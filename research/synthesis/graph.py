@@ -17,7 +17,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
-from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY
+from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY, safe_eval_formula
 
 
 @dataclass
@@ -350,7 +350,7 @@ class ComputationGraph:
             if op.has_params:
                 formula = op.param_formula.replace("D", str(D))
                 try:
-                    total += int(eval(formula))
+                    total += safe_eval_formula(formula)
                 except Exception:
                     total += D * D  # fallback estimate
         self._cache["n_params"] = total

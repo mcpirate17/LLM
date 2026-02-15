@@ -382,6 +382,8 @@ class ExperimentAnalytics:
                 "recovery_lag": 0.0,
                 "stage1_transition_timing": 0.0,
                 "primary_change_point_timing": 0.0,
+                "stage1_transition_density": 0.0,
+                "change_point_confidence": 0.0,
             }
             for exp_id in exp_ids
         }
@@ -438,13 +440,16 @@ class ExperimentAnalytics:
                 peak_timing = peak_idx / normalizer
 
                 first_transition_idx = None
+                transitions = 0
                 for idx in range(1, len(stage1_values)):
                     if stage1_values[idx] != stage1_values[idx - 1]:
+                        transitions += 1
                         first_transition_idx = idx
                         break
                 stage1_transition_timing = (
                     (first_transition_idx / normalizer) if first_transition_idx is not None else 0.0
                 )
+                stage1_transition_density = transitions / normalizer if normalizer > 0 else 0.0
 
                 if len(outcome_proxy) > 1:
                     deltas = [
@@ -453,8 +458,12 @@ class ExperimentAnalytics:
                     ]
                     cp_idx = 1 + max(range(len(deltas)), key=lambda idx: deltas[idx])
                     primary_change_point_timing = cp_idx / normalizer
+                    max_delta = max(deltas) if deltas else 0.0
+                    total_delta = sum(deltas)
+                    change_point_confidence = max_delta / total_delta if total_delta > 1e-9 else 0.0
                 else:
                     primary_change_point_timing = 0.0
+                    change_point_confidence = 0.0
 
                 early_window = max(1, len(outcome_proxy) // 3)
                 early_baseline = sum(outcome_proxy[:early_window]) / early_window
@@ -478,6 +487,8 @@ class ExperimentAnalytics:
                     "recovery_lag": recovery_lag,
                     "stage1_transition_timing": stage1_transition_timing,
                     "primary_change_point_timing": primary_change_point_timing,
+                    "stage1_transition_density": stage1_transition_density,
+                    "change_point_confidence": change_point_confidence,
                 }
 
         for e in experiments:
@@ -490,6 +501,8 @@ class ExperimentAnalytics:
             e["recovery_lag"] = float(traj.get("recovery_lag", 0.0))
             e["stage1_transition_timing"] = float(traj.get("stage1_transition_timing", 0.0))
             e["primary_change_point_timing"] = float(traj.get("primary_change_point_timing", 0.0))
+            e["stage1_transition_density"] = float(traj.get("stage1_transition_density", 0.0))
+            e["change_point_confidence"] = float(traj.get("change_point_confidence", 0.0))
 
         feature_keys = [
             "s1_rate",
@@ -508,6 +521,8 @@ class ExperimentAnalytics:
             "recovery_lag",
             "stage1_transition_timing",
             "primary_change_point_timing",
+            "stage1_transition_density",
+            "change_point_confidence",
         ]
         mins = {k: min(e[k] for e in experiments) for k in feature_keys}
         maxs = {k: max(e[k] for e in experiments) for k in feature_keys}
@@ -539,6 +554,8 @@ class ExperimentAnalytics:
                 _norm(e["recovery_lag"], "recovery_lag"),
                 _norm(e["stage1_transition_timing"], "stage1_transition_timing"),
                 _norm(e["primary_change_point_timing"], "primary_change_point_timing"),
+                _norm(e["stage1_transition_density"], "stage1_transition_density"),
+                _norm(e["change_point_confidence"], "change_point_confidence"),
             ]
             points.append((e, vec))
 
@@ -744,6 +761,8 @@ class ExperimentAnalytics:
                 "avg_recovery_lag": round(sum(m["recovery_lag"] for m in member_exps) / len(member_exps), 4),
                 "avg_stage1_transition_timing": round(sum(m["stage1_transition_timing"] for m in member_exps) / len(member_exps), 4),
                 "avg_primary_change_point_timing": round(sum(m["primary_change_point_timing"] for m in member_exps) / len(member_exps), 4),
+                "avg_stage1_transition_density": round(sum(m["stage1_transition_density"] for m in member_exps) / len(member_exps), 4),
+                "avg_change_point_confidence": round(sum(m["change_point_confidence"] for m in member_exps) / len(member_exps), 4),
                 "experiment_ids": [m["experiment_id"] for m in member_exps[:10]],
             })
 
@@ -784,6 +803,8 @@ class ExperimentAnalytics:
                 "recovery_lag",
                 "stage1_transition_timing",
                 "primary_change_point_timing",
+                "stage1_transition_density",
+                "change_point_confidence",
             ],
             "stability_score": round(max(0.0, min(1.0, stability)), 4),
             "model_selection": {

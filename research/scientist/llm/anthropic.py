@@ -9,6 +9,8 @@ from .backend import LLMBackend, LLMResponse
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-latest"
+
 
 class AnthropicBackend(LLMBackend):
     """LLM backend using the Anthropic Claude API."""
@@ -17,7 +19,9 @@ class AnthropicBackend(LLMBackend):
 
     def __init__(self):
         self.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        self.model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+        self.model = os.environ.get("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL)
+        if "ANTHROPIC_MODEL" not in os.environ:
+            logger.info("Using default Anthropic model alias: %s", self.model)
         self._client = None
 
     def _get_client(self):

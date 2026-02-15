@@ -644,6 +644,8 @@ class TestNotebook(unittest.TestCase):
         self.assertIn("recovery_lag", clusters["feature_keys"])
         self.assertIn("stage1_transition_timing", clusters["feature_keys"])
         self.assertIn("primary_change_point_timing", clusters["feature_keys"])
+        self.assertIn("stage1_transition_density", clusters["feature_keys"])
+        self.assertIn("change_point_confidence", clusters["feature_keys"])
 
         self.assertIn("model_selection", clusters)
         self.assertEqual(clusters["model_selection"]["selected_k"], 2)
@@ -655,6 +657,8 @@ class TestNotebook(unittest.TestCase):
         recovery_lag = sorted(c["avg_recovery_lag"] for c in clusters["clusters"])
         transition_timing = [c["avg_stage1_transition_timing"] for c in clusters["clusters"]]
         change_point_timing = [c["avg_primary_change_point_timing"] for c in clusters["clusters"]]
+        transition_density = [c["avg_stage1_transition_density"] for c in clusters["clusters"]]
+        change_point_conf = [c["avg_change_point_confidence"] for c in clusters["clusters"]]
 
         self.assertLess(stage1_momentum[0], -0.6)
         self.assertGreater(stage1_momentum[-1], 0.6)
@@ -668,6 +672,8 @@ class TestNotebook(unittest.TestCase):
         self.assertGreater(recovery_lag[-1], 0.8)
         self.assertTrue(all(0.0 <= t <= 1.0 for t in transition_timing))
         self.assertTrue(all(0.0 <= t <= 1.0 for t in change_point_timing))
+        self.assertTrue(all(0.0 <= t <= 1.0 for t in transition_density))
+        self.assertTrue(all(0.0 <= t <= 1.0 for t in change_point_conf))
 
 
 # ── Test 2: Novelty Scoring ──

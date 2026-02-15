@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
 /**
- * TrendCharts — Cross-experiment line charts using inline SVG.
- * Shows S1 pass rate, best novelty, best loss ratio over time.
+ * TrendCharts — Cross-experiment line charts using inline SVG
+ * plus a sortable data table with per-experiment scores.
  */
 
 function MiniChart({ data, valueKey, label, color, formatValue }) {
@@ -77,9 +77,68 @@ function MiniChart({ data, valueKey, label, color, formatValue }) {
   );
 }
 
+/**
+ * Score a trend data point (experiment) 0-100.
+ * Weights: S1 pass rate (35%), best loss ratio (30%), best novelty (25%), efficiency (10%)
+ */
+function trendScore(d) {
+  // S1 pass rate: scaled so 10% = max
+  const passRate = Math.min((d.s1_pass_rate || 0) / 0.10, 1.0) * 35;
+
+  // Loss ratio: lower is better
+  const lossScore = d.best_loss_ratio != null
+    ? Math.max(0, 1 - (d.best_loss_ratio - 0.2) / 0.8) * 30
+    : 0;
+
+  // Novelty
+  const noveltyScore = d.best_novelty_score != null
+    ? Math.min(d.best_novelty_score, 1.0) * 25
+    : 0;
+
+  // Efficiency: more programs per second = better, normalize to ~2 prog/s
+  const efficiency = (d.duration_seconds && d.n_programs_generated)
+    ? Math.min((d.n_programs_generated / d.duration_seconds) / 2, 1.0) * 10
+    : 0;
+
+  return Math.round(Math.max(0, Math.min(100, passRate + lossScore + noveltyScore + efficiency)));
+}
+
+function scoreColor(score) {
+  if (score >= 70) return 'var(--accent-green)';
+  if (score >= 40) return 'var(--accent-yellow)';
+  if (score >= 20) return 'var(--accent-orange, #f0883e)';
+  return 'var(--accent-red)';
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) return '--';
+  return new Date(timestamp * 1000).toLocaleString();
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return '--';
+  if (seconds < 60) return `${seconds.toFixed(0)}s`;
+  if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+const COLUMNS = [
+  { key: '_score', label: 'Score' },
+  { key: 'experiment_id', label: 'ID' },
+  { key: 's1_pass_rate', label: 'S1 Rate' },
+  { key: 'best_loss_ratio', label: 'Best Loss' },
+  { key: 'best_novelty_score', label: 'Best Novelty' },
+  { key: 'n_programs_generated', label: 'Programs' },
+  { key: 'n_stage1_passed', label: 'S1 Pass' },
+  { key: 'duration_seconds', label: 'Duration' },
+  { key: 'timestamp', label: 'Time' },
+];
+
 function TrendCharts() {
   const [trends, setTrends] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [sortKey, setSortKey] = useState('_score');
+  const [sortDesc, setSortDesc] = useState(true);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/trends`)
@@ -87,6 +146,35 @@ function TrendCharts() {
       .then(d => { setTrends(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
+
+  const handleSort = (key) => {
+    if (sortKey === key) {
+      setSortDesc(!sortDesc);
+    } else {
+      setSortKey(key);
+      setSortDesc(true);
+    }
+  };
+
+  const augmented = useMemo(() => {
+    if (!trends) return [];
+    return trends.map(d => ({ ...d, _score: trendScore(d) }));
+  }, [trends]);
+
+  const sorted = useMemo(() => {
+    const arr = [...augmented];
+    arr.sort((a, b) => {
+      let va = a[sortKey], vb = b[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') {
+        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      }
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [augmented, sortKey, sortDesc]);
 
   if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading trends...</p></div>;
   if (!trends || trends.length === 0) {
@@ -103,7 +191,12 @@ function TrendCharts() {
   return (
     <div className="card">
       <div className="card-title">Experiment Trends</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        How the search is improving over time. Rising S1 pass rate means the grammar is learning
+        to generate better architectures. Decreasing loss ratio means the survivors are learning
+        faster. These trends show whether the system's self-improvement loop is working.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginBottom: 24 }}>
         <MiniChart
           data={trends}
           valueKey="s1_pass_rate"
@@ -125,6 +218,70 @@ function TrendCharts() {
           formatValue={v => v.toFixed(4)}
         />
       </div>
+
+      {/* Data table */}
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
+        Experiment Data
+      </div>
+      <table className="data-table">
+        <thead>
+          <tr>
+            {COLUMNS.map(col => (
+              <th
+                key={col.key}
+                onClick={() => handleSort(col.key)}
+                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+              >
+                {col.label}
+                {sortKey === col.key && (
+                  <span style={{ marginLeft: 4, fontSize: 10 }}>
+                    {sortDesc ? '\u25BC' : '\u25B2'}
+                  </span>
+                )}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((d, i) => (
+            <tr key={d.experiment_id || i}>
+              <td style={{ fontWeight: 600, color: scoreColor(d._score) }}>
+                {d._score}
+              </td>
+              <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
+                {(d.experiment_id || '').slice(0, 12)}
+              </td>
+              <td style={{
+                color: (d.s1_pass_rate || 0) > 0.05 ? 'var(--accent-green)' : 'var(--text-muted)',
+              }}>
+                {d.s1_pass_rate != null ? `${(d.s1_pass_rate * 100).toFixed(1)}%` : '--'}
+              </td>
+              <td style={{
+                color: d.best_loss_ratio != null
+                  ? (d.best_loss_ratio < 0.5 ? 'var(--accent-green)' : d.best_loss_ratio < 0.8 ? 'var(--accent-yellow)' : 'var(--text-muted)')
+                  : 'var(--text-muted)',
+              }}>
+                {d.best_loss_ratio?.toFixed(4) || '--'}
+              </td>
+              <td style={{
+                color: d.best_novelty_score != null
+                  ? (d.best_novelty_score > 0.8 ? 'var(--accent-green)' : d.best_novelty_score > 0.5 ? 'var(--accent-yellow)' : 'var(--text-muted)')
+                  : 'var(--text-muted)',
+              }}>
+                {d.best_novelty_score?.toFixed(3) || '--'}
+              </td>
+              <td>{d.n_programs_generated || 0}</td>
+              <td style={{ color: (d.n_stage1_passed || 0) > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                {d.n_stage1_passed || 0}
+              </td>
+              <td>{formatDuration(d.duration_seconds)}</td>
+              <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                {formatTime(d.timestamp)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

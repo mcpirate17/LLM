@@ -306,18 +306,24 @@ class ArchSpec:
 
 def _check_tag_incompatibilities(spec: ArchSpec) -> Optional[str]:
     """Check if any option's incompatible_with tags clash with other options' tags."""
+    option_cache: Dict[str, Option] = {
+        dim_name: spec.get_option(dim_name) for dim_name in spec.choices
+    }
+    tag_sources: Dict[str, List[Tuple[str, str]]] = {}
+    for dim_name, opt in option_cache.items():
+        for tag in opt.tags:
+            tag_sources.setdefault(tag, []).append((dim_name, opt.name))
+
     for dim_name, opt_name in spec.choices.items():
-        opt = spec.get_option(dim_name)
+        opt = option_cache[dim_name]
         if not opt.incompatible_with:
             continue
-        for other_dim, other_name in spec.choices.items():
-            if other_dim == dim_name:
-                continue
-            other_opt = spec.get_option(other_dim)
-            clash = set(opt.incompatible_with) & set(other_opt.tags)
-            if clash:
+        for bad_tag in opt.incompatible_with:
+            for other_dim, other_name in tag_sources.get(bad_tag, []):
+                if other_dim == dim_name:
+                    continue
                 return (f"{dim_name}={opt_name} incompatible with "
-                        f"{other_dim}={other_name} (tags: {clash})")
+                        f"{other_dim}={other_name} (tags: {{{bad_tag}}})")
     return None
 
 

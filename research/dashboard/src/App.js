@@ -12,6 +12,12 @@ import MetricsChart from './components/MetricsChart';
 import ControlPanel from './components/ControlPanel';
 import LiveFeed from './components/LiveFeed';
 import TrendCharts from './components/TrendCharts';
+import LearningPanel from './components/LearningPanel';
+import ResearchReport from './components/ResearchReport';
+import HelpPanel from './components/HelpPanel';
+import Leaderboard from './components/Leaderboard';
+import CampaignView from './components/CampaignView';
+import KnowledgeBase from './components/KnowledgeBase';
 import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -132,7 +138,7 @@ function App() {
       </header>
 
       <nav className="tab-nav">
-        {['overview', 'experiments', 'programs', 'trends', 'notebook', 'insights'].map(tab => (
+        {['overview', 'experiments', 'programs', 'leaderboard', 'campaigns', 'knowledge', 'trends', 'learning', 'notebook', 'insights', 'report', 'help'].map(tab => (
           <button
             key={tab}
             className={`tab ${activeTab === tab ? 'active' : ''} ${
@@ -168,6 +174,7 @@ function App() {
                 onStart={handleStartExperiment}
                 onStop={handleStopExperiment}
                 onRefresh={fetchDashboard}
+                autoRecommendation={data?.last_recommendation}
               />
             </div>
 
@@ -215,8 +222,26 @@ function App() {
           />
         )}
 
+        {activeTab === 'leaderboard' && (
+          <Leaderboard
+            onSelectProgram={handleSelectProgram}
+          />
+        )}
+
+        {activeTab === 'campaigns' && (
+          <CampaignView />
+        )}
+
+        {activeTab === 'knowledge' && (
+          <KnowledgeBase />
+        )}
+
         {activeTab === 'trends' && (
           <TrendCharts />
+        )}
+
+        {activeTab === 'learning' && (
+          <LearningPanel />
         )}
 
         {activeTab === 'notebook' && (
@@ -225,6 +250,14 @@ function App() {
 
         {activeTab === 'insights' && (
           <InsightsPanel insights={data?.insights} />
+        )}
+
+        {activeTab === 'report' && (
+          <ResearchReport />
+        )}
+
+        {activeTab === 'help' && (
+          <HelpPanel />
         )}
       </main>
 

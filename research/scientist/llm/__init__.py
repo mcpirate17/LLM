@@ -6,6 +6,14 @@ and experiment summarization. Falls back to rule-based methods when
 no backend is configured.
 """
 
-from .backend import LLMBackend, LLMResponse, create_backend
+from . import context, prompts
+from .backend import LLMBackend, LLMResponse, create_backend, create_backend_from_config
 
-__all__ = ["LLMBackend", "LLMResponse", "create_backend"]
+__all__ = [
+	"LLMBackend",
+	"LLMResponse",
+	"create_backend",
+	"create_backend_from_config",
+	"context",
+	"prompts",
+]

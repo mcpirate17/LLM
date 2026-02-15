@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
 
@@ -20,6 +20,58 @@ function formatDuration(seconds) {
   if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
   return `${(seconds / 3600).toFixed(1)}h`;
 }
+
+/** Rate a program row: green (learned well), amber (compiles), red (failed early) */
+function programRowRating(p) {
+  if (p.stage1_passed) {
+    if (p.baseline_loss_ratio != null && p.baseline_loss_ratio < 1.0)
+      return { color: 'var(--accent-green)', label: 'Excellent', tip: 'Outperforms a standard transformer of the same size' };
+    if ((p.loss_ratio || 1) < 0.5)
+      return { color: 'var(--accent-green)', label: 'Strong', tip: 'Learned quickly — loss dropped significantly' };
+    return { color: 'var(--accent-yellow)', label: 'Learned', tip: 'Passed Stage 1 — demonstrated learning ability' };
+  }
+  if (p.stage05_passed)
+    return { color: 'var(--accent-orange, #f0883e)', label: 'Stable', tip: 'Numerically stable but didn\'t learn — gradient signal too weak' };
+  if (p.stage0_passed)
+    return { color: 'var(--accent-orange, #f0883e)', label: 'Compiled', tip: 'Compiled and ran but produced NaN or unstable gradients' };
+  return { color: 'var(--accent-red)', label: 'Failed', tip: 'Failed to compile or crashed — invalid operation combination', order: 0 };
+}
+
+/**
+ * Score a program row 0-100.
+ * Weights: stage progress (30%), loss ratio (30%), novelty (20%), baseline (20%)
+ */
+function programRowScore(p) {
+  const stageScore = (p.stage1_passed ? 1.0 : p.stage05_passed ? 0.5 : p.stage0_passed ? 0.2 : 0) * 30;
+  const lossScore = p.loss_ratio != null ? Math.max(0, 1 - (p.loss_ratio - 0.2) / 0.8) * 30 : 0;
+  const noveltyScore = p.novelty_score != null ? Math.min(p.novelty_score, 1.0) * 20 : 0;
+  const baselineScore = p.baseline_loss_ratio != null ? Math.max(0, Math.min(1, 1.5 - p.baseline_loss_ratio)) * 20 : 0;
+  return Math.round(Math.max(0, Math.min(100, stageScore + lossScore + noveltyScore + baselineScore)));
+}
+
+function progScoreColor(score) {
+  if (score >= 70) return 'var(--accent-green)';
+  if (score >= 40) return 'var(--accent-yellow)';
+  if (score >= 20) return 'var(--accent-orange, #f0883e)';
+  return 'var(--accent-red)';
+}
+
+const PROG_COLUMNS = [
+  { key: '_score', label: 'Score' },
+  { key: 'rating', label: 'Rating' },
+  { key: 'graph_fingerprint', label: 'Fingerprint' },
+  { key: 'stage0_passed', label: 'S0' },
+  { key: 'stage05_passed', label: 'S0.5' },
+  { key: 'stage1_passed', label: 'S1' },
+  { key: 'novelty_score', label: 'Novelty' },
+  { key: 'loss_ratio', label: 'Loss Ratio' },
+  { key: 'param_count', label: 'Params' },
+  { key: 'peak_memory_mb', label: 'Memory' },
+  { key: 'flops_forward', label: 'FLOPs' },
+  { key: 'baseline_loss_ratio', label: 'Baseline' },
+];
+
+const ROW_RATING_ORDER = { Excellent: 5, Strong: 4, Learned: 3, Stable: 2, Compiled: 1, Failed: 0 };
 
 function FunnelViz({ experiment }) {
   const stages = [
@@ -54,11 +106,122 @@ function FunnelViz({ experiment }) {
   );
 }
 
+function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram }) {
+  const sorted = useMemo(() => {
+    const aug = programs.map(p => ({ ...p, _score: programRowScore(p), _rating: programRowRating(p) }));
+    aug.sort((a, b) => {
+      let va, vb;
+      if (sortKey === '_score') { va = a._score; vb = b._score; }
+      else if (sortKey === 'rating') { va = ROW_RATING_ORDER[a._rating.label] || 0; vb = ROW_RATING_ORDER[b._rating.label] || 0; }
+      else if (sortKey === 'graph_fingerprint') { va = a.graph_fingerprint || ''; vb = b.graph_fingerprint || ''; return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb); }
+      else { va = a[sortKey]; vb = b[sortKey]; }
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return sortDesc ? vb - va : va - vb;
+    });
+    return aug;
+  }, [programs, sortKey, sortDesc]);
+
+  return (
+    <div className="card">
+      <div className="card-title">All Programs ({programs.length})</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+        Every architecture tested in this experiment. P = passed, F = failed at that stage.
+        Baseline {'<'} 1.0 means it outperformed a standard transformer of the same size.
+        Click any row for the full computation graph and detailed metrics.
+      </p>
+      <div style={{ maxHeight: 400, overflow: 'auto' }}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              {PROG_COLUMNS.map(col => (
+                <th
+                  key={col.key}
+                  onClick={() => onSort(col.key)}
+                  style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                >
+                  {col.label}
+                  {sortKey === col.key && (
+                    <span style={{ marginLeft: 4, fontSize: 10 }}>
+                      {sortDesc ? '\u25BC' : '\u25B2'}
+                    </span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((p, i) => {
+              const rating = p._rating;
+              return (
+                <tr key={p.result_id || i}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onSelectProgram && onSelectProgram(p.result_id)}>
+                  <td style={{ fontWeight: 600, color: progScoreColor(p._score) }}>
+                    {p._score}
+                  </td>
+                  <td title={rating.tip}>
+                    <span style={{
+                      display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
+                      background: rating.color, marginRight: 6,
+                    }} />
+                    <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
+                  </td>
+                  <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
+                    {p.graph_fingerprint?.slice(0, 10) || '--'}
+                  </td>
+                  <td><span className={`badge ${p.stage0_passed ? 'pass' : 'fail'}`}>{p.stage0_passed ? 'P' : 'F'}</span></td>
+                  <td><span className={`badge ${p.stage05_passed ? 'pass' : 'fail'}`}>{p.stage05_passed ? 'P' : 'F'}</span></td>
+                  <td><span className={`badge ${p.stage1_passed ? 'pass' : 'fail'}`}>{p.stage1_passed ? 'P' : 'F'}</span></td>
+                  <td style={{
+                    color: (p.novelty_score || 0) > 0.8 ? 'var(--accent-green)'
+                      : (p.novelty_score || 0) > 0.5 ? 'var(--accent-yellow)' : 'var(--text-muted)'
+                  }}>
+                    {p.novelty_score?.toFixed(3) || '--'}
+                  </td>
+                  <td style={{
+                    color: p.loss_ratio != null
+                      ? (p.loss_ratio < 0.5 ? 'var(--accent-green)' : p.loss_ratio < 0.7 ? 'var(--accent-yellow)' : 'var(--accent-orange, #f0883e)')
+                      : 'var(--text-muted)'
+                  }}>
+                    {p.loss_ratio?.toFixed(4) || '--'}
+                  </td>
+                  <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : '--'}</td>
+                  <td style={{ fontSize: 11 }}>{p.peak_memory_mb ? `${Number(p.peak_memory_mb).toFixed(0)}MB` : '--'}</td>
+                  <td style={{ fontSize: 11 }}>{p.flops_forward ? `${(p.flops_forward / 1e6).toFixed(1)}M` : '--'}</td>
+                  <td style={{
+                    fontSize: 11,
+                    fontWeight: p.baseline_loss_ratio != null && p.baseline_loss_ratio < 1 ? 600 : 'normal',
+                    color: p.baseline_loss_ratio != null
+                      ? (p.baseline_loss_ratio < 1 ? 'var(--accent-green)' : 'var(--accent-red)')
+                      : 'var(--text-muted)'
+                  }}>
+                    {p.baseline_loss_ratio?.toFixed(3) || '--'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, display: 'flex', gap: 16 }}>
+        <span><span style={{ color: 'var(--accent-green)' }}>Green</span> = learned from data (S1 pass)</span>
+        <span><span style={{ color: 'var(--accent-yellow)' }}>Amber</span> = passed learning stage</span>
+        <span><span style={{ color: 'var(--accent-orange, #f0883e)' }}>Orange</span> = compiled but didn't learn</span>
+        <span><span style={{ color: 'var(--accent-red)' }}>Red</span> = failed to compile</span>
+      </div>
+    </div>
+  );
+}
+
 function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const [data, setData] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedProgramId, setSelectedProgramId] = useState(null);
+  const [progSortKey, setProgSortKey] = useState('_score');
+  const [progSortDesc, setProgSortDesc] = useState(true);
 
   useEffect(() => {
     if (!experimentId) return;
@@ -114,6 +277,11 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
         )}
 
         {/* Funnel */}
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+          The evaluation funnel: each generated architecture is tested in stages.
+          S0 = compiles and produces outputs. S0.5 = gradients are stable. S1 = loss actually
+          decreases during training. Only S1 survivors are viable LLM layer candidates.
+        </p>
         <FunnelViz experiment={exp} />
       </div>
 
@@ -159,45 +327,16 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
         <FailureAnalysis experimentId={experimentId} />
 
         {/* Programs Table */}
-        <div className="card">
-          <div className="card-title">All Programs ({programs.length})</div>
-          <div style={{ maxHeight: 400, overflow: 'auto' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Fingerprint</th>
-                  <th>S0</th>
-                  <th>S0.5</th>
-                  <th>S1</th>
-                  <th>Novelty</th>
-                  <th>Loss Ratio</th>
-                  <th>Params</th>
-                </tr>
-              </thead>
-              <tbody>
-                {programs.map((p, i) => (
-                  <tr key={p.result_id || i}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => setSelectedProgramId(p.result_id)}>
-                    <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
-                      {p.graph_fingerprint?.slice(0, 10) || '--'}
-                    </td>
-                    <td><span className={`badge ${p.stage0_passed ? 'pass' : 'fail'}`}>{p.stage0_passed ? 'P' : 'F'}</span></td>
-                    <td><span className={`badge ${p.stage05_passed ? 'pass' : 'fail'}`}>{p.stage05_passed ? 'P' : 'F'}</span></td>
-                    <td><span className={`badge ${p.stage1_passed ? 'pass' : 'fail'}`}>{p.stage1_passed ? 'P' : 'F'}</span></td>
-                    <td>
-                      <span className={p.novelty_score > 0.5 ? 'badge novel' : ''}>
-                        {p.novelty_score?.toFixed(3) || '--'}
-                      </span>
-                    </td>
-                    <td>{p.loss_ratio?.toFixed(4) || '--'}</td>
-                    <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : '--'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <ProgramsTable
+          programs={programs}
+          sortKey={progSortKey}
+          sortDesc={progSortDesc}
+          onSort={(key) => {
+            if (progSortKey === key) setProgSortDesc(!progSortDesc);
+            else { setProgSortKey(key); setProgSortDesc(true); }
+          }}
+          onSelectProgram={setSelectedProgramId}
+        />
       </div>
 
       {/* Notebook Entries */}

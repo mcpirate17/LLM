@@ -1,241 +1,368 @@
 import React from 'react';
 
 /**
- * AriaAvatar — Procedural anime-style SVG avatar for Dr. Aria Nexus.
- *
- * Mood-reactive expressions:
- *   curious:        raised eyebrow, small smile, sparkle
- *   excited:        wide eyes, big grin, blush marks
- *   contemplative:  half-closed eyes, neutral mouth
- *   frustrated:     furrowed brows, slight frown
- *   triumphant:     happy closed eyes, wide grin, sparkles
+ * AriaAvatar — Stylish anime-inspired SVG avatar for Dr. Aria Nexus.
+ * Sleek design with gradient hair, luminous eyes, and ambient glow.
+ * Mood-reactive with smooth color transitions.
  */
 
-const MOOD_COLORS = {
-  curious:        { iris: '#58a6ff', accent: '#bc8cff' },
-  excited:        { iris: '#3fb950', accent: '#f0883e' },
-  contemplative:  { iris: '#8b949e', accent: '#58a6ff' },
-  frustrated:     { iris: '#f85149', accent: '#d29922' },
-  triumphant:     { iris: '#d29922', accent: '#3fb950' },
+const MOOD_THEMES = {
+  curious:        { iris: '#4a90e2', irisInner: '#74b9ff', glow: '#4a90e2', accent: '#e74c3c', hairHighlight: '#2c3e6e' },
+  excited:        { iris: '#e74c3c', irisInner: '#ff7675', glow: '#e74c3c', accent: '#f1c40f', hairHighlight: '#4a1a2e' },
+  contemplative:  { iris: '#a29bfe', irisInner: '#d6d3ff', glow: '#a29bfe', accent: '#6c5ce7', hairHighlight: '#2d2b55' },
+  frustrated:     { iris: '#fd7272', irisInner: '#ffb8b8', glow: '#e17055', accent: '#e67e22', hairHighlight: '#4a1a1a' },
+  triumphant:     { iris: '#00cec9', irisInner: '#81ecec', glow: '#00b894', accent: '#fdcb6e', hairHighlight: '#1a3c3c' },
 };
 
 function AriaAvatar({ mood = 'curious', size = 80 }) {
   const s = size;
   const cx = s / 2;
   const cy = s / 2;
-  const scale = s / 80; // base design is 80x80
-  const colors = MOOD_COLORS[mood] || MOOD_COLORS.curious;
+  const sc = s / 80;
+  const t = MOOD_THEMES[mood] || MOOD_THEMES.curious;
+  const uid = `aria-${mood}-${size}`;
 
   return (
     <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`} xmlns="http://www.w3.org/2000/svg">
-      {/* Hair back */}
-      <ellipse cx={cx} cy={cy - 2 * scale} rx={32 * scale} ry={34 * scale}
-        fill="#2d1b69" />
+      <defs>
+        {/* Ambient glow behind head */}
+        <radialGradient id={`${uid}-glow`} cx="50%" cy="45%" r="50%">
+          <stop offset="0%" stopColor={t.glow} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={t.glow} stopOpacity="0" />
+        </radialGradient>
+
+        {/* Hair gradient */}
+        <linearGradient id={`${uid}-hair`} x1="0" y1="0" x2="0.3" y2="1">
+          <stop offset="0%" stopColor="#2d3436" />
+          <stop offset="40%" stopColor="#1a1a2e" />
+          <stop offset="100%" stopColor={t.hairHighlight} />
+        </linearGradient>
+
+        {/* Skin gradient */}
+        <radialGradient id={`${uid}-skin`} cx="50%" cy="40%" r="55%">
+          <stop offset="0%" stopColor="#ffe8dc" />
+          <stop offset="100%" stopColor="#f0c9b5" />
+        </radialGradient>
+
+        {/* Eye glow */}
+        <radialGradient id={`${uid}-eyeglow`} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor={t.irisInner} stopOpacity="0.8" />
+          <stop offset="60%" stopColor={t.iris} stopOpacity="1" />
+          <stop offset="100%" stopColor={t.iris} stopOpacity="0.7" />
+        </radialGradient>
+
+        {/* Lip tint */}
+        <linearGradient id={`${uid}-lip`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#d4666a" />
+          <stop offset="100%" stopColor="#b33939" />
+        </linearGradient>
+
+        {/* Hair sheen */}
+        <linearGradient id={`${uid}-sheen`} x1="0.3" y1="0" x2="0.7" y2="1">
+          <stop offset="0%" stopColor="white" stopOpacity="0.12" />
+          <stop offset="50%" stopColor="white" stopOpacity="0.03" />
+          <stop offset="100%" stopColor="white" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+
+      {/* Ambient glow */}
+      <circle cx={cx} cy={cy} r={36 * sc} fill={`url(#${uid}-glow)`} />
+
+      {/* Hair back volume */}
+      <ellipse cx={cx} cy={cy - 4 * sc} rx={30 * sc} ry={32 * sc}
+        fill={`url(#${uid}-hair)`} />
+
+      {/* Neck */}
+      <rect x={cx - 6 * sc} y={cy + 20 * sc} width={12 * sc} height={14 * sc}
+        rx={4 * sc} fill="#f0c9b5" />
+
+      {/* Shoulder hint */}
+      <ellipse cx={cx} cy={cy + 34 * sc} rx={22 * sc} ry={8 * sc}
+        fill="#1a1a2e" opacity="0.9" />
 
       {/* Face */}
-      <ellipse cx={cx} cy={cy + 2 * scale} rx={24 * scale} ry={26 * scale}
-        fill="#fce4d6" />
+      <path
+        d={`M ${cx - 19 * sc} ${cy - 10 * sc}
+           Q ${cx - 22 * sc} ${cy + 8 * sc} ${cx - 13 * sc} ${cy + 20 * sc}
+           Q ${cx - 6 * sc} ${cy + 25 * sc} ${cx} ${cy + 26 * sc}
+           Q ${cx + 6 * sc} ${cy + 25 * sc} ${cx + 13 * sc} ${cy + 20 * sc}
+           Q ${cx + 22 * sc} ${cy + 8 * sc} ${cx + 19 * sc} ${cy - 10 * sc}
+           Q ${cx + 12 * sc} ${cy - 26 * sc} ${cx} ${cy - 28 * sc}
+           Q ${cx - 12 * sc} ${cy - 26 * sc} ${cx - 19 * sc} ${cy - 10 * sc} Z`}
+        fill={`url(#${uid}-skin)`}
+      />
 
-      {/* Hair front - bangs */}
-      <path d={`M ${cx - 24 * scale} ${cy - 8 * scale}
-                Q ${cx - 18 * scale} ${cy - 28 * scale} ${cx - 6 * scale} ${cy - 18 * scale}
-                Q ${cx} ${cy - 22 * scale} ${cx + 6 * scale} ${cy - 18 * scale}
-                Q ${cx + 18 * scale} ${cy - 28 * scale} ${cx + 24 * scale} ${cy - 8 * scale}
-                Q ${cx + 20 * scale} ${cy - 20 * scale} ${cx} ${cy - 26 * scale}
-                Q ${cx - 20 * scale} ${cy - 20 * scale} ${cx - 24 * scale} ${cy - 8 * scale}
-                Z`}
-        fill="#3d2b7a" />
-
-      {/* Hair side strands */}
-      <path d={`M ${cx - 24 * scale} ${cy - 6 * scale}
-                Q ${cx - 30 * scale} ${cy + 10 * scale} ${cx - 26 * scale} ${cy + 22 * scale}`}
-        stroke="#3d2b7a" strokeWidth={4 * scale} fill="none" strokeLinecap="round" />
-      <path d={`M ${cx + 24 * scale} ${cy - 6 * scale}
-                Q ${cx + 30 * scale} ${cy + 10 * scale} ${cx + 26 * scale} ${cy + 22 * scale}`}
-        stroke="#3d2b7a" strokeWidth={4 * scale} fill="none" strokeLinecap="round" />
+      {/* Cheek blush */}
+      <ellipse cx={cx - 14 * sc} cy={cy + 8 * sc} rx={5 * sc} ry={3 * sc}
+        fill="#ff9f9f" opacity="0.18" />
+      <ellipse cx={cx + 14 * sc} cy={cy + 8 * sc} rx={5 * sc} ry={3 * sc}
+        fill="#ff9f9f" opacity="0.18" />
 
       {/* Eyes */}
-      <Eyes cx={cx} cy={cy} scale={scale} mood={mood} colors={colors} />
+      <Eyes cx={cx} cy={cy} sc={sc} mood={mood} theme={t} uid={uid} />
 
-      {/* Blush marks (excited/triumphant) */}
-      {(mood === 'excited' || mood === 'triumphant') && (
-        <>
-          <ellipse cx={cx - 16 * scale} cy={cy + 8 * scale} rx={4 * scale} ry={2.5 * scale}
-            fill="#f8a4a4" opacity={0.5} />
-          <ellipse cx={cx + 16 * scale} cy={cy + 8 * scale} rx={4 * scale} ry={2.5 * scale}
-            fill="#f8a4a4" opacity={0.5} />
-        </>
-      )}
+      {/* Eyebrows */}
+      <Eyebrows cx={cx} cy={cy} sc={sc} mood={mood} />
 
       {/* Nose */}
-      <path d={`M ${cx} ${cy + 4 * scale} l ${2 * scale} ${4 * scale} l ${-4 * scale} 0 Z`}
-        fill="none" stroke="#dbb8a0" strokeWidth={scale * 0.8} />
+      <path
+        d={`M ${cx - 0.5 * sc} ${cy + 4 * sc} Q ${cx - 2 * sc} ${cy + 10 * sc} ${cx} ${cy + 10.5 * sc}
+           Q ${cx + 2 * sc} ${cy + 10 * sc} ${cx + 0.5 * sc} ${cy + 4 * sc}`}
+        fill="none" stroke="#d9b0a0" strokeWidth={0.7 * sc} strokeLinecap="round" />
 
       {/* Mouth */}
-      <Mouth cx={cx} cy={cy} scale={scale} mood={mood} />
+      <Mouth cx={cx} cy={cy} sc={sc} mood={mood} uid={uid} />
 
-      {/* Glasses */}
-      <circle cx={cx - 10 * scale} cy={cy + 2 * scale} r={8 * scale}
-        fill="none" stroke="#8b949e" strokeWidth={scale} />
-      <circle cx={cx + 10 * scale} cy={cy + 2 * scale} r={8 * scale}
-        fill="none" stroke="#8b949e" strokeWidth={scale} />
-      <line x1={cx - 2 * scale} y1={cy + 2 * scale}
-            x2={cx + 2 * scale} y2={cy + 2 * scale}
-        stroke="#8b949e" strokeWidth={scale} />
+      {/* Hair front - swept bangs with volume */}
+      <path
+        d={`M ${cx - 26 * sc} ${cy - 16 * sc}
+           Q ${cx - 30 * sc} ${cy - 6 * sc} ${cx - 22 * sc} ${cy + 4 * sc}
+           Q ${cx - 18 * sc} ${cy + 2 * sc} ${cx - 16 * sc} ${cy - 6 * sc}
+           Q ${cx - 12 * sc} ${cy - 16 * sc} ${cx - 4 * sc} ${cy - 14 * sc}
+           Q ${cx + 2 * sc} ${cy - 20 * sc} ${cx + 8 * sc} ${cy - 16 * sc}
+           Q ${cx + 16 * sc} ${cy - 8 * sc} ${cx + 20 * sc} ${cy - 4 * sc}
+           Q ${cx + 24 * sc} ${cy + 2 * sc} ${cx + 26 * sc} ${cy + 6 * sc}
+           Q ${cx + 28 * sc} ${cy - 8 * sc} ${cx + 24 * sc} ${cy - 18 * sc}
+           Q ${cx + 16 * sc} ${cy - 32 * sc} ${cx} ${cy - 34 * sc}
+           Q ${cx - 16 * sc} ${cy - 32 * sc} ${cx - 26 * sc} ${cy - 16 * sc} Z`}
+        fill={`url(#${uid}-hair)`}
+      />
 
-      {/* Lab coat collar hint */}
-      <path d={`M ${cx - 16 * scale} ${cy + 26 * scale}
-                L ${cx - 6 * scale} ${cy + 20 * scale}
-                L ${cx} ${cy + 24 * scale}
-                L ${cx + 6 * scale} ${cy + 20 * scale}
-                L ${cx + 16 * scale} ${cy + 26 * scale}`}
-        fill="none" stroke="#e6edf3" strokeWidth={1.5 * scale} strokeLinejoin="round" />
+      {/* Hair sheen overlay */}
+      <path
+        d={`M ${cx - 26 * sc} ${cy - 16 * sc}
+           Q ${cx - 30 * sc} ${cy - 6 * sc} ${cx - 22 * sc} ${cy + 4 * sc}
+           Q ${cx - 18 * sc} ${cy + 2 * sc} ${cx - 16 * sc} ${cy - 6 * sc}
+           Q ${cx - 12 * sc} ${cy - 16 * sc} ${cx - 4 * sc} ${cy - 14 * sc}
+           Q ${cx + 2 * sc} ${cy - 20 * sc} ${cx + 8 * sc} ${cy - 16 * sc}
+           Q ${cx + 16 * sc} ${cy - 8 * sc} ${cx + 20 * sc} ${cy - 4 * sc}
+           Q ${cx + 24 * sc} ${cy + 2 * sc} ${cx + 26 * sc} ${cy + 6 * sc}
+           Q ${cx + 28 * sc} ${cy - 8 * sc} ${cx + 24 * sc} ${cy - 18 * sc}
+           Q ${cx + 16 * sc} ${cy - 32 * sc} ${cx} ${cy - 34 * sc}
+           Q ${cx - 16 * sc} ${cy - 32 * sc} ${cx - 26 * sc} ${cy - 16 * sc} Z`}
+        fill={`url(#${uid}-sheen)`}
+      />
 
-      {/* Sparkles (curious/triumphant) */}
-      {(mood === 'curious' || mood === 'triumphant') && (
-        <>
-          <Sparkle x={cx + 22 * scale} y={cy - 16 * scale} size={3 * scale} color={colors.accent} />
-          {mood === 'triumphant' && (
-            <Sparkle x={cx - 20 * scale} y={cy - 14 * scale} size={2.5 * scale} color={colors.accent} />
-          )}
-        </>
-      )}
+      {/* Wispy side strands */}
+      <path d={`M ${cx - 22 * sc} ${cy + 2 * sc} Q ${cx - 26 * sc} ${cy + 14 * sc} ${cx - 22 * sc} ${cy + 24 * sc}`}
+        stroke="#1a1a2e" strokeWidth={2.5 * sc} fill="none" strokeLinecap="round" />
+      <path d={`M ${cx - 20 * sc} ${cy + 4 * sc} Q ${cx - 24 * sc} ${cy + 16 * sc} ${cx - 20 * sc} ${cy + 26 * sc}`}
+        stroke="#2d3436" strokeWidth={1.5 * sc} fill="none" strokeLinecap="round" opacity="0.6" />
+      <path d={`M ${cx + 24 * sc} ${cy + 4 * sc} Q ${cx + 28 * sc} ${cy + 16 * sc} ${cx + 24 * sc} ${cy + 28 * sc}`}
+        stroke="#1a1a2e" strokeWidth={2.2 * sc} fill="none" strokeLinecap="round" />
 
-      {/* Frustrated brow crease */}
-      {mood === 'frustrated' && (
-        <line x1={cx - 2 * scale} y1={cy - 10 * scale}
-              x2={cx + 2 * scale} y2={cy - 10 * scale}
-          stroke="#dbb8a0" strokeWidth={scale * 1.2} strokeLinecap="round" />
-      )}
+      {/* Mood particles */}
+      <MoodParticles cx={cx} cy={cy} sc={sc} mood={mood} theme={t} />
     </svg>
   );
 }
 
-function Eyes({ cx, cy, scale, mood, colors }) {
-  const eyeY = cy + 2 * scale;
-  const leftX = cx - 10 * scale;
-  const rightX = cx + 10 * scale;
-  const eyeRx = 4.5 * scale;
-  const eyeRy = mood === 'excited' ? 5 * scale : 4 * scale;
+function Eyes({ cx, cy, sc, mood, theme: t, uid }) {
+  const ey = cy + 1 * sc;
+  const lx = cx - 10 * sc;
+  const rx = cx + 10 * sc;
 
-  if (mood === 'triumphant') {
-    // Happy closed eyes - curved lines
-    return (
-      <>
-        <path d={`M ${leftX - eyeRx} ${eyeY} Q ${leftX} ${eyeY - 3 * scale} ${leftX + eyeRx} ${eyeY}`}
-          fill="none" stroke="#3d2b7a" strokeWidth={1.5 * scale} strokeLinecap="round" />
-        <path d={`M ${rightX - eyeRx} ${eyeY} Q ${rightX} ${eyeY - 3 * scale} ${rightX + eyeRx} ${eyeY}`}
-          fill="none" stroke="#3d2b7a" strokeWidth={1.5 * scale} strokeLinecap="round" />
-      </>
-    );
-  }
+  const eyeW = 5.5 * sc;
+  const eyeH = mood === 'excited' ? 5.8 * sc : mood === 'contemplative' || mood === 'triumphant' ? 3.8 * sc : 5 * sc;
 
-  if (mood === 'contemplative') {
-    // Half-closed eyes
-    return (
-      <>
-        <ellipse cx={leftX} cy={eyeY + scale} rx={eyeRx} ry={2.5 * scale} fill="white" />
-        <ellipse cx={leftX} cy={eyeY + scale} rx={2.5 * scale} ry={2 * scale} fill={colors.iris} />
-        <ellipse cx={leftX} cy={eyeY + scale} rx={1.2 * scale} ry={1 * scale} fill="#1a1a2e" />
-        {/* Eyelid */}
-        <path d={`M ${leftX - eyeRx - scale} ${eyeY - scale}
-                  Q ${leftX} ${eyeY + scale} ${leftX + eyeRx + scale} ${eyeY - scale}`}
-          fill="#fce4d6" stroke="none" />
-
-        <ellipse cx={rightX} cy={eyeY + scale} rx={eyeRx} ry={2.5 * scale} fill="white" />
-        <ellipse cx={rightX} cy={eyeY + scale} rx={2.5 * scale} ry={2 * scale} fill={colors.iris} />
-        <ellipse cx={rightX} cy={eyeY + scale} rx={1.2 * scale} ry={1 * scale} fill="#1a1a2e" />
-        <path d={`M ${rightX - eyeRx - scale} ${eyeY - scale}
-                  Q ${rightX} ${eyeY + scale} ${rightX + eyeRx + scale} ${eyeY - scale}`}
-          fill="#fce4d6" stroke="none" />
-      </>
-    );
-  }
-
-  // Default eyes (curious, excited, frustrated)
-  const browOffset = mood === 'curious' ? -2 * scale : 0;
-  const rightBrowOffset = mood === 'curious' ? 0 : (mood === 'frustrated' ? 2 * scale : 0);
+  // Upper lash thickness varies by mood
+  const lashW = mood === 'excited' ? 1.8 * sc : 1.4 * sc;
 
   return (
     <>
-      {/* Eyebrows */}
-      <line x1={leftX - eyeRx} y1={eyeY - eyeRy - 2 * scale + browOffset}
-            x2={leftX + eyeRx} y2={eyeY - eyeRy - 2 * scale}
-        stroke="#3d2b7a" strokeWidth={1.2 * scale} strokeLinecap="round" />
-      <line x1={rightX - eyeRx} y1={eyeY - eyeRy - 2 * scale + rightBrowOffset}
-            x2={rightX + eyeRx} y2={eyeY - eyeRy - 2 * scale + (mood === 'frustrated' ? -rightBrowOffset : 0)}
-        stroke="#3d2b7a" strokeWidth={1.2 * scale} strokeLinecap="round" />
+      {[lx, rx].map((ex, i) => (
+        <g key={i}>
+          {/* Eye white with slight shadow */}
+          <ellipse cx={ex} cy={ey} rx={eyeW} ry={eyeH} fill="white" />
+          <ellipse cx={ex} cy={ey - eyeH * 0.3} rx={eyeW * 0.9} ry={eyeH * 0.3}
+            fill="#f0e8e4" opacity="0.3" />
 
-      {/* Eye whites */}
-      <ellipse cx={leftX} cy={eyeY} rx={eyeRx} ry={eyeRy} fill="white" />
-      <ellipse cx={rightX} cy={eyeY} rx={eyeRx} ry={eyeRy} fill="white" />
+          {/* Iris with glow gradient */}
+          <circle cx={ex} cy={ey + 0.3 * sc} r={3 * sc}
+            fill={`url(#${uid}-eyeglow)`} />
 
-      {/* Iris */}
-      <circle cx={leftX} cy={eyeY} r={2.5 * scale} fill={colors.iris} />
-      <circle cx={rightX} cy={eyeY} r={2.5 * scale} fill={colors.iris} />
+          {/* Pupil */}
+          <circle cx={ex} cy={ey + 0.3 * sc} r={1.4 * sc} fill="#0a0a0a" />
 
-      {/* Pupils */}
-      <circle cx={leftX} cy={eyeY} r={1.2 * scale} fill="#1a1a2e" />
-      <circle cx={rightX} cy={eyeY} r={1.2 * scale} fill="#1a1a2e" />
+          {/* Catchlight - large */}
+          <circle cx={ex + 1.2 * sc} cy={ey - 1 * sc} r={1 * sc} fill="white" opacity="0.9" />
+          {/* Catchlight - small */}
+          <circle cx={ex - 0.8 * sc} cy={ey + 1 * sc} r={0.5 * sc} fill="white" opacity="0.5" />
 
-      {/* Eye highlights */}
-      <circle cx={leftX + scale} cy={eyeY - scale} r={0.8 * scale} fill="white" opacity={0.8} />
-      <circle cx={rightX + scale} cy={eyeY - scale} r={0.8 * scale} fill="white" opacity={0.8} />
+          {/* Upper lash line - thick and curved */}
+          <path
+            d={`M ${ex - eyeW} ${ey - eyeH * 0.85}
+               Q ${ex} ${ey - eyeH - 1.5 * sc} ${ex + eyeW} ${ey - eyeH * 0.85}`}
+            fill="none" stroke="#0f0f0f" strokeWidth={lashW} strokeLinecap="round" />
+
+          {/* Outer lash flick */}
+          <path
+            d={`M ${ex + eyeW - 0.5 * sc} ${ey - eyeH * 0.7}
+               Q ${ex + eyeW + 1.5 * sc} ${ey - eyeH - 1 * sc} ${ex + eyeW + 2 * sc} ${ey - eyeH - 2 * sc}`}
+            fill="none" stroke="#0f0f0f" strokeWidth={0.8 * sc} strokeLinecap="round" />
+
+          {/* Lower lash - subtle */}
+          <path
+            d={`M ${ex - eyeW * 0.7} ${ey + eyeH * 0.8}
+               Q ${ex} ${ey + eyeH + 0.3 * sc} ${ex + eyeW * 0.7} ${ey + eyeH * 0.8}`}
+            fill="none" stroke="#2d2d2d" strokeWidth={0.5 * sc} strokeLinecap="round" opacity="0.4" />
+
+          {/* Half-lid for triumphant/contemplative */}
+          {(mood === 'triumphant' || mood === 'contemplative') && (
+            <ellipse cx={ex} cy={ey - eyeH * 0.15} rx={eyeW * 1.05} ry={eyeH * 0.55}
+              fill={`url(#${uid}-skin)`} />
+          )}
+        </g>
+      ))}
     </>
   );
 }
 
-function Mouth({ cx, cy, scale, mood }) {
-  const mouthY = cy + 14 * scale;
+function Eyebrows({ cx, cy, sc, mood }) {
+  const by = cy - 10 * sc;
+  const lx = cx - 10 * sc;
+  const rx = cx + 10 * sc;
 
-  if (mood === 'excited' || mood === 'triumphant') {
-    // Big grin
-    const width = mood === 'triumphant' ? 10 : 8;
+  let lAngle = 0;
+  let rAngle = 0;
+  let curve = 2 * sc;
+
+  if (mood === 'curious') { lAngle = -2 * sc; curve = 3 * sc; }
+  if (mood === 'frustrated') { lAngle = 2.5 * sc; rAngle = 1.5 * sc; curve = 1 * sc; }
+  if (mood === 'excited') { lAngle = -1.5 * sc; rAngle = -1.5 * sc; curve = 2.5 * sc; }
+  if (mood === 'triumphant') { lAngle = -0.5 * sc; curve = 1.5 * sc; }
+
+  return (
+    <>
+      <path
+        d={`M ${lx - 5 * sc} ${by + lAngle}
+           Q ${lx} ${by - curve} ${lx + 5 * sc} ${by}`}
+        fill="none" stroke="#1a1a2e" strokeWidth={1.6 * sc} strokeLinecap="round" />
+      <path
+        d={`M ${rx - 5 * sc} ${by}
+           Q ${rx} ${by - curve} ${rx + 5 * sc} ${by + rAngle}`}
+        fill="none" stroke="#1a1a2e" strokeWidth={1.6 * sc} strokeLinecap="round" />
+    </>
+  );
+}
+
+function Mouth({ cx, cy, sc, mood, uid }) {
+  const my = cy + 15 * sc;
+
+  if (mood === 'excited') {
     return (
-      <path d={`M ${cx - width * scale} ${mouthY}
-                Q ${cx} ${mouthY + 6 * scale} ${cx + width * scale} ${mouthY}`}
-        fill="none" stroke="#c0392b" strokeWidth={1.5 * scale} strokeLinecap="round" />
+      <g>
+        <path
+          d={`M ${cx - 7 * sc} ${my} Q ${cx} ${my + 6 * sc} ${cx + 7 * sc} ${my}`}
+          fill="none" stroke={`url(#${uid}-lip)`} strokeWidth={1.5 * sc} strokeLinecap="round" />
+        <path
+          d={`M ${cx - 5 * sc} ${my + 1 * sc} Q ${cx} ${my + 4 * sc} ${cx + 5 * sc} ${my + 1 * sc}`}
+          fill="#fff" opacity="0.15" />
+      </g>
+    );
+  }
+
+  if (mood === 'triumphant') {
+    return (
+      <path
+        d={`M ${cx - 8 * sc} ${my + 0.5 * sc}
+           Q ${cx - 3 * sc} ${my + 5 * sc} ${cx + 2 * sc} ${my + 1 * sc}
+           Q ${cx + 6 * sc} ${my - 1 * sc} ${cx + 9 * sc} ${my - 2 * sc}`}
+        fill="none" stroke={`url(#${uid}-lip)`} strokeWidth={1.5 * sc} strokeLinecap="round" />
     );
   }
 
   if (mood === 'frustrated') {
-    // Slight frown
     return (
-      <path d={`M ${cx - 6 * scale} ${mouthY + 2 * scale}
-                Q ${cx} ${mouthY - 2 * scale} ${cx + 6 * scale} ${mouthY + 2 * scale}`}
-        fill="none" stroke="#c0392b" strokeWidth={1.2 * scale} strokeLinecap="round" />
+      <path
+        d={`M ${cx - 6 * sc} ${my + 2 * sc}
+           Q ${cx} ${my - 1 * sc} ${cx + 6 * sc} ${my + 2 * sc}`}
+        fill="none" stroke="#b33939" strokeWidth={1.3 * sc} strokeLinecap="round" />
     );
   }
 
   if (mood === 'contemplative') {
-    // Neutral line
     return (
-      <line x1={cx - 5 * scale} y1={mouthY}
-            x2={cx + 5 * scale} y2={mouthY}
-        stroke="#c0392b" strokeWidth={1.2 * scale} strokeLinecap="round" />
+      <path
+        d={`M ${cx - 5 * sc} ${my + 1 * sc}
+           Q ${cx} ${my + 0.5 * sc} ${cx + 5 * sc} ${my + 1 * sc}`}
+        fill="none" stroke="#b33939" strokeWidth={1.2 * sc} strokeLinecap="round" />
     );
   }
 
-  // Curious: small smile
+  // Curious: elegant smirk
   return (
-    <path d={`M ${cx - 5 * scale} ${mouthY}
-              Q ${cx} ${mouthY + 3 * scale} ${cx + 5 * scale} ${mouthY}`}
-      fill="none" stroke="#c0392b" strokeWidth={1.2 * scale} strokeLinecap="round" />
+    <path
+      d={`M ${cx - 5 * sc} ${my + 0.5 * sc}
+         Q ${cx - 1 * sc} ${my + 3 * sc} ${cx + 5 * sc} ${my - 0.5 * sc}`}
+      fill="none" stroke={`url(#${uid}-lip)`} strokeWidth={1.3 * sc} strokeLinecap="round" />
   );
+}
+
+function MoodParticles({ cx, cy, sc, mood, theme: t }) {
+  if (mood === 'triumphant') {
+    return (
+      <g>
+        <Sparkle x={cx + 26 * sc} y={cy - 16 * sc} size={3 * sc} color={t.accent} />
+        <Sparkle x={cx - 24 * sc} y={cy - 12 * sc} size={2.5 * sc} color={t.accent} />
+        <Sparkle x={cx + 18 * sc} y={cy - 26 * sc} size={2 * sc} color={t.glow} />
+      </g>
+    );
+  }
+
+  if (mood === 'curious') {
+    return (
+      <g>
+        <Sparkle x={cx + 26 * sc} y={cy - 14 * sc} size={2.5 * sc} color={t.accent} />
+        {/* Floating dot */}
+        <circle cx={cx - 28 * sc} cy={cy - 20 * sc} r={1.2 * sc} fill={t.glow} opacity="0.5">
+          <animate attributeName="cy" values={`${cy - 20 * sc};${cy - 23 * sc};${cy - 20 * sc}`}
+            dur="3s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0.5;0.2;0.5"
+            dur="3s" repeatCount="indefinite" />
+        </circle>
+      </g>
+    );
+  }
+
+  if (mood === 'excited') {
+    return (
+      <g>
+        <Sparkle x={cx + 24 * sc} y={cy - 18 * sc} size={3 * sc} color={t.accent} />
+        <Sparkle x={cx - 22 * sc} y={cy - 16 * sc} size={2.5 * sc} color={t.accent} />
+        <Sparkle x={cx + 28 * sc} y={cy + 4 * sc} size={2 * sc} color={t.glow} />
+      </g>
+    );
+  }
+
+  if (mood === 'contemplative') {
+    return (
+      <g>
+        {/* Subtle floating orbs */}
+        {[[-26, -18], [28, -10]].map(([dx, dy], i) => (
+          <circle key={i} cx={cx + dx * sc} cy={cy + dy * sc} r={1.5 * sc}
+            fill={t.glow} opacity="0.3">
+            <animate attributeName="opacity" values="0.3;0.1;0.3"
+              dur={`${3 + i}s`} repeatCount="indefinite" />
+          </circle>
+        ))}
+      </g>
+    );
+  }
+
+  return null;
 }
 
 function Sparkle({ x, y, size, color }) {
   return (
-    <g>
+    <g opacity="0.8">
       <line x1={x} y1={y - size} x2={x} y2={y + size}
         stroke={color} strokeWidth={size * 0.3} strokeLinecap="round" />
       <line x1={x - size} y1={y} x2={x + size} y2={y}
         stroke={color} strokeWidth={size * 0.3} strokeLinecap="round" />
-      <line x1={x - size * 0.6} y1={y - size * 0.6}
-            x2={x + size * 0.6} y2={y + size * 0.6}
+      <line x1={x - size * 0.55} y1={y - size * 0.55} x2={x + size * 0.55} y2={y + size * 0.55}
         stroke={color} strokeWidth={size * 0.2} strokeLinecap="round" />
-      <line x1={x + size * 0.6} y1={y - size * 0.6}
-            x2={x - size * 0.6} y2={y + size * 0.6}
+      <line x1={x + size * 0.55} y1={y - size * 0.55} x2={x - size * 0.55} y2={y + size * 0.55}
         stroke={color} strokeWidth={size * 0.2} strokeLinecap="round" />
     </g>
   );

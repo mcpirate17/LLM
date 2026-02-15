@@ -5,6 +5,10 @@ import React, { useMemo } from 'react';
  *
  * Performs topological-sort layered layout of computation graph
  * nodes and edges. Designed for 10-16 node graphs, no heavy deps needed.
+ *
+ * Accepts graph_json_parsed from the API which has:
+ *   { nodes: { "0": {id, op_name, input_ids, ...}, ... }, input_node_id, output_node_id }
+ * Derives edges from input_ids on each node.
  */
 
 const NODE_W = 100;
@@ -31,42 +35,93 @@ function getOpColor(op) {
   return OP_COLORS.default;
 }
 
+/**
+ * Normalize graph data from various formats into { nodes: [...], edges: [...] }
+ */
+function normalizeGraph(graph) {
+  if (!graph) return null;
+
+  let nodes = [];
+  let edges = [];
+
+  // Handle nodes as dict (keyed by ID) — the format from graph_json_parsed
+  if (graph.nodes && !Array.isArray(graph.nodes)) {
+    const nodeDict = graph.nodes;
+    nodes = Object.values(nodeDict).map(n => ({
+      id: String(n.id),
+      op: n.op_name || n.op || n.type || 'unknown',
+      is_input: n.is_input || false,
+      is_output: n.is_output || false,
+    }));
+
+    // Derive edges from input_ids
+    for (const n of Object.values(nodeDict)) {
+      const targetId = String(n.id);
+      if (n.input_ids && Array.isArray(n.input_ids)) {
+        for (const srcId of n.input_ids) {
+          edges.push({ from: String(srcId), to: targetId });
+        }
+      }
+    }
+  } else if (Array.isArray(graph.nodes)) {
+    // Already an array format
+    nodes = graph.nodes.map(n => ({
+      id: String(n.id),
+      op: n.op_name || n.op || n.type || 'unknown',
+      is_input: n.is_input || false,
+      is_output: n.is_output || false,
+    }));
+    edges = (graph.edges || []).map(e => ({
+      from: String(e.from),
+      to: String(e.to),
+    }));
+  }
+
+  if (nodes.length === 0) return null;
+  return { nodes, edges };
+}
+
 function topoSort(nodes, edges) {
   const adj = {};
   const inDeg = {};
   nodes.forEach(n => { adj[n.id] = []; inDeg[n.id] = 0; });
   edges.forEach(e => {
-    adj[e.from] = adj[e.from] || [];
-    adj[e.from].push(e.to);
+    if (adj[e.from]) adj[e.from].push(e.to);
     inDeg[e.to] = (inDeg[e.to] || 0) + 1;
   });
 
   const layers = [];
   let queue = nodes.filter(n => (inDeg[n.id] || 0) === 0).map(n => n.id);
+  const visited = new Set();
 
   while (queue.length > 0) {
     layers.push([...queue]);
     const next = [];
     for (const id of queue) {
+      visited.add(id);
       for (const child of (adj[id] || [])) {
         inDeg[child]--;
-        if (inDeg[child] === 0) next.push(child);
+        if (inDeg[child] === 0 && !visited.has(child)) next.push(child);
       }
     }
     queue = next;
+    // Safety: break if we've visited all nodes (prevents infinite loop on cycles)
+    if (visited.size >= nodes.length) break;
   }
+
+  // Add any unvisited nodes (cycles) to a final layer
+  const remaining = nodes.filter(n => !visited.has(n.id)).map(n => n.id);
+  if (remaining.length > 0) layers.push(remaining);
 
   return layers;
 }
 
 function GraphViewer({ graph }) {
   const layout = useMemo(() => {
-    if (!graph) return null;
+    const normalized = normalizeGraph(graph);
+    if (!normalized) return null;
 
-    const nodes = graph.nodes || [];
-    const edges = graph.edges || [];
-    if (nodes.length === 0) return null;
-
+    const { nodes, edges } = normalized;
     const nodeMap = {};
     nodes.forEach(n => { nodeMap[n.id] = n; });
 
@@ -90,7 +145,7 @@ function GraphViewer({ graph }) {
       const totalW = layer.length * (NODE_W + NODE_GAP) - NODE_GAP;
       const maxW = maxLayerWidth * (NODE_W + NODE_GAP) - NODE_GAP;
       const offset = (maxW - totalW) / 2;
-      layer.forEach(id => { positions[id].x += offset; });
+      layer.forEach(id => { if (positions[id]) positions[id].x += offset; });
     });
 
     const svgW = maxLayerWidth * (NODE_W + NODE_GAP) + 20;
@@ -136,8 +191,8 @@ function GraphViewer({ graph }) {
         {/* Nodes */}
         {Object.entries(positions).map(([id, pos]) => {
           const node = nodeMap[id];
-          const color = getOpColor(node?.op || node?.type || '');
-          const label = node?.op || node?.type || id;
+          const label = node?.op || id;
+          const color = getOpColor(label);
           return (
             <g key={id} transform={`translate(${pos.x + 10}, ${pos.y + 10})`}>
               <rect width={NODE_W} height={NODE_H} rx={4}

@@ -71,3 +71,54 @@ def create_backend() -> Optional[LLMBackend]:
     else:
         logger.warning(f"Unknown ARIA_LLM_BACKEND={backend_name!r}, using rule-based fallback")
         return None
+
+
+def create_backend_from_config(
+    backend_name: str,
+    api_key: str = "",
+    model: str = "",
+    host: str = "",
+) -> Optional[LLMBackend]:
+    """Create an LLM backend from explicit configuration (no env vars).
+
+    Args:
+        backend_name: 'ollama', 'anthropic', or 'openai'
+        api_key: API key for anthropic/openai
+        model: Model name override
+        host: Host URL override (ollama)
+
+    Returns the backend, or None on failure.
+    """
+    backend_name = backend_name.lower().strip()
+
+    try:
+        if backend_name == "ollama":
+            from .ollama import OllamaBackend
+            b = OllamaBackend()
+            if host:
+                b.host = host
+            if model:
+                b.model = model
+            return b
+        elif backend_name == "anthropic":
+            from .anthropic import AnthropicBackend
+            b = AnthropicBackend()
+            if api_key:
+                b.api_key = api_key
+                b._client = None  # force re-init with new key
+            if model:
+                b.model = model
+            return b
+        elif backend_name == "openai":
+            from .openai_backend import OpenAIBackend
+            b = OpenAIBackend()
+            if api_key:
+                b.api_key = api_key
+                b._client = None
+            if model:
+                b.model = model
+            return b
+    except Exception as e:
+        logger.warning(f"Failed to create {backend_name} backend: {e}")
+
+    return None

@@ -7,6 +7,11 @@ function AriaStatus({ aria }) {
   return (
     <div className="card aria-card">
       <div className="card-title">Aria's Status</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+        Aria is the AI scientist running the search. She formulates hypotheses about what
+        makes architectures work, designs experiments, analyzes results, and adapts her
+        strategy based on what she learns.
+      </p>
 
       <div className="aria-mood">
         <AriaAvatar mood={aria.mood} size={80} />
