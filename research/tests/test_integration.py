@@ -122,6 +122,19 @@ class TestNotebook(unittest.TestCase):
         for t in expected:
             self.assertIn(t, tables, f"Missing table: {t}")
 
+    def test_program_results_experiment_index_exists(self):
+        """program_results(experiment_id) should be indexed for large-query performance."""
+        indexes = self.nb.conn.execute("PRAGMA index_list('program_results')").fetchall()
+        has_experiment_index = False
+        for idx in indexes:
+            idx_name = idx[1]
+            cols = self.nb.conn.execute(f"PRAGMA index_info('{idx_name}')").fetchall()
+            col_names = [c[2] for c in cols]
+            if col_names == ["experiment_id"]:
+                has_experiment_index = True
+                break
+        self.assertTrue(has_experiment_index, "Missing index on program_results(experiment_id)")
+
     def test_experiment_lifecycle(self):
         """Start → complete → query an experiment."""
         exp_id = self.nb.start_experiment(
@@ -154,6 +167,24 @@ class TestNotebook(unittest.TestCase):
 
         exp = self.nb.get_experiment(exp_id)
         self.assertEqual(exp["status"], "completed")
+
+    def test_start_experiment_records_code_version(self):
+        """Experiment config should always include code_version metadata."""
+        with patch.dict(os.environ, {"RESEARCH_CODE_VERSION": "test-version"}, clear=False):
+            LabNotebook._cached_code_version = None
+            exp_id = self.nb.start_experiment(
+                experiment_type="synthesis",
+                config={"n_programs": 3},
+                hypothesis="version test",
+            )
+
+        row = self.nb.conn.execute(
+            "SELECT config_json FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        config = json.loads(row["config_json"])
+        self.assertEqual(config.get("code_version"), "test-version")
 
     def test_leaderboard_upsert_and_query(self):
         """Leaderboard CRUD operations."""
@@ -256,16 +287,18 @@ class TestNotebook(unittest.TestCase):
         self.assertEqual(entries[0]["tier"], "investigation")
 
     def test_composite_score_increases_with_phases(self):
-        """Composite score should increase as candidates pass more phases."""
+        """Composite score should increase as candidates pass more phases with good results."""
         score_screening = self.nb.compute_composite_score(
             screening_lr=0.5, screening_nov=0.7)
         score_investigation = self.nb.compute_composite_score(
             screening_lr=0.5, screening_nov=0.7,
             inv_lr=0.4, inv_robust=0.6)
+        # Validation values represent a strong candidate: 30% of baseline
+        # loss with low variance (std=0.1)
         score_validation = self.nb.compute_composite_score(
             screening_lr=0.5, screening_nov=0.7,
             inv_lr=0.4, inv_robust=0.6,
-            val_lr=0.3, val_baseline=0.85)
+            val_baseline=0.3, val_std=0.1)
 
         self.assertGreater(score_investigation, score_screening)
         self.assertGreater(score_validation, score_investigation)
@@ -343,6 +376,298 @@ class TestNotebook(unittest.TestCase):
         retrieved = self.nb.get_training_curve(result_id)
         self.assertEqual(len(retrieved), 3)
         self.assertAlmostEqual(retrieved[0]["loss"], 5.0)
+
+    def test_top_op_combinations_handles_malformed_graph_json(self):
+        """Analytics top_op_combinations should skip malformed JSON and still aggregate valid pairs."""
+        analytics_mod = _load_module_directly(
+            "research.scientist.analytics",
+            os.path.join(_project_root, "scientist", "analytics.py"),
+        )
+        ExperimentAnalytics = analytics_mod.ExperimentAnalytics
+
+        exp_id = self.nb.start_experiment("synthesis", {}, "combo-test")
+        valid_graph = json.dumps({
+            "nodes": {
+                "a": {"op_name": "relu"},
+                "b": {"op_name": "gelu"},
+                "c": {"op_name": "input"},
+            }
+        })
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_combo_1",
+            graph_json=valid_graph,
+            stage1_passed=True,
+            novelty_score=0.7,
+        )
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_combo_2",
+            graph_json=valid_graph,
+            stage1_passed=True,
+            novelty_score=0.5,
+        )
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_combo_bad",
+            graph_json="{bad-json",
+            stage1_passed=True,
+            novelty_score=0.9,
+        )
+
+        analytics = ExperimentAnalytics(self.nb)
+        combos = analytics.top_op_combinations(n=3)
+
+        self.assertGreaterEqual(len(combos), 1)
+        first = combos[0]
+        self.assertEqual(first["ops"], ["gelu", "relu"])
+        self.assertEqual(first["count"], 2)
+
+    def test_experiment_clusters_model_selection_and_consensus(self):
+        """experiment_clusters should select a sensible k and expose model-selection diagnostics."""
+        analytics_mod = _load_module_directly(
+            "research.scientist.analytics",
+            os.path.join(_project_root, "scientist", "analytics.py"),
+        )
+        ExperimentAnalytics = analytics_mod.ExperimentAnalytics
+
+        cluster_a = [
+            {"s1": 74, "novelty": 1.25, "loss": 0.58, "duration": 95.0},
+            {"s1": 70, "novelty": 1.18, "loss": 0.62, "duration": 92.0},
+            {"s1": 77, "novelty": 1.32, "loss": 0.55, "duration": 98.0},
+        ]
+        cluster_b = [
+            {"s1": 9, "novelty": 0.12, "loss": 1.62, "duration": 36.0},
+            {"s1": 6, "novelty": 0.08, "loss": 1.74, "duration": 32.0},
+            {"s1": 11, "novelty": 0.15, "loss": 1.58, "duration": 38.0},
+        ]
+
+        for i, spec in enumerate(cluster_a + cluster_b):
+            exp_id = self.nb.start_experiment("synthesis", {"n_programs": 100}, f"cluster-{i}")
+            self.nb.complete_experiment(
+                exp_id,
+                {
+                    "total": 100,
+                    "stage0_passed": 100,
+                    "stage05_passed": 100,
+                    "stage1_passed": spec["s1"],
+                    "best_loss_ratio": spec["loss"],
+                    "best_novelty_score": spec["novelty"],
+                },
+            )
+            self.nb.conn.execute(
+                "UPDATE experiments SET duration_seconds = ? WHERE experiment_id = ?",
+                (spec["duration"], exp_id),
+            )
+        self.nb.conn.commit()
+
+        clusters = ExperimentAnalytics(self.nb).experiment_clusters(n_clusters=5)
+        self.assertIsNotNone(clusters)
+        self.assertEqual(clusters["n_experiments"], 6)
+        self.assertEqual(clusters["n_clusters"], 2)
+        self.assertIn("model_selection", clusters)
+
+        model_selection = clusters["model_selection"]
+        self.assertIn("candidate_ks", model_selection)
+        self.assertIn("selected_k", model_selection)
+        self.assertIn("silhouette", model_selection)
+        self.assertIn("consensus", model_selection)
+        self.assertGreaterEqual(model_selection["selected_k"], 2)
+        self.assertLessEqual(model_selection["selected_k"], 5)
+        self.assertEqual(model_selection["selected_k"], 2)
+
+        avg_s1_rates = sorted(c["avg_s1_rate"] for c in clusters["clusters"])
+        self.assertLess(avg_s1_rates[0], 0.2)
+        self.assertGreater(avg_s1_rates[-1], 0.65)
+        self.assertGreater(clusters["stability_score"], 0.6)
+
+    def test_experiment_clusters_include_failure_signature_features(self):
+        """Clustering should use failure signatures to separate experiments with similar top-level metrics."""
+        analytics_mod = _load_module_directly(
+            "research.scientist.analytics",
+            os.path.join(_project_root, "scientist", "analytics.py"),
+        )
+        ExperimentAnalytics = analytics_mod.ExperimentAnalytics
+
+        for i in range(3):
+            exp_id = self.nb.start_experiment("synthesis", {"n_programs": 10}, f"compile-heavy-{i}")
+            for j in range(10):
+                is_success = j >= 5
+                self.nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=f"fp_compile_{i}_{j}",
+                    graph_json="{}",
+                    stage0_passed=is_success,
+                    stage05_passed=is_success,
+                    stage1_passed=is_success,
+                    error_type=None if is_success else "compile_error",
+                    stage_at_death=None if is_success else "stage0",
+                )
+            self.nb.complete_experiment(
+                exp_id,
+                {
+                    "total": 10,
+                    "stage0_passed": 5,
+                    "stage05_passed": 5,
+                    "stage1_passed": 5,
+                    "best_loss_ratio": 0.9,
+                    "best_novelty_score": 0.45,
+                },
+            )
+            self.nb.conn.execute(
+                "UPDATE experiments SET duration_seconds = ? WHERE experiment_id = ?",
+                (60.0 + i, exp_id),
+            )
+
+        stage1_errors = ["nan_output", "overflow", "timeout", "nan_output", "overflow"]
+        for i in range(3):
+            exp_id = self.nb.start_experiment("synthesis", {"n_programs": 10}, f"stage1-heavy-{i}")
+            for j in range(10):
+                is_success = j >= 5
+                self.nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=f"fp_stage1_{i}_{j}",
+                    graph_json="{}",
+                    stage0_passed=True,
+                    stage05_passed=True,
+                    stage1_passed=is_success,
+                    error_type=None if is_success else stage1_errors[j],
+                    stage_at_death=None if is_success else "stage1",
+                )
+            self.nb.complete_experiment(
+                exp_id,
+                {
+                    "total": 10,
+                    "stage0_passed": 10,
+                    "stage05_passed": 10,
+                    "stage1_passed": 5,
+                    "best_loss_ratio": 0.9,
+                    "best_novelty_score": 0.45,
+                },
+            )
+            self.nb.conn.execute(
+                "UPDATE experiments SET duration_seconds = ? WHERE experiment_id = ?",
+                (60.0 + i, exp_id),
+            )
+
+        self.nb.conn.commit()
+
+        clusters = ExperimentAnalytics(self.nb).experiment_clusters(n_clusters=4)
+        self.assertIsNotNone(clusters)
+        self.assertEqual(clusters["n_experiments"], 6)
+        self.assertIn("compile_fail_rate", clusters["feature_keys"])
+        self.assertIn("error_diversity", clusters["feature_keys"])
+        self.assertIn("model_selection", clusters)
+        self.assertEqual(clusters["model_selection"]["selected_k"], 2)
+
+        compile_rates = sorted(c["avg_compile_fail_rate"] for c in clusters["clusters"])
+        stage1_rates = sorted(c["avg_stage1_fail_rate"] for c in clusters["clusters"])
+        error_diversities = sorted(c["avg_error_diversity"] for c in clusters["clusters"])
+
+        self.assertLess(compile_rates[0], 0.1)
+        self.assertGreater(compile_rates[-1], 0.4)
+        self.assertLess(stage1_rates[0], 0.1)
+        self.assertGreater(stage1_rates[-1], 0.4)
+        self.assertLess(error_diversities[0], 0.1)
+        self.assertGreater(error_diversities[-1], 0.5)
+
+    def test_experiment_clusters_include_trajectory_features(self):
+        """Clustering should separate experiments with matched aggregates but opposite temporal trajectories."""
+        analytics_mod = _load_module_directly(
+            "research.scientist.analytics",
+            os.path.join(_project_root, "scientist", "analytics.py"),
+        )
+        ExperimentAnalytics = analytics_mod.ExperimentAnalytics
+
+        def _record_experiment_with_trajectory(prefix: str, improving: bool, offset: float):
+            exp_id = self.nb.start_experiment("synthesis", {"n_programs": 10}, prefix)
+            base_ts = 1000.0 + offset
+
+            for step in range(10):
+                if improving:
+                    is_success = step >= 5
+                    novelty = 0.2 + (0.06 * step)
+                    loss_ratio = 1.3 - (0.06 * step)
+                else:
+                    is_success = step < 5
+                    novelty = 0.8 - (0.06 * step)
+                    loss_ratio = 0.7 + (0.06 * step)
+
+                result_id = self.nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=f"fp_{prefix}_{step}",
+                    graph_json="{}",
+                    stage0_passed=True,
+                    stage05_passed=True,
+                    stage1_passed=is_success,
+                    novelty_score=novelty,
+                    loss_ratio=loss_ratio,
+                    error_type=None if is_success else "stage1_error",
+                    stage_at_death=None if is_success else "stage1",
+                )
+                self.nb.conn.execute(
+                    "UPDATE program_results SET timestamp = ? WHERE result_id = ?",
+                    (base_ts + step, result_id),
+                )
+
+            self.nb.complete_experiment(
+                exp_id,
+                {
+                    "total": 10,
+                    "stage0_passed": 10,
+                    "stage05_passed": 10,
+                    "stage1_passed": 5,
+                    "best_loss_ratio": 0.7,
+                    "best_novelty_score": 0.8,
+                },
+            )
+            self.nb.conn.execute(
+                "UPDATE experiments SET duration_seconds = ? WHERE experiment_id = ?",
+                (75.0, exp_id),
+            )
+
+        for i in range(3):
+            _record_experiment_with_trajectory(f"traj_up_{i}", improving=True, offset=i * 20)
+            _record_experiment_with_trajectory(f"traj_down_{i}", improving=False, offset=200 + (i * 20))
+
+        self.nb.conn.commit()
+
+        clusters = ExperimentAnalytics(self.nb).experiment_clusters(n_clusters=4)
+        self.assertIsNotNone(clusters)
+        self.assertEqual(clusters["n_experiments"], 6)
+
+        self.assertIn("stage1_momentum", clusters["feature_keys"])
+        self.assertIn("novelty_momentum", clusters["feature_keys"])
+        self.assertIn("loss_improvement_momentum", clusters["feature_keys"])
+        self.assertIn("outcome_volatility", clusters["feature_keys"])
+        self.assertIn("outcome_peak_timing", clusters["feature_keys"])
+        self.assertIn("recovery_lag", clusters["feature_keys"])
+        self.assertIn("stage1_transition_timing", clusters["feature_keys"])
+        self.assertIn("primary_change_point_timing", clusters["feature_keys"])
+
+        self.assertIn("model_selection", clusters)
+        self.assertEqual(clusters["model_selection"]["selected_k"], 2)
+
+        stage1_momentum = sorted(c["avg_stage1_momentum"] for c in clusters["clusters"])
+        novelty_momentum = sorted(c["avg_novelty_momentum"] for c in clusters["clusters"])
+        loss_momentum = sorted(c["avg_loss_improvement_momentum"] for c in clusters["clusters"])
+        peak_timing = sorted(c["avg_outcome_peak_timing"] for c in clusters["clusters"])
+        recovery_lag = sorted(c["avg_recovery_lag"] for c in clusters["clusters"])
+        transition_timing = [c["avg_stage1_transition_timing"] for c in clusters["clusters"]]
+        change_point_timing = [c["avg_primary_change_point_timing"] for c in clusters["clusters"]]
+
+        self.assertLess(stage1_momentum[0], -0.6)
+        self.assertGreater(stage1_momentum[-1], 0.6)
+        self.assertLess(novelty_momentum[0], -0.3)
+        self.assertGreater(novelty_momentum[-1], 0.3)
+        self.assertLess(loss_momentum[0], -0.3)
+        self.assertGreater(loss_momentum[-1], 0.3)
+        self.assertLess(peak_timing[0], 0.35)
+        self.assertGreater(peak_timing[-1], 0.65)
+        self.assertLess(recovery_lag[0], 0.35)
+        self.assertGreater(recovery_lag[-1], 0.8)
+        self.assertTrue(all(0.0 <= t <= 1.0 for t in transition_timing))
+        self.assertTrue(all(0.0 <= t <= 1.0 for t in change_point_timing))
 
 
 # ── Test 2: Novelty Scoring ──
@@ -440,6 +765,253 @@ class TestNoveltyScoring(unittest.TestCase):
                            "Duplicate should be penalized")
 
 
+class TestNoveltyCalibration(unittest.TestCase):
+    """Regression tests for novelty confidence/quality tracking (#4, #10)."""
+
+    def test_fingerprint_quality_defaults(self):
+        """BehavioralFingerprint defaults to quality='none', analyses_succeeded=0."""
+        from research.eval.fingerprint import BehavioralFingerprint
+
+        fp = BehavioralFingerprint()
+        self.assertEqual(fp.quality, "none")
+        self.assertEqual(fp.analyses_succeeded, 0)
+
+    def test_novelty_confidence_defaults(self):
+        """NoveltyMetrics defaults to novelty_confidence=0.0."""
+        from research.eval.metrics import NoveltyMetrics
+
+        nm = NoveltyMetrics()
+        self.assertEqual(nm.novelty_confidence, 0.0)
+
+    def test_confidence_no_fingerprint(self):
+        """Without fingerprint, novelty_confidence should be 0.2."""
+        from research.eval.metrics import novelty_score
+        from research.synthesis.graph import ComputationGraph
+
+        graph = ComputationGraph(model_dim=256)
+        inp = graph.add_input()
+        op = graph.add_op("relu", [inp])
+        graph.set_output(op)
+
+        nov = novelty_score(graph, fingerprint=None)
+        self.assertAlmostEqual(nov.novelty_confidence, 0.2)
+
+    def test_confidence_full_quality_fingerprint(self):
+        """Full-quality fingerprint gives confidence=0.9."""
+        from research.eval.metrics import novelty_score
+        from research.eval.fingerprint import BehavioralFingerprint
+        from research.synthesis.graph import ComputationGraph
+
+        graph = ComputationGraph(model_dim=256)
+        inp = graph.add_input()
+        op = graph.add_op("relu", [inp])
+        graph.set_output(op)
+
+        fp = BehavioralFingerprint(
+            novelty_score=0.7, quality="full", analyses_succeeded=4,
+        )
+        nov = novelty_score(graph, fingerprint=fp)
+        self.assertAlmostEqual(nov.novelty_confidence, 0.9)
+
+    def test_confidence_partial_quality_fingerprint(self):
+        """Partial-quality fingerprint gives confidence=0.4 + n*0.1."""
+        from research.eval.metrics import novelty_score
+        from research.eval.fingerprint import BehavioralFingerprint
+        from research.synthesis.graph import ComputationGraph
+
+        graph = ComputationGraph(model_dim=256)
+        inp = graph.add_input()
+        op = graph.add_op("relu", [inp])
+        graph.set_output(op)
+
+        for n in (1, 2, 3):
+            fp = BehavioralFingerprint(
+                novelty_score=0.5, quality="partial", analyses_succeeded=n,
+            )
+            nov = novelty_score(graph, fingerprint=fp)
+            expected = 0.4 + n * 0.1
+            self.assertAlmostEqual(nov.novelty_confidence, expected,
+                                   msg=f"analyses_succeeded={n}")
+
+    def test_confidence_none_quality_with_fingerprint(self):
+        """quality='none' but fingerprint provided gives confidence=0.3."""
+        from research.eval.metrics import novelty_score
+        from research.eval.fingerprint import BehavioralFingerprint
+        from research.synthesis.graph import ComputationGraph
+
+        graph = ComputationGraph(model_dim=256)
+        inp = graph.add_input()
+        op = graph.add_op("relu", [inp])
+        graph.set_output(op)
+
+        fp = BehavioralFingerprint(novelty_score=0.5, quality="none",
+                                   analyses_succeeded=0)
+        nov = novelty_score(graph, fingerprint=fp)
+        self.assertAlmostEqual(nov.novelty_confidence, 0.3)
+
+    def test_novelty_confidence_persisted_in_db(self):
+        """novelty_confidence column exists and round-trips through DB."""
+        from research.scientist.notebook import LabNotebook
+        import tempfile, os
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test.db")
+            nb = LabNotebook(db_path)
+            exp_id = nb.start_experiment("test", {})
+            rid = nb.record_program_result(
+                exp_id, "fp123", "{}",
+                novelty_score=0.7, novelty_confidence=0.85,
+            )
+            detail = nb.get_program_detail(rid)
+            self.assertAlmostEqual(detail["novelty_confidence"], 0.85)
+            nb.close()
+
+    def test_op_success_rates_tracks_novelty_confidence(self):
+        """update_op_success_rates persists avg_novelty_confidence."""
+        from research.scientist.notebook import LabNotebook
+        import tempfile, os, json
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test.db")
+            nb = LabNotebook(db_path)
+            exp_id = nb.start_experiment("test", {})
+            graph = {"nodes": {"n1": {"op_name": "relu", "inputs": ["input"]}}}
+            nb.record_program_result(
+                exp_id, "fp1", json.dumps(graph),
+                novelty_score=0.6, novelty_confidence=0.9,
+                stage0_passed=True, stage1_passed=True,
+            )
+            nb.record_program_result(
+                exp_id, "fp2", json.dumps(graph),
+                novelty_score=0.4, novelty_confidence=0.3,
+                stage0_passed=True, stage1_passed=False,
+            )
+            nb.update_op_success_rates(exp_id)
+            rates = nb.get_op_success_rates()
+            relu_rate = [r for r in rates if r["op_name"] == "relu"][0]
+            self.assertIsNotNone(relu_rate["avg_novelty_confidence"])
+            self.assertAlmostEqual(relu_rate["avg_novelty_confidence"], 0.6)
+            nb.close()
+
+    def test_breakthrough_requires_novelty_confidence(self):
+        """Runner breakthrough gate requires novelty_confidence >= 0.5."""
+        # Verify the threshold is present in the source code
+        import ast
+        from pathlib import Path
+
+        runner_path = Path(__file__).parent.parent / "scientist" / "runner.py"
+        source = runner_path.read_text()
+        # Should contain the novelty confidence gate
+        self.assertIn("nov_conf >= 0.5", source,
+                       "Breakthrough gate must require novelty_confidence >= 0.5")
+
+    def test_breakthrough_requires_5_seeds(self):
+        """Runner breakthrough gate requires >= 5 seeds passed."""
+        from pathlib import Path
+
+        runner_path = Path(__file__).parent.parent / "scientist" / "runner.py"
+        source = runner_path.read_text()
+        self.assertIn("len(passed_seeds) >= 5", source,
+                       "Breakthrough gate must require >= 5 seeds")
+
+    def test_validation_n_seeds_default_is_5(self):
+        """RunConfig.validation_n_seeds default must be >= 5."""
+        from research.scientist.runner import RunConfig
+
+        config = RunConfig()
+        self.assertGreaterEqual(config.validation_n_seeds, 5,
+                                "validation_n_seeds must default to >= 5 for breakthrough eligibility")
+
+    def test_grammar_weights_discount_low_confidence_novelty(self):
+        """Grammar weight novelty factor should be scaled by confidence."""
+        from research.scientist.analytics import ExperimentAnalytics
+        from unittest.mock import MagicMock
+
+        analytics = ExperimentAnalytics.__new__(ExperimentAnalytics)
+        analytics.nb = MagicMock()
+
+        # High confidence novelty vs low confidence novelty
+        stats_high_conf = {
+            "total": 100, "s1_total": 20, "novelty_sum": 50.0, "count": 100,
+            "conf_sum": 90.0, "conf_count": 100,  # avg conf = 0.9
+        }
+        stats_low_conf = {
+            "total": 100, "s1_total": 20, "novelty_sum": 50.0, "count": 100,
+            "conf_sum": 20.0, "conf_count": 100,  # avg conf = 0.2
+        }
+
+        weights_high = analytics._compute_weights_from_stats(
+            {"activation": stats_high_conf})
+        weights_low = analytics._compute_weights_from_stats(
+            {"activation": stats_low_conf})
+
+        # Both should produce weights, but high-conf should weight novelty more
+        self.assertIsNotNone(weights_high)
+        self.assertIsNotNone(weights_low)
+        # With same s1_rate (only one category), both hit statistical guard
+        # and return default. Use two categories to get past the guard.
+        stats_good = {
+            "total": 100, "s1_total": 30, "novelty_sum": 80.0, "count": 100,
+            "conf_sum": 90.0, "conf_count": 100,
+        }
+        stats_bad = {
+            "total": 100, "s1_total": 5, "novelty_sum": 10.0, "count": 100,
+            "conf_sum": 20.0, "conf_count": 100,
+        }
+        w_high = analytics._compute_weights_from_stats({
+            "activation": stats_good, "linear": stats_bad,
+        })
+        # Replace good stats with low confidence
+        stats_good_lowconf = dict(stats_good)
+        stats_good_lowconf["conf_sum"] = 10.0  # avg conf = 0.1
+        w_low = analytics._compute_weights_from_stats({
+            "activation": stats_good_lowconf, "linear": stats_bad,
+        })
+        self.assertIsNotNone(w_high)
+        self.assertIsNotNone(w_low)
+        # High-confidence novelty should give a higher weight
+        self.assertGreater(w_high["activation"], w_low["activation"],
+                           "High-confidence novelty should produce higher grammar weight")
+
+
+class TestMorphologicalConstraints(unittest.TestCase):
+    """Regression tests for morphological-box constraint checks."""
+
+    def test_tag_incompatibility_detection_via_option_map_patch(self):
+        import copy
+        from research import morphological_box as mb
+
+        spec = mb.roll(seed=123)
+        dim_names = list(spec.choices.keys())
+        self.assertGreaterEqual(len(dim_names), 2)
+
+        src_dim = dim_names[0]
+        dst_dim = dim_names[1]
+        src_opt_name = spec.choices[src_dim]
+        dst_opt_name = spec.choices[dst_dim]
+        dst_opt = mb._OPTION_MAP[dst_dim][dst_opt_name]
+        dst_tag = dst_opt.tags[0] if dst_opt.tags else "_test_tag"
+
+        original_map = copy.deepcopy(mb._OPTION_MAP)
+        try:
+            src_opt = mb._OPTION_MAP[src_dim][src_opt_name]
+            patched = mb.Option(
+                name=src_opt.name,
+                description=src_opt.description,
+                tags=src_opt.tags,
+                incompatible_with=(dst_tag,),
+            )
+            mb._OPTION_MAP[src_dim][src_opt_name] = patched
+
+            valid, reason = mb.is_valid_spec(spec)
+            self.assertFalse(valid)
+            self.assertIsNotNone(reason)
+            self.assertIn("incompatible", reason)
+        finally:
+            mb._OPTION_MAP.clear()
+            mb._OPTION_MAP.update(original_map)
+
+
 # ── Test 3: RunConfig & Mode Selection ──
 
 
@@ -488,9 +1060,31 @@ class TestRunConfig(unittest.TestCase):
             "validation_seq_len", "validation_n_seeds",
             "model_source", "morph_ratio",
             "use_synthesized_training", "n_training_programs",
+            "data_mode", "corpus_path", "corpus_format",
+            "corpus_text_key", "tokenizer_mode", "corpus_max_chars",
         ]
         for f in fields:
             self.assertTrue(hasattr(config, f), f"Missing field: {f}")
+
+    def test_round_trip_preserves_corpus_fields(self):
+        """RunConfig serialization should preserve corpus-mode fields."""
+        from research.scientist.runner import RunConfig
+
+        original = RunConfig(
+            data_mode="corpus",
+            corpus_path="/tmp/example.jsonl",
+            corpus_format="jsonl",
+            corpus_text_key="content",
+            tokenizer_mode="whitespace",
+            corpus_max_chars=12345,
+        )
+        restored = RunConfig.from_dict(original.to_dict())
+        self.assertEqual(restored.data_mode, "corpus")
+        self.assertEqual(restored.corpus_path, "/tmp/example.jsonl")
+        self.assertEqual(restored.corpus_format, "jsonl")
+        self.assertEqual(restored.corpus_text_key, "content")
+        self.assertEqual(restored.tokenizer_mode, "whitespace")
+        self.assertEqual(restored.corpus_max_chars, 12345)
 
 
 # ── Test 4: Aria Mode Selection ──
@@ -511,6 +1105,17 @@ class TestAriaModeSelecion(unittest.TestCase):
             "n_experiments_in_session": 1,
         })
         self.assertEqual(rec["mode"], "synthesis")
+
+    def test_long_zero_survivor_streak_recommends_pivot(self):
+        """After many zero-survivor runs, recommendation should include pivot signal."""
+        rec = self.aria._rule_based_mode_recommendation({
+            "total_s1_survivors": 0,
+            "avg_novelty": 0,
+            "n_experiments_in_session": 12,
+        })
+        self.assertEqual(rec["mode"], "synthesis")
+        self.assertTrue(rec.get("config", {}).get("pivot_recommended"))
+        self.assertTrue(rec.get("config", {}).get("stop_recommended"))
 
     def test_low_novelty_recommends_novelty_search(self):
         """With survivors but low novelty, should recommend novelty."""
@@ -801,6 +1406,7 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertIn("summary", data)
+        self.assertIn("experiment_clusters", data)
 
     def test_api_analytics_op_success(self):
         r = self.client.get("/api/analytics/op-success")
@@ -821,6 +1427,21 @@ class TestAPI(unittest.TestCase):
     def test_api_analytics_learning_log(self):
         r = self.client.get("/api/analytics/learning-log")
         self.assertEqual(r.status_code, 200)
+
+    def test_api_analytics_experiment_clusters(self):
+        r = self.client.get("/api/analytics/experiment-clusters")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        if data is not None:
+            self.assertIn("clusters", data)
+            self.assertIn("stability_score", data)
+
+    def test_api_analytics_routing_health(self):
+        r = self.client.get("/api/analytics/routing-health")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("available", data)
+        self.assertIn("by_mode", data)
 
     def test_api_config(self):
         r = self.client.get("/api/config")
@@ -878,6 +1499,18 @@ class TestAPI(unittest.TestCase):
     def test_api_404_for_unknown_endpoint(self):
         r = self.client.get("/api/nonexistent")
         self.assertEqual(r.status_code, 404)
+
+    def test_sse_timeout_env_parsing(self):
+        from research.scientist.api import _get_sse_timeout_seconds
+
+        with patch.dict(os.environ, {"ARIA_SSE_TIMEOUT_SECONDS": "60"}, clear=False):
+            self.assertEqual(_get_sse_timeout_seconds(), 60.0)
+
+        with patch.dict(os.environ, {"ARIA_SSE_TIMEOUT_SECONDS": "invalid"}, clear=False):
+            self.assertEqual(_get_sse_timeout_seconds(), 30.0)
+
+        with patch.dict(os.environ, {"ARIA_SSE_TIMEOUT_SECONDS": "0"}, clear=False):
+            self.assertEqual(_get_sse_timeout_seconds(), 30.0)
 
 
 # ── Test 7: Auto-Escalation Pipeline ──
@@ -1006,6 +1639,26 @@ class TestAutoEscalation(unittest.TestCase):
         self.assertEqual(leaderboard[0]["tier"], "screening")
         nb.close()
 
+    def test_ensure_campaign_marks_post_hoc_criteria(self):
+        """Campaign criteria created from recent results should be labeled post-hoc."""
+        nb = LabNotebook(self.db_path)
+        try:
+            self.runner._active_campaign_id = None
+            self.runner.aria.formulate_campaign = MagicMock(return_value={
+                "title": "Campaign A",
+                "objective": "Explore",
+                "success_criteria": "Increase S1 pass rate",
+            })
+
+            campaign_id = self.runner._ensure_campaign(self.config, nb)
+            self.assertIsNotNone(campaign_id)
+
+            campaign = nb.get_campaign(campaign_id)
+            self.assertIsNotNone(campaign)
+            self.assertIn("[POST-HOC]", campaign["success_criteria"])
+        finally:
+            nb.close()
+
 
 # ── Test 8: Prompt Templates ──
 
@@ -1050,6 +1703,34 @@ class TestPrompts(unittest.TestCase):
     def test_validation_prompt_has_hypothesis_placeholder(self):
         from research.scientist.llm.prompts import VALIDATION_PROMPT
         self.assertIn("{hypothesis}", VALIDATION_PROMPT)
+
+
+class TestPackageWiring(unittest.TestCase):
+    """Ensure explicitly connected package modules remain importable."""
+
+    def test_mathspaces_exports_modules(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        init_path = os.path.join(repo_root, "mathspaces", "__init__.py")
+        with open(init_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("from . import clifford, hyperbolic, padic, tropical", content)
+        self.assertIn("from .registry import register_all_mathspaces", content)
+        self.assertIn('"hyperbolic"', content)
+        self.assertIn('"tropical"', content)
+        self.assertIn('"padic"', content)
+        self.assertIn('"clifford"', content)
+
+    def test_llm_package_exports_context_and_prompts(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        init_path = os.path.join(repo_root, "scientist", "llm", "__init__.py")
+        with open(init_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("from . import context, prompts", content)
+        self.assertIn("from .backend import", content)
+        self.assertIn('"context"', content)
+        self.assertIn('"prompts"', content)
 
 
 # ── Test 9: Persona Methods ──
@@ -1123,10 +1804,72 @@ class TestPersona(unittest.TestCase):
         self.assertIsInstance(msg, str)
         self.assertIn("BREAKTHROUGH", msg)
 
+    def test_assess_breakthrough_evidence_publication_grade(self):
+        evidence = self.aria.assess_breakthrough_evidence(metrics={
+            "seeds_passed": 6,
+            "total_seeds": 6,
+            "val_baseline_ratio": 0.82,
+            "multi_seed_std": 0.018,
+            "ood_robustness": 0.8,
+            "hp_robustness": 0.85,
+        })
+        self.assertEqual(evidence["label"], "publication_grade")
+        self.assertIn(evidence["confidence_band"], {"high", "medium", "low"})
+
+    def test_assess_breakthrough_evidence_provisional_for_low_seed_count(self):
+        evidence = self.aria.assess_breakthrough_evidence(metrics={
+            "seeds_passed": 3,
+            "total_seeds": 3,
+            "val_baseline_ratio": 0.82,
+            "multi_seed_std": 0.018,
+        })
+        self.assertEqual(evidence["label"], "provisional")
+        self.assertIn("seed_count_below_publication_threshold", evidence["reasons"])
+
+    def test_announce_breakthrough_provisional_language(self):
+        msg = self.aria.announce_breakthrough(metrics={
+            "seeds_passed": 3,
+            "total_seeds": 3,
+            "val_baseline_ratio": 0.93,
+            "multi_seed_std": 0.05,
+        })
+        self.assertIn("BREAKTHROUGH SIGNAL DETECTED", msg)
+        self.assertIn("PROVISIONAL", msg)
+
     def test_cost_tracking(self):
         self.aria.reset_cost_tracking()
         self.assertEqual(self.aria.total_tokens, 0)
         self.assertEqual(self.aria.total_cost, 0.0)
+
+    def test_unknown_backend_cost_logs_warning_once(self):
+        class _Resp:
+            tokens_used = 100
+
+        class _Backend:
+            name = "mystery-backend"
+
+        self.aria._llm = _Backend()
+        with patch("research.scientist.persona.logger.warning") as warn:
+            self.aria._track_cost(_Resp())
+            self.aria._track_cost(_Resp())
+            self.assertEqual(warn.call_count, 1)
+        self.assertGreater(self.aria.total_cost, 0.0)
+
+
+class TestAnthropicBackendConfig(unittest.TestCase):
+    """Backend config defaults should be resilient to model deprecations."""
+
+    def test_default_model_uses_alias(self):
+        with patch.dict(os.environ, {}, clear=True):
+            from research.scientist.llm.anthropic import AnthropicBackend
+            backend = AnthropicBackend()
+            self.assertEqual(backend.model, "claude-sonnet-latest")
+
+    def test_env_model_override_wins(self):
+        with patch.dict(os.environ, {"ANTHROPIC_MODEL": "custom-model"}, clear=True):
+            from research.scientist.llm.anthropic import AnthropicBackend
+            backend = AnthropicBackend()
+            self.assertEqual(backend.model, "custom-model")
 
 
 # ── Test 10: Dashboard Component Consistency ──
@@ -1138,12 +1881,14 @@ class TestDashboardConsistency(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import glob
+        cls.repo_root = os.path.dirname(os.path.dirname(__file__))
         cls.component_dir = os.path.join(
-            os.path.dirname(__file__), "..", "dashboard", "src", "components")
+            cls.repo_root, "dashboard", "src", "components")
         cls.component_files = glob.glob(
             os.path.join(cls.component_dir, "*.js"))
         cls.app_js = os.path.join(
-            os.path.dirname(__file__), "..", "dashboard", "src", "App.js")
+            cls.repo_root, "dashboard", "src", "App.js")
+        cls.api_py = os.path.join(cls.repo_root, "scientist", "api.py")
 
     def _read_file(self, path):
         with open(path, "r") as f:
@@ -1193,7 +1938,8 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/llm/config",
             "/api/analytics/op-success", "/api/analytics/failure-patterns",
             "/api/analytics/grammar-weights", "/api/analytics/efficiency-frontier",
-            "/api/analytics/learning-log",
+            "/api/analytics/learning-log", "/api/analytics/experiment-clusters",
+            "/api/analytics/routing-health",
             "/api/metrics/",
             "/api/experiments/start", "/api/experiments/stop",
             "/api/campaigns", "/api/hypotheses",
@@ -1274,6 +2020,75 @@ class TestDashboardConsistency(unittest.TestCase):
                 f"LiveFeed.js missing handler for SSE event: {event}",
             )
 
+    def test_frontend_api_routes_exist_in_backend(self):
+        """All frontend /api paths should map to a backend Flask route."""
+        import re
+
+        api_content = self._read_file(self.api_py)
+        route_re = re.compile(r"@app\.route\(\s*['\"](/api/[^'\"]+)['\"]")
+        backend_routes = [self._normalize_route(r) for r in route_re.findall(api_content)]
+
+        for filepath in self.component_files + [self.app_js]:
+            content = self._read_file(filepath)
+            found = re.findall(r"/api/[A-Za-z0-9_\-/${}]+(?:/[A-Za-z0-9_\-/${}]+)*", content)
+            for path in found:
+                normalized = self._normalize_route(path)
+                matched = any(self._route_matches(b, normalized) for b in backend_routes)
+                self.assertTrue(
+                    matched,
+                    f"Frontend route has no backend mapping: {path} in {os.path.basename(filepath)}",
+                )
+
+    @staticmethod
+    def _normalize_route(path: str) -> str:
+        import re
+
+        p = path.split("?", 1)[0]
+        p = re.sub(r"<[^>]+>", "*", p)
+        p = re.sub(r"\$\{[^}]+\}", "*", p)
+        p = re.sub(r"//+", "/", p)
+        return p.rstrip("/") or "/"
+
+    @staticmethod
+    def _route_matches(backend: str, frontend: str) -> bool:
+        if backend == frontend:
+            return True
+
+        b_parts = [p for p in backend.strip("/").split("/") if p]
+        f_parts = [p for p in frontend.strip("/").split("/") if p]
+        if len(b_parts) != len(f_parts):
+            return False
+
+        for b, f in zip(b_parts, f_parts):
+            if b == "*" or f == "*":
+                continue
+            if b != f:
+                return False
+        return True
+
+
+class TestDeadCodeAudit(unittest.TestCase):
+    """Non-destructive dead code audit should run and emit structured data."""
+
+    def test_dead_code_audit_json_runs(self):
+        import subprocess
+
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        cmd = [
+            sys.executable,
+            os.path.join(repo_root, "tools", "dead_code_audit.py"),
+            "--workspace",
+            repo_root,
+            "--json",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        payload = json.loads(proc.stdout)
+        self.assertIn("dashboard_orphans", payload)
+        self.assertIn("python_possible_orphans", payload)
+        self.assertIn("notes", payload)
+
 
 # ── Test 11: Evolution Search ──
 
@@ -1295,6 +2110,101 @@ class TestEvolutionIntegration(unittest.TestCase):
         import inspect
         sig = inspect.signature(novelty_search)
         self.assertIn("fingerprint_fn", sig.parameters)
+
+    def test_mutation_adds_lineage_metadata(self):
+        """Mutation should preserve lineage metadata for auditability."""
+        from research.search.evolution import _mutate_graph
+        from research.synthesis.grammar import GrammarConfig, generate_layer_graph
+        import random
+
+        parent = generate_layer_graph(GrammarConfig(model_dim=128), seed=123)
+        child = _mutate_graph(parent, GrammarConfig(model_dim=128), random.Random(9))
+
+        self.assertEqual(child.model_dim, parent.model_dim)
+        self.assertIn("lineage", child.metadata)
+        self.assertEqual(child.metadata["lineage"].get("type"), "mutation")
+        self.assertEqual(child.metadata["lineage"].get("parent"), parent.fingerprint())
+
+    def test_crossover_adds_lineage_metadata(self):
+        """Crossover should retain both parent fingerprints in metadata."""
+        from research.search.evolution import _crossover_graphs
+        from research.synthesis.grammar import GrammarConfig, generate_layer_graph
+        import random
+
+        g1 = generate_layer_graph(GrammarConfig(model_dim=128), seed=101)
+        g2 = generate_layer_graph(GrammarConfig(model_dim=128), seed=202)
+        child = _crossover_graphs(g1, g2, GrammarConfig(model_dim=128), random.Random(11))
+
+        self.assertEqual(child.model_dim, g1.model_dim)
+        self.assertIn("lineage", child.metadata)
+        self.assertEqual(child.metadata["lineage"].get("type"), "crossover")
+        self.assertEqual(
+            child.metadata["lineage"].get("parents"),
+            [g1.fingerprint(), g2.fingerprint()],
+        )
+
+    def test_evolution_captures_eval_errors_in_metadata(self):
+        """Evaluation failures should be explicit metadata, not silent drops."""
+        from research.search.evolution import evolutionary_search, EvolutionConfig
+
+        def bad_fitness(_):
+            raise RuntimeError("fitness exploded")
+
+        def bad_novelty(_, __):
+            raise ValueError("novelty unavailable")
+
+        pop = evolutionary_search(
+            fitness_fn=bad_fitness,
+            novelty_fn=bad_novelty,
+            config=EvolutionConfig(population_size=4, n_generations=1, elitism=1),
+            seed=7,
+        )
+
+        self.assertGreater(len(pop), 0)
+        for ind in pop:
+            self.assertEqual(ind.fitness, 0.0)
+            self.assertEqual(ind.novelty, 0.0)
+            self.assertEqual(ind.metadata.get("fitness_error_type"), "RuntimeError")
+            self.assertEqual(ind.metadata.get("novelty_error_type"), "ValueError")
+
+    def test_evolution_enforces_fingerprint_diversity(self):
+        """Duplicate fingerprints should be replaced to avoid clone collapse."""
+        import random
+
+        from research.search.evolution import (
+            EvolutionConfig,
+            Individual,
+            _enforce_population_diversity,
+        )
+        from research.synthesis.graph import ComputationGraph
+        from research.synthesis.grammar import GrammarConfig, generate_layer_graph
+
+        grammar = GrammarConfig(model_dim=128)
+        g1 = generate_layer_graph(grammar, seed=11)
+        g1_clone = ComputationGraph.from_dict(g1.to_dict())
+        g2 = generate_layer_graph(grammar, seed=22)
+
+        pop = [
+            Individual(graph=g1, fitness=1.0, novelty=0.2, generation=0),
+            Individual(graph=g1_clone, fitness=0.9, novelty=0.1, generation=0),
+            Individual(graph=g2, fitness=0.8, novelty=0.3, generation=0),
+        ]
+
+        deduped = _enforce_population_diversity(
+            population=pop,
+            fitness_fn=lambda _g: 1.0,
+            novelty_fn=lambda _g, _all: 0.0,
+            config=EvolutionConfig(population_size=3),
+            grammar=grammar,
+            rng=random.Random(5),
+            generation=1,
+        )
+
+        fps = [ind.fingerprint for ind in deduped]
+        self.assertEqual(len(deduped), 3)
+        self.assertEqual(len(set(fps)), 3)
+        self.assertTrue(any(ind.metadata.get("dedupe_duplicates_replaced", 0) > 0
+                            for ind in deduped))
 
 
 # ── Test 12: Inline Phase Methods & Budget Context ──
@@ -1333,6 +2243,284 @@ class TestInlinePhaseMethods(unittest.TestCase):
                          "_run_inline_investigation should not call "
                          "non-existent _run_investigation()")
 
+    def test_control_experiment_interval_marks_and_skips_learned_weights(self):
+        """Every Nth continuous synthesis run should be treated as control."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_control_interval.db")
+        runner = ExperimentRunner(db_path)
+
+        config = RunConfig(
+            n_programs=1,
+            enable_campaigns=False,
+            auto_report=False,
+            auto_scale_up=False,
+            auto_investigate=False,
+            auto_validate=False,
+            control_experiment_interval=2,
+        )
+
+        nb = MagicMock()
+        nb.get_recent_experiments.return_value = []
+        nb.get_leaderboard.return_value = []
+        nb.start_experiment.return_value = "exp-control"
+
+        runner.aria.formulate_hypothesis = MagicMock(return_value="control hypothesis")
+        runner.aria.validate_hypothesis = MagicMock(return_value=None)
+        runner.aria.experiment_summary = MagicMock(return_value="summary")
+        runner.aria.analyze_results = MagicMock(return_value="")
+        runner._build_rich_context_for_experiment = MagicMock(return_value="ctx")
+        runner._analyze_results = MagicMock(return_value=[])
+        runner._auto_recommend = MagicMock()
+        runner._auto_escalate = MagicMock()
+        runner._maybe_auto_report = MagicMock()
+
+        expected_results = {
+            "total": 1,
+            "stage0_passed": 0,
+            "stage05_passed": 0,
+            "stage1_passed": 0,
+            "novel_count": 0,
+            "survivors": [],
+            "best_loss_ratio": None,
+            "best_novelty_score": None,
+        }
+        runner._execute_experiment = MagicMock(return_value=expected_results)
+
+        runner._run_continuous_synthesis(
+            config=config,
+            nb=nb,
+            n_experiments=2,
+            limit_str="exp 2/10",
+            mode_reasoning="control check",
+        )
+
+        self.assertTrue(runner._is_control_experiment(config, 2))
+        exec_kwargs = runner._execute_experiment.call_args.kwargs
+        self.assertFalse(exec_kwargs["use_learned_grammar"])
+
+        start_cfg = nb.start_experiment.call_args.kwargs["config"]
+        self.assertTrue(start_cfg["control_experiment"])
+        self.assertFalse(start_cfg["use_learned_grammar_weights"])
+
+        log_call = nb.log_learning_event.call_args
+        self.assertEqual(log_call.args[0], "grammar_control_experiment")
+
+    def test_runner_startup_recovers_stale_experiments(self):
+        """Runner init should clean stale experiments left in running state."""
+        from research.scientist.runner import ExperimentRunner
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_runner_recovery.db")
+
+        nb = LabNotebook(db_path)
+        try:
+            exp_id = nb.start_experiment(
+                experiment_type="synthesis",
+                config={"n_programs": 1},
+                hypothesis="stale run",
+            )
+            nb.conn.execute(
+                "UPDATE experiments SET started_at = ? WHERE experiment_id = ?",
+                (time.time() - (2 * 60 * 60), exp_id),
+            )
+            nb.conn.commit()
+        finally:
+            nb.close()
+
+        _runner = ExperimentRunner(db_path)
+        self.assertIsNotNone(_runner)
+
+        nb2 = LabNotebook(db_path)
+        try:
+            exp = nb2.get_experiment(exp_id)
+            self.assertIsNotNone(exp)
+            self.assertEqual(exp["status"], "failed")
+            results = json.loads(exp.get("results_json") or "{}")
+            self.assertIn("failure_reason", results)
+        finally:
+            nb2.close()
+
+    def test_train_with_program_uses_step_seed_sequence(self):
+        """Synthesized-program training should seed data generation with seed+step."""
+        import torch.nn as nn
+        import torch
+
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        class TinyModel(nn.Module):
+            def __init__(self, vocab_size: int = 32, d_model: int = 16):
+                super().__init__()
+                self.emb = nn.Embedding(vocab_size, d_model)
+                self.head = nn.Linear(d_model, vocab_size)
+
+            def forward(self, input_ids):
+                return self.head(self.emb(input_ids))
+
+        class _Curriculum:
+            @staticmethod
+            def get_seq_len(_step, _total):
+                return 8
+
+        class _Loss:
+            @staticmethod
+            def compute(logits, target):
+                return torch.nn.functional.cross_entropy(logits, target)
+
+        class _Optimizer:
+            @staticmethod
+            def create(params):
+                return torch.optim.SGD(params, lr=1e-3)
+
+        class Program:
+            init_scheme = "default"
+            init_scale = 0.02
+            n_steps = 3
+            batch_size = 1
+            max_grad_norm = 1.0
+            curriculum = _Curriculum()
+            loss = _Loss()
+            optimizer = _Optimizer()
+
+        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "seed_test.db"))
+        model = TinyModel()
+        config = RunConfig(vocab_size=32, max_seq_len=16)
+
+        original_randint = torch.randint
+        seen_seeds = []
+
+        def _spy_randint(*args, **kwargs):
+            generator = kwargs.get("generator")
+            if generator is not None:
+                seen_seeds.append(generator.initial_seed())
+            return original_randint(*args, **kwargs)
+
+        with patch("research.scientist.runner.torch.randint", side_effect=_spy_randint):
+            _ = runner._train_with_program(
+                model,
+                Program(),
+                config,
+                torch.device("cpu"),
+                seed=1234,
+            )
+
+        self.assertGreaterEqual(len(seen_seeds), 3)
+        self.assertEqual(seen_seeds[:3], [1234, 1235, 1236])
+
+    def test_corpus_mode_falls_back_to_random_when_missing_path(self):
+        """Corpus mode should safely fall back to random token generation when corpus is unavailable."""
+        import torch
+        import torch.nn as nn
+
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        class TinyModel(nn.Module):
+            def __init__(self, vocab_size: int = 32, d_model: int = 16):
+                super().__init__()
+                self.emb = nn.Embedding(vocab_size, d_model)
+                self.head = nn.Linear(d_model, vocab_size)
+
+            def forward(self, input_ids):
+                return self.head(self.emb(input_ids))
+
+        class _Curriculum:
+            @staticmethod
+            def get_seq_len(_step, _total):
+                return 8
+
+        class _Loss:
+            @staticmethod
+            def compute(logits, target):
+                return torch.nn.functional.cross_entropy(logits, target)
+
+        class _Optimizer:
+            @staticmethod
+            def create(params):
+                return torch.optim.SGD(params, lr=1e-3)
+
+        class Program:
+            init_scheme = "default"
+            init_scale = 0.02
+            n_steps = 2
+            batch_size = 1
+            max_grad_norm = 1.0
+            curriculum = _Curriculum()
+            loss = _Loss()
+            optimizer = _Optimizer()
+
+        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "corpus_fallback.db"))
+        model = TinyModel()
+        config = RunConfig(
+            vocab_size=32,
+            max_seq_len=16,
+            data_mode="corpus",
+            corpus_path="/tmp/does-not-exist.txt",
+            corpus_format="txt",
+        )
+
+        result = runner._train_with_program(
+            model,
+            Program(),
+            config,
+            torch.device("cpu"),
+            seed=42,
+        )
+
+        self.assertIn("n_train_steps", result)
+        self.assertGreaterEqual(int(result["n_train_steps"]), 1)
+
+    def test_baseline_compare_uses_training_metrics(self):
+        """Baseline compare should use candidate training metrics and recipe metadata."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src_execute = inspect.getsource(ExperimentRunner._execute_experiment)
+        self.assertIn('s1_result.get("n_train_steps")', src_execute)
+        self.assertIn("self._resolve_baseline_recipe", src_execute)
+        self.assertIn('optimizer_name=baseline_recipe["optimizer_name"]', src_execute)
+        self.assertIn('weight_decay=baseline_recipe["weight_decay"]', src_execute)
+
+        src_validation = inspect.getsource(ExperimentRunner._run_inline_validation)
+        self.assertIn('best_seed.get("n_train_steps")', src_validation)
+        self.assertIn("self._resolve_baseline_recipe", src_validation)
+        self.assertIn('momentum=baseline_recipe["momentum"]', src_validation)
+
+        src_tp = inspect.getsource(ExperimentRunner._train_with_program)
+        self.assertIn('result["optimizer_class"]', src_tp)
+        self.assertIn('result["optimizer_weight_decay"]', src_tp)
+
+    def test_routing_benchmark_compares_multiple_modes(self):
+        """Track C benchmark should compare >=3 routing strategies with frontier metrics."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "routing_bench.db"))
+        config = RunConfig(
+            model_dim=64,
+            n_layers=2,
+            vocab_size=128,
+            max_seq_len=32,
+            stage1_steps=1,
+            stage1_batch_size=1,
+            device="cpu",
+        )
+        modes = ["uniform", "mod_topk", "early_exit"]
+        seeds = [11, 22]
+        result = runner.run_routing_benchmark(config, seed_set=seeds, modes=modes)
+
+        self.assertTrue(result.get("available"))
+        self.assertEqual(result.get("seed_set"), seeds)
+        self.assertGreaterEqual(len(result.get("modes_evaluated", [])), 3)
+
+        points = result.get("points", [])
+        self.assertGreaterEqual(len(points), 3)
+        for point in points:
+            self.assertIn("routing_mode", point)
+            self.assertIn("validation_loss", point)
+            self.assertIn("tokens_per_sec", point)
+            self.assertIn("effective_token_compute", point)
+            self.assertIn("routing_stability", point)
+
 
 @unittest.skipUnless(HAS_CONTEXT, "requires context module")
 class TestBudgetContext(unittest.TestCase):
@@ -1360,6 +2548,97 @@ class TestBudgetContext(unittest.TestCase):
             budget=0,
         )
         self.assertNotIn("Budget", ctx)
+
+
+@unittest.skipUnless(HAS_TORCH and HAS_FLASK and HAS_NOTEBOOK,
+                     "requires torch, flask, and notebook")
+class TestPipelineEndToEnd(unittest.TestCase):
+    """Single test that runs the AI scientist pipeline end-to-end."""
+
+    def test_continuous_pipeline_records_novelty_learning_and_reports(self):
+        from research.scientist.runner import ExperimentRunner, RunConfig
+        from research.scientist.api import create_app
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_pipeline_end_to_end.db")
+
+        runner = ExperimentRunner(db_path)
+        config = RunConfig(
+            n_programs=1,
+            model_dim=64,
+            n_layers=2,
+            max_depth=4,
+            max_ops=8,
+            device="cpu",
+            stage1_steps=1,
+            stage1_batch_size=1,
+            continuous=True,
+            max_experiments=2,
+            rest_between_experiments=0,
+            auto_scale_up=False,
+            auto_investigate=False,
+            auto_validate=False,
+            enable_campaigns=True,
+            knowledge_extraction_interval=1,
+            auto_report=False,
+        )
+
+        session_id = runner.start_continuous(config)
+        self.assertIsNotNone(session_id)
+
+        t0 = time.time()
+        timeout_s = 180
+        while runner.is_running and (time.time() - t0) < timeout_s:
+            time.sleep(0.2)
+
+        self.assertFalse(runner.is_running, "continuous run timed out")
+        self.assertIn(runner.progress.status, {"completed", "stopped"})
+
+        nb = LabNotebook(db_path)
+        try:
+            experiments = nb.get_recent_experiments(10)
+            self.assertGreaterEqual(len(experiments), 2)
+            completed = [e for e in experiments if e.get("status") == "completed"]
+            self.assertGreaterEqual(len(completed), 2)
+
+            novelty_count = nb.conn.execute(
+                "SELECT COUNT(*) FROM program_results WHERE novelty_score IS NOT NULL"
+            ).fetchone()[0]
+            self.assertGreater(novelty_count, 0)
+
+            op_rates = nb.get_op_success_rates()
+            self.assertGreater(len(op_rates), 0)
+
+            campaign_rows = nb.conn.execute(
+                "SELECT COUNT(*) FROM campaigns"
+            ).fetchone()[0]
+            self.assertGreaterEqual(campaign_rows, 1)
+        finally:
+            nb.close()
+
+        app = create_app(notebook_path=db_path)
+        client = app.test_client()
+
+        r_report = client.get("/api/report")
+        self.assertEqual(r_report.status_code, 200)
+        report = r_report.get_json()
+        for k in ["summary", "recent_experiments", "op_success_rates",
+                  "structural_correlations", "learning_log"]:
+            self.assertIn(k, report)
+        self.assertGreaterEqual(len(report.get("recent_experiments", [])), 2)
+
+        r_campaigns = client.get("/api/campaigns")
+        self.assertEqual(r_campaigns.status_code, 200)
+        campaigns = r_campaigns.get_json()
+        self.assertIsInstance(campaigns, list)
+        self.assertGreaterEqual(len(campaigns), 1)
+        self.assertIn("n_experiments", campaigns[0])
+
+        r_op_success = client.get("/api/analytics/op-success")
+        self.assertEqual(r_op_success.status_code, 200)
+        op_success = r_op_success.get_json()
+        self.assertIsInstance(op_success, dict)
+        self.assertGreater(len(op_success), 0)
 
 
 if __name__ == "__main__":

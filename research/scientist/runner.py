@@ -14,13 +14,14 @@ Supports background execution controlled from the dashboard.
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import queue
 import threading
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -38,6 +39,8 @@ from ..eval.fingerprint import compute_fingerprint
 from ..training.loss_synthesis import synthesize_loss
 from ..training.optimizer_synthesis import synthesize_optimizer
 from ..training.training_program import synthesize_training_program
+from ..training.data_pipeline import CorpusConfig, CorpusTokenBatcher
+from ..training.checkpointing import CheckpointManager
 from .persona import Aria, get_aria
 from .notebook import LabNotebook, ExperimentEntry
 from .llm.context import (build_experiment_context,
@@ -79,6 +82,13 @@ class RunConfig:
     stage1_steps: int = 500
     stage1_lr: float = 3e-4
     stage1_batch_size: int = 4
+    # Training data source
+    data_mode: str = "random"  # "random" | "corpus"
+    corpus_path: str = ""      # TXT or JSONL path for corpus mode
+    corpus_format: str = "auto"  # "auto" | "txt" | "jsonl"
+    corpus_text_key: str = "text"  # JSONL key when format is jsonl
+    tokenizer_mode: str = "byte"  # "byte" | "whitespace"
+    corpus_max_chars: int = 200000
     # Synthesis grammar
     max_depth: int = 10
     max_ops: int = 16
@@ -88,6 +98,7 @@ class RunConfig:
     continuous: bool = False
     max_experiments: int = 100
     rest_between_experiments: int = 5  # seconds
+    control_experiment_interval: int = 5  # run every Nth synthesis as control (0 disables)
     max_time_minutes: int = 0        # 0 = no limit
     max_cost_dollars: float = 0.0    # 0 = no limit (estimated LLM API cost)
     # Evolution search
@@ -129,7 +140,7 @@ class RunConfig:
     validation_steps: int = 10000
     validation_batch_size: int = 8
     validation_seq_len: int = 512
-    validation_n_seeds: int = 3
+    validation_n_seeds: int = 5
     # Auto-escalation pipeline
     auto_investigate: bool = True
     auto_investigate_min_survivors: int = 1
@@ -137,6 +148,11 @@ class RunConfig:
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
     auto_validate_top_n: int = 3
+    # Checkpoint/resume
+    checkpoint_dir: str = "checkpoints"
+    checkpoint_interval: int = 1  # save continuous checkpoint every N experiments
+    resume_experiment_id: str = ""  # experiment ID to resume (empty = fresh start)
+    keep_checkpoints: bool = False  # keep checkpoints after successful completion
     # Campaign system
     enable_campaigns: bool = True
     knowledge_extraction_interval: int = 3  # every N experiments
@@ -187,6 +203,21 @@ class LiveProgress:
 class ExperimentRunner:
     """Autonomous experiment execution engine with background support."""
 
+    _ROUTING_BENCHMARK_MODES = [
+        "uniform",
+        "mod_topk",
+        "early_exit",
+        "token_merging",
+        "moe_topk",
+    ]
+    _ROUTING_EFFICIENCY_FACTOR = {
+        "uniform": 1.0,
+        "mod_topk": 0.7,
+        "early_exit": 0.75,
+        "token_merging": 0.65,
+        "moe_topk": 0.8,
+    }
+
     def __init__(self, notebook_path: str = "research/lab_notebook.db"):
         self.notebook_path = notebook_path
         self.aria = get_aria()
@@ -202,6 +233,11 @@ class ExperimentRunner:
         self._last_recommendation: Optional[Dict] = None
         self._active_campaign_id: Optional[str] = None
         self._current_hypothesis_id: Optional[str] = None
+        self._corpus_batcher: Optional[CorpusTokenBatcher] = None
+        self._corpus_signature: Optional[Tuple[str, str, str, str, int, int]] = None
+        self._corpus_warned_unavailable: bool = False
+
+        self._recover_stale_experiments_on_startup()
 
     def _ensure_math_spaces(self):
         if not self._math_spaces_registered:
@@ -209,8 +245,8 @@ class ExperimentRunner:
                 from ..mathspaces.registry import register_all_mathspaces
                 register_all_mathspaces()
                 self._math_spaces_registered = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Math spaces registration failed: %s", e)
 
     def _get_baseline(self) -> TransformerBaseline:
         if self._baseline is None:
@@ -220,6 +256,95 @@ class ExperimentRunner:
     def _make_notebook(self) -> LabNotebook:
         """Create a new notebook connection (thread-safe)."""
         return LabNotebook(self.notebook_path)
+
+    def _recover_stale_experiments_on_startup(self) -> None:
+        """Clean up stale running experiments from previous crashed processes."""
+        try:
+            nb = self._make_notebook()
+            cleaned = nb.cleanup_stale_experiments(timeout_minutes=60)
+            if cleaned > 0:
+                logger.info("Recovered %d stale experiments from previous crash", cleaned)
+            nb.close()
+        except Exception as e:
+            logger.debug("Startup stale-experiment recovery failed: %s", e)
+
+    @staticmethod
+    def _stable_seed(*parts: Any) -> int:
+        """Create a reproducible 31-bit seed from contextual parts."""
+        key = "|".join(str(p) for p in parts)
+        return int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) & 0x7FFFFFFF
+
+    def _get_corpus_batcher(self, config: RunConfig) -> Optional[CorpusTokenBatcher]:
+        """Lazily create or reuse corpus batcher for corpus-mode training."""
+        signature = (
+            str(config.corpus_path or ""),
+            str(config.corpus_format or "auto"),
+            str(config.corpus_text_key or "text"),
+            str(config.tokenizer_mode or "byte"),
+            int(config.corpus_max_chars),
+            int(config.vocab_size),
+        )
+
+        if self._corpus_batcher is not None and self._corpus_signature == signature:
+            return self._corpus_batcher
+
+        path = str(config.corpus_path or "").strip()
+        if not path:
+            self._corpus_batcher = None
+            self._corpus_signature = signature
+            return None
+
+        batcher = CorpusTokenBatcher(
+            CorpusConfig(
+                path=path,
+                fmt=str(config.corpus_format or "auto"),
+                text_key=str(config.corpus_text_key or "text"),
+                tokenizer=str(config.tokenizer_mode or "byte"),
+                max_chars=int(config.corpus_max_chars),
+            ),
+            vocab_size=int(config.vocab_size),
+        )
+        self._corpus_batcher = batcher
+        self._corpus_signature = signature
+        if not batcher.ready and not self._corpus_warned_unavailable:
+            logger.warning(
+                "Corpus mode requested but corpus unavailable/too small (path=%s); falling back to random tokens.",
+                path,
+            )
+            self._corpus_warned_unavailable = True
+        return batcher
+
+    def _sample_training_input_ids(
+        self,
+        config: RunConfig,
+        dev: torch.device,
+        batch_size: int,
+        seq_len: int,
+        seed: int,
+    ) -> torch.Tensor:
+        """Sample input IDs from configured data source with deterministic seed."""
+        generator = torch.Generator(device=dev)
+        generator.manual_seed(int(seed))
+
+        if str(config.data_mode or "random").strip().lower() == "corpus":
+            batcher = self._get_corpus_batcher(config)
+            if batcher is not None:
+                batch = batcher.sample_batch(
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                    generator=generator,
+                    device=dev,
+                )
+                if batch is not None:
+                    return batch
+
+        return torch.randint(
+            0,
+            int(config.vocab_size),
+            (batch_size, seq_len),
+            device=dev,
+            generator=generator,
+        )
 
     @property
     def progress(self) -> LiveProgress:
@@ -331,6 +456,81 @@ class ExperimentRunner:
         self._thread.start()
         return "continuous"
 
+    def start_resume(self, experiment_id: str, config: Optional[RunConfig] = None) -> str:
+        """Resume an interrupted experiment from its last checkpoint.
+
+        Looks up the experiment in the notebook, reconstructs config if needed,
+        and dispatches to the appropriate thread based on experiment type.
+        """
+        if self.is_running:
+            raise RuntimeError("An experiment is already running")
+
+        self._ensure_math_spaces()
+        self._stop_event.clear()
+
+        nb = self._make_notebook()
+        exp_data = nb.get_resumable_experiment(experiment_id)
+        if exp_data is None:
+            nb.close()
+            raise ValueError(
+                f"Experiment {experiment_id} not found or not resumable "
+                "(must be 'running' or 'failed')")
+
+        exp_type = exp_data["experiment_type"]
+        hypothesis = exp_data.get("hypothesis", "")
+
+        # Reconstruct config from stored config_json
+        if config is None:
+            try:
+                config_dict = json.loads(exp_data["config_json"])
+                config = RunConfig.from_dict(config_dict)
+            except Exception:
+                nb.close()
+                raise ValueError(
+                    f"Cannot reconstruct config for experiment {experiment_id}")
+
+        config.resume_experiment_id = experiment_id
+
+        # Mark experiment as running again if it was failed
+        if exp_data["status"] == "failed":
+            nb.conn.execute(
+                "UPDATE experiments SET status = 'running' WHERE experiment_id = ?",
+                (experiment_id,),
+            )
+            nb.conn.commit()
+        nb.close()
+
+        with self._lock:
+            self._progress = LiveProgress(
+                experiment_id=experiment_id,
+                status="resuming",
+                aria_message=f"Resuming {exp_type} experiment {experiment_id}...",
+            )
+
+        self._emit_event("experiment_resuming", {
+            "experiment_id": experiment_id,
+            "experiment_type": exp_type,
+        })
+
+        if exp_type == "continuous" or config.continuous:
+            self._thread = threading.Thread(
+                target=self._run_continuous_thread,
+                args=(config,),
+                daemon=True,
+            )
+        else:
+            logger.warning("Resume for experiment type '%s' not yet supported, "
+                           "falling back to continuous", exp_type)
+            config.continuous = True
+            self._thread = threading.Thread(
+                target=self._run_continuous_thread,
+                args=(config,),
+                daemon=True,
+            )
+
+        self._thread.start()
+        return experiment_id
+
     def stop(self):
         """Stop the current experiment gracefully."""
         self._stop_event.set()
@@ -339,6 +539,168 @@ class ExperimentRunner:
             self._progress.status = "stopped"
             self._progress.aria_message = "Stopping... wrapping up current evaluation."
         self._emit_event("experiment_stopping", {})
+
+    # ── Routing Benchmark Harness (Track C) ──
+
+    @staticmethod
+    def _routing_stability_from_curve(training_curve: List[Dict[str, Any]]) -> Optional[float]:
+        """Compute a simple stability score from per-step loss trajectory."""
+        if not training_curve:
+            return None
+        losses = [float(row.get("loss")) for row in training_curve if row.get("loss") is not None]
+        if len(losses) < 2:
+            return None
+        tail = losses[max(0, len(losses) // 2):]
+        if len(tail) < 2:
+            return None
+        mean_loss = sum(tail) / len(tail)
+        if mean_loss <= 1e-8:
+            return 1.0
+        variance = sum((v - mean_loss) ** 2 for v in tail) / len(tail)
+        std = variance ** 0.5
+        cv = std / mean_loss
+        return 1.0 / (1.0 + cv)
+
+    def run_routing_benchmark(
+        self,
+        config: RunConfig,
+        seed_set: Optional[List[int]] = None,
+        modes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Run fixed-budget routing benchmark across compute-routing strategies.
+
+        Compares routing modes on identical architecture skeleton, seed set, and
+        step budget. Returns compact frontier points and raw per-run metrics.
+        """
+        from ..morphological_box import roll
+        from ..arch_builder import build_model, BuildConfig
+
+        requested_modes = modes or list(self._ROUTING_BENCHMARK_MODES)
+        supported_modes = [m for m in requested_modes if m in self._ROUTING_BENCHMARK_MODES]
+        seeds = seed_set or [101, 202, 303]
+        if not supported_modes:
+            return {
+                "available": False,
+                "reason": "No supported routing modes requested",
+                "modes_requested": requested_modes,
+                "seed_set": seeds,
+                "points": [],
+                "raw_runs": [],
+            }
+
+        dev_str = config.device
+        if dev_str == "cuda" and not torch.cuda.is_available():
+            dev_str = "cpu"
+        dev = torch.device(dev_str)
+
+        fixed_base = {
+            "token_representation": "dense_float",
+            "weight_storage": "dense_matrix",
+            "token_mixing": "softmax_attention",
+            "channel_mixing": "swiglu_mlp",
+            "topology": "sequential",
+            "normalization": "rmsnorm_pre",
+            "positional_encoding": "rope",
+        }
+
+        bench_config = RunConfig.from_dict(config.to_dict())
+        if bench_config.stage1_steps <= 0:
+            bench_config.stage1_steps = 1
+
+        raw_runs: List[Dict[str, Any]] = []
+        for routing_mode in supported_modes:
+            fixed = dict(fixed_base)
+            fixed["compute_routing"] = routing_mode
+
+            for seed in seeds:
+                if self._stop_event.is_set():
+                    break
+
+                run_data: Dict[str, Any] = {
+                    "routing_mode": routing_mode,
+                    "seed": int(seed),
+                    "status": "ok",
+                }
+                try:
+                    spec = roll(seed=int(seed), fixed=fixed)
+                    model = build_model(
+                        spec,
+                        BuildConfig(
+                            dim=int(bench_config.model_dim),
+                            n_layers=int(bench_config.n_layers),
+                            vocab_size=int(bench_config.vocab_size),
+                            max_seq_len=int(bench_config.max_seq_len),
+                        ),
+                    )
+                    train_result = self._micro_train(
+                        model=model,
+                        config=bench_config,
+                        dev=dev,
+                        seed=int(seed),
+                    )
+
+                    seq_len = min(128, int(bench_config.max_seq_len))
+                    n_steps = int(train_result.get("n_train_steps") or bench_config.stage1_steps)
+                    batch_size = int(bench_config.stage1_batch_size)
+                    tokens_total = batch_size * seq_len * n_steps
+                    eff_factor = float(self._ROUTING_EFFICIENCY_FACTOR.get(routing_mode, 1.0))
+
+                    run_data.update({
+                        "validation_loss": train_result.get("final_loss"),
+                        "tokens_per_sec": train_result.get("throughput"),
+                        "routing_stability": self._routing_stability_from_curve(
+                            train_result.get("training_curve") or []
+                        ),
+                        "tokens_total": tokens_total,
+                        "effective_token_compute": tokens_total * eff_factor,
+                        "loss_ratio": train_result.get("loss_ratio"),
+                    })
+
+                    del model
+                    if dev.type == "cuda":
+                        torch.cuda.empty_cache()
+                except Exception as exc:
+                    run_data["status"] = "error"
+                    run_data["error"] = str(exc)
+
+                raw_runs.append(run_data)
+
+        points: List[Dict[str, Any]] = []
+        for routing_mode in supported_modes:
+            mode_runs = [
+                row for row in raw_runs
+                if row.get("routing_mode") == routing_mode and row.get("status") == "ok"
+            ]
+            if not mode_runs:
+                continue
+
+            def _mean(key: str) -> Optional[float]:
+                vals = [float(r[key]) for r in mode_runs if r.get(key) is not None]
+                return (sum(vals) / len(vals)) if vals else None
+
+            points.append({
+                "routing_mode": routing_mode,
+                "n_runs": len(mode_runs),
+                "validation_loss": _mean("validation_loss"),
+                "tokens_per_sec": _mean("tokens_per_sec"),
+                "effective_token_compute": _mean("effective_token_compute"),
+                "routing_stability": _mean("routing_stability"),
+            })
+
+        return {
+            "available": len(points) > 0,
+            "seed_set": seeds,
+            "modes_requested": requested_modes,
+            "modes_evaluated": [p["routing_mode"] for p in points],
+            "points": points,
+            "raw_runs": raw_runs,
+            "benchmark_config": {
+                "stage1_steps": int(bench_config.stage1_steps),
+                "stage1_batch_size": int(bench_config.stage1_batch_size),
+                "max_seq_len": int(bench_config.max_seq_len),
+                "data_mode": str(bench_config.data_mode),
+            },
+        }
 
     # ── Background Threads ──
 
@@ -370,8 +732,8 @@ class ExperimentRunner:
                         experiment_id=exp_id,
                         metadata={"validated": validation.get("validated", False)},
                     ))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Hypothesis validation logging failed: %s", e)
 
             nb.complete_experiment(
                 experiment_id=exp_id,
@@ -442,6 +804,11 @@ class ExperimentRunner:
                 return f"Cost limit reached (${cost:.2f} / ${config.max_cost_dollars:.2f})"
         return None
 
+    def _is_control_experiment(self, config: RunConfig, n_experiments: int) -> bool:
+        """Whether this continuous synthesis run should be a control experiment."""
+        interval = int(getattr(config, "control_experiment_interval", 0) or 0)
+        return interval > 0 and n_experiments > 0 and (n_experiments % interval == 0)
+
     def _ensure_campaign(self, config: RunConfig, nb: LabNotebook) -> Optional[str]:
         """Ensure an active campaign exists. Create one if needed."""
         if not config.enable_campaigns:
@@ -467,10 +834,15 @@ class ExperimentRunner:
             previous_campaigns=previous,
         )
         camp_data = self.aria.formulate_campaign(context=context)
+        post_hoc_note = (
+            "\n\n[POST-HOC] Success criteria were formulated after reviewing "
+            "recent experiment outcomes; treat claims as exploratory until "
+            "prospective criteria are pre-registered."
+        )
         campaign_id = nb.create_campaign(
             title=camp_data["title"],
             objective=camp_data["objective"],
-            success_criteria=camp_data["success_criteria"],
+            success_criteria=f"{camp_data['success_criteria']}{post_hoc_note}",
         )
         self._active_campaign_id = campaign_id
         self._emit_event("campaign_created", {
@@ -549,6 +921,26 @@ class ExperimentRunner:
         n_experiments = 0
         t_start = time.time()
         self.aria.reset_cost_tracking()
+
+        # Initialize checkpoint manager
+        ckpt = CheckpointManager(config.checkpoint_dir)
+        resume_id = config.resume_experiment_id
+
+        # Resume from checkpoint if requested
+        if resume_id:
+            ckpt_state = ckpt.load_continuous(resume_id)
+            if ckpt_state:
+                n_experiments = ckpt_state.get("n_experiments", 0)
+                elapsed_prior = ckpt_state.get("elapsed_seconds", 0.0)
+                t_start = time.time() - elapsed_prior
+                logger.info("Resuming continuous session from checkpoint: "
+                            "n_experiments=%d, elapsed=%.0fs",
+                            n_experiments, elapsed_prior)
+                self._emit_event("checkpoint_resumed", {
+                    "experiment_id": resume_id,
+                    "n_experiments": n_experiments,
+                    "elapsed_seconds": elapsed_prior,
+                })
 
         # Clean up stale experiments from previous interrupted runs
         try:
@@ -673,6 +1065,24 @@ class ExperimentRunner:
                 self._progress.estimated_cost = self.aria.total_cost
                 self._progress.total_tokens = self.aria.total_tokens
 
+            # Save checkpoint after every checkpoint_interval experiments
+            if (config.checkpoint_interval > 0
+                    and n_experiments % config.checkpoint_interval == 0):
+                try:
+                    ckpt_exp_id = resume_id or "continuous"
+                    ckpt.save_continuous(
+                        experiment_id=ckpt_exp_id,
+                        config_dict=config.to_dict(),
+                        n_experiments=n_experiments,
+                        elapsed_seconds=time.time() - t_start,
+                        extra_state={
+                            "estimated_cost": self.aria.total_cost,
+                            "total_tokens": self.aria.total_tokens,
+                        },
+                    )
+                except Exception as e:
+                    logger.debug("Checkpoint save failed: %s", e)
+
             if config.rest_between_experiments > 0 and not self._stop_event.is_set():
                 time.sleep(config.rest_between_experiments)
 
@@ -691,6 +1101,14 @@ class ExperimentRunner:
             self._progress.aria_message = (
                 f"Stopped after {n_experiments} experiments ({elapsed_min:.0f}min{cost_str})."
             )
+
+        # Clean up checkpoints on successful completion (unless keep_checkpoints)
+        if not self._stop_event.is_set() and not config.keep_checkpoints:
+            try:
+                ckpt_exp_id = resume_id or "continuous"
+                ckpt.cleanup(ckpt_exp_id)
+            except Exception as e:
+                logger.debug("Checkpoint cleanup failed: %s", e)
 
         # Launch queued auto-scale-up
         self._run_pending_scale_up()
@@ -767,6 +1185,8 @@ class ExperimentRunner:
                                   n_experiments: int, limit_str: str,
                                   mode_reasoning: str):
         """Run a single synthesis experiment within continuous mode."""
+        is_control = self._is_control_experiment(config, n_experiments)
+
         # Build context so Aria's hypothesis is informed by recent results
         recent = nb.get_recent_experiments(5)
         leaderboard = nb.get_leaderboard(limit=20)
@@ -834,11 +1254,23 @@ class ExperimentRunner:
         if structured_hyp is None:
             hypothesis = self.aria.formulate_hypothesis(context=context)
 
+        exp_config = config.to_dict()
+        if is_control:
+            exp_config["control_experiment"] = True
+            exp_config["use_learned_grammar_weights"] = False
+
         exp_id = nb.start_experiment(
             experiment_type="synthesis",
-            config=config.to_dict(),
+            config=exp_config,
             hypothesis=hypothesis,
         )
+
+        if is_control:
+            nb.log_learning_event(
+                "grammar_control_experiment",
+                f"Experiment {exp_id} is a control run using default grammar weights",
+                evidence=f"interval={config.control_experiment_interval}, experiment_number={n_experiments}",
+            )
 
         # Link experiment to campaign
         if config.enable_campaigns and self._active_campaign_id:
@@ -848,8 +1280,8 @@ class ExperimentRunner:
                     (self._active_campaign_id, exp_id),
                 )
                 nb.conn.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Campaign linking failed for %s: %s", exp_id, e)
 
         # Link hypothesis to experiment
         if hypothesis_id:
@@ -860,8 +1292,8 @@ class ExperimentRunner:
                     (exp_id, hypothesis_id),
                 )
                 nb.conn.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Hypothesis linking failed for %s: %s", exp_id, e)
 
         with self._lock:
             self._progress = LiveProgress(
@@ -878,12 +1310,18 @@ class ExperimentRunner:
             "experiment_number": n_experiments,
             "hypothesis": hypothesis,
             "mode": "synthesis",
+            "is_control_experiment": is_control,
         })
 
         # Diversify grammar config based on experiment number
         synth_config = self._diversify_grammar_config(config, n_experiments)
 
-        results = self._execute_experiment(exp_id, synth_config, nb)
+        results = self._execute_experiment(
+            exp_id,
+            synth_config,
+            nb,
+            use_learned_grammar=not is_control,
+        )
         context = self._build_rich_context_for_experiment(
             results, config, hypothesis, nb)
         summary = self.aria.experiment_summary(results, context=context)
@@ -936,8 +1374,8 @@ class ExperimentRunner:
                         experiment_id=exp_id,
                         metadata={"validated": validation.get("validated", False)},
                     ))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Hypothesis validation logging failed: %s", e)
 
         nb.complete_experiment(
             experiment_id=exp_id, results=results,
@@ -1046,6 +1484,7 @@ class ExperimentRunner:
                 stage05_passed=ind.fitness > 0,
                 loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
                 novelty_score=ind.novelty,
+                novelty_confidence=0.2,
                 stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
                 model_source="graph_synthesis",
                 **graph_metrics,
@@ -1166,6 +1605,7 @@ class ExperimentRunner:
                 stage05_passed=ind.fitness > 0,
                 loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
                 novelty_score=ind.novelty,
+                novelty_confidence=0.2,
                 stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
                 model_source="graph_synthesis",
                 **graph_metrics,
@@ -1373,7 +1813,13 @@ class ExperimentRunner:
                         "status": f"training with {tp.name}",
                     })
 
-                    tp_result = self._train_with_program(model, tp, inv_config, dev)
+                    tp_result = self._train_with_program(
+                        model,
+                        tp,
+                        inv_config,
+                        dev,
+                        seed=self._stable_seed(exp_id, source_result_id, tp_i, "investigation"),
+                    )
                     tp_results.append({
                         "training_program": tp.name,
                         "passed": tp_result.get("passed", False),
@@ -1447,6 +1893,7 @@ class ExperimentRunner:
                     stage1_passed=n_passed > 0,
                     loss_ratio=best_lr,
                     novelty_score=source.get("novelty_score"),
+                    novelty_confidence=source.get("novelty_confidence"),
                     training_program_json=best_tp_json,
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
@@ -1652,17 +2099,41 @@ class ExperimentRunner:
                                 seed=tp_data.get("seed", seed),
                             )
                             s1_result = self._train_with_program(
-                                model, tp, val_config, dev)
+                                model,
+                                tp,
+                                val_config,
+                                dev,
+                                seed=self._stable_seed(exp_id, source_result_id, seed, "validation_tp"),
+                            )
                         except Exception:
-                            s1_result = self._micro_train(model, val_config, dev)
+                            s1_result = self._micro_train(
+                                model,
+                                val_config,
+                                dev,
+                                seed=self._stable_seed(exp_id, source_result_id, seed, "validation_micro"),
+                            )
                     else:
-                        s1_result = self._micro_train(model, val_config, dev)
+                        s1_result = self._micro_train(
+                            model,
+                            val_config,
+                            dev,
+                            seed=self._stable_seed(exp_id, source_result_id, seed, "validation_micro"),
+                        )
 
                     seed_results.append({
                         "seed": seed,
                         "passed": s1_result.get("passed", False),
                         "loss_ratio": s1_result.get("loss_ratio"),
                         "final_loss": s1_result.get("final_loss"),
+                        "n_train_steps": s1_result.get("n_train_steps"),
+                        "final_lr": s1_result.get("final_lr"),
+                        "training_program_json": s1_result.get("training_program_json"),
+                        "optimizer_class": s1_result.get("optimizer_class"),
+                        "optimizer_lr": s1_result.get("optimizer_lr"),
+                        "optimizer_weight_decay": s1_result.get("optimizer_weight_decay"),
+                        "optimizer_momentum": s1_result.get("optimizer_momentum"),
+                        "optimizer_beta1": s1_result.get("optimizer_beta1"),
+                        "optimizer_beta2": s1_result.get("optimizer_beta2"),
                     })
 
                     del model
@@ -1688,23 +2159,31 @@ class ExperimentRunner:
                 # Baseline comparison at validation scale
                 val_baseline_ratio = None
                 if loss_ratios:
-                    best_final = min(
-                        (r["final_loss"] for r in seed_results
-                         if r.get("final_loss") is not None),
+                    best_seed = min(
+                        (r for r in seed_results if r.get("final_loss") is not None),
+                        key=lambda r: r["final_loss"],
                         default=None,
                     )
-                    if best_final is not None:
+                    if best_seed is not None:
                         try:
                             baseline = self._get_baseline()
+                            baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
+                            baseline_recipe = self._resolve_baseline_recipe(
+                                best_seed, default_lr=config.stage1_lr)
                             val_baseline_ratio = baseline.compare(
-                                best_final,
+                                best_seed["final_loss"],
                                 d_model=config.model_dim,
                                 seq_len=min(128, config.validation_seq_len),
-                                n_steps=config.validation_steps,
+                                n_steps=max(1, baseline_steps),
                                 vocab_size=config.vocab_size,
                                 batch_size=config.validation_batch_size,
-                                lr=config.stage1_lr,
+                                lr=baseline_recipe["lr"],
                                 device=dev_str,
+                                n_layers=config.n_layers,
+                                optimizer_name=baseline_recipe["optimizer_name"],
+                                weight_decay=baseline_recipe["weight_decay"],
+                                momentum=baseline_recipe["momentum"],
+                                betas=baseline_recipe["betas"],
                             )
                         except Exception:
                             pass
@@ -1714,12 +2193,83 @@ class ExperimentRunner:
                 results["stage0_passed"] += 1
                 results["stage05_passed"] += 1
 
-                # Determine if breakthrough
+                # OOD robustness check (#54): test with reference recipes
+                ood_result = None
+                if len(passed_seeds) > 0:
+                    _gjs_ood = graph_json_str
+                    _asjs_ood = arch_spec_json_str
+                    _ms_ood = model_source
+                    _cfg_ood = config
+
+                    def _make_model_ood():
+                        if _ms_ood == "morphological_box" and _asjs_ood:
+                            from ..morphological_box import ArchSpec
+                            from ..arch_builder import build_model, BuildConfig
+                            spec = ArchSpec(**json.loads(_asjs_ood))
+                            bc = BuildConfig(
+                                dim=_cfg_ood.model_dim,
+                                n_layers=_cfg_ood.n_layers,
+                                vocab_size=_cfg_ood.vocab_size,
+                                max_seq_len=_cfg_ood.validation_seq_len)
+                            return build_model(spec, bc)
+                        else:
+                            g = graph_from_json(_gjs_ood)
+                            return compile_model(
+                                [g] * _cfg_ood.n_layers,
+                                vocab_size=_cfg_ood.vocab_size,
+                                max_seq_len=_cfg_ood.validation_seq_len)
+
+                    try:
+                        ood_result = self._ood_robustness_check(
+                            _make_model_ood, config, dev,
+                            n_steps=min(300, config.validation_steps // 3),
+                            seed=self._stable_seed(
+                                exp_id, source_result_id, 0, "ood"),
+                        )
+                        self._emit_event("ood_robustness", {
+                            "experiment_id": exp_id,
+                            "result_id": source_result_id,
+                            "ood_robustness": ood_result.get("ood_robustness"),
+                            "recipes_passed": ood_result.get("recipes_passed"),
+                        })
+                    except Exception as e:
+                        logger.debug("OOD robustness check failed: %s", e)
+
+                # Hyperparameter sensitivity check (#57)
+                sensitivity_result = None
+                if len(passed_seeds) > 0 and val_loss_ratio is not None:
+                    try:
+                        sensitivity_result = self._sensitivity_check(
+                            _make_model_ood, config, dev,
+                            base_loss_ratio=val_loss_ratio,
+                            n_steps=min(300, config.validation_steps // 3),
+                            seed=self._stable_seed(
+                                exp_id, source_result_id, 0, "sensitivity"),
+                        )
+                        self._emit_event("sensitivity_check", {
+                            "experiment_id": exp_id,
+                            "result_id": source_result_id,
+                            "hp_robustness": sensitivity_result.get("hp_robustness"),
+                            "avg_deviation": sensitivity_result.get("avg_deviation"),
+                        })
+                    except Exception as e:
+                        logger.debug("Sensitivity check failed: %s", e)
+
+                # Determine if breakthrough — aligned with Aria publication thresholds
+                ood_ok = (ood_result is not None
+                          and ood_result.get("ood_robustness", 0) >= 0.67)
+                hp_ok = (sensitivity_result is not None
+                         and sensitivity_result.get("hp_robustness", 0) >= 0.75)
+                nov_conf = source.get("novelty_confidence", 0) if source else 0
                 is_breakthrough = (
                     val_baseline_ratio is not None
-                    and val_baseline_ratio < 0.95
-                    and multi_seed_std < 0.05
+                    and val_baseline_ratio < 0.90
+                    and multi_seed_std <= 0.03
+                    and len(passed_seeds) >= 5
                     and len(passed_seeds) == config.validation_n_seeds
+                    and (ood_result is None or ood_ok)
+                    and (sensitivity_result is None or hp_ok)
+                    and nov_conf >= 0.5
                 )
 
                 tier = "breakthrough" if is_breakthrough else "validation"
@@ -1732,6 +2282,9 @@ class ExperimentRunner:
                     "seeds_passed": len(passed_seeds),
                     "total_seeds": config.validation_n_seeds,
                     "is_breakthrough": is_breakthrough,
+                    "novelty_confidence": nov_conf,
+                    "ood_robustness": ood_result,
+                    "sensitivity": sensitivity_result,
                 }
                 results["validation_results"].append(validation_entry)
 
@@ -1764,6 +2317,7 @@ class ExperimentRunner:
                     loss_ratio=val_loss_ratio,
                     baseline_loss_ratio=val_baseline_ratio,
                     novelty_score=source.get("novelty_score"),
+                    novelty_confidence=source.get("novelty_confidence"),
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
                 )
@@ -1944,7 +2498,8 @@ class ExperimentRunner:
         return "survived"
 
     def _execute_experiment(self, exp_id: str, config: RunConfig,
-                            nb: LabNotebook) -> Dict:
+                            nb: LabNotebook,
+                            use_learned_grammar: bool = True) -> Dict:
         """Core experiment logic shared by single and continuous modes."""
         results = {
             "total": 0, "stage0_passed": 0, "stage05_passed": 0,
@@ -1953,14 +2508,14 @@ class ExperimentRunner:
             "survivors": [],
         }
 
-        # Try to get learned grammar weights from analytics
         grammar_weights = None
-        try:
-            from .analytics import ExperimentAnalytics
-            analytics = ExperimentAnalytics(nb)
-            grammar_weights = analytics.compute_grammar_weights()
-        except Exception:
-            pass
+        if use_learned_grammar:
+            try:
+                from .analytics import ExperimentAnalytics
+                analytics = ExperimentAnalytics(nb)
+                grammar_weights = analytics.compute_grammar_weights()
+            except Exception as e:
+                logger.warning("Failed computing learned grammar weights for %s: %s", exp_id, e)
 
         grammar = GrammarConfig(
             model_dim=config.model_dim,
@@ -2024,8 +2579,8 @@ class ExperimentRunner:
                 program_metrics["flops_forward"] = flop_est.flops_forward
                 program_metrics["flops_per_param"] = flop_est.flops_per_param
                 program_metrics["flops_per_token"] = flop_est.flops_per_token
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("FLOP estimate failed for %s: %s", graph.fingerprint()[:10], e)
 
             # Validate
             with self._lock:
@@ -2140,7 +2695,12 @@ class ExperimentRunner:
                 with self._lock:
                     self._progress.current_stage = "stage1"
 
-                s1_result = self._micro_train(model, config, dev)
+                s1_result = self._micro_train(
+                    model,
+                    config,
+                    dev,
+                    seed=self._stable_seed(exp_id, i, "screening"),
+                )
                 s1_passed = s1_result.get("passed", False)
                 loss_ratio = s1_result.get("loss_ratio")
                 final_loss = s1_result.get("final_loss")
@@ -2168,15 +2728,23 @@ class ExperimentRunner:
                     if final_loss is not None:
                         try:
                             baseline = self._get_baseline()
+                            baseline_steps = int(s1_result.get("n_train_steps") or config.stage1_steps)
+                            baseline_recipe = self._resolve_baseline_recipe(
+                                s1_result, default_lr=config.stage1_lr)
                             baseline_ratio = baseline.compare(
                                 final_loss,
                                 d_model=config.model_dim,
                                 seq_len=min(128, config.max_seq_len),
-                                n_steps=config.stage1_steps,
+                                n_steps=max(1, baseline_steps),
                                 vocab_size=config.vocab_size,
                                 batch_size=config.stage1_batch_size,
-                                lr=config.stage1_lr,
+                                lr=baseline_recipe["lr"],
                                 device=dev_str,
+                                n_layers=config.n_layers,
+                                optimizer_name=baseline_recipe["optimizer_name"],
+                                weight_decay=baseline_recipe["weight_decay"],
+                                momentum=baseline_recipe["momentum"],
+                                betas=baseline_recipe["betas"],
                             )
                             program_metrics["baseline_loss_ratio"] = baseline_ratio
                         except Exception:
@@ -2241,6 +2809,7 @@ class ExperimentRunner:
                 structural_novelty=nov.structural_novelty,
                 behavioral_novelty=nov.behavioral_novelty,
                 most_similar_to=nov.most_similar_to,
+                novelty_confidence=nov.novelty_confidence,
                 model_source="graph_synthesis",
                 **program_metrics,
             )
@@ -2279,9 +2848,66 @@ class ExperimentRunner:
 
         return results
 
+    def _resolve_baseline_recipe(
+        self,
+        train_result: Dict[str, Any],
+        default_lr: float,
+        default_weight_decay: float = 0.01,
+    ) -> Dict[str, Any]:
+        """Resolve baseline training recipe from observed candidate metadata."""
+        optimizer_name = "adamw"
+
+        optimizer_class = str(train_result.get("optimizer_class") or "").lower()
+        if "sgd" in optimizer_class:
+            optimizer_name = "sgd"
+
+        lr = float(
+            train_result.get("final_lr")
+            or train_result.get("optimizer_lr")
+            or default_lr
+        )
+        weight_decay = float(
+            train_result.get("optimizer_weight_decay", default_weight_decay)
+        )
+        momentum = float(train_result.get("optimizer_momentum", 0.0))
+
+        beta1 = train_result.get("optimizer_beta1")
+        beta2 = train_result.get("optimizer_beta2")
+        betas: Optional[Tuple[float, float]] = None
+        if beta1 is not None and beta2 is not None:
+            betas = (float(beta1), float(beta2))
+
+        tp_json = train_result.get("training_program_json")
+        if tp_json and not optimizer_class:
+            try:
+                tp = json.loads(tp_json)
+                opt = tp.get("optimizer") or {}
+                opt_name = str(opt.get("name") or "").lower()
+                comps = [str(c).lower() for c in (opt.get("components") or [])]
+                if "sgd" in opt_name or "sgd" in comps:
+                    optimizer_name = "sgd"
+                if "lr" in opt:
+                    lr = float(opt["lr"])
+                if "weight_decay" in opt:
+                    weight_decay = float(opt["weight_decay"])
+            except Exception as e:
+                logger.debug("Failed to parse training_program_json for baseline recipe: %s", e)
+
+        return {
+            "optimizer_name": optimizer_name,
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "momentum": momentum,
+            "betas": betas,
+        }
+
     def _micro_train(self, model: nn.Module, config: RunConfig,
-                     dev: torch.device) -> Dict:
-        """Run Stage 1 micro-training with comprehensive metric capture."""
+                     dev: torch.device, seed: int = 42) -> Dict:
+        """Run Stage 1 micro-training with comprehensive metric capture.
+
+        Uses deterministic seeding per step so all candidates see the same
+        training data in the same order, enabling fair comparison (#56).
+        """
         result: Dict[str, Any] = {"passed": False}
 
         try:
@@ -2289,6 +2915,17 @@ class ExperimentRunner:
             model.train()
             optimizer = torch.optim.AdamW(model.parameters(),
                                           lr=config.stage1_lr, weight_decay=0.01)
+
+            result["optimizer_class"] = optimizer.__class__.__name__.lower()
+            if optimizer.param_groups:
+                pg0 = optimizer.param_groups[0]
+                result["optimizer_lr"] = float(pg0.get("lr", config.stage1_lr))
+                result["optimizer_weight_decay"] = float(pg0.get("weight_decay", 0.01))
+                result["optimizer_momentum"] = float(pg0.get("momentum", 0.0))
+                betas = pg0.get("betas")
+                if isinstance(betas, tuple) and len(betas) == 2:
+                    result["optimizer_beta1"] = float(betas[0])
+                    result["optimizer_beta2"] = float(betas[1])
 
             initial_loss = None
             final_loss = None
@@ -2306,10 +2943,12 @@ class ExperimentRunner:
                 if self._stop_event.is_set():
                     break
 
-                input_ids = torch.randint(
-                    0, config.vocab_size,
-                    (config.stage1_batch_size, seq_len),
-                    device=dev,
+                input_ids = self._sample_training_input_ids(
+                    config=config,
+                    dev=dev,
+                    batch_size=config.stage1_batch_size,
+                    seq_len=seq_len,
+                    seed=seed + step,
                 )
 
                 t_step = time.perf_counter()
@@ -2801,7 +3440,8 @@ class ExperimentRunner:
 
     def _train_with_program(self, model: nn.Module, program,
                             config: RunConfig,
-                            dev: torch.device) -> Dict:
+                            dev: torch.device,
+                            seed: int = 42) -> Dict:
         """Train a model using a synthesized TrainingProgram.
 
         Returns same metrics dict as _micro_train() plus training_program_json.
@@ -2832,6 +3472,17 @@ class ExperimentRunner:
             except Exception:
                 optimizer = torch.optim.AdamW(
                     model.parameters(), lr=3e-4, weight_decay=0.01)
+
+            result["optimizer_class"] = optimizer.__class__.__name__.lower()
+            if optimizer.param_groups:
+                pg0 = optimizer.param_groups[0]
+                result["optimizer_lr"] = float(pg0.get("lr", 3e-4))
+                result["optimizer_weight_decay"] = float(pg0.get("weight_decay", 0.01))
+                result["optimizer_momentum"] = float(pg0.get("momentum", 0.0))
+                betas = pg0.get("betas")
+                if isinstance(betas, tuple) and len(betas) == 2:
+                    result["optimizer_beta1"] = float(betas[0])
+                    result["optimizer_beta2"] = float(betas[1])
 
             n_steps = program.n_steps
             batch_size = program.batch_size
@@ -2868,10 +3519,12 @@ class ExperimentRunner:
                 except Exception:
                     pass
 
-                input_ids = torch.randint(
-                    0, config.vocab_size,
-                    (batch_size, seq_len),
-                    device=dev,
+                input_ids = self._sample_training_input_ids(
+                    config=config,
+                    dev=dev,
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                    seed=seed + step,
                 )
 
                 t_step = time.perf_counter()
@@ -2960,6 +3613,261 @@ class ExperimentRunner:
 
         return result
 
+    # ── OOD Robustness Testing (#54) ──
+
+    # Hand-designed reference training recipes for out-of-distribution testing.
+    # Each recipe exercises a different optimizer/LR/schedule to test whether
+    # a candidate's learnability is robust or just an artifact of one recipe.
+    _REFERENCE_RECIPES = [
+        {
+            "name": "sgd_high_lr",
+            "optimizer": "sgd",
+            "lr": 1e-2,
+            "momentum": 0.9,
+            "weight_decay": 0.0,
+        },
+        {
+            "name": "adamw_low_lr",
+            "optimizer": "adamw",
+            "lr": 1e-4,
+            "weight_decay": 0.1,
+        },
+        {
+            "name": "adamw_high_lr",
+            "optimizer": "adamw",
+            "lr": 1e-3,
+            "weight_decay": 0.01,
+        },
+    ]
+
+    def _ood_robustness_check(
+        self,
+        model_factory: Callable[[], nn.Module],
+        config: RunConfig,
+        dev: torch.device,
+        n_steps: int = 300,
+        seed: int = 42,
+    ) -> Dict[str, Any]:
+        """Test a candidate against hand-designed reference training recipes.
+
+        Returns a dict with per-recipe results and an overall robustness score
+        (fraction of recipes that achieved loss_ratio < 0.9).
+        """
+        recipe_results = []
+
+        for recipe in self._REFERENCE_RECIPES:
+            if self._stop_event.is_set():
+                break
+
+            try:
+                model = model_factory().to(dev)
+                model.train()
+
+                if recipe["optimizer"] == "sgd":
+                    optimizer = torch.optim.SGD(
+                        model.parameters(),
+                        lr=recipe["lr"],
+                        momentum=recipe.get("momentum", 0.0),
+                        weight_decay=recipe.get("weight_decay", 0.0),
+                    )
+                else:  # adamw
+                    optimizer = torch.optim.AdamW(
+                        model.parameters(),
+                        lr=recipe["lr"],
+                        weight_decay=recipe.get("weight_decay", 0.01),
+                    )
+
+                seq_len = min(128, config.max_seq_len)
+                initial_loss = None
+                final_loss = None
+
+                for step in range(n_steps):
+                    if self._stop_event.is_set():
+                        break
+
+                    input_ids = self._sample_training_input_ids(
+                        config=config,
+                        dev=dev,
+                        batch_size=config.stage1_batch_size,
+                        seq_len=seq_len,
+                        seed=seed + step,
+                    )
+
+                    with torch.amp.autocast(
+                        device_type=dev.type, dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
+                        logits = model(input_ids)
+                        loss = F.cross_entropy(
+                            logits[:, :-1].reshape(-1, logits.shape[-1]),
+                            input_ids[:, 1:].reshape(-1),
+                        )
+
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        break
+
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+
+                    loss_val = loss.item()
+                    if step == 0:
+                        initial_loss = loss_val
+                    final_loss = loss_val
+
+                loss_ratio = (final_loss / max(initial_loss, 1e-6)
+                              if initial_loss and final_loss else None)
+                recipe_results.append({
+                    "recipe": recipe["name"],
+                    "loss_ratio": round(loss_ratio, 4) if loss_ratio else None,
+                    "passed": loss_ratio is not None and loss_ratio < 0.9,
+                    "initial_loss": initial_loss,
+                    "final_loss": final_loss,
+                })
+
+                del model
+                if dev.type == "cuda":
+                    torch.cuda.empty_cache()
+
+            except Exception as e:
+                recipe_results.append({
+                    "recipe": recipe["name"],
+                    "loss_ratio": None,
+                    "passed": False,
+                    "error": str(e),
+                })
+
+        n_passed = sum(1 for r in recipe_results if r.get("passed"))
+        return {
+            "recipes_tested": len(recipe_results),
+            "recipes_passed": n_passed,
+            "ood_robustness": n_passed / max(len(recipe_results), 1),
+            "recipe_results": recipe_results,
+        }
+
+    # ── Hyperparameter Sensitivity (#57) ──
+
+    # Perturbations to test: each is (label, param_overrides) where overrides
+    # are multipliers applied to the base config values.
+    _SENSITIVITY_PERTURBATIONS = [
+        ("lr_half", {"lr_mult": 0.5}),
+        ("lr_double", {"lr_mult": 2.0}),
+        ("steps_half", {"steps_mult": 0.5}),
+        ("steps_double", {"steps_mult": 2.0}),
+    ]
+
+    def _sensitivity_check(
+        self,
+        model_factory: Callable[[], nn.Module],
+        config: RunConfig,
+        dev: torch.device,
+        base_loss_ratio: float,
+        n_steps: int = 300,
+        seed: int = 42,
+    ) -> Dict[str, Any]:
+        """Test whether a candidate's performance is sensitive to hyperparameter changes.
+
+        Trains the model with ±2x learning rate and ±2x training steps.
+        Returns per-perturbation loss ratios and an overall sensitivity score.
+        A robust candidate should learn under all perturbations (loss_ratio < 1.0).
+        """
+        perturbation_results = []
+        base_lr = config.stage1_lr
+
+        for label, overrides in self._SENSITIVITY_PERTURBATIONS:
+            if self._stop_event.is_set():
+                break
+
+            lr = base_lr * overrides.get("lr_mult", 1.0)
+            steps = int(n_steps * overrides.get("steps_mult", 1.0))
+
+            try:
+                model = model_factory().to(dev)
+                model.train()
+                optimizer = torch.optim.AdamW(
+                    model.parameters(), lr=lr, weight_decay=0.01)
+
+                seq_len = min(128, config.max_seq_len)
+                initial_loss = None
+                final_loss = None
+
+                for step in range(steps):
+                    if self._stop_event.is_set():
+                        break
+
+                    input_ids = self._sample_training_input_ids(
+                        config=config,
+                        dev=dev,
+                        batch_size=config.stage1_batch_size,
+                        seq_len=seq_len,
+                        seed=seed + step,
+                    )
+
+                    with torch.amp.autocast(
+                        device_type=dev.type, dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
+                        logits = model(input_ids)
+                        loss = F.cross_entropy(
+                            logits[:, :-1].reshape(-1, logits.shape[-1]),
+                            input_ids[:, 1:].reshape(-1),
+                        )
+
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        break
+
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+
+                    loss_val = loss.item()
+                    if step == 0:
+                        initial_loss = loss_val
+                    final_loss = loss_val
+
+                loss_ratio = (final_loss / max(initial_loss, 1e-6)
+                              if initial_loss and final_loss else None)
+
+                # How much did loss_ratio change vs the base run?
+                deviation = (abs(loss_ratio - base_loss_ratio) / max(base_loss_ratio, 1e-6)
+                             if loss_ratio is not None else None)
+
+                perturbation_results.append({
+                    "perturbation": label,
+                    "lr": lr,
+                    "steps": steps,
+                    "loss_ratio": round(loss_ratio, 4) if loss_ratio else None,
+                    "deviation_from_base": round(deviation, 4) if deviation is not None else None,
+                    "still_learns": loss_ratio is not None and loss_ratio < 1.0,
+                })
+
+                del model
+                if dev.type == "cuda":
+                    torch.cuda.empty_cache()
+
+            except Exception as e:
+                perturbation_results.append({
+                    "perturbation": label,
+                    "loss_ratio": None,
+                    "still_learns": False,
+                    "error": str(e),
+                })
+
+        n_learns = sum(1 for r in perturbation_results if r.get("still_learns"))
+        deviations = [r["deviation_from_base"] for r in perturbation_results
+                      if r.get("deviation_from_base") is not None]
+        avg_deviation = sum(deviations) / len(deviations) if deviations else None
+
+        return {
+            "perturbations_tested": len(perturbation_results),
+            "perturbations_learn": n_learns,
+            "hp_robustness": n_learns / max(len(perturbation_results), 1),
+            "avg_deviation": round(avg_deviation, 4) if avg_deviation is not None else None,
+            "perturbation_results": perturbation_results,
+        }
+
     # ── Investigation Phase ──
 
     def start_investigation(self, result_ids: List[str], config: RunConfig,
@@ -3013,6 +3921,15 @@ class ExperimentRunner:
         """Execute investigation phase in background."""
         nb = self._make_notebook()
         t_start = time.time()
+        ckpt = CheckpointManager(config.checkpoint_dir)
+
+        # Load phase checkpoint to find where we left off
+        resume_from_candidate = 0
+        ckpt_state = ckpt.load_phase(exp_id, "investigation", -1, 0)
+        if ckpt_state:
+            resume_from_candidate = ckpt_state.get("candidate_idx", 0)
+            logger.info("Resuming investigation from candidate %d", resume_from_candidate)
+
         try:
             results = {
                 "total": len(result_ids), "stage0_passed": 0, "stage05_passed": 0,
@@ -3029,6 +3946,8 @@ class ExperimentRunner:
             inv_config.stage1_batch_size = config.investigation_batch_size
 
             for prog_idx, source_result_id in enumerate(result_ids):
+                if prog_idx < resume_from_candidate:
+                    continue
                 if self._stop_event.is_set():
                     break
 
@@ -3115,7 +4034,13 @@ class ExperimentRunner:
                     })
 
                     # Train with this program
-                    tp_result = self._train_with_program(model, tp, inv_config, dev)
+                    tp_result = self._train_with_program(
+                        model,
+                        tp,
+                        inv_config,
+                        dev,
+                        seed=self._stable_seed(exp_id, source_result_id, tp_i, "investigation_inline"),
+                    )
                     tp_results.append({
                         "training_program": tp.name,
                         "passed": tp_result.get("passed", False),
@@ -3189,10 +4114,37 @@ class ExperimentRunner:
                     stage1_passed=n_passed > 0,
                     loss_ratio=best_lr,
                     novelty_score=source.get("novelty_score"),
+                    novelty_confidence=source.get("novelty_confidence"),
                     training_program_json=best_tp_json,
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
                 )
+
+                # Save checkpoint after each candidate completes
+                try:
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="investigation",
+                        candidate_idx=prog_idx + 1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"completed_candidate": prog_idx},
+                    )
+                    # Also save a progress marker at index -1 for resume
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="investigation",
+                        candidate_idx=-1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"candidate_idx": prog_idx + 1},
+                    )
+                except Exception as e:
+                    logger.debug("Investigation checkpoint save failed: %s", e)
 
             # Complete experiment
             context = self._build_rich_context_for_experiment(
@@ -3211,6 +4163,13 @@ class ExperimentRunner:
 
             # Auto-escalate to validation
             self._auto_escalate(results, config, nb, phase="investigation")
+
+            # Clean up investigation checkpoints on success
+            if not config.keep_checkpoints:
+                try:
+                    ckpt.cleanup(exp_id)
+                except Exception:
+                    pass
 
             with self._lock:
                 self._progress.status = "completed"
@@ -3290,6 +4249,15 @@ class ExperimentRunner:
         """Execute validation phase in background."""
         nb = self._make_notebook()
         t_start = time.time()
+        ckpt = CheckpointManager(config.checkpoint_dir)
+
+        # Load phase checkpoint to find where we left off
+        resume_from_candidate = 0
+        ckpt_state = ckpt.load_phase(exp_id, "validation", -1, 0)
+        if ckpt_state:
+            resume_from_candidate = ckpt_state.get("candidate_idx", 0)
+            logger.info("Resuming validation from candidate %d", resume_from_candidate)
+
         try:
             results = {
                 "total": len(result_ids), "stage0_passed": 0, "stage05_passed": 0,
@@ -3307,6 +4275,8 @@ class ExperimentRunner:
             val_config.max_seq_len = config.validation_seq_len
 
             for prog_idx, source_result_id in enumerate(result_ids):
+                if prog_idx < resume_from_candidate:
+                    continue
                 if self._stop_event.is_set():
                     break
 
@@ -3402,17 +4372,41 @@ class ExperimentRunner:
                                 seed=tp_data.get("seed", seed),
                             )
                             s1_result = self._train_with_program(
-                                model, tp, val_config, dev)
+                                model,
+                                tp,
+                                val_config,
+                                dev,
+                                seed=self._stable_seed(exp_id, source_result_id, seed, "validation_inline_tp"),
+                            )
                         except Exception:
-                            s1_result = self._micro_train(model, val_config, dev)
+                            s1_result = self._micro_train(
+                                model,
+                                val_config,
+                                dev,
+                                seed=self._stable_seed(exp_id, source_result_id, seed, "validation_inline_micro"),
+                            )
                     else:
-                        s1_result = self._micro_train(model, val_config, dev)
+                        s1_result = self._micro_train(
+                            model,
+                            val_config,
+                            dev,
+                            seed=self._stable_seed(exp_id, source_result_id, seed, "validation_inline_micro"),
+                        )
 
                     seed_results.append({
                         "seed": seed,
                         "passed": s1_result.get("passed", False),
                         "loss_ratio": s1_result.get("loss_ratio"),
                         "final_loss": s1_result.get("final_loss"),
+                        "n_train_steps": s1_result.get("n_train_steps"),
+                        "final_lr": s1_result.get("final_lr"),
+                        "training_program_json": s1_result.get("training_program_json"),
+                        "optimizer_class": s1_result.get("optimizer_class"),
+                        "optimizer_lr": s1_result.get("optimizer_lr"),
+                        "optimizer_weight_decay": s1_result.get("optimizer_weight_decay"),
+                        "optimizer_momentum": s1_result.get("optimizer_momentum"),
+                        "optimizer_beta1": s1_result.get("optimizer_beta1"),
+                        "optimizer_beta2": s1_result.get("optimizer_beta2"),
                     })
 
                     del model
@@ -3438,23 +4432,31 @@ class ExperimentRunner:
                 # Baseline comparison at validation scale
                 val_baseline_ratio = None
                 if loss_ratios:
-                    best_final = min(
-                        (r["final_loss"] for r in seed_results
-                         if r.get("final_loss") is not None),
+                    best_seed = min(
+                        (r for r in seed_results if r.get("final_loss") is not None),
+                        key=lambda r: r["final_loss"],
                         default=None,
                     )
-                    if best_final is not None:
+                    if best_seed is not None:
                         try:
                             baseline = self._get_baseline()
+                            baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
+                            baseline_recipe = self._resolve_baseline_recipe(
+                                best_seed, default_lr=config.stage1_lr)
                             val_baseline_ratio = baseline.compare(
-                                best_final,
+                                best_seed["final_loss"],
                                 d_model=config.model_dim,
                                 seq_len=min(128, config.validation_seq_len),
-                                n_steps=config.validation_steps,
+                                n_steps=max(1, baseline_steps),
                                 vocab_size=config.vocab_size,
                                 batch_size=config.validation_batch_size,
-                                lr=config.stage1_lr,
+                                lr=baseline_recipe["lr"],
                                 device=dev_str,
+                                n_layers=config.n_layers,
+                                optimizer_name=baseline_recipe["optimizer_name"],
+                                weight_decay=baseline_recipe["weight_decay"],
+                                momentum=baseline_recipe["momentum"],
+                                betas=baseline_recipe["betas"],
                             )
                         except Exception:
                             pass
@@ -3464,12 +4466,71 @@ class ExperimentRunner:
                 results["stage0_passed"] += 1
                 results["stage05_passed"] += 1
 
-                # Determine if breakthrough
+                # OOD robustness check (#54): test with reference recipes
+                ood_result = None
+                if len(passed_seeds) > 0:
+                    _gjs_t = graph_json_str
+                    _asjs_t = arch_spec_json_str
+                    _ms_t = model_source
+                    _cfg_t = config
+
+                    def _make_model_t():
+                        if _ms_t == "morphological_box" and _asjs_t:
+                            from ..morphological_box import ArchSpec
+                            from ..arch_builder import build_model, BuildConfig
+                            spec = ArchSpec(**json.loads(_asjs_t))
+                            bc = BuildConfig(
+                                dim=_cfg_t.model_dim,
+                                n_layers=_cfg_t.n_layers,
+                                vocab_size=_cfg_t.vocab_size,
+                                max_seq_len=_cfg_t.validation_seq_len)
+                            return build_model(spec, bc)
+                        else:
+                            g = graph_from_json(_gjs_t)
+                            return compile_model(
+                                [g] * _cfg_t.n_layers,
+                                vocab_size=_cfg_t.vocab_size,
+                                max_seq_len=_cfg_t.validation_seq_len)
+
+                    try:
+                        ood_result = self._ood_robustness_check(
+                            _make_model_t, config, dev,
+                            n_steps=min(300, config.validation_steps // 3),
+                            seed=self._stable_seed(
+                                exp_id, source_result_id, 0, "ood"),
+                        )
+                    except Exception as e:
+                        logger.debug("OOD robustness check failed: %s", e)
+
+                # Hyperparameter sensitivity check (#57)
+                sensitivity_result = None
+                if len(passed_seeds) > 0 and val_loss_ratio is not None:
+                    try:
+                        sensitivity_result = self._sensitivity_check(
+                            _make_model_t, config, dev,
+                            base_loss_ratio=val_loss_ratio,
+                            n_steps=min(300, config.validation_steps // 3),
+                            seed=self._stable_seed(
+                                exp_id, source_result_id, 0, "sensitivity"),
+                        )
+                    except Exception as e:
+                        logger.debug("Sensitivity check failed: %s", e)
+
+                # Determine if breakthrough — aligned with Aria publication thresholds
+                ood_ok = (ood_result is not None
+                          and ood_result.get("ood_robustness", 0) >= 0.67)
+                hp_ok = (sensitivity_result is not None
+                         and sensitivity_result.get("hp_robustness", 0) >= 0.75)
+                nov_conf = source.get("novelty_confidence", 0) if source else 0
                 is_breakthrough = (
                     val_baseline_ratio is not None
-                    and val_baseline_ratio < 0.95
-                    and multi_seed_std < 0.05
+                    and val_baseline_ratio < 0.90
+                    and multi_seed_std <= 0.03
+                    and len(passed_seeds) >= 5
                     and len(passed_seeds) == config.validation_n_seeds
+                    and (ood_result is None or ood_ok)
+                    and (sensitivity_result is None or hp_ok)
+                    and nov_conf >= 0.5
                 )
 
                 tier = "breakthrough" if is_breakthrough else "validation"
@@ -3482,6 +4543,9 @@ class ExperimentRunner:
                     "seeds_passed": len(passed_seeds),
                     "total_seeds": config.validation_n_seeds,
                     "is_breakthrough": is_breakthrough,
+                    "novelty_confidence": nov_conf,
+                    "ood_robustness": ood_result,
+                    "sensitivity": sensitivity_result,
                 }
                 results["validation_results"].append(validation_entry)
 
@@ -3545,9 +4609,36 @@ class ExperimentRunner:
                     loss_ratio=val_loss_ratio,
                     baseline_loss_ratio=val_baseline_ratio,
                     novelty_score=source.get("novelty_score"),
+                    novelty_confidence=source.get("novelty_confidence"),
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
                 )
+
+                # Save checkpoint after each candidate completes
+                try:
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="validation",
+                        candidate_idx=prog_idx + 1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"completed_candidate": prog_idx},
+                    )
+                    # Also save a progress marker at index -1 for resume
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="validation",
+                        candidate_idx=-1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"candidate_idx": prog_idx + 1},
+                    )
+                except Exception as e:
+                    logger.debug("Validation checkpoint save failed: %s", e)
 
             # Complete experiment
             context = self._build_rich_context_for_experiment(
@@ -3563,6 +4654,13 @@ class ExperimentRunner:
                 insights=self._analyze_results(results, exp_id, nb, context=context),
                 llm_analysis=llm_analysis,
             )
+
+            # Clean up validation checkpoints on success
+            if not config.keep_checkpoints:
+                try:
+                    ckpt.cleanup(exp_id)
+                except Exception:
+                    pass
 
             with self._lock:
                 self._progress.status = "completed"
@@ -3922,7 +5020,12 @@ class ExperimentRunner:
                     return 0.0
 
                 # Micro-train for fitness
-                s1_result = self._micro_train(model, config, dev)
+                s1_result = self._micro_train(
+                    model,
+                    config,
+                    dev,
+                    seed=self._stable_seed("fitness", graph.fingerprint()),
+                )
                 del model
                 if dev.type == "cuda":
                     torch.cuda.empty_cache()
@@ -4032,6 +5135,7 @@ class ExperimentRunner:
                     stage05_passed=ind.fitness > 0,
                     loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
                     novelty_score=ind.novelty,
+                    novelty_confidence=0.2,
                     stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
                     **graph_metrics,
                 )
@@ -4061,8 +5165,8 @@ class ExperimentRunner:
                         experiment_id=exp_id,
                         metadata={"validated": validation.get("validated", False)},
                     ))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Hypothesis validation failed for %s: %s", exp_id, e)
 
             nb.complete_experiment(
                 experiment_id=exp_id,
@@ -4212,6 +5316,7 @@ class ExperimentRunner:
                     stage05_passed=ind.fitness > 0,
                     loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
                     novelty_score=ind.novelty,
+                    novelty_confidence=0.2,
                     stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
                     **graph_metrics,
                 )
@@ -4440,7 +5545,12 @@ class ExperimentRunner:
                 results["stage05_passed"] += 1
 
                 # Run scale-up training
-                s1_result = self._micro_train(model, scale_config, dev)
+                s1_result = self._micro_train(
+                    model,
+                    scale_config,
+                    dev,
+                    seed=self._stable_seed(exp_id, source_result_id, "scale_up"),
+                )
 
                 program_metrics = self._extract_graph_metrics(graph)
                 program_metrics["source_result_id"] = source_result_id
@@ -4467,15 +5577,23 @@ class ExperimentRunner:
                     if final_loss is not None:
                         try:
                             baseline = self._get_baseline()
+                            baseline_steps = int(s1_result.get("n_train_steps") or config.scale_up_steps)
+                            baseline_recipe = self._resolve_baseline_recipe(
+                                s1_result, default_lr=config.stage1_lr)
                             baseline_ratio = baseline.compare(
                                 final_loss,
                                 d_model=config.model_dim,
                                 seq_len=min(128, config.scale_up_seq_len),
-                                n_steps=config.scale_up_steps,
+                                n_steps=max(1, baseline_steps),
                                 vocab_size=config.vocab_size,
                                 batch_size=config.scale_up_batch_size,
-                                lr=config.stage1_lr,
+                                lr=baseline_recipe["lr"],
                                 device=dev_str,
+                                n_layers=config.n_layers,
+                                optimizer_name=baseline_recipe["optimizer_name"],
+                                weight_decay=baseline_recipe["weight_decay"],
+                                momentum=baseline_recipe["momentum"],
+                                betas=baseline_recipe["betas"],
                             )
                             program_metrics["baseline_loss_ratio"] = baseline_ratio
                         except Exception:
@@ -4525,6 +5643,7 @@ class ExperimentRunner:
                     structural_novelty=nov.structural_novelty,
                     behavioral_novelty=nov.behavioral_novelty,
                     most_similar_to=nov.most_similar_to,
+                    novelty_confidence=nov.novelty_confidence,
                     **program_metrics,
                 )
 

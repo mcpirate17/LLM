@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
+import subprocess
 import time
 import uuid
 from datetime import datetime
@@ -90,6 +92,7 @@ CREATE TABLE IF NOT EXISTS program_results (
     structural_novelty REAL,
     behavioral_novelty REAL,
     most_similar_to TEXT,
+    novelty_confidence REAL,
 
     -- Fingerprint
     fingerprint_json TEXT,
@@ -200,6 +203,7 @@ CREATE TABLE IF NOT EXISTS op_success_rates (
     n_stage1_passed INTEGER DEFAULT 0,
     avg_loss_ratio REAL,
     avg_novelty REAL,
+    avg_novelty_confidence REAL,
     last_updated REAL
 );
 
@@ -376,6 +380,19 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "flops_per_param": "REAL",
     "flops_per_token": "REAL",
     "baseline_loss_ratio": "REAL",
+    # Routing telemetry (Track A)
+    "routing_mode": "TEXT",
+    "routing_tokens_total": "INTEGER",
+    "routing_tokens_processed": "INTEGER",
+    "routing_tokens_skipped": "INTEGER",
+    "routing_drop_rate": "REAL",
+    "routing_utilization_entropy": "REAL",
+    "routing_capacity_overflow_count": "INTEGER",
+    "routing_confidence_mean": "REAL",
+    "routing_confidence_std": "REAL",
+    "routing_expert_utilization_json": "TEXT",
+    # Novelty calibration
+    "novelty_confidence": "REAL",
 }
 
 
@@ -392,6 +409,8 @@ class ExperimentEntry:
 
 class LabNotebook:
     """Electronic lab notebook for the AI scientist."""
+
+    _cached_code_version: Optional[str] = None
 
     def __init__(self, db_path: str | Path = "research/lab_notebook.db"):
         self.db_path = Path(db_path)
@@ -460,6 +479,16 @@ class LabNotebook:
             CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON leaderboard(composite_score);
             CREATE INDEX IF NOT EXISTS idx_leaderboard_result ON leaderboard(result_id);
         """)
+        # Migrate op_success_rates: add avg_novelty_confidence if missing
+        osr_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(op_success_rates)").fetchall()
+        }
+        if "avg_novelty_confidence" not in osr_cols:
+            self.conn.execute(
+                "ALTER TABLE op_success_rates ADD COLUMN avg_novelty_confidence REAL"
+            )
+
         # Migrate experiments: add campaign_id if missing
         exp_cols = {
             row[1] for row in
@@ -469,6 +498,34 @@ class LabNotebook:
             self.conn.execute(
                 "ALTER TABLE experiments ADD COLUMN campaign_id TEXT"
             )
+
+    @classmethod
+    def _detect_code_version(cls) -> str:
+        """Detect code version for experiment traceability."""
+        if cls._cached_code_version:
+            return cls._cached_code_version
+
+        env_version = os.environ.get("RESEARCH_CODE_VERSION")
+        if env_version:
+            cls._cached_code_version = env_version
+            return cls._cached_code_version
+
+        repo_root = Path(__file__).resolve().parents[2]
+        try:
+            commit = subprocess.check_output(
+                ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                timeout=1.0,
+                text=True,
+            ).strip()
+            if commit:
+                cls._cached_code_version = commit
+                return cls._cached_code_version
+        except Exception:
+            pass
+
+        cls._cached_code_version = "unknown"
+        return cls._cached_code_version
 
         # Migrate leaderboard: add campaign_id if missing
         lb_cols = {
@@ -516,6 +573,29 @@ class LabNotebook:
         self.conn.commit()
         return len(exp_ids)
 
+    def get_resumable_experiment(self, experiment_id: str) -> Optional[Dict]:
+        """Get experiment data for resume if status is 'running' or 'failed'.
+
+        Returns dict with config_json, experiment_type, hypothesis, started_at,
+        or None if the experiment doesn't exist or isn't resumable.
+        """
+        row = self.conn.execute(
+            "SELECT experiment_id, experiment_type, status, config_json, "
+            "hypothesis, started_at FROM experiments "
+            "WHERE experiment_id = ? AND status IN ('running', 'failed')",
+            (experiment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "experiment_id": row["experiment_id"],
+            "experiment_type": row["experiment_type"],
+            "status": row["status"],
+            "config_json": row["config_json"],
+            "hypothesis": row["hypothesis"],
+            "started_at": row["started_at"],
+        }
+
     # ── Experiments ──
 
     def start_experiment(
@@ -528,6 +608,8 @@ class LabNotebook:
         """Start a new experiment. Returns experiment ID."""
         exp_id = str(uuid.uuid4())[:12]
         now = time.time()
+        config_payload = dict(config)
+        config_payload.setdefault("code_version", self._detect_code_version())
 
         self.conn.execute(
             """INSERT INTO experiments
@@ -535,7 +617,7 @@ class LabNotebook:
              research_question, config_json, started_at)
             VALUES (?, ?, ?, 'running', ?, ?, ?, ?)""",
             (exp_id, now, experiment_type, hypothesis, research_question,
-             json.dumps(config), now),
+             json.dumps(config_payload), now),
         )
         self.conn.commit()
 
@@ -711,13 +793,25 @@ class LabNotebook:
     # ── Op Success Rates ──
 
     def update_op_success_rates(self, experiment_id: str) -> None:
-        """Recompute op success rates from program results in this experiment."""
-        programs = self.get_program_results(experiment_id)
-        op_stats: Dict[str, Dict] = {}
+        """Recompute op success rates from program results in this experiment.
 
-        for p in programs:
-            # Parse graph to get ops used
-            graph_json = p.get("graph_json", "")
+        Uses a targeted query (only needed columns) and avoids dict(r)
+        conversion overhead from get_program_results.
+        """
+        rows = self.conn.execute(
+            """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
+                      loss_ratio, novelty_score, novelty_confidence
+               FROM program_results
+               WHERE experiment_id = ? AND graph_json IS NOT NULL""",
+            (experiment_id,),
+        ).fetchall()
+
+        op_stats: Dict[str, Dict] = {}
+        # Reusable reference to avoid repeated dict key hashing
+        _OP_NAME = "op_name"
+
+        for r in rows:
+            graph_json = r[0]  # access by index — faster than by name
             if not graph_json:
                 continue
             try:
@@ -728,40 +822,55 @@ class LabNotebook:
 
             ops_in_graph = set()
             for node_data in nodes.values():
-                op_name = node_data.get("op_name", "")
+                op_name = node_data.get(_OP_NAME, "")
                 if op_name and op_name != "input":
                     ops_in_graph.add(op_name)
+
+            s0 = r[1]   # stage0_passed
+            s05 = r[2]  # stage05_passed
+            s1 = r[3]   # stage1_passed
+            lr = r[4]   # loss_ratio
+            nov = r[5]  # novelty_score
+            nov_conf = r[6]  # novelty_confidence
 
             for op_name in ops_in_graph:
                 if op_name not in op_stats:
                     op_stats[op_name] = {
                         "n_used": 0, "n_s0": 0, "n_s05": 0, "n_s1": 0,
-                        "loss_ratios": [], "novelties": [],
+                        "lr_sum": 0.0, "lr_n": 0,
+                        "nov_sum": 0.0, "nov_n": 0,
+                        "nov_conf_sum": 0.0, "nov_conf_n": 0,
                     }
                 stats = op_stats[op_name]
                 stats["n_used"] += 1
-                if p.get("stage0_passed"):
+                if s0:
                     stats["n_s0"] += 1
-                if p.get("stage05_passed"):
+                if s05:
                     stats["n_s05"] += 1
-                if p.get("stage1_passed"):
+                if s1:
                     stats["n_s1"] += 1
-                if p.get("loss_ratio") is not None:
-                    stats["loss_ratios"].append(p["loss_ratio"])
-                if p.get("novelty_score") is not None:
-                    stats["novelties"].append(p["novelty_score"])
+                if lr is not None:
+                    stats["lr_sum"] += lr
+                    stats["lr_n"] += 1
+                if nov is not None:
+                    stats["nov_sum"] += nov
+                    stats["nov_n"] += 1
+                if nov_conf is not None:
+                    stats["nov_conf_sum"] += nov_conf
+                    stats["nov_conf_n"] += 1
 
         now = time.time()
         for op_name, stats in op_stats.items():
-            avg_lr = (sum(stats["loss_ratios"]) / len(stats["loss_ratios"])
-                      if stats["loss_ratios"] else None)
-            avg_nov = (sum(stats["novelties"]) / len(stats["novelties"])
-                       if stats["novelties"] else None)
+            avg_lr = stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
+            avg_nov = stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
+            avg_nov_conf = (stats["nov_conf_sum"] / stats["nov_conf_n"]
+                           if stats["nov_conf_n"] else None)
             self.conn.execute(
                 """INSERT INTO op_success_rates
                    (op_name, n_used, n_stage0_passed, n_stage05_passed,
-                    n_stage1_passed, avg_loss_ratio, avg_novelty, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    n_stage1_passed, avg_loss_ratio, avg_novelty,
+                    avg_novelty_confidence, last_updated)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(op_name) DO UPDATE SET
                     n_used = n_used + excluded.n_used,
                     n_stage0_passed = n_stage0_passed + excluded.n_stage0_passed,
@@ -769,9 +878,10 @@ class LabNotebook:
                     n_stage1_passed = n_stage1_passed + excluded.n_stage1_passed,
                     avg_loss_ratio = excluded.avg_loss_ratio,
                     avg_novelty = excluded.avg_novelty,
+                    avg_novelty_confidence = excluded.avg_novelty_confidence,
                     last_updated = excluded.last_updated""",
                 (op_name, stats["n_used"], stats["n_s0"], stats["n_s05"],
-                 stats["n_s1"], avg_lr, avg_nov, now),
+                 stats["n_s1"], avg_lr, avg_nov, avg_nov_conf, now),
             )
         self.conn.commit()
 
@@ -1100,26 +1210,50 @@ class LabNotebook:
         val_baseline: Optional[float] = None,
         val_std: Optional[float] = None,
     ) -> float:
-        """Compute weighted composite score across research phases.
+        """Compute normalized composite score across research phases.
 
-        Screening only: 0.6 * (1 - loss_ratio) + 0.4 * novelty
-        + Investigation: +0.3 * (1 - inv_loss_ratio) + 0.2 * robustness
-        + Validation: +0.5 * (1 - val_baseline_ratio) + 0.3 * (1 / (1 + std))
+        Each tier produces a score in [0, 1], so programs at different
+        stages are comparable without later stages dominating by
+        construction (#49).
+
+        Validation std uses hard threshold: std > 0.5 caps the
+        validation score at 0.3 to strongly penalize instability (#50).
         """
-        score = 0.0
+        # Screening tier: [0, 1]
+        screening_score = 0.0
         if screening_lr is not None:
-            score += 0.6 * max(0, 1 - screening_lr)
+            screening_score += 0.6 * max(0, 1 - screening_lr)
         if screening_nov is not None:
-            score += 0.4 * screening_nov
+            screening_score += 0.4 * screening_nov
+
+        # Investigation tier: [0, 1]
+        inv_score = 0.0
+        has_inv = inv_lr is not None or inv_robust is not None
         if inv_lr is not None:
-            score += 0.3 * max(0, 1 - inv_lr)
+            inv_score += 0.6 * max(0, 1 - inv_lr)
         if inv_robust is not None:
-            score += 0.2 * inv_robust
+            inv_score += 0.4 * inv_robust
+
+        # Validation tier: [0, 1]
+        val_score = 0.0
+        has_val = val_baseline is not None
         if val_baseline is not None:
-            score += 0.5 * max(0, 1 - val_baseline)
+            val_score += 0.6 * max(0, 1 - val_baseline)
         if val_std is not None:
-            score += 0.3 * (1 / (1 + val_std))
-        return score
+            # Hard threshold: high variability strongly penalized
+            if val_std > 0.5:
+                val_score = min(val_score, 0.3)
+            else:
+                val_score += 0.4 * (1 / (1 + val_std))
+
+        # Weighted combination — later tiers matter more but are
+        # normalized so a screening-only program isn't artificially low
+        if has_val:
+            return 0.2 * screening_score + 0.3 * inv_score + 0.5 * val_score
+        elif has_inv:
+            return 0.4 * screening_score + 0.6 * inv_score
+        else:
+            return screening_score
 
     def upsert_leaderboard(
         self,

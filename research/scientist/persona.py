@@ -29,7 +29,9 @@ LLM Integration:
 from __future__ import annotations
 
 import logging
+import math
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -60,6 +62,12 @@ class Aria:
     CURIOSITY = 0.9
     RISK_TOLERANCE = 0.7
     METHODICALNESS = 0.85
+
+    PUBLICATION_MIN_SEEDS = 5
+    PUBLICATION_MAX_MULTI_SEED_STD = 0.03
+    PUBLICATION_MAX_BASELINE_RATIO = 0.90
+    PUBLICATION_MIN_OOD_ROBUSTNESS = 0.67
+    PUBLICATION_MIN_HP_ROBUSTNESS = 0.75
 
     GREETINGS = [
         "Lab's open! Let's see what the universe of computation has for us today.",
@@ -106,6 +114,7 @@ class Aria:
         # Cost tracking
         self._total_tokens = 0
         self._total_cost = 0.0  # estimated USD
+        self._unknown_cost_backends_warned = set()
 
     def _get_llm(self):
         """Lazy-init LLM backend (only try once)."""
@@ -135,7 +144,15 @@ class Aria:
         if resp and resp.tokens_used:
             self._total_tokens += resp.tokens_used
             backend_name = getattr(self._llm, "name", "")
-            rate = self._COST_PER_TOKEN.get(backend_name, 0.000003)
+            rate = self._COST_PER_TOKEN.get(backend_name)
+            if rate is None:
+                rate = self._COST_PER_TOKEN["anthropic"]
+                if backend_name and backend_name not in self._unknown_cost_backends_warned:
+                    logger.warning(
+                        "Unknown LLM backend '%s' for cost estimation; using anthropic default rate.",
+                        backend_name,
+                    )
+                    self._unknown_cost_backends_warned.add(backend_name)
             self._total_cost += resp.tokens_used * rate
 
     @property
@@ -593,8 +610,8 @@ class Aria:
                     context_parts.append(
                         f"Total experiments: {summary.get('total_experiments', 0)}\n"
                         f"Total programs evaluated: {summary.get('total_programs_evaluated', 0)}\n"
-                        f"Stage 1 survivors: {summary.get('total_s1_passed', 0)}\n"
-                        f"Novel discoveries: {summary.get('total_novel', 0)}"
+                        f"Stage 1 survivors: {summary.get('stage1_survivors', 0)}\n"
+                        f"S1 survival rate: {summary.get('survival_rate', 0):.1%}"
                     )
                 top = report_data.get("top_programs", [])
                 if top:
@@ -712,16 +729,18 @@ class Aria:
         if top:
             sections.append("## Top 10 Programs (by loss ratio)")
             sections.append("")
-            sections.append("| Fingerprint | Loss Ratio | Novelty | Experiment |")
-            sections.append("|------------|------------|---------|------------|")
+            sections.append("| Fingerprint | Loss Ratio | Novelty | Confidence | Experiment |")
+            sections.append("|------------|------------|---------|------------|------------|")
             for prog in top[:10]:
                 fp = (prog.get("graph_fingerprint") or "?")[:12]
                 lr = prog.get("loss_ratio")
                 lr_str = f"{lr:.4f}" if lr is not None else "?"
                 nov = prog.get("novelty_score")
                 nov_str = f"{nov:.3f}" if nov is not None else "—"
+                nc = prog.get("novelty_confidence")
+                nc_str = f"{nc:.2f}" if nc is not None else "—"
                 exp_id = (prog.get("experiment_id") or "?")[:8]
-                sections.append(f"| {fp} | {lr_str} | {nov_str} | {exp_id} |")
+                sections.append(f"| {fp} | {lr_str} | {nov_str} | {nc_str} | {exp_id} |")
             sections.append("")
 
         # Op success rates
@@ -743,9 +762,42 @@ class Aria:
                 sections.append(f"| {op_name} | {n} | {s0:.0f} | {s05:.0f} | {s1:.0f} | {nov_str} |")
             sections.append("")
 
+        # Control experiment comparison (#41)
+        gw_data = report_data.get("grammar_weights", {})
+        control_cmp = gw_data.get("control_comparison") if isinstance(gw_data, dict) else None
+        if control_cmp:
+            sections.append("## Control Experiment Analysis")
+            sections.append("")
+            ctrl = control_cmp["control"]
+            lrn = control_cmp["learned"]
+            sections.append(f"| Group | Experiments | Programs | S1 Passed | S1 Rate |")
+            sections.append(f"|-------|-----------|----------|-----------|---------|")
+            sections.append(
+                f"| Control (default weights) | {ctrl['experiments']} | "
+                f"{ctrl['programs']} | {ctrl['s1_passed']} | "
+                f"{ctrl['s1_rate']:.1%} |")
+            sections.append(
+                f"| Learned weights | {lrn['experiments']} | "
+                f"{lrn['programs']} | {lrn['s1_passed']} | "
+                f"{lrn['s1_rate']:.1%} |")
+            sections.append("")
+            sections.append(
+                f"**Difference**: {control_cmp['s1_rate_difference']:+.1%} "
+                f"(z={control_cmp['z_score']:.2f}, "
+                f"{'significant' if control_cmp['significant_at_p05'] else 'not significant'} "
+                f"at p<0.05)")
+            sections.append("")
+            sections.append(f"**Interpretation**: {control_cmp['interpretation']}")
+            sections.append("")
+
         # Grammar weight evolution
-        grammar_weights = report_data.get("grammar_weights", {})
-        default_weights = report_data.get("default_weights", {})
+        gw_raw = report_data.get("grammar_weights", {})
+        if isinstance(gw_raw, dict) and "learned" in gw_raw:
+            grammar_weights = gw_raw.get("learned") or {}
+            default_weights = gw_raw.get("default") or {}
+        else:
+            grammar_weights = gw_raw or {}
+            default_weights = report_data.get("default_weights", {})
         if grammar_weights:
             sections.append("## Grammar Weights (learned vs default)")
             sections.append("")
@@ -825,7 +877,108 @@ class Aria:
             "at 10x scale with multi-seed evaluation."
         )
 
-    def announce_breakthrough(self, context: str = "") -> str:
+    def _extract_breakthrough_metrics_from_context(self, context: str) -> Dict[str, float]:
+        """Best-effort parse of validation metrics from free-form context text."""
+        parsed: Dict[str, float] = {}
+        if not context:
+            return parsed
+
+        patterns = {
+            "seeds_passed": [r"seeds?_passed\s*[:=]\s*(\d+)", r"seeds\s*[:=]\s*(\d+)\s*/\s*\d+"],
+            "total_seeds": [r"total_seeds\s*[:=]\s*(\d+)", r"seeds\s*[:=]\s*\d+\s*/\s*(\d+)"],
+            "val_baseline_ratio": [r"val_baseline_ratio\s*[:=]\s*([0-9]*\.?[0-9]+)", r"baseline[^\n]*ratio\s*[:=]\s*([0-9]*\.?[0-9]+)"],
+            "multi_seed_std": [r"multi_seed_std\s*[:=]\s*([0-9]*\.?[0-9]+)", r"multi[- ]seed[^\n]*std\s*[:=]\s*([0-9]*\.?[0-9]+)"],
+            "ood_robustness": [r"ood_robustness\s*[:=]\s*([0-9]*\.?[0-9]+)"],
+            "hp_robustness": [r"hp_robustness\s*[:=]\s*([0-9]*\.?[0-9]+)"],
+        }
+
+        for key, key_patterns in patterns.items():
+            for pattern in key_patterns:
+                m = re.search(pattern, context, re.IGNORECASE)
+                if m:
+                    try:
+                        parsed[key] = float(m.group(1))
+                        break
+                    except ValueError:
+                        continue
+
+        return parsed
+
+    def assess_breakthrough_evidence(
+        self,
+        context: str = "",
+        metrics: Optional[Dict] = None,
+    ) -> Dict:
+        """Assess whether breakthrough evidence is publication-grade.
+
+        Returns: {label, confidence_band, parsed_metrics, reasons}
+        where label is one of: publication_grade, provisional, underspecified.
+        """
+        merged: Dict[str, float] = {}
+        merged.update(self._extract_breakthrough_metrics_from_context(context))
+        if metrics:
+            for key, value in metrics.items():
+                if value is None:
+                    continue
+                try:
+                    merged[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+
+        keys_present = set(merged.keys())
+        required = {"seeds_passed", "total_seeds", "val_baseline_ratio", "multi_seed_std"}
+        if not required.issubset(keys_present):
+            return {
+                "label": "underspecified",
+                "confidence_band": "unknown",
+                "parsed_metrics": merged,
+                "reasons": ["insufficient_replication_metrics"],
+            }
+
+        total_seeds = int(round(merged.get("total_seeds", 0)))
+        seeds_passed = int(round(merged.get("seeds_passed", 0)))
+        baseline_ratio = float(merged.get("val_baseline_ratio", math.inf))
+        multi_seed_std = float(merged.get("multi_seed_std", math.inf))
+        ood = merged.get("ood_robustness")
+        hp = merged.get("hp_robustness")
+
+        reasons: List[str] = []
+        if total_seeds < self.PUBLICATION_MIN_SEEDS:
+            reasons.append("seed_count_below_publication_threshold")
+        if seeds_passed < total_seeds:
+            reasons.append("not_all_seeds_passed")
+        if baseline_ratio >= self.PUBLICATION_MAX_BASELINE_RATIO:
+            reasons.append("baseline_margin_insufficient")
+        if multi_seed_std >= self.PUBLICATION_MAX_MULTI_SEED_STD:
+            reasons.append("multi_seed_variability_too_high")
+        if ood is not None and ood < self.PUBLICATION_MIN_OOD_ROBUSTNESS:
+            reasons.append("ood_robustness_insufficient")
+        if hp is not None and hp < self.PUBLICATION_MIN_HP_ROBUSTNESS:
+            reasons.append("hp_robustness_insufficient")
+
+        if not reasons:
+            if total_seeds >= 8 and multi_seed_std <= 0.02:
+                band = "high"
+            elif total_seeds >= self.PUBLICATION_MIN_SEEDS and multi_seed_std <= 0.03:
+                band = "medium"
+            else:
+                band = "low"
+            return {
+                "label": "publication_grade",
+                "confidence_band": band,
+                "parsed_metrics": merged,
+                "reasons": [],
+            }
+
+        return {
+            "label": "provisional",
+            "confidence_band": "low",
+            "parsed_metrics": merged,
+            "reasons": reasons,
+        }
+
+    def announce_breakthrough(self, context: str = "",
+                              metrics: Optional[Dict] = None) -> str:
         """Generate breakthrough announcement."""
         llm = self._get_llm()
         if llm and context:
@@ -841,14 +994,27 @@ class Aria:
             except Exception as e:
                 logger.warning(f"LLM breakthrough announcement failed: {e}")
 
+        evidence = self.assess_breakthrough_evidence(context=context, metrics=metrics)
         self.state.mood = "triumphant"
         self.state.discoveries_today += 1
+        if evidence["label"] == "publication_grade":
+            return (
+                "BREAKTHROUGH DETECTED (publication-grade)! A candidate passed all "
+                "three phases and met strict replication thresholds: full multi-seed "
+                "pass, tight confidence band, and strong baseline margin. "
+                f"Confidence band: {evidence['confidence_band']}."
+            )
+        if evidence["label"] == "provisional":
+            reasons = ", ".join(evidence.get("reasons", [])[:3]) or "replication criteria unmet"
+            return (
+                "BREAKTHROUGH SIGNAL DETECTED (PROVISIONAL). The candidate is "
+                "promising, but publication-grade replication criteria are not fully met yet "
+                f"({reasons}). Run additional multi-seed and robustness validation before claiming a breakthrough."
+            )
         return (
-            "BREAKTHROUGH DETECTED! A candidate has passed all three phases of "
-            "validation — screening, investigation, and validation. It showed "
-            "robust learning across multiple training programs, maintained "
-            "performance across seeds, and beat the transformer baseline. "
-            "This is a genuine discovery worth deeper study."
+            "BREAKTHROUGH DETECTED. Evidence packet is currently underspecified for a "
+            "publication-grade claim; treat this as a strong internal signal and collect "
+            "explicit multi-seed confidence-band metrics before externalizing the claim."
         )
 
     def recommend_next_mode(self, context: str = "",
@@ -947,6 +1113,18 @@ class Aria:
 
         # No survivors yet -> keep screening
         if total_s1 == 0:
+            if n_experiments >= 10:
+                return {
+                    "mode": "synthesis",
+                    "reasoning": ("No S1 survivors after multiple experiments. "
+                                  "Recommend pivoting hypothesis or pausing "
+                                  "this campaign before spending more budget."),
+                    "confidence": 0.8,
+                    "config": {
+                        "pivot_recommended": True,
+                        "stop_recommended": True,
+                    },
+                }
             return {
                 "mode": "synthesis",
                 "reasoning": "No S1 survivors yet. Continuing broad exploration.",
