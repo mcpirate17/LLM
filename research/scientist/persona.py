@@ -635,50 +635,137 @@ class Aria:
         return self._rule_based_report_narrative(report_data)
 
     def _rule_based_report_narrative(self, report_data: Dict) -> str:
-        """Template-based report narrative when LLM is unavailable."""
+        """Template-based structured markdown report."""
         summary = report_data.get("summary", {})
         total_exp = summary.get("total_experiments", 0)
+        completed_exp = summary.get("completed_experiments", 0)
         total_prog = summary.get("total_programs_evaluated", 0)
-        s1_passed = summary.get("total_s1_passed", 0)
-        novel = summary.get("total_novel", 0)
-
-        s1_rate = s1_passed / max(total_prog, 1) * 100
-
-        lines = [
-            f"Research campaign status: {total_exp} experiments completed, "
-            f"{total_prog} programs evaluated.",
-            f"",
-            f"Stage 1 pass rate: {s1_rate:.1f}% ({s1_passed}/{total_prog}). "
-            f"Novel discoveries: {novel}.",
-        ]
-
+        s1_passed = summary.get("stage1_survivors", 0)
         top = report_data.get("top_programs", [])
-        if top:
-            best = top[0]
-            lines.append(
-                f"Best performer: {best.get('graph_fingerprint', '?')[:12]} "
-                f"with loss_ratio={best.get('loss_ratio', '?')}."
-            )
-        else:
-            lines.append("No Stage 1 survivors yet.")
+        s1_rate = s1_passed / max(total_prog, 1) * 100
+        avg_novelty = summary.get("avg_novelty_score", 0) or 0
+        best_novelty = summary.get("top_novelty_score", 0) or 0
 
-        if s1_rate > 5:
-            lines.append(
-                "The current grammar configuration is producing learnable architectures "
-                "at a healthy rate. Consider focusing on exploitation of top performers."
+        best_lr = top[0].get("loss_ratio", "?") if top else "N/A"
+
+        sections = []
+
+        # Header with key metrics
+        sections.append("# Research Report")
+        sections.append("")
+        sections.append("## Key Metrics")
+        sections.append("")
+        sections.append(f"| Metric | Value |")
+        sections.append(f"|--------|-------|")
+        sections.append(f"| Experiments | {completed_exp}/{total_exp} completed |")
+        sections.append(f"| Programs evaluated | {total_prog} |")
+        sections.append(f"| Stage 1 survivors | {s1_passed} ({s1_rate:.1f}%) |")
+        sections.append(f"| Best loss ratio | {best_lr} |")
+        sections.append(f"| Avg novelty | {avg_novelty:.3f} |")
+        sections.append(f"| Top novelty | {best_novelty:.3f} |")
+        sections.append("")
+
+        # Recommendation
+        sections.append("## Assessment")
+        sections.append("")
+        if s1_rate > 15:
+            sections.append(
+                "The grammar is producing learnable architectures at a strong rate. "
+                "Focus on exploitation of top performers and scale-up validation."
+            )
+        elif s1_rate > 5:
+            sections.append(
+                "Moderate S1 pass rate. Grammar weight learning should be actively "
+                "steering toward productive categories. Consider more experiments."
             )
         elif s1_rate > 0:
-            lines.append(
-                "Some programs are learning, but the pass rate is low. "
-                "Grammar weight adjustments may improve yield."
+            sections.append(
+                "Low S1 pass rate — most generated architectures fail to learn. "
+                "Grammar weight adjustments should help concentrate on productive ops."
             )
         else:
-            lines.append(
-                "No programs have passed Stage 1 yet. The search space may need "
+            sections.append(
+                "No programs have passed Stage 1. The search space may need "
                 "significant restructuring, or more experiments are needed."
             )
+        sections.append("")
 
-        return "\n".join(lines)
+        # Recent experiments breakdown
+        recent = report_data.get("recent_experiments", [])
+        if recent:
+            sections.append("## Recent Experiments")
+            sections.append("")
+            sections.append("| Experiment | Type | Programs | S1 Passed | Best LR | Status |")
+            sections.append("|-----------|------|----------|-----------|---------|--------|")
+            for exp in recent[:15]:
+                exp_id = (exp.get("experiment_id") or "?")[:8]
+                exp_type = exp.get("experiment_type", "?")
+                n_gen = exp.get("n_programs_generated", 0) or 0
+                n_s1 = exp.get("n_stage1_passed", 0) or 0
+                blr = exp.get("best_loss_ratio")
+                blr_str = f"{blr:.4f}" if blr is not None else "—"
+                status = exp.get("status", "?")
+                sections.append(f"| {exp_id} | {exp_type} | {n_gen} | {n_s1} | {blr_str} | {status} |")
+            sections.append("")
+
+        # Top programs table
+        if top:
+            sections.append("## Top 10 Programs (by loss ratio)")
+            sections.append("")
+            sections.append("| Fingerprint | Loss Ratio | Novelty | Experiment |")
+            sections.append("|------------|------------|---------|------------|")
+            for prog in top[:10]:
+                fp = (prog.get("graph_fingerprint") or "?")[:12]
+                lr = prog.get("loss_ratio")
+                lr_str = f"{lr:.4f}" if lr is not None else "?"
+                nov = prog.get("novelty_score")
+                nov_str = f"{nov:.3f}" if nov is not None else "—"
+                exp_id = (prog.get("experiment_id") or "?")[:8]
+                sections.append(f"| {fp} | {lr_str} | {nov_str} | {exp_id} |")
+            sections.append("")
+
+        # Op success rates
+        op_rates = report_data.get("op_success_rates", {})
+        if op_rates:
+            sections.append("## Op Success Rates (top 15 by usage)")
+            sections.append("")
+            sections.append("| Op | Used | S0% | S0.5% | S1% | Avg Novelty |")
+            sections.append("|----|------|-----|-------|-----|-------------|")
+            sorted_ops = sorted(op_rates.items(),
+                                key=lambda x: x[1]["n_used"], reverse=True)
+            for op_name, stats in sorted_ops[:15]:
+                n = stats["n_used"]
+                s0 = stats.get("s0_rate", 0) * 100
+                s05 = stats.get("s05_rate", 0) * 100
+                s1 = stats.get("s1_rate", 0) * 100
+                nov = stats.get("avg_novelty")
+                nov_str = f"{nov:.3f}" if nov else "—"
+                sections.append(f"| {op_name} | {n} | {s0:.0f} | {s05:.0f} | {s1:.0f} | {nov_str} |")
+            sections.append("")
+
+        # Grammar weight evolution
+        grammar_weights = report_data.get("grammar_weights", {})
+        default_weights = report_data.get("default_weights", {})
+        if grammar_weights:
+            sections.append("## Grammar Weights (learned vs default)")
+            sections.append("")
+            sections.append("| Category | Default | Learned | Change |")
+            sections.append("|----------|---------|---------|--------|")
+            all_cats = sorted(set(list(grammar_weights.keys()) +
+                                  list(default_weights.keys())))
+            for cat in all_cats:
+                default = default_weights.get(cat, 1.0)
+                learned = grammar_weights.get(cat)
+                if learned is not None:
+                    delta = learned - default
+                    arrow = "+" if delta > 0 else ""
+                    sections.append(
+                        f"| {cat} | {default:.2f} | {learned:.2f} | {arrow}{delta:.2f} |")
+                else:
+                    sections.append(f"| {cat} | {default:.2f} | — | — |")
+            sections.append("")
+
+        return "\n".join(sections)
 
     def get_status(self) -> Dict:
         """Get Aria's current status for the dashboard."""

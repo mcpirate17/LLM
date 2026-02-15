@@ -9,9 +9,11 @@ and served to the React dashboard via API.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1586,3 +1588,51 @@ class LabNotebook:
                     pass
             results.append(d)
         return results
+
+    # ── Report Markdown Export ──
+
+    def save_report_markdown(self, content: str, reason: str,
+                             summary: Optional[Dict] = None) -> Optional[Path]:
+        """Save a report as a markdown file alongside the database.
+
+        Creates a reports/ directory next to lab_notebook.db and writes
+        the report content as a .md file with a frontmatter-style header.
+
+        Returns the path to the created file, or None on failure.
+        """
+        logger = logging.getLogger(__name__)
+        try:
+            reports_dir = self.db_path.parent / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+
+            now = datetime.now()
+            timestamp_str = now.strftime("%Y-%m-%d_%H-%M")
+            safe_reason = reason.replace(" ", "_").replace("/", "-")[:40]
+            filename = f"report_{timestamp_str}_{safe_reason}.md"
+            filepath = reports_dir / filename
+
+            # Build frontmatter header
+            header_lines = [
+                "---",
+                f"generated: {now.isoformat()}",
+                f"reason: {reason}",
+            ]
+            if summary:
+                header_lines.append(
+                    f"experiments: {summary.get('total_experiments', '?')}")
+                total_prog = summary.get("total_programs_evaluated", 0)
+                s1 = summary.get("stage1_survivors", 0)
+                rate = s1 / max(total_prog, 1) * 100
+                header_lines.append(f"s1_pass_rate: {rate:.1f}%")
+                header_lines.append(f"stage1_survivors: {s1}")
+            header_lines.append("---")
+            header_lines.append("")
+
+            full_content = "\n".join(header_lines) + content
+
+            filepath.write_text(full_content, encoding="utf-8")
+            logger.info(f"Report saved to {filepath}")
+            return filepath
+        except Exception as e:
+            logger.warning(f"Failed to save report markdown: {e}")
+            return None

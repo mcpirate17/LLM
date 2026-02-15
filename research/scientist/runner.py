@@ -2624,6 +2624,8 @@ class ExperimentRunner:
                 "failure_patterns": analytics.failure_patterns(),
                 "top_op_combinations": analytics.top_op_combinations(10),
                 "efficiency_frontier": analytics.efficiency_frontier(),
+                "grammar_weights": analytics.compute_grammar_weights() or {},
+                "default_weights": analytics.get_current_grammar_weights(),
             }
 
             narrative = self.aria.generate_report_narrative(report_data)
@@ -2635,9 +2637,12 @@ class ExperimentRunner:
                 metadata={
                     "trigger": reason,
                     "total_experiments": report_data["summary"].get("total_experiments", 0),
-                    "total_s1_passed": report_data["summary"].get("total_s1_passed", 0),
+                    "stage1_survivors": report_data["summary"].get("stage1_survivors", 0),
                 },
             ))
+
+            # Save as markdown file for human/LLM consumption
+            nb.save_report_markdown(narrative, reason, report_data["summary"])
 
             self._emit_event("auto_report_generated", {
                 "reason": reason,
