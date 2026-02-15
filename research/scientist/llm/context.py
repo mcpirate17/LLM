@@ -145,6 +145,539 @@ def build_failure_context(programs: List[Dict]) -> str:
     return "\n".join(lines)
 
 
+def build_rich_context(
+    results: Dict,
+    config: Optional[Dict] = None,
+    hypothesis: Optional[str] = None,
+    analytics_data: Optional[Dict] = None,
+    history: Optional[List[Dict]] = None,
+    past_hypotheses: Optional[List[Dict]] = None,
+) -> str:
+    """Build comprehensive context including all analytics data.
+
+    Aggregates experiment results, history, op success rates, structural
+    correlations, failure patterns, efficiency frontier, grammar weights,
+    learning log, and past hypothesis outcomes into a single context string.
+    """
+    sections = []
+
+    # Current experiment results
+    sections.append(build_experiment_context(results, config, hypothesis))
+
+    # History
+    if history:
+        sections.append(build_history_context(history))
+
+    # Analytics data
+    if analytics_data:
+        # Op success rates
+        op_rates = analytics_data.get("op_success_rates", {})
+        if op_rates:
+            rated = sorted(op_rates.items(), key=lambda x: -x[1].get("s1_rate", 0))
+            best = rated[:5]
+            worst = rated[-5:] if len(rated) > 5 else []
+            lines = ["Op Success Rates (S1):"]
+            if best:
+                lines.append("  Best:")
+                for op, s in best:
+                    lines.append(f"    {op}: S1={s.get('s1_rate', 0):.0%} "
+                                 f"(n={s.get('n_used', 0)}, "
+                                 f"novelty={s.get('avg_novelty') or 0:.3f})")
+            if worst:
+                lines.append("  Worst:")
+                for op, s in worst:
+                    lines.append(f"    {op}: S1={s.get('s1_rate', 0):.0%} "
+                                 f"(n={s.get('n_used', 0)})")
+            sections.append("\n".join(lines))
+
+        # Structural correlations
+        correlations = analytics_data.get("structural_correlations", {})
+        if correlations:
+            lines = ["Structural Correlations with S1 Success:"]
+            for metric, effect in sorted(correlations.items(),
+                                          key=lambda x: -abs(x[1])):
+                name = metric.replace("graph_", "").replace("_", " ")
+                direction = "+" if effect > 0 else "-"
+                lines.append(f"  {name}: {direction}{abs(effect):.2f}")
+            sections.append("\n".join(lines))
+
+        # Failure patterns
+        failures = analytics_data.get("failure_patterns", {})
+        if failures:
+            lines = ["Failure Patterns (error_type x stage):"]
+            for err_type, info in sorted(failures.items(),
+                                          key=lambda x: -x[1].get("total", 0))[:5]:
+                stages = ", ".join(f"{s}:{c}" for s, c
+                                   in info.get("by_stage", {}).items())
+                lines.append(f"  {err_type}: {info.get('total', 0)} total ({stages})")
+            sections.append("\n".join(lines))
+
+        # Top op combinations
+        combos = analytics_data.get("top_op_combinations", [])
+        if combos:
+            lines = ["Top Op Combinations (S1 survivors):"]
+            for c in combos[:5]:
+                ops = " + ".join(c.get("ops", []))
+                lines.append(f"  {ops}: {c.get('count', 0)}x "
+                             f"(avg novelty {c.get('avg_novelty', 0):.3f})")
+            sections.append("\n".join(lines))
+
+        # Efficiency frontier
+        frontier = analytics_data.get("efficiency_frontier", [])
+        if frontier:
+            lines = [f"Efficiency Frontier: {len(frontier)} Pareto-optimal programs"]
+            best_loss = min((p.get("final_loss") for p in frontier
+                             if p.get("final_loss") is not None), default=None)
+            if best_loss is not None:
+                lines.append(f"  Best loss on frontier: {best_loss:.4f}")
+            most_eff = min((p for p in frontier if p.get("flops_forward")),
+                           key=lambda p: p["flops_forward"], default=None)
+            if most_eff:
+                lines.append(f"  Most efficient: {most_eff.get('flops_forward', 0):.0f} FLOPs, "
+                             f"loss={most_eff.get('final_loss', 0):.4f}")
+            sections.append("\n".join(lines))
+
+        # Grammar weights
+        grammar_weights = analytics_data.get("grammar_weights")
+        default_weights = analytics_data.get("default_weights", {})
+        if grammar_weights and default_weights:
+            lines = ["Grammar Weights (learned vs default):"]
+            for cat in sorted(set(list(grammar_weights.keys()) +
+                                   list(default_weights.keys()))):
+                learned = grammar_weights.get(cat, "—")
+                default = default_weights.get(cat, 1.0)
+                if isinstance(learned, (int, float)):
+                    delta = learned - default
+                    arrow = "^" if delta > 0.1 else ("v" if delta < -0.1 else "=")
+                    lines.append(f"  {cat}: {default:.1f} -> {learned:.1f} [{arrow}]")
+            sections.append("\n".join(lines))
+
+        # Learning log
+        learning_log = analytics_data.get("learning_log", [])
+        if learning_log:
+            lines = [f"Recent Learning Events ({len(learning_log)} most recent):"]
+            for entry in learning_log[:5]:
+                lines.append(f"  [{entry.get('event_type', '?')}] "
+                             f"{entry.get('description', '')[:80]}")
+            sections.append("\n".join(lines))
+
+    # Past hypothesis outcomes
+    if past_hypotheses:
+        lines = ["Past Hypothesis Outcomes:"]
+        for h in past_hypotheses[:5]:
+            status = "CONFIRMED" if h.get("confirmed") else "REFUTED"
+            lines.append(f"  [{status}] {h.get('hypothesis', '?')[:80]}")
+            if h.get("s1_count") is not None:
+                lines.append(f"    S1 passes: {h['s1_count']}, "
+                             f"novelty: {h.get('best_novelty', 0):.3f}")
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def build_investigation_context(candidates: list, leaderboard: list) -> str:
+    """Build context for investigation phase LLM prompts."""
+    sections = []
+
+    sections.append(f"Investigation Phase: {len(candidates)} candidates selected for deep study")
+
+    for i, c in enumerate(candidates[:10]):
+        lines = [f"\nCandidate {i + 1}:"]
+        lines.append(f"  Result ID: {c.get('result_id', '?')[:12]}")
+        lines.append(f"  Source: {c.get('model_source', 'graph_synthesis')}")
+        if c.get("architecture_desc"):
+            lines.append(f"  Architecture: {c['architecture_desc']}")
+        if c.get("loss_ratio") is not None:
+            lines.append(f"  Screening loss ratio: {c['loss_ratio']:.4f}")
+        if c.get("novelty_score") is not None:
+            lines.append(f"  Screening novelty: {c['novelty_score']:.3f}")
+        if c.get("most_similar_to"):
+            lines.append(f"  Most similar to: {c['most_similar_to']}")
+        if c.get("param_count"):
+            lines.append(f"  Parameters: {c['param_count']:,}")
+        sections.append("\n".join(lines))
+
+    if leaderboard:
+        lines = [f"\nLeaderboard context ({len(leaderboard)} total entries):"]
+        tier_counts: dict = {}
+        for entry in leaderboard:
+            t = entry.get("tier", "screening")
+            tier_counts[t] = tier_counts.get(t, 0) + 1
+        for t, count in sorted(tier_counts.items()):
+            lines.append(f"  {t}: {count} entries")
+        best = max(leaderboard, key=lambda x: x.get("composite_score", 0),
+                   default=None)
+        if best:
+            lines.append(f"  Best composite score: {best.get('composite_score', 0):.3f}")
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def build_validation_context(candidates: list,
+                              investigation_results: list) -> str:
+    """Build context for validation phase LLM prompts."""
+    sections = []
+
+    sections.append(f"Validation Phase: {len(candidates)} candidates for final testing")
+
+    for i, c in enumerate(candidates[:5]):
+        lines = [f"\nCandidate {i + 1}:"]
+        lines.append(f"  Result ID: {c.get('result_id', '?')[:12]}")
+        lines.append(f"  Source: {c.get('model_source', 'graph_synthesis')}")
+        if c.get("architecture_desc"):
+            lines.append(f"  Architecture: {c['architecture_desc']}")
+        if c.get("investigation_loss_ratio") is not None:
+            lines.append(f"  Investigation loss ratio: {c['investigation_loss_ratio']:.4f}")
+        if c.get("investigation_robustness") is not None:
+            lines.append(f"  Robustness: {c['investigation_robustness']:.2f}")
+        if c.get("screening_loss_ratio") is not None:
+            lines.append(f"  Screening loss ratio: {c['screening_loss_ratio']:.4f}")
+        if c.get("screening_novelty") is not None:
+            lines.append(f"  Screening novelty: {c['screening_novelty']:.3f}")
+        sections.append("\n".join(lines))
+
+    if investigation_results:
+        lines = ["\nInvestigation phase summary:"]
+        for r in investigation_results[:10]:
+            lines.append(
+                f"  {r.get('result_id', '?')[:12]}: "
+                f"robustness={r.get('robustness', 0):.2f}, "
+                f"best_lr={r.get('best_loss_ratio', 0):.4f}"
+            )
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def build_mode_selection_context(
+    recent_experiments: list,
+    leaderboard: list,
+    analytics_data: Optional[Dict] = None,
+    current_mode: str = "synthesis",
+    n_experiments_in_session: int = 0,
+    cost_spent: float = 0.0,
+    budget: float = 0.0,
+) -> str:
+    """Build context for mode selection decisions."""
+    sections = []
+
+    sections.append(f"Current mode: {current_mode}")
+    sections.append(f"Experiments completed this session: {n_experiments_in_session}")
+
+    if budget > 0:
+        remaining = budget - cost_spent
+        avg_cost = cost_spent / max(n_experiments_in_session, 1)
+        est_remaining = int(remaining / avg_cost) if avg_cost > 0 else "unknown"
+        sections.append(
+            f"Budget: ${cost_spent:.2f} / ${budget:.2f} "
+            f"(${remaining:.2f} remaining, ~{est_remaining} experiments left)"
+        )
+
+    # Recent experiment results
+    if recent_experiments:
+        total_s1 = sum(e.get("n_stage1_passed", 0) for e in recent_experiments)
+        total_programs = sum(e.get("n_programs_generated", 0)
+                            for e in recent_experiments)
+        avg_novelty_scores = [
+            e.get("best_novelty_score", 0) for e in recent_experiments
+            if e.get("best_novelty_score") is not None
+        ]
+        avg_novelty = (sum(avg_novelty_scores) / len(avg_novelty_scores)
+                       if avg_novelty_scores else 0)
+
+        lines = [f"\nRecent experiment history ({len(recent_experiments)} experiments):"]
+        lines.append(f"  Total S1 survivors: {total_s1} / {total_programs} programs")
+        lines.append(f"  Average best novelty: {avg_novelty:.3f}")
+
+        for exp in recent_experiments[:5]:
+            exp_type = exp.get("experiment_type", "synthesis")
+            s1 = exp.get("n_stage1_passed", 0)
+            total = exp.get("n_programs_generated", 0)
+            novelty = exp.get("best_novelty_score")
+            loss = exp.get("best_loss_ratio")
+            line = f"  [{exp_type}] {s1}/{total} S1"
+            if novelty is not None:
+                line += f", novelty={novelty:.3f}"
+            if loss is not None:
+                line += f", loss={loss:.4f}"
+            lines.append(line)
+        sections.append("\n".join(lines))
+
+    # Leaderboard summary
+    if leaderboard:
+        tier_counts: Dict[str, int] = {}
+        tier_best: Dict[str, float] = {}
+        for entry in leaderboard:
+            t = entry.get("tier", "screening")
+            tier_counts[t] = tier_counts.get(t, 0) + 1
+            score = entry.get("composite_score", 0)
+            if score > tier_best.get(t, 0):
+                tier_best[t] = score
+
+        lines = [f"\nLeaderboard summary ({len(leaderboard)} total entries):"]
+        for t in ["screening", "investigation", "validation", "breakthrough"]:
+            if t in tier_counts:
+                lines.append(f"  {t}: {tier_counts[t]} entries "
+                             f"(best score: {tier_best.get(t, 0):.3f})")
+        sections.append("\n".join(lines))
+
+        # Check if investigation/validation candidates exist
+        screening_candidates = [
+            e for e in leaderboard
+            if e.get("tier") == "screening"
+            and e.get("screening_loss_ratio") is not None
+            and e["screening_loss_ratio"] < 0.5
+        ]
+        if screening_candidates:
+            sections.append(
+                f"\nInvestigation-ready candidates: {len(screening_candidates)} "
+                f"(screening loss_ratio < 0.5)")
+
+        investigation_candidates = [
+            e for e in leaderboard
+            if e.get("tier") == "investigation"
+            and e.get("investigation_robustness") is not None
+            and e["investigation_robustness"] >= 0.5
+        ]
+        if investigation_candidates:
+            sections.append(
+                f"Validation-ready candidates: {len(investigation_candidates)} "
+                f"(investigation robustness >= 0.5)")
+
+    # Op success rates summary
+    if analytics_data:
+        op_rates = analytics_data.get("op_success_rates", {})
+        if op_rates:
+            s1_rates = [v.get("s1_rate", 0) for v in op_rates.values()]
+            avg_s1 = sum(s1_rates) / len(s1_rates) if s1_rates else 0
+            sections.append(f"\nAverage op S1 rate: {avg_s1:.1%}")
+
+    return "\n\n".join(sections)
+
+
+def build_hypothesis_context(
+    campaign: Optional[Dict] = None,
+    recent_hypotheses: Optional[List[Dict]] = None,
+    knowledge: Optional[List[Dict]] = None,
+    leaderboard: Optional[List[Dict]] = None,
+    recent_experiments: Optional[List[Dict]] = None,
+) -> str:
+    """Build context for structured hypothesis formulation."""
+    sections = []
+
+    if campaign:
+        sections.append(
+            f"Active Campaign: {campaign.get('title', '?')}\n"
+            f"Objective: {campaign.get('objective', '?')}\n"
+            f"Success Criteria: {campaign.get('success_criteria', '?')}"
+        )
+
+    if recent_experiments:
+        sections.append(build_history_context(recent_experiments, limit=5))
+
+    if recent_hypotheses:
+        lines = ["Recent Hypotheses:"]
+        for h in recent_hypotheses[:5]:
+            status = h.get("status", "pending")
+            lines.append(
+                f"  [{status.upper()}] {h.get('prediction', '?')[:80]}"
+            )
+            if h.get("outcome_summary"):
+                lines.append(f"    -> {h['outcome_summary'][:80]}")
+        sections.append("\n".join(lines))
+
+    if knowledge:
+        lines = ["Knowledge Base (relevant insights):"]
+        for k in knowledge[:10]:
+            lines.append(
+                f"  [{k.get('category', '?')}] {k.get('title', '?')}: "
+                f"{k.get('content', '?')[:80]} "
+                f"(confidence={k.get('confidence', 0):.1f}, "
+                f"validated {k.get('times_validated', 0)}x)"
+            )
+        sections.append("\n".join(lines))
+
+    if leaderboard:
+        tier_counts: Dict[str, int] = {}
+        for entry in leaderboard:
+            t = entry.get("tier", "screening")
+            tier_counts[t] = tier_counts.get(t, 0) + 1
+        lines = ["Leaderboard:"]
+        for t in ["screening", "investigation", "validation", "breakthrough"]:
+            if t in tier_counts:
+                lines.append(f"  {t}: {tier_counts[t]} entries")
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def build_go_no_go_context(
+    candidate: Dict,
+    investigation_results: Optional[List[Dict]] = None,
+    campaign_criteria: str = "",
+) -> str:
+    """Build context for go/no-go decisions."""
+    sections = []
+
+    lines = ["Candidate under review:"]
+    lines.append(f"  Result ID: {candidate.get('result_id', '?')[:12]}")
+    if candidate.get("loss_ratio") is not None:
+        lines.append(f"  Loss ratio: {candidate['loss_ratio']:.4f}")
+    if candidate.get("novelty_score") is not None:
+        lines.append(f"  Novelty: {candidate['novelty_score']:.3f}")
+    if candidate.get("investigation_robustness") is not None:
+        lines.append(f"  Robustness: {candidate['investigation_robustness']:.2f}")
+    if candidate.get("screening_loss_ratio") is not None:
+        lines.append(f"  Screening loss ratio: {candidate['screening_loss_ratio']:.4f}")
+    if candidate.get("architecture_desc"):
+        lines.append(f"  Architecture: {candidate['architecture_desc']}")
+    sections.append("\n".join(lines))
+
+    if investigation_results:
+        lines = ["Investigation results:"]
+        for r in investigation_results[:10]:
+            lines.append(
+                f"  Program {r.get('result_id', '?')[:8]}: "
+                f"loss_ratio={r.get('loss_ratio', '?')}"
+            )
+        sections.append("\n".join(lines))
+
+    if campaign_criteria:
+        sections.append(f"Campaign success criteria: {campaign_criteria}")
+
+    return "\n\n".join(sections)
+
+
+def build_campaign_report_context(
+    campaign: Dict,
+    experiments: List[Dict],
+    hypotheses: List[Dict],
+    decisions: List[Dict],
+    knowledge: List[Dict],
+) -> str:
+    """Build context for campaign report generation."""
+    sections = []
+
+    sections.append(
+        f"Campaign: {campaign.get('title', '?')}\n"
+        f"Objective: {campaign.get('objective', '?')}\n"
+        f"Success Criteria: {campaign.get('success_criteria', '?')}\n"
+        f"Status: {campaign.get('status', '?')}"
+    )
+
+    if experiments:
+        total_s1 = sum(e.get("n_stage1_passed", 0) for e in experiments)
+        total_programs = sum(e.get("n_programs_generated", 0) for e in experiments)
+        lines = [f"\nExperiments ({len(experiments)} total):"]
+        lines.append(f"  Total programs evaluated: {total_programs}")
+        lines.append(f"  Total S1 survivors: {total_s1}")
+        for exp in experiments[:10]:
+            s1 = exp.get("n_stage1_passed", 0)
+            total = exp.get("n_programs_generated", 0)
+            exp_type = exp.get("experiment_type", "?")
+            lines.append(f"  [{exp_type}] {s1}/{total} S1")
+        sections.append("\n".join(lines))
+
+    if hypotheses:
+        lines = [f"\nHypothesis Chain ({len(hypotheses)} total):"]
+        confirmed = sum(1 for h in hypotheses if h.get("status") == "confirmed")
+        refuted = sum(1 for h in hypotheses if h.get("status") == "refuted")
+        lines.append(f"  Confirmed: {confirmed}, Refuted: {refuted}")
+        for h in hypotheses[:10]:
+            lines.append(
+                f"  [{h.get('status', '?').upper()}] {h.get('prediction', '?')[:80]}"
+            )
+        sections.append("\n".join(lines))
+
+    if decisions:
+        lines = [f"\nDecisions ({len(decisions)} total):"]
+        for d in decisions[:10]:
+            lines.append(
+                f"  [{d.get('decision_type', '?').upper()}] "
+                f"{d.get('subject', '?')[:60]}: {d.get('rationale', '')[:80]}"
+            )
+        sections.append("\n".join(lines))
+
+    if knowledge:
+        lines = [f"\nKnowledge Extracted ({len(knowledge)} entries):"]
+        for k in knowledge[:10]:
+            lines.append(
+                f"  [{k.get('category', '?')}] {k.get('title', '?')}: "
+                f"{k.get('content', '?')[:80]}"
+            )
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def build_knowledge_extraction_context(
+    experiment_results: List[Dict],
+    resolved_hypotheses: List[Dict],
+) -> str:
+    """Build context for knowledge extraction."""
+    sections = []
+
+    if experiment_results:
+        lines = [f"Recent Experiment Results ({len(experiment_results)} experiments):"]
+        for exp in experiment_results[:10]:
+            s1 = exp.get("n_stage1_passed", 0)
+            total = exp.get("n_programs_generated", 0)
+            loss = exp.get("best_loss_ratio")
+            exp_type = exp.get("experiment_type", "?")
+            line = f"  [{exp_type}] {s1}/{total} S1"
+            if loss is not None:
+                line += f", best loss_ratio={loss:.4f}"
+            lines.append(line)
+        sections.append("\n".join(lines))
+
+    if resolved_hypotheses:
+        lines = [f"Resolved Hypotheses ({len(resolved_hypotheses)} total):"]
+        for h in resolved_hypotheses[:10]:
+            lines.append(
+                f"  [{h.get('status', '?').upper()}] {h.get('prediction', '?')[:80]}"
+            )
+            if h.get("outcome_summary"):
+                lines.append(f"    Evidence: {h['outcome_summary'][:100]}")
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def build_campaign_formulation_context(
+    recent_experiments: Optional[List[Dict]] = None,
+    knowledge: Optional[List[Dict]] = None,
+    previous_campaigns: Optional[List[Dict]] = None,
+) -> str:
+    """Build context for campaign formulation."""
+    sections = []
+
+    if previous_campaigns:
+        lines = ["Previous Campaigns:"]
+        for c in previous_campaigns[:5]:
+            lines.append(
+                f"  [{c.get('status', '?')}] {c.get('title', '?')}: "
+                f"{c.get('objective', '?')[:80]}"
+            )
+            if c.get("findings_summary"):
+                lines.append(f"    Findings: {c['findings_summary'][:100]}")
+        sections.append("\n".join(lines))
+
+    if recent_experiments:
+        sections.append(build_history_context(recent_experiments, limit=10))
+
+    if knowledge:
+        lines = ["Knowledge Base:"]
+        for k in knowledge[:10]:
+            lines.append(
+                f"  [{k.get('category', '?')}] {k.get('title', '?')}: "
+                f"{k.get('content', '?')[:80]}"
+            )
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
 def _pct(n: int, total: int) -> str:
     if total == 0:
         return "0%"
