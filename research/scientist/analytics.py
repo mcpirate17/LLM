@@ -12,6 +12,8 @@ import json
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
+from ..synthesis.grammar import GrammarConfig
+from ..synthesis.primitives import get_primitive
 from .notebook import LabNotebook
 
 
@@ -42,8 +44,8 @@ class ExperimentAnalytics:
         """Analyze which graph properties correlate with Stage 1 success.
 
         Returns correlation-like scores for graph metrics vs success.
+        Single-pass accumulation for efficiency.
         """
-        # Query programs with structural data
         rows = self.nb.conn.execute("""
             SELECT stage1_passed, graph_n_ops, graph_depth,
                    graph_n_params_estimate, graph_n_unique_ops,
@@ -60,30 +62,43 @@ class ExperimentAnalytics:
                     "graph_n_unique_ops", "graph_uses_math_spaces",
                     "graph_uses_frequency_domain", "graph_has_gradient_path"]
 
-        correlations = {}
-        for metric in metrics:
-            success_vals = []
-            fail_vals = []
-            for r in rows:
-                val = r[metric]
+        # Single-pass: accumulate sums/counts per metric per group
+        acc = {m: {"s_sum": 0.0, "s_n": 0, "f_sum": 0.0, "f_n": 0,
+                    "all_sum": 0.0, "all_sq": 0.0, "all_n": 0}
+               for m in metrics}
+
+        for r in rows:
+            passed = r["stage1_passed"]
+            for m in metrics:
+                val = r[m]
                 if val is None:
                     continue
-                if r["stage1_passed"]:
-                    success_vals.append(float(val))
+                v = float(val)
+                a = acc[m]
+                a["all_sum"] += v
+                a["all_sq"] += v * v
+                a["all_n"] += 1
+                if passed:
+                    a["s_sum"] += v
+                    a["s_n"] += 1
                 else:
-                    fail_vals.append(float(val))
+                    a["f_sum"] += v
+                    a["f_n"] += 1
 
-            if success_vals and fail_vals:
-                avg_success = sum(success_vals) / len(success_vals)
-                avg_fail = sum(fail_vals) / len(fail_vals)
-                # Simple effect size: difference of means
-                combined = success_vals + fail_vals
-                std = (sum((x - sum(combined) / len(combined)) ** 2
-                           for x in combined) / len(combined)) ** 0.5
-                if std > 0:
-                    correlations[metric] = (avg_success - avg_fail) / std
-                else:
-                    correlations[metric] = 0.0
+        correlations = {}
+        for m in metrics:
+            a = acc[m]
+            if a["s_n"] == 0 or a["f_n"] == 0 or a["all_n"] == 0:
+                continue
+            avg_success = a["s_sum"] / a["s_n"]
+            avg_fail = a["f_sum"] / a["f_n"]
+            mean = a["all_sum"] / a["all_n"]
+            variance = a["all_sq"] / a["all_n"] - mean * mean
+            std = variance ** 0.5 if variance > 0 else 0.0
+            if std > 0:
+                correlations[m] = (avg_success - avg_fail) / std
+            else:
+                correlations[m] = 0.0
 
         return correlations
 
@@ -97,7 +112,6 @@ class ExperimentAnalytics:
             return None
 
         # Group by category
-        from ..synthesis.primitives import get_primitive
         cat_stats: Dict[str, Dict] = defaultdict(lambda: {
             "total": 0, "s1_total": 0, "novelty_sum": 0.0, "count": 0,
         })
@@ -119,7 +133,6 @@ class ExperimentAnalytics:
             return None
 
         # Get default weights to preserve designer intent as base
-        from ..synthesis.grammar import GrammarConfig
         default_weights = GrammarConfig().category_weights
 
         # Compute per-category s1 rates, then compare to mean
@@ -342,5 +355,4 @@ class ExperimentAnalytics:
 
     def get_current_grammar_weights(self) -> Dict[str, float]:
         """Get the default grammar weights for comparison."""
-        from ..synthesis.grammar import GrammarConfig
         return dict(GrammarConfig().category_weights)

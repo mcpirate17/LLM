@@ -114,6 +114,7 @@ class ComputationGraph:
         self._input_node_id: Optional[int] = None
         self._output_node_id: Optional[int] = None
         self.metadata: Dict = {}
+        self._cache: Dict = {}  # lazily computed properties
 
     @property
     def input_node(self) -> Optional[OpNode]:
@@ -141,6 +142,7 @@ class ComputationGraph:
         )
         self.nodes[node_id] = node
         self._input_node_id = node_id
+        self._cache.clear()
         return node_id
 
     def add_op(self, op_name: str, input_ids: List[int],
@@ -173,6 +175,7 @@ class ComputationGraph:
             config=config or {},
         )
         self.nodes[node_id] = node
+        self._cache.clear()
         return node_id
 
     def set_output(self, node_id: int) -> None:
@@ -192,6 +195,7 @@ class ComputationGraph:
             )
         node.is_output = True
         self._output_node_id = node_id
+        self._cache.clear()
 
     def _compute_shape(self, op: PrimitiveOp, input_shapes: List[ShapeInfo],
                        config: Dict) -> ShapeInfo:
@@ -283,7 +287,10 @@ class ComputationGraph:
             raise ValueError(f"Unknown shape rule: {rule}")
 
     def topological_order(self) -> List[int]:
-        """Return node IDs in topological order (inputs first)."""
+        """Return node IDs in topological order (inputs first). Cached."""
+        if "topo" in self._cache:
+            return self._cache["topo"]
+
         visited = set()
         order = []
 
@@ -302,10 +309,13 @@ class ComputationGraph:
             for nid in self.nodes:
                 visit(nid)
 
+        self._cache["topo"] = order
         return order
 
     def depth(self) -> int:
-        """Longest path from input to output."""
+        """Longest path from input to output. Cached."""
+        if "depth" in self._cache:
+            return self._cache["depth"]
         if not self.nodes:
             return 0
         depths: Dict[int, int] = {}
@@ -315,14 +325,22 @@ class ComputationGraph:
                 depths[nid] = 0
             else:
                 depths[nid] = max(depths.get(iid, 0) for iid in node.input_ids) + 1
-        return max(depths.values()) if depths else 0
+        result = max(depths.values()) if depths else 0
+        self._cache["depth"] = result
+        return result
 
     def n_ops(self) -> int:
-        """Number of non-input nodes."""
-        return sum(1 for n in self.nodes.values() if not n.is_input)
+        """Number of non-input nodes. Cached."""
+        if "n_ops" in self._cache:
+            return self._cache["n_ops"]
+        result = sum(1 for n in self.nodes.values() if not n.is_input)
+        self._cache["n_ops"] = result
+        return result
 
     def n_params_estimate(self) -> int:
-        """Estimate total learnable parameters."""
+        """Estimate total learnable parameters. Cached."""
+        if "n_params" in self._cache:
+            return self._cache["n_params"]
         total = 0
         D = self.model_dim
         for node in self.nodes.values():
@@ -335,11 +353,15 @@ class ComputationGraph:
                     total += int(eval(formula))
                 except Exception:
                     total += D * D  # fallback estimate
+        self._cache["n_params"] = total
         return total
 
     def has_gradient_path(self) -> bool:
-        """Check if there's a differentiable path from input to output."""
+        """Check if there's a differentiable path from input to output. Cached."""
+        if "grad_path" in self._cache:
+            return self._cache["grad_path"]
         if self._input_node_id is None or self._output_node_id is None:
+            self._cache["grad_path"] = False
             return False
 
         # BFS backwards from output
@@ -354,16 +376,22 @@ class ComputationGraph:
             for inp_id in node.input_ids:
                 queue.append(inp_id)
 
-        return self._input_node_id in reachable
+        result = self._input_node_id in reachable
+        self._cache["grad_path"] = result
+        return result
 
     def fingerprint(self) -> str:
-        """Structural fingerprint (hash of the graph topology + ops)."""
+        """Structural fingerprint (hash of the graph topology + ops). Cached."""
+        if "fingerprint" in self._cache:
+            return self._cache["fingerprint"]
         desc = []
         for nid in self.topological_order():
             node = self.nodes[nid]
             desc.append(f"{node.op_name}({','.join(map(str, node.input_ids))})")
         key = "|".join(desc)
-        return hashlib.sha256(key.encode()).hexdigest()[:16]
+        result = hashlib.sha256(key.encode()).hexdigest()[:16]
+        self._cache["fingerprint"] = result
+        return result
 
     def to_dict(self) -> dict:
         return {
