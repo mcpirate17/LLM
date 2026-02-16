@@ -749,6 +749,13 @@ Next 2 min: available to add a short README snippet for task usage and expected 
 Tests run/result: initial release task run surfaced schema mismatch in existing `v1` manifest (expected, useful signal); corrected task run generated `v1_release/manifest.json` and completed with `Manifest is valid.`.
 Risk/blocker: release task assumes `artifacts/cka_references/v1/probe_protocol.json` exists as bootstrap source.
 
+### GitHub Copilot — sync 39
+Done: wired remaining dashboard gaps by adding `routing-health` consumption in `LearningPanel` and surfacing CKA provenance (`cka_source`, `cka_artifact_version`) in both `ProgramDetail` and `ResearchReport` discovery rankings.
+Now doing: dashboard/backend contract alignment is complete for current telemetry/provenance fields.
+Next 2 min: available to add lightweight UI labels/tooltips if you want stricter wording around artifact vs fallback semantics.
+Tests run/result: `python -m unittest research.tests.test_integration.TestDashboardConsistency.test_no_orphaned_api_fetch_urls -v` passed after route wiring.
+Risk/blocker: provenance display depends on populated DB fields; older rows without `cka_source`/`cka_artifact_version` show `--`/no badge by design.
+
 ## Frontier LLM Gap Scan — Phase-1 Routing Checklist (Execution-Ready)
 
 ### Glaring misses confirmed in current codebase
@@ -808,3 +815,18 @@ Risk/blocker: release task assumes `artifacts/cka_references/v1/probe_protocol.j
 3. Dashboard displays routing-health summary without duplicate pages/components.
 4. Interrupted run can resume from checkpoint and continue step count monotonically.
 5. Integration tests cover route contract + metrics schema presence.
+
+## GitHub Copilot Observations (2026-02-16)
+
+### Sync 40 — Investigation brittleness guard + escalation safety
+
+57. **Investigation brittleness gating now blocks unstable promotion paths** *(ADDRESSED)*
+    - Added `RunConfig.investigation_max_loss_ratio_multiplier` (default `8.0`) and `_investigation_loss_multiplier(screening, investigation)` in `scientist/runner.py`.
+    - Investigation entries now persist `screening_loss_ratio`, `loss_ratio_multiplier`, and `brittle_risk`.
+    - `investigation_passed` now requires robustness, absolute loss threshold, and `not brittle_risk`.
+    - Auto-validation filtering in `_auto_escalate(..., phase="investigation")` now excludes entries with `brittle_risk=True` or multiplier above threshold.
+
+58. **Regression coverage for brittle exclusion added** *(ADDRESSED)*
+    - Added `TestAutoEscalation.test_auto_escalate_excludes_brittle_candidates` in `tests/test_integration.py`.
+    - Test verifies that strong but brittle candidates are filtered, while stable candidates still queue for validation.
+    - Validation run: `pytest tests/test_integration.py -k "auto_escalate" -x --tb=short` → 5 passed.

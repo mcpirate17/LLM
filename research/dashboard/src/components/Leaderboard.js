@@ -100,6 +100,7 @@ const COLUMNS = [
   { key: '_score', label: 'Score' },
   { key: 'tier', label: 'Tier' },
   { key: 'model_source', label: 'Source' },
+  { key: 'architecture_family', label: 'Family' },
   { key: 'architecture_desc', label: 'Description' },
   { key: 'composite_score', label: 'Composite' },
   { key: 'screening_loss_ratio', label: 'S.Loss' },
@@ -114,21 +115,23 @@ const COLUMNS = [
 function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [activeTier, setActiveTier] = useState('all');
   const [sortKey, setSortKey] = useState('_score');
   const [sortDesc, setSortDesc] = useState(true);
+  const [actionError, setActionError] = useState(null);
 
   const fetchLeaderboard = useCallback(async () => {
     try {
       const params = new URLSearchParams({ sort: 'composite_score', limit: '100' });
       if (activeTier !== 'all') params.set('tier', activeTier);
       const res = await fetch(`${API_BASE}/api/leaderboard?${params}`);
-      if (res.ok) {
-        const json = await res.json();
-        setData(json);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setData(json);
+      setError(null);
     } catch (e) {
-      console.error('Failed to fetch leaderboard:', e);
+      setError('Failed to load leaderboard: ' + e.message);
     }
     setLoading(false);
   }, [activeTier]);
@@ -155,6 +158,7 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
 
   const handleInvestigate = (resultIds) => {
     if (onInvestigate) {
+      setActionError(null);
       onInvestigate(resultIds);
     } else {
       fetch(`${API_BASE}/api/experiments/start`, {
@@ -163,13 +167,17 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
         body: JSON.stringify({ mode: 'investigation', result_ids: resultIds }),
       })
         .then(r => r.ok ? r.json() : Promise.reject(r))
-        .then(() => fetchLeaderboard())
-        .catch(e => alert('Failed to start investigation: ' + e));
+        .then(() => {
+          setActionError(null);
+          fetchLeaderboard();
+        })
+        .catch(e => setActionError('Failed to start investigation: ' + (e?.message || String(e))));
     }
   };
 
   const handleValidate = (resultIds) => {
     if (onValidate) {
+      setActionError(null);
       onValidate(resultIds);
     } else {
       fetch(`${API_BASE}/api/experiments/start`, {
@@ -178,8 +186,11 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
         body: JSON.stringify({ mode: 'validation', result_ids: resultIds }),
       })
         .then(r => r.ok ? r.json() : Promise.reject(r))
-        .then(() => fetchLeaderboard())
-        .catch(e => alert('Failed to start validation: ' + e));
+        .then(() => {
+          setActionError(null);
+          fetchLeaderboard();
+        })
+        .catch(e => setActionError('Failed to start validation: ' + (e?.message || String(e))));
     }
   };
 
@@ -200,7 +211,11 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
       if (sortKey === 'tier') {
         va = TIER_ORDER[a.tier] || 0;
         vb = TIER_ORDER[b.tier] || 0;
-      } else if (sortKey === 'model_source' || sortKey === 'architecture_desc') {
+      } else if (
+        sortKey === 'model_source'
+        || sortKey === 'architecture_desc'
+        || sortKey === 'architecture_family'
+      ) {
         va = a[sortKey] || '';
         vb = b[sortKey] || '';
         return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
@@ -224,6 +239,10 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
           {rawEntries.length} entries
         </span>
       </div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Ranked candidates that survived screening, investigation, or validation. Higher-tier rows have stronger evidence
+        that the architecture is robust, novel, and competitive with transformer baselines.
+      </p>
 
       {/* Tier tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -231,6 +250,7 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
           <button
             key={tier}
             onClick={() => setActiveTier(tier)}
+            aria-label={`Filter leaderboard by ${tier === 'all' ? 'all tiers' : `${TIER_LABELS[tier]} tier`}`}
             style={{
               padding: '4px 12px',
               borderRadius: 4,
@@ -255,18 +275,44 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
         ))}
         <button
           onClick={fetchLeaderboard}
+          aria-label="Refresh leaderboard"
           style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}
         >
           Refresh
         </button>
       </div>
 
+      {error && (
+        <p style={{ color: 'var(--accent-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>
+      )}
+      {actionError && (
+        <p style={{ color: 'var(--accent-red)', fontSize: 13, marginBottom: 8 }}>{actionError}</p>
+      )}
+
       {loading ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading leaderboard...</p>
-      ) : sorted.length === 0 ? (
-        <p style={{ color: 'var(--text-muted)' }}>
-          No leaderboard entries yet. Run experiments to populate the leaderboard.
-        </p>
+      ) : sorted.length === 0 && !error ? (
+        <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
+          {activeTier === 'all' ? (
+            <>
+              <p style={{ margin: 0 }}>
+                No leaderboard entries yet.
+              </p>
+              <p style={{ margin: '6px 0 0' }}>
+                Start a screening experiment from Overview to generate candidates, then return here to review and promote top results.
+              </p>
+            </>
+          ) : (
+            <>
+              <p style={{ margin: 0 }}>
+                No entries in {TIER_LABELS[activeTier]} yet.
+              </p>
+              <p style={{ margin: '6px 0 0' }}>
+                Advance candidates from lower tiers using Investigate/Validate actions to populate this tier.
+              </p>
+            </>
+          )}
+        </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -277,6 +323,9 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
                   <th
                     key={col.key}
                     onClick={() => handleSort(col.key)}
+                    aria-label={col.key === '_actions'
+                      ? 'Actions column'
+                      : `Sort leaderboard by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
                     style={{
                       ...thStyle,
                       cursor: col.key === '_actions' ? 'default' : 'pointer',
@@ -285,7 +334,7 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
                   >
                     {col.label}
                     {sortKey === col.key && (
-                      <span style={{ marginLeft: 4, fontSize: 9 }}>
+                      <span style={{ marginLeft: 4, fontSize: 10 }}>
                         {sortDesc ? '\u25BC' : '\u25B2'}
                       </span>
                     )}
@@ -318,6 +367,7 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
                       {entry.model_source === 'morphological_box' ? 'MORPH' : 'GRAPH'}
                     </span>
                   </td>
+                  <td style={tdStyle}>{entry.architecture_family || '--'}</td>
                   <td style={{ ...tdStyle, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {entry.architecture_desc || entry.result_id?.slice(0, 12)}
                   </td>

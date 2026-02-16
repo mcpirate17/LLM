@@ -27,10 +27,25 @@ function App() {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [tabData, setTabData] = useState({
+    experiments: null,
+    programs: null,
+    entries: null,
+    insights: null,
+  });
+  const [tabErrors, setTabErrors] = useState({
+    experiments: null,
+    programs: null,
+    entries: null,
+    insights: null,
+  });
 
   // Drill-down state
   const [selectedExperiment, setSelectedExperiment] = useState(null);
   const [selectedProgram, setSelectedProgram] = useState(null);
+
+  // Action error state (replaces alert())
+  const [actionError, setActionError] = useState(null);
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -57,6 +72,39 @@ function App() {
     return () => clearInterval(interval);
   }, [autoRefresh, fetchDashboard, refreshInterval]);
 
+  const fetchTabFreshData = useCallback(async (tab) => {
+    const endpoints = {
+      experiments: '/api/experiments',
+      programs: '/api/programs?n=50&sort=novelty_score',
+      entries: '/api/entries?n=50',
+      insights: '/api/insights',
+    };
+    const endpoint = endpoints[tab];
+    if (!endpoint) return;
+
+    try {
+      const res = await fetch(`${API_BASE}${endpoint}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setTabData(prev => ({ ...prev, [tab]: Array.isArray(json) ? json : [] }));
+      setTabErrors(prev => ({ ...prev, [tab]: null }));
+    } catch (err) {
+      setTabErrors(prev => ({ ...prev, [tab]: err.message }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'experiments') {
+      fetchTabFreshData('experiments');
+    } else if (activeTab === 'programs') {
+      fetchTabFreshData('programs');
+    } else if (activeTab === 'notebook') {
+      fetchTabFreshData('entries');
+    } else if (activeTab === 'insights') {
+      fetchTabFreshData('insights');
+    }
+  }, [activeTab, fetchTabFreshData]);
+
   const handleStartExperiment = async (config) => {
     try {
       const res = await fetch(`${API_BASE}/api/experiments/start`, {
@@ -66,13 +114,13 @@ function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        alert(err.error || 'Failed to start experiment');
+        setActionError(err.error || 'Failed to start experiment');
         return;
       }
-      // Refresh immediately to get new state
+      setActionError(null);
       fetchDashboard();
     } catch (err) {
-      alert('Failed to start experiment: ' + err.message);
+      setActionError('Failed to start experiment: ' + err.message);
     }
   };
 
@@ -83,12 +131,13 @@ function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        alert(err.error || 'Failed to stop experiment');
+        setActionError(err.error || 'Failed to stop experiment');
         return;
       }
+      setActionError(null);
       fetchDashboard();
     } catch (err) {
-      alert('Failed to stop: ' + err.message);
+      setActionError('Failed to stop: ' + err.message);
     }
   };
 
@@ -104,6 +153,48 @@ function App() {
 
   const handleSelectProgram = (resultId) => {
     setSelectedProgram(resultId);
+  };
+
+  const handleInvestigate = async (resultIds) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'investigation', result_ids: resultIds }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setActionError(err.error || 'Failed to start investigation');
+        return;
+      }
+      setActionError(null);
+      fetchDashboard();
+    } catch (err) {
+      setActionError('Failed to start investigation: ' + err.message);
+    }
+  };
+
+  const handleValidate = async (resultIds) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'validation', result_ids: resultIds }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setActionError(err.error || 'Failed to start validation');
+        return;
+      }
+      setActionError(null);
+      fetchDashboard();
+    } catch (err) {
+      setActionError('Failed to start validation: ' + err.message);
+    }
+  };
+
+  const handleActionComplete = () => {
+    fetchDashboard();
   };
 
   const ariaMood = data?.aria?.mood || 'curious';
@@ -163,8 +254,23 @@ function App() {
           </div>
         )}
 
+        {actionError && (
+          <div className="error-banner" style={{ cursor: 'pointer' }} onClick={() => setActionError(null)}>
+            {actionError}
+            <span style={{ marginLeft: 12, fontSize: 11, opacity: 0.7 }}>Click to dismiss</span>
+          </div>
+        )}
+
         {activeTab === 'overview' && (
           <div className="overview-grid">
+            <div className="card" style={{ gridColumn: '1 / -1', marginBottom: 0 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                This AI scientist is focused on one job: searching for novel neural network layer designs that learn
+                more efficiently than standard transformers. It does not tune training recipes or datasets — it
+                generates and evaluates architecture candidates.
+              </div>
+            </div>
+
             {/* Left column: Aria + Control Panel */}
             <div className="overview-left">
               <AriaStatus aria={data?.aria} isRunning={data?.is_running} progress={data?.progress} />
@@ -201,10 +307,17 @@ function App() {
         )}
 
         {activeTab === 'experiments' && (
-          <ExperimentList
-            experiments={data?.recent_experiments}
-            onSelectExperiment={handleSelectExperiment}
-          />
+          <>
+            {tabErrors.experiments && (
+              <div className="error-banner" style={{ marginBottom: 12 }}>
+                Fresh experiments fetch failed ({tabErrors.experiments}); showing dashboard snapshot.
+              </div>
+            )}
+            <ExperimentList
+              experiments={tabData.experiments || data?.recent_experiments}
+              onSelectExperiment={handleSelectExperiment}
+            />
+          </>
         )}
 
         {activeTab === 'experiment-detail' && selectedExperiment && (
@@ -216,15 +329,24 @@ function App() {
         )}
 
         {activeTab === 'programs' && (
-          <TopPrograms
-            programs={data?.top_programs}
-            onSelectProgram={handleSelectProgram}
-          />
+          <>
+            {tabErrors.programs && (
+              <div className="error-banner" style={{ marginBottom: 12 }}>
+                Fresh programs fetch failed ({tabErrors.programs}); showing dashboard snapshot.
+              </div>
+            )}
+            <TopPrograms
+              programs={tabData.programs || data?.top_programs}
+              onSelectProgram={handleSelectProgram}
+            />
+          </>
         )}
 
         {activeTab === 'leaderboard' && (
           <Leaderboard
             onSelectProgram={handleSelectProgram}
+            onInvestigate={handleInvestigate}
+            onValidate={handleValidate}
           />
         )}
 
@@ -245,11 +367,25 @@ function App() {
         )}
 
         {activeTab === 'notebook' && (
-          <LabNotebook entries={data?.recent_entries} />
+          <>
+            {tabErrors.entries && (
+              <div className="error-banner" style={{ marginBottom: 12 }}>
+                Fresh notebook fetch failed ({tabErrors.entries}); showing dashboard snapshot.
+              </div>
+            )}
+            <LabNotebook entries={tabData.entries || data?.recent_entries} />
+          </>
         )}
 
         {activeTab === 'insights' && (
-          <InsightsPanel insights={data?.insights} />
+          <>
+            {tabErrors.insights && (
+              <div className="error-banner" style={{ marginBottom: 12 }}>
+                Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
+              </div>
+            )}
+            <InsightsPanel insights={tabData.insights || data?.insights} />
+          </>
         )}
 
         {activeTab === 'report' && (
@@ -266,6 +402,7 @@ function App() {
         <ProgramDetail
           resultId={selectedProgram}
           onClose={() => setSelectedProgram(null)}
+          onActionComplete={handleActionComplete}
         />
       )}
 

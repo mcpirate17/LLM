@@ -38,6 +38,8 @@ function ConfidenceBar({ confidence }) {
 function KnowledgeBase() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [filter, setFilter] = useState(null);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState({});
@@ -46,23 +48,29 @@ function KnowledgeBase() {
     const url = filter
       ? `${API_BASE}/api/knowledge?category=${filter}`
       : `${API_BASE}/api/knowledge`;
+    setError(null);
     fetch(url)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => { setEntries(Array.isArray(d) ? d : []); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch(e => { setError('Failed to load knowledge base: ' + e.message); setLoading(false); });
   }, [filter]);
 
   const doSearch = async () => {
     if (!search.trim()) return;
-    setLoading(true);
+    setSearchLoading(true);
+    setError(null);
     try {
       const r = await fetch(`${API_BASE}/api/knowledge/search?q=${encodeURIComponent(search)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       setEntries(Array.isArray(d) ? d : []);
     } catch (e) {
-      console.error(e);
+      setError('Search failed: ' + e.message);
     }
-    setLoading(false);
+    setSearchLoading(false);
   };
 
   const toggleExpand = (id) => {
@@ -74,12 +82,17 @@ function KnowledgeBase() {
   return (
     <div>
       <h2 style={{ fontSize: 16, marginBottom: 16 }}>Knowledge Base</h2>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Curated lessons extracted from past experiments, such as reliable design principles and common failure
+        patterns. Confidence shows how strongly the existing evidence supports each claim.
+      </p>
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <button
           className={`tab ${filter === null ? 'active' : ''}`}
           onClick={() => setFilter(null)}
+          aria-label="Show all knowledge categories"
           style={{ padding: '4px 12px', fontSize: 12 }}
         >
           All
@@ -89,6 +102,7 @@ function KnowledgeBase() {
             key={cat}
             className={`tab ${filter === cat ? 'active' : ''}`}
             onClick={() => setFilter(cat)}
+            aria-label={`Filter knowledge by ${CATEGORY_LABELS[cat] || cat}`}
             style={{
               padding: '4px 12px', fontSize: 12,
               color: filter === cat ? CATEGORY_COLORS[cat] : undefined,
@@ -105,21 +119,36 @@ function KnowledgeBase() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && doSearch()}
+            aria-label="Search knowledge base"
             style={{ padding: '4px 8px', fontSize: 12, width: 160 }}
           />
-          <button className="refresh-btn" onClick={doSearch} style={{ padding: '4px 8px', fontSize: 12 }}>
-            Search
+          <button className="refresh-btn" onClick={doSearch} aria-label="Run knowledge base search" style={{ padding: '4px 8px', fontSize: 12 }}>
+            {searchLoading ? 'Searching...' : 'Search'}
           </button>
         </div>
       </div>
 
+      {searchLoading && (
+        <p style={{ color: 'var(--text-muted)', marginTop: -6, marginBottom: 10, fontSize: 12 }}>
+          Searching knowledge base...
+        </p>
+      )}
+
       {/* Entries */}
+      {error && (
+        <p style={{ color: 'var(--accent-red)', marginBottom: 8 }}>{error}</p>
+      )}
       {loading ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading...</p>
-      ) : entries.length === 0 ? (
-        <p style={{ color: 'var(--text-muted)' }}>
-          No knowledge entries yet. Knowledge is extracted automatically during continuous experiments.
-        </p>
+      ) : entries.length === 0 && !error ? (
+        <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
+          <p style={{ margin: 0 }}>
+            No knowledge entries found.
+          </p>
+          <p style={{ margin: '6px 0 0' }}>
+            Run continuous experiments to accumulate evidence, or clear filters/search to view all available insights.
+          </p>
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {entries.map(entry => (

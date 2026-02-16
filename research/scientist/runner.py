@@ -153,6 +153,8 @@ class RunConfig:
     auto_investigate_top_n: int = 5
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
+    auto_validate_max_baseline_ratio: float = 0.90
+    auto_validate_min_novelty_confidence: float = 0.50
     auto_validate_top_n: int = 3
     # Checkpoint/resume
     checkpoint_dir: str = "checkpoints"
@@ -817,6 +819,7 @@ class ExperimentRunner:
         nb = self._make_notebook()
         try:
             results = self._execute_experiment(exp_id, config, nb)
+            self._persist_applied_grammar_weights(nb, exp_id, results)
 
             # Build rich context for LLM-enhanced methods
             context = self._build_rich_context_for_experiment(
@@ -1429,6 +1432,8 @@ class ExperimentRunner:
             nb,
             use_learned_grammar=not is_control,
         )
+        self._persist_applied_grammar_weights(nb, exp_id, results)
+
         context = self._build_rich_context_for_experiment(
             results, config, hypothesis, nb)
         summary = self.aria.experiment_summary(results, context=context)
@@ -1511,6 +1516,121 @@ class ExperimentRunner:
         self._emit_event("experiment_completed", {
             "experiment_id": exp_id, "results": results, "mode": "synthesis",
         })
+
+    def _persist_applied_grammar_weights(
+        self,
+        nb: LabNotebook,
+        exp_id: str,
+        results: Dict[str, Any],
+    ) -> None:
+        """Persist applied grammar weights into experiment config_json."""
+        applied = results.get("applied_grammar_weights")
+        if not applied:
+            return
+        try:
+            row = nb.conn.execute(
+                "SELECT config_json FROM experiments WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+            if row is None:
+                return
+            cfg_raw = row["config_json"]
+            stored_config = json.loads(cfg_raw) if cfg_raw else {}
+            stored_config["applied_grammar_weights"] = applied
+            stored_config["grammar_weights"] = applied
+            nb.conn.execute(
+                "UPDATE experiments SET config_json = ? WHERE experiment_id = ?",
+                (json.dumps(stored_config), exp_id),
+            )
+            nb.conn.commit()
+        except Exception as e:
+            logger.debug("Failed persisting grammar weights to config: %s", e)
+
+    @staticmethod
+    def _compute_generated_op_distribution(graphs: List[Any]) -> Dict[str, float]:
+        """Compute normalized op-name distribution across generated graphs."""
+        counts: Dict[str, int] = {}
+        total = 0
+        for graph in graphs:
+            nodes = getattr(graph, "nodes", {}) or {}
+            for node in nodes.values():
+                op_name = getattr(node, "op_name", None)
+                if not op_name or op_name == "input":
+                    continue
+                counts[op_name] = counts.get(op_name, 0) + 1
+                total += 1
+
+        if total <= 0:
+            return {}
+
+        return {
+            op: round(count / total, 6)
+            for op, count in sorted(counts.items())
+        }
+
+    @staticmethod
+    def _distribution_l1_distance(
+        current: Dict[str, float],
+        previous: Dict[str, float],
+    ) -> float:
+        """Compute L1 distance between two sparse distributions."""
+        keys = set(current.keys()) | set(previous.keys())
+        if not keys:
+            return 0.0
+        return float(sum(abs(current.get(k, 0.0) - previous.get(k, 0.0)) for k in keys))
+
+    def _compare_with_previous_synthesis_distribution(
+        self,
+        nb: LabNotebook,
+        exp_id: str,
+        current_distribution: Dict[str, float],
+    ) -> Optional[Dict[str, Any]]:
+        """Compare generated-op distribution against previous synthesis experiment."""
+        if not current_distribution:
+            return None
+
+        try:
+            row = nb.conn.execute(
+                """
+                SELECT experiment_id, results_json
+                FROM experiments
+                WHERE experiment_type = 'synthesis'
+                  AND experiment_id != ?
+                  AND results_json IS NOT NULL
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (exp_id,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            prev_results_raw = row["results_json"]
+            prev_results = json.loads(prev_results_raw) if prev_results_raw else {}
+            previous_distribution = prev_results.get("generated_op_distribution")
+            if not isinstance(previous_distribution, dict) or not previous_distribution:
+                return None
+
+            l1 = self._distribution_l1_distance(current_distribution, previous_distribution)
+            delta_pairs = []
+            for op in set(current_distribution.keys()) | set(previous_distribution.keys()):
+                delta = current_distribution.get(op, 0.0) - previous_distribution.get(op, 0.0)
+                if abs(delta) > 1e-12:
+                    delta_pairs.append((op, delta))
+            delta_pairs.sort(key=lambda item: abs(item[1]), reverse=True)
+            top_changes = [
+                {"op": op, "delta": round(delta, 6)}
+                for op, delta in delta_pairs[:5]
+            ]
+
+            return {
+                "previous_experiment_id": row["experiment_id"],
+                "l1_distance": round(l1, 6),
+                "top_op_deltas": top_changes,
+            }
+        except Exception as e:
+            logger.debug("Failed comparing generated-op distribution for %s: %s", exp_id, e)
+            return None
 
     def _run_continuous_evolution(self, config: RunConfig, nb: LabNotebook,
                                   n_experiments: int, limit_str: str,
@@ -1767,13 +1887,24 @@ class ExperimentRunner:
                                    leaderboard: list, n_experiments: int,
                                    limit_str: str, mode_reasoning: str):
         """Execute investigation phase inline (not threaded) for continuous mode."""
-        # Find screening survivors with good loss ratios
+        # Find screening survivors with good loss ratios, skipping already-investigated archs
+        investigated_fps = nb.get_investigated_fingerprints()
         candidates = [
             e for e in leaderboard
             if e.get("tier") == "screening"
             and e.get("screening_loss_ratio") is not None
             and e["screening_loss_ratio"] < 0.5
         ]
+        if investigated_fps:
+            before = len(candidates)
+            candidates = [
+                c for c in candidates
+                if c.get("graph_fingerprint", c.get("architecture_desc", ""))
+                not in investigated_fps
+            ]
+            skipped = before - len(candidates)
+            if skipped:
+                logger.info("Skipped %d already-investigated candidates", skipped)
         if not candidates:
             logger.info("No investigation candidates, falling back to synthesis")
             self._run_continuous_synthesis(
@@ -1804,6 +1935,7 @@ class ExperimentRunner:
             self._progress = LiveProgress(
                 experiment_id=exp_id,
                 status="investigating",
+                total_programs=len(result_ids),
                 estimated_cost=self.aria.total_cost,
                 total_tokens=self.aria.total_tokens,
                 aria_message=(f"[{limit_str}|investigation] "
@@ -1965,6 +2097,8 @@ class ExperimentRunner:
                     "robustness": robustness,
                     "best_loss_ratio": best_lr,
                     "screening_loss_ratio": screening_lr,
+                    "baseline_loss_ratio": source.get("baseline_loss_ratio"),
+                    "novelty_confidence": source.get("novelty_confidence"),
                     "loss_ratio_multiplier": lr_multiplier,
                     "brittle_risk": brittle_risk,
                     "n_programs_passed": n_passed,
@@ -2087,7 +2221,11 @@ class ExperimentRunner:
             context=val_context)
         exp_id = nb.start_experiment(
             experiment_type="validation",
-            config=config.to_dict(),
+            config=self._validation_config_with_result_ids(
+                config,
+                result_ids,
+                "continuous_auto",
+            ),
             hypothesis=hypothesis,
         )
 
@@ -2095,6 +2233,7 @@ class ExperimentRunner:
             self._progress = LiveProgress(
                 experiment_id=exp_id,
                 status="validating",
+                total_programs=len(result_ids),
                 estimated_cost=self.aria.total_cost,
                 total_tokens=self.aria.total_tokens,
                 aria_message=(f"[{limit_str}|validation] "
@@ -2659,6 +2798,8 @@ class ExperimentRunner:
                 old_weights=old_weights,
                 new_weights=dict(grammar.category_weights),
             )
+            # Persist for observability
+            results["applied_grammar_weights"] = dict(grammar.category_weights)
         else:
             grammar.category_weights["math_space"] = config.math_space_weight
 
@@ -2667,6 +2808,27 @@ class ExperimentRunner:
         # Generate graphs
         graphs = batch_generate(config.n_programs, grammar)
         results["total"] = len(graphs)
+        op_distribution = self._compute_generated_op_distribution(graphs)
+        if op_distribution:
+            results["generated_op_distribution"] = op_distribution
+            shift = self._compare_with_previous_synthesis_distribution(
+                nb,
+                exp_id,
+                op_distribution,
+            )
+            if shift:
+                results["generation_distribution_shift"] = shift
+                nb.log_learning_event(
+                    "architecture_distribution_shift",
+                    f"Generated-op distribution shift recorded for synthesis experiment {exp_id}",
+                    evidence=json.dumps(shift, sort_keys=True),
+                )
+            else:
+                nb.log_learning_event(
+                    "architecture_distribution_snapshot",
+                    f"Captured generated-op distribution for synthesis experiment {exp_id}",
+                    evidence=json.dumps({"op_distribution": op_distribution}, sort_keys=True),
+                )
 
         with self._lock:
             self._progress.total_programs = len(graphs)
@@ -4219,6 +4381,8 @@ class ExperimentRunner:
                     "robustness": robustness,
                     "best_loss_ratio": best_lr,
                     "screening_loss_ratio": screening_lr,
+                    "baseline_loss_ratio": source.get("baseline_loss_ratio"),
+                    "novelty_confidence": source.get("novelty_confidence"),
                     "loss_ratio_multiplier": lr_multiplier,
                     "brittle_risk": brittle_risk,
                     "n_programs_passed": n_passed,
@@ -4356,7 +4520,8 @@ class ExperimentRunner:
     # ── Validation Phase ──
 
     def start_validation(self, result_ids: List[str], config: RunConfig,
-                         hypothesis: Optional[str] = None) -> str:
+                         hypothesis: Optional[str] = None,
+                         trigger: str = "manual") -> str:
         """Start validation phase for investigation survivors."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -4373,7 +4538,7 @@ class ExperimentRunner:
 
         exp_id = nb.start_experiment(
             experiment_type="validation",
-            config=config.to_dict(),
+            config=self._validation_config_with_result_ids(config, result_ids, trigger),
             hypothesis=hypothesis,
         )
         nb.close()
@@ -4712,17 +4877,7 @@ class ExperimentRunner:
                                        or val_loss_ratio < results["best_loss_ratio"]):
                     results["best_loss_ratio"] = val_loss_ratio
 
-                # Update leaderboard
-                nb.promote_to_tier(
-                    entry_id=nb.get_leaderboard()[0]["entry_id"]
-                    if nb.get_leaderboard() else "unknown",
-                    tier=tier,
-                    validation_loss_ratio=val_loss_ratio,
-                    validation_baseline_ratio=val_baseline_ratio,
-                    validation_multi_seed_std=multi_seed_std,
-                    validation_passed=len(passed_seeds) > 0,
-                )
-                # More robust: find the actual entry for this result
+                # Update leaderboard — find the actual entry for this result
                 for entry in nb.get_leaderboard(limit=200):
                     if entry.get("result_id") == source_result_id:
                         nb.promote_to_tier(
@@ -4878,6 +5033,16 @@ class ExperimentRunner:
                 # Fallback for callers that don't set experiment_id in results
                 top = nb.get_top_programs(
                     config.auto_investigate_top_n, sort_by="loss_ratio")
+            # Filter out architectures already investigated
+            investigated_fps = nb.get_investigated_fingerprints()
+            if investigated_fps:
+                before = len(top)
+                top = [p for p in top
+                       if p.get("graph_fingerprint") not in investigated_fps]
+                skipped = before - len(top)
+                if skipped:
+                    logger.info("Auto-escalate: skipped %d already-investigated archs", skipped)
+
             candidate_ids = [
                 p["result_id"] for p in top
                 if p.get("stage1_passed") and p.get("loss_ratio", 1.0) < 0.5
@@ -4996,7 +5161,10 @@ class ExperimentRunner:
                 r for r in inv_results
                 if r.get("robustness", 0) >= config.auto_validate_min_robustness
                 and (r.get("best_loss_ratio") or 1.0) < 0.6
-                and (r.get("baseline_loss_ratio") or r.get("best_loss_ratio", 1.0)) < 0.98
+                and r.get("baseline_loss_ratio") is not None
+                and r.get("baseline_loss_ratio") < config.auto_validate_max_baseline_ratio
+                and r.get("novelty_confidence") is not None
+                and r.get("novelty_confidence") >= config.auto_validate_min_novelty_confidence
                 and not r.get("brittle_risk", False)
                 and (
                     r.get("loss_ratio_multiplier") is None
@@ -5037,6 +5205,20 @@ class ExperimentRunner:
                 metadata={"result_ids": candidate_ids},
             ))
 
+    @staticmethod
+    def _validation_config_with_result_ids(
+        config: RunConfig,
+        result_ids: List[str],
+        trigger: str,
+    ) -> Dict[str, Any]:
+        """Attach validation candidate metadata to persisted experiment config."""
+        cfg = config.to_dict()
+        ids = [rid for rid in result_ids if rid]
+        cfg["validation_result_ids"] = ids
+        cfg["validation_candidate_count"] = len(ids)
+        cfg["validation_trigger"] = trigger
+        return cfg
+
     def _run_pending_investigation(self):
         """Launch pending auto-investigation if queued."""
         pending = getattr(self, "_pending_investigation", None)
@@ -5071,6 +5253,7 @@ class ExperimentRunner:
                 result_ids=pending["result_ids"],
                 config=pending["config"],
                 hypothesis=pending["hypothesis"],
+                trigger="auto_escalate",
             )
         except Exception as e:
             logger.warning(f"Failed to launch auto-validation: {e}")

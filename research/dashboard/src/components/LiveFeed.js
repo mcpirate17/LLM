@@ -283,10 +283,23 @@ function LiveFeed({ apiBase }) {
         Live Feed
         <span className={`connection-dot ${connected ? 'connected' : ''}`}></span>
       </div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Real-time stream of architectures being tested. Each line shows a generated computation graph and whether it passed or failed. Green = survived, red = failed at some stage.
+      </p>
+      {!connected && events.length > 0 && (
+        <div style={{
+          padding: '6px 12px', marginBottom: 8, borderRadius: 4,
+          background: 'rgba(248, 81, 73, 0.1)', border: '1px solid rgba(248, 81, 73, 0.3)',
+          fontSize: 12, color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent-red)', flexShrink: 0 }} />
+          Connection lost. Reconnecting...
+        </div>
+      )}
       <div className="feed-container" ref={feedRef}>
         {events.length === 0 ? (
           <div className="feed-empty">
-            Waiting for experiment events...
+            {connected ? 'Waiting for experiment events...' : 'Unable to connect to event stream. Is the server running?'}
           </div>
         ) : (
           events.map((evt, i) => (

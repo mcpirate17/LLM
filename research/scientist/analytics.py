@@ -835,6 +835,10 @@ class ExperimentAnalytics:
 
         clusters.sort(key=lambda c: c["avg_s1_rate"], reverse=True)
 
+        # Generate plain-language description for each cluster
+        for c in clusters:
+            c["description"] = self._describe_cluster(c)
+
         inter_centroid = []
         for i in range(len(centroids)):
             for j in range(i + 1, len(centroids)):
@@ -887,6 +891,141 @@ class ExperimentAnalytics:
             "clusters": clusters,
         }
 
+    @staticmethod
+    def _describe_cluster(c: Dict) -> str:
+        """Generate a plain-language summary for a cluster."""
+        size = c.get("size", 0)
+        s1_pct = (c.get("avg_s1_rate", 0) or 0) * 100
+        novelty = c.get("avg_best_novelty", 0) or 0
+        loss_ratio = c.get("avg_best_loss_ratio", 0) or 0
+        compile_fail = (c.get("avg_compile_fail_rate", 0) or 0) * 100
+
+        # Characterize S1 rate
+        if s1_pct >= 30:
+            s1_desc = f"high S1 pass rate ({s1_pct:.0f}%)"
+        elif s1_pct >= 10:
+            s1_desc = f"moderate S1 pass rate ({s1_pct:.0f}%)"
+        elif s1_pct > 0:
+            s1_desc = f"low S1 pass rate ({s1_pct:.0f}%)"
+        else:
+            s1_desc = "no S1 survivors"
+
+        # Characterize novelty
+        if novelty >= 0.7:
+            nov_desc = "high novelty"
+        elif novelty >= 0.3:
+            nov_desc = "moderate novelty"
+        else:
+            nov_desc = "low novelty"
+
+        # Characterize loss ratio
+        if loss_ratio < 0.8:
+            loss_desc = "strong loss improvement"
+        elif loss_ratio < 1.0:
+            loss_desc = "some loss improvement"
+        else:
+            loss_desc = "no loss improvement over baseline"
+
+        # Determine cluster character
+        if s1_pct >= 20 and loss_ratio < 0.9:
+            character = "the productive cluster"
+        elif s1_pct >= 10:
+            character = "a moderately productive cluster"
+        elif compile_fail >= 50:
+            character = "a high-failure cluster"
+        else:
+            character = "an exploratory cluster"
+
+        return (
+            f"{size} experiments with {s1_desc}, {nov_desc}, "
+            f"and {loss_desc} \u2014 {character}."
+        )
+
+    @staticmethod
+    def _explain_routing_health(by_mode: List[Dict], total_programs: int,
+                                overall_stage1_pass_rate: float) -> str:
+        """Generate deterministic plain-language routing interpretation."""
+        if not by_mode:
+            return (
+                "No routing telemetry available yet. Run routed architectures "
+                "to estimate drop rate, utilization balance, and confidence."
+            )
+
+        def weighted_mean(key: str) -> Optional[float]:
+            weighted_sum = 0.0
+            weighted_n = 0
+            for row in by_mode:
+                value = row.get(key)
+                n_programs = int(row.get("n_programs") or 0)
+                if value is None or n_programs <= 0:
+                    continue
+                weighted_sum += float(value) * n_programs
+                weighted_n += n_programs
+            if weighted_n == 0:
+                return None
+            return weighted_sum / weighted_n
+
+        avg_drop = weighted_mean("avg_drop_rate")
+        avg_entropy = weighted_mean("avg_utilization_entropy")
+        avg_confidence = weighted_mean("avg_confidence_mean")
+
+        if avg_drop is None:
+            drop_desc = "unknown"
+            drop_text = "drop rate is unavailable"
+        elif avg_drop <= 0.05:
+            drop_desc = "low"
+            drop_text = f"drop rate is low ({avg_drop * 100:.1f}%)"
+        elif avg_drop <= 0.15:
+            drop_desc = "moderate"
+            drop_text = f"drop rate is moderate ({avg_drop * 100:.1f}%)"
+        else:
+            drop_desc = "high"
+            drop_text = f"drop rate is high ({avg_drop * 100:.1f}%)"
+
+        if avg_entropy is None:
+            entropy_text = "utilization balance is unavailable"
+        elif avg_entropy >= 1.2:
+            entropy_text = f"utilization appears balanced (entropy {avg_entropy:.2f})"
+        elif avg_entropy >= 0.8:
+            entropy_text = f"utilization is moderately balanced (entropy {avg_entropy:.2f})"
+        else:
+            entropy_text = f"utilization looks concentrated (entropy {avg_entropy:.2f})"
+
+        if avg_confidence is None:
+            confidence_desc = "unknown"
+            confidence_text = "confidence is unavailable"
+        elif avg_confidence >= 0.7:
+            confidence_desc = "strong"
+            confidence_text = f"confidence is strong ({avg_confidence:.2f})"
+        elif avg_confidence >= 0.5:
+            confidence_desc = "moderate"
+            confidence_text = f"confidence is moderate ({avg_confidence:.2f})"
+        else:
+            confidence_desc = "weak"
+            confidence_text = f"confidence is weak ({avg_confidence:.2f})"
+
+        best_mode = max(by_mode, key=lambda r: float(r.get("stage1_pass_rate") or 0.0))
+        sentence_1 = (
+            f"Across {total_programs} routed programs, overall Stage 1 pass rate is "
+            f"{overall_stage1_pass_rate * 100:.1f}% and {drop_text}."
+        )
+        sentence_2 = (
+            f"Routing {entropy_text}, while {confidence_text}. "
+            f"Best-performing mode is '{best_mode.get('routing_mode', 'unknown')}' "
+            f"at {float(best_mode.get('stage1_pass_rate') or 0.0) * 100:.1f}% S1 pass."
+        )
+
+        if drop_desc == "high":
+            sentence_3 = "High drop suggests routing-capacity pressure; consider reducing overflow and token skipping."
+        elif confidence_desc == "weak":
+            sentence_3 = "Low confidence suggests uncertain routing choices; prioritize modes with steadier confidence and lower variance."
+        elif avg_entropy is not None and avg_entropy < 0.8:
+            sentence_3 = "Low entropy suggests expert over-concentration; improve utilization balance to reduce mode-collapse risk."
+        else:
+            sentence_3 = "Telemetry suggests routing is reasonably healthy and balanced across current modes."
+
+        return f"{sentence_1} {sentence_2} {sentence_3}"
+
     def routing_health(self) -> Dict:
         """Aggregate routing telemetry by routing mode.
 
@@ -919,6 +1058,10 @@ class ExperimentAnalytics:
                 "n_modes": 0,
                 "total_programs": 0,
                 "by_mode": [],
+                "explanation": (
+                    "No routing telemetry available yet. Run routed architectures "
+                    "to estimate drop rate, utilization balance, and confidence."
+                ),
             }
 
         by_mode = []
@@ -945,12 +1088,19 @@ class ExperimentAnalytics:
                 "avg_confidence_std": row["avg_confidence_std"],
             })
 
+        overall_stage1_pass_rate = total_stage1 / max(total_programs, 1)
+
         return {
             "available": True,
             "n_modes": len(by_mode),
             "total_programs": total_programs,
-            "overall_stage1_pass_rate": total_stage1 / max(total_programs, 1),
+            "overall_stage1_pass_rate": overall_stage1_pass_rate,
             "by_mode": by_mode,
+            "explanation": self._explain_routing_health(
+                by_mode=by_mode,
+                total_programs=total_programs,
+                overall_stage1_pass_rate=overall_stage1_pass_rate,
+            ),
         }
 
     def control_experiment_comparison(self) -> Optional[Dict]:
@@ -1183,7 +1333,7 @@ class ExperimentAnalytics:
         rows = self.nb.conn.execute("""
             SELECT result_id, graph_fingerprint, final_loss,
                    flops_forward, param_count, novelty_score,
-                   loss_ratio, baseline_loss_ratio
+                   loss_ratio, baseline_loss_ratio, graph_json
             FROM program_results
             WHERE stage1_passed = 1
               AND final_loss IS NOT NULL
@@ -1196,6 +1346,27 @@ class ExperimentAnalytics:
             return []
 
         programs = [dict(r) for r in rows]
+
+        # Extract ops list from graph_json
+        for p in programs:
+            ops = []
+            try:
+                if p.get("graph_json"):
+                    graph = json.loads(p["graph_json"])
+                    nodes = graph.get("nodes")
+                    if isinstance(nodes, dict):
+                        node_iter = nodes.values()
+                    elif isinstance(nodes, list):
+                        node_iter = nodes
+                    else:
+                        node_iter = []
+                    for n in node_iter:
+                        if isinstance(n, dict) and n.get("op"):
+                            ops.append(n["op"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+            p["ops"] = ops
+            p.pop("graph_json", None)
 
         # Find Pareto frontier: not dominated in (loss, flops)
         frontier = []

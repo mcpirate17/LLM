@@ -7,7 +7,7 @@ const API_BASE = process.env.REACT_APP_API_URL || '';
  * learning log timeline, and efficiency frontier.
  */
 
-function GrammarWeightsChart({ defaultWeights, learnedWeights }) {
+function GrammarWeightsChart({ defaultWeights, learnedWeights, explanation }) {
   if (!defaultWeights) return null;
 
   const categories = Object.keys(defaultWeights).sort();
@@ -73,6 +73,16 @@ function GrammarWeightsChart({ defaultWeights, learnedWeights }) {
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8, fontStyle: 'italic' }}>
           No learned weights yet. Run more experiments to enable learning.
         </p>
+      )}
+      {explanation && (
+        <div style={{ marginTop: 12, padding: 10, background: 'var(--bg-tertiary)', borderRadius: 6, borderLeft: '3px solid var(--accent-purple)' }}>
+          <div style={{ fontSize: 11, color: 'var(--accent-purple)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 4 }}>
+            Aria's interpretation
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+            {explanation}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -295,6 +305,8 @@ function LearningLog({ log }) {
 }
 
 function EfficiencyFrontier({ frontier }) {
+  const [hover, setHover] = useState(null);
+
   if (!frontier || frontier.length === 0) {
     return (
       <div className="card">
@@ -324,17 +336,20 @@ function EfficiencyFrontier({ frontier }) {
     y: H - pad - ((losses[i] - minLoss) / rangeL) * (H - 2 * pad),
     label: p.graph_fingerprint?.slice(0, 8),
     novelty: p.novelty_score || 0,
+    data: p,
+    idx: i,
   }));
 
   return (
-    <div className="card">
+    <div className="card" style={{ position: 'relative' }}>
       <div className="card-title">Efficiency Frontier ({frontier.length} Pareto-optimal)</div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
         Architectures that are the best trade-off between compute cost (FLOPs) and learning
         quality (loss). Points on the frontier can't be beaten on both axes simultaneously —
         these are the most promising candidates for scaling up.
       </p>
-      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}
+        onMouseLeave={() => setHover(null)}>
         {/* Axes */}
         <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="var(--border)" />
         <line x1={pad} y1={pad} x2={pad} y2={H - pad} stroke="var(--border)" />
@@ -345,7 +360,7 @@ function EfficiencyFrontier({ frontier }) {
         {/* Frontier line */}
         {points.length > 1 && (
           <polyline
-            points={points.sort((a, b) => a.x - b.x).map(p => `${p.x},${p.y}`).join(' ')}
+            points={[...points].sort((a, b) => a.x - b.x).map(p => `${p.x},${p.y}`).join(' ')}
             fill="none" stroke="var(--accent-purple)" strokeWidth={1.5} strokeDasharray="4 2"
           />
         )}
@@ -353,13 +368,50 @@ function EfficiencyFrontier({ frontier }) {
         {/* Points */}
         {points.map((p, i) => (
           <g key={i}>
-            <circle cx={p.x} cy={p.y} r={5}
+            <circle cx={p.x} cy={p.y} r={hover?.idx === i ? 7 : 5}
               fill={`rgba(188, 140, 255, ${0.3 + p.novelty * 0.7})`}
-              stroke="var(--accent-purple)" strokeWidth={1.5} />
-            <title>{p.label}: loss={losses[i]?.toFixed(4)}, FLOPs={frontier[i].flops_forward}</title>
+              stroke={hover?.idx === i ? 'var(--accent-blue)' : 'var(--accent-purple)'}
+              strokeWidth={hover?.idx === i ? 2.5 : 1.5}
+              style={{ cursor: 'pointer' }}
+              onMouseEnter={() => setHover(p)}
+              onMouseLeave={() => setHover(null)} />
           </g>
         ))}
       </svg>
+
+      {/* Hover card */}
+      {hover && (
+        <div style={{
+          position: 'absolute',
+          top: 60,
+          right: 12,
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: '10px 14px',
+          fontSize: 12,
+          lineHeight: 1.6,
+          zIndex: 10,
+          minWidth: 200,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        }}>
+          <div style={{ fontWeight: 600, color: 'var(--accent-purple)', marginBottom: 4 }}>
+            {hover.label || 'Unknown'}
+          </div>
+          <div><span style={{ color: 'var(--text-muted)' }}>Loss:</span> {hover.data.final_loss?.toFixed(4)}</div>
+          <div><span style={{ color: 'var(--text-muted)' }}>FLOPs:</span> {hover.data.flops_forward?.toLocaleString()}</div>
+          <div><span style={{ color: 'var(--text-muted)' }}>Params:</span> {hover.data.param_count?.toLocaleString()}</div>
+          <div><span style={{ color: 'var(--text-muted)' }}>Novelty:</span> {(hover.data.novelty_score || 0).toFixed(3)}</div>
+          {hover.data.ops && hover.data.ops.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Ops:</span>{' '}
+              <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)', fontSize: 11 }}>
+                {hover.data.ops.join(', ')}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -403,17 +455,119 @@ function ExperimentClusters({ clustersData }) {
           </thead>
           <tbody>
             {clustersData.clusters.map(c => (
-              <tr key={c.cluster_id}>
-                <td style={{ color: 'var(--accent-blue)' }}>#{c.cluster_id}</td>
-                <td>{c.size}</td>
-                <td>{((c.avg_s1_rate || 0) * 100).toFixed(1)}%</td>
-                <td>{(c.avg_best_novelty || 0).toFixed(3)}</td>
-                <td>{(c.avg_best_loss_ratio || 0).toFixed(3)}</td>
+              <React.Fragment key={c.cluster_id}>
+                <tr>
+                  <td style={{ color: 'var(--accent-blue)' }}>#{c.cluster_id}</td>
+                  <td>{c.size}</td>
+                  <td>{((c.avg_s1_rate || 0) * 100).toFixed(1)}%</td>
+                  <td>{(c.avg_best_novelty || 0).toFixed(3)}</td>
+                  <td>{(c.avg_best_loss_ratio || 0).toFixed(3)}</td>
+                </tr>
+                {c.description && (
+                  <tr>
+                    <td colSpan={5} style={{
+                      fontSize: 11, color: 'var(--text-muted)',
+                      fontStyle: 'italic', paddingTop: 0, paddingBottom: 8,
+                      borderBottom: '1px solid var(--border)',
+                    }}>
+                      {c.description}
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RoutingHealth({ data }) {
+  if (!data || data.available === false || !data.by_mode || data.by_mode.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-title">Routing Health</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          No routing telemetry available yet. Routing health tracks how well mixture-of-experts
+          architectures distribute work across their expert paths. It will appear once the system
+          generates and evaluates routed architectures.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Routing Health ({data.n_modes} modes)</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Aggregated routing telemetry by mode. Lower drop rate and higher confidence generally indicate healthier routing.
+      </p>
+      {data.explanation && (
+        <div style={{ marginBottom: 10, padding: 10, background: 'var(--bg-tertiary)', borderRadius: 6, borderLeft: '3px solid var(--accent-purple)' }}>
+          <div style={{ fontSize: 11, color: 'var(--accent-purple)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 4 }}>
+            Plain-language interpretation
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+            {data.explanation}
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+        <strong style={{ color: 'var(--accent-purple)' }}>Overall S1 pass:</strong>{' '}
+        {((data.overall_stage1_pass_rate || 0) * 100).toFixed(1)}%
+        <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>
+          ({data.total_programs} programs)
+        </span>
+      </div>
+      <div style={{ maxHeight: 260, overflow: 'auto' }}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Mode</th>
+              <th>N</th>
+              <th>S1%</th>
+              <th>Drop%</th>
+              <th>Entropy</th>
+              <th>Conf</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.by_mode.map((row) => (
+              <tr key={row.routing_mode}>
+                <td style={{ color: 'var(--accent-blue)' }}>{row.routing_mode}</td>
+                <td>{row.n_programs ?? 0}</td>
+                <td>{((row.stage1_pass_rate || 0) * 100).toFixed(1)}%</td>
+                <td>{((row.avg_drop_rate || 0) * 100).toFixed(1)}%</td>
+                <td>{row.avg_utilization_entropy != null ? Number(row.avg_utilization_entropy).toFixed(3) : '--'}</td>
+                <td>{row.avg_confidence_mean != null ? Number(row.avg_confidence_mean).toFixed(3) : '--'}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function WhatIHaveLearned({ summary }) {
+  if (!summary || !summary.bullets || summary.bullets.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">What I've learned</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Aria's synthesized takeaways across grammar adaptation, frontier quality, clusters, and recent experiment outcomes.
+      </p>
+      <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {summary.bullets.map((bullet, index) => (
+          <li key={index} style={{ fontSize: 12, lineHeight: 1.5 }}>
+            {bullet}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -424,21 +578,39 @@ function LearningPanel() {
   const [log, setLog] = useState(null);
   const [frontier, setFrontier] = useState(null);
   const [clusters, setClusters] = useState(null);
+  const [routingHealth, setRoutingHealth] = useState(null);
+  const [learningSummary, setLearningSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
+    const safeFetch = (url) => fetch(url).then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }).catch(() => null);
+
     Promise.all([
-      fetch(`${API_BASE}/api/analytics/grammar-weights`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/api/analytics/op-success`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/api/analytics/learning-log`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/api/analytics/efficiency-frontier`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/api/analytics/experiment-clusters`).then(r => r.json()).catch(() => null),
-    ]).then(([w, ops, lg, fr, cl]) => {
+      safeFetch(`${API_BASE}/api/analytics/grammar-weights`),
+      safeFetch(`${API_BASE}/api/analytics/op-success`),
+      safeFetch(`${API_BASE}/api/analytics/learning-log`),
+      safeFetch(`${API_BASE}/api/analytics/efficiency-frontier`),
+      safeFetch(`${API_BASE}/api/analytics/experiment-clusters`),
+      safeFetch(`${API_BASE}/api/analytics/routing-health`),
+      safeFetch(`${API_BASE}/api/analytics/learning-summary`),
+    ]).then(([w, ops, lg, fr, cl, rh, ls]) => {
+      if (!w && !ops && !lg && !fr && !cl && !rh && !ls) {
+        setError('Failed to load analytics data. The API may be unavailable.');
+      }
       setWeights(w);
       setOpRates(ops);
       setLog(lg);
       setFrontier(fr);
       setClusters(cl);
+      setRoutingHealth(rh);
+      setLearningSummary(ls);
+      setLoading(false);
+    }).catch(e => {
+      setError('Failed to load analytics: ' + e.message);
       setLoading(false);
     });
   }, []);
@@ -447,16 +619,32 @@ function LearningPanel() {
     return <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading analytics...</p></div>;
   }
 
+  if (error) {
+    return <div className="card"><p style={{ color: 'var(--accent-red)' }}>{error}</p></div>;
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="card" style={{ padding: '12px 16px' }}>
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>
+          The AI scientist searches for novel neural network layer designs by generating random
+          compositions of operations, testing if they compile and learn, and evolving the search
+          grammar toward successful patterns. This tab shows what the system has learned so far.
+        </p>
+      </div>
+      <WhatIHaveLearned summary={learningSummary} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <GrammarWeightsChart
           defaultWeights={weights?.default}
           learnedWeights={weights?.learned}
+          explanation={weights?.explanation}
         />
         <EfficiencyFrontier frontier={frontier} />
       </div>
-      <ExperimentClusters clustersData={clusters} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <ExperimentClusters clustersData={clusters} />
+        <RoutingHealth data={routingHealth} />
+      </div>
       <OpSuccessTable opRates={opRates} />
       <LearningLog log={log} />
     </div>

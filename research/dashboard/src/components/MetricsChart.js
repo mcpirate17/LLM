@@ -6,7 +6,7 @@ function MetricsChart({ experiments }) {
     return (
       <div className="card" style={{ gridColumn: '1 / -1' }}>
         <div className="card-title">Experiment History</div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           No experiment data to chart yet.
         </p>
       </div>

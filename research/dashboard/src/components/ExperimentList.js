@@ -14,6 +14,14 @@ function formatDuration(seconds) {
 
 /** Color-code experiment outcome: green (good), amber (ok), red (bad) */
 function experimentRating(exp) {
+  if (exp?.status === 'running' && exp?.experiment_type === 'validation') {
+    return {
+      color: 'var(--accent-blue)',
+      label: 'Validating',
+      tip: 'Validation run in progress — rating shown after aggregate seed results arrive',
+    };
+  }
+
   const n = exp.n_programs_generated || 0;
   const s1 = exp.n_stage1_passed || 0;
   const rate = n > 0 ? s1 / n : 0;
@@ -29,6 +37,10 @@ function experimentRating(exp) {
  * Weights: S1 pass rate (40%), best loss ratio (30%), best novelty (20%), completion (10%)
  */
 function experimentScore(exp) {
+  if (exp?.status === 'running' && exp?.experiment_type === 'validation') {
+    return 25;
+  }
+
   const n = exp.n_programs_generated || 0;
   const s1 = exp.n_stage1_passed || 0;
 
@@ -104,7 +116,7 @@ function ExperimentList({ experiments, onSelectExperiment }) {
         va = a._score; vb = b._score;
       } else if (sortKey === 'rating') {
         // Map label to numeric for sorting
-        const order = { Strong: 3, Some: 2, Weak: 1, Poor: 0 };
+        const order = { Strong: 4, Some: 3, Validating: 2, Weak: 1, Poor: 0 };
         va = order[a._rating.label] ?? -1;
         vb = order[b._rating.label] ?? -1;
       } else {
@@ -126,7 +138,7 @@ function ExperimentList({ experiments, onSelectExperiment }) {
     return (
       <div className="card">
         <div className="card-title">Experiments</div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           No experiments yet. Run: python -m research --mode=synthesize --n 100
         </p>
       </div>
@@ -165,12 +177,13 @@ function ExperimentList({ experiments, onSelectExperiment }) {
           {sorted.map(exp => {
             const rating = exp._rating;
             const score = exp._score;
+            const isActiveValidation = exp.status === 'running' && exp.experiment_type === 'validation';
             return (
               <tr key={exp.experiment_id}
                 style={{ cursor: onSelectExperiment ? 'pointer' : 'default' }}
                 onClick={() => onSelectExperiment && onSelectExperiment(exp.experiment_id)}>
-                <td style={{ fontWeight: 600, color: scoreColor(score) }}>
-                  {score}
+                <td style={{ fontWeight: 600, color: isActiveValidation ? 'var(--accent-blue)' : scoreColor(score) }}>
+                  {isActiveValidation ? '--' : score}
                 </td>
                 <td title={rating.tip}>
                   <span style={{

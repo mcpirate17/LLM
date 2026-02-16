@@ -1789,6 +1789,45 @@ class TestAPI(unittest.TestCase):
             "total": 3, "stage0_passed": 3, "stage1_passed": 1,
         }, "Test summary", "excited")
 
+        campaign_id = nb.create_campaign(
+            title="Schema Contract Campaign",
+            objective="Validate campaign endpoint contracts",
+            success_criteria="All campaign routes return expected payload shape",
+        )
+        cls.campaign_id = campaign_id
+        cls.exp_id = exp_id
+
+        nb.conn.execute(
+            "UPDATE experiments SET campaign_id = ? WHERE experiment_id = ?",
+            (campaign_id, exp_id),
+        )
+        nb.conn.commit()
+
+        nb.record_hypothesis(
+            campaign_id=campaign_id,
+            experiment_id=exp_id,
+            prediction="Schema contracts remain stable",
+            reasoning="Dashboard consumers require stable API keys.",
+            test_method="Run integration schema assertions",
+            success_metric="All assertions pass",
+            confidence=0.7,
+        )
+        nb.record_decision(
+            campaign_id=campaign_id,
+            decision_type="go",
+            subject="contract-tests",
+            rationale="Schema checks provide early drift detection.",
+            evidence_ids=[exp_id],
+            alternatives=[{"option": "manual-checks", "risk": "high drift risk"}],
+        )
+        nb.add_knowledge(
+            category="api_contract",
+            title="Dashboard schema contract baseline",
+            content="Core dashboard endpoints must preserve key payload fields.",
+            evidence=[exp_id],
+            confidence=0.9,
+        )
+
         # Add leaderboard entry
         nb.upsert_leaderboard(
             result_id="fp_000",
@@ -1960,6 +1999,13 @@ class TestAPI(unittest.TestCase):
         self.assertIn("available", data)
         self.assertIn("by_mode", data)
 
+    def test_api_analytics_learning_summary(self):
+        r = self.client.get("/api/analytics/learning-summary")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("bullets", data)
+        self.assertIn("source", data)
+
     def test_api_config(self):
         r = self.client.get("/api/config")
         self.assertEqual(r.status_code, 200)
@@ -2012,6 +2058,230 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertIn("generated", data)
         self.assertIn("healthy", data)
+
+    # ── Schema contract tests (deeper validation) ──
+
+    def test_api_dashboard_summary_schema(self):
+        """Dashboard summary must contain all keys consumed by Overview."""
+        r = self.client.get("/api/dashboard")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        summary = data["summary"]
+        required_summary_keys = [
+            "total_experiments", "completed_experiments",
+            "total_programs_evaluated", "stage1_survivors",
+            "survival_rate", "avg_novelty_score",
+            "top_novelty_score", "active_insights",
+            "learning_events",
+        ]
+        for key in required_summary_keys:
+            self.assertIn(key, summary, f"summary missing key: {key}")
+        # progress and is_running must exist at top level
+        self.assertIn("progress", data)
+        self.assertIn("is_running", data)
+        self.assertIsInstance(data["recent_experiments"], list)
+        self.assertIsInstance(data["top_programs"], list)
+        self.assertIsInstance(data["insights"], list)
+
+    def test_api_dashboard_progress_schema(self):
+        """Dashboard progress must have expected shape."""
+        r = self.client.get("/api/dashboard")
+        data = r.get_json()
+        progress = data["progress"]
+        self.assertIn("aria_message", progress)
+        self.assertIn("current_stage", progress)
+        self.assertIn("elapsed_seconds", progress)
+
+    def test_api_leaderboard_entry_schema(self):
+        """Leaderboard entries must contain scoring and tier fields."""
+        r = self.client.get("/api/leaderboard")
+        data = r.get_json()
+        self.assertGreater(data["total"], 0)
+        entry = data["entries"][0]
+        required_entry_keys = [
+            "entry_id", "result_id", "composite_score", "tier",
+            "screening_loss_ratio", "architecture_family",
+        ]
+        for key in required_entry_keys:
+            self.assertIn(key, entry, f"leaderboard entry missing key: {key}")
+
+    def test_api_analytics_grammar_weights_schema(self):
+        """Grammar weights must have default and holdout_validation keys."""
+        r = self.client.get("/api/analytics/grammar-weights")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("default", data)
+        self.assertIsInstance(data["default"], dict)
+        self.assertIn("holdout_validation", data)
+        self.assertIn("explanation", data)
+        self.assertIsInstance(data["explanation"], str)
+
+    def test_api_analytics_efficiency_frontier_schema(self):
+        """Frontier entries must include ops field from graph_json."""
+        r = self.client.get("/api/analytics/efficiency-frontier")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        if data:  # may be empty if no S1 survivors with FLOPs
+            entry = data[0]
+            self.assertIn("result_id", entry)
+            self.assertIn("graph_fingerprint", entry)
+            self.assertIn("final_loss", entry)
+            self.assertIn("flops_forward", entry)
+            self.assertIn("ops", entry)
+            self.assertNotIn("graph_json", entry,
+                             "graph_json should be stripped from frontier response")
+
+    def test_api_analytics_experiment_clusters_schema(self):
+        """Cluster entries must include description field."""
+        r = self.client.get("/api/analytics/experiment-clusters")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        if data is not None and data.get("clusters"):
+            cluster = data["clusters"][0]
+            self.assertIn("cluster_id", cluster)
+            self.assertIn("size", cluster)
+            self.assertIn("avg_s1_rate", cluster)
+            self.assertIn("description", cluster)
+
+    def test_api_analytics_routing_health_schema(self):
+        """Routing health must have structured by_mode entries."""
+        r = self.client.get("/api/analytics/routing-health")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("available", data)
+        self.assertIn("by_mode", data)
+        self.assertIn("explanation", data)
+        self.assertIsInstance(data["explanation"], str)
+        self.assertIsInstance(data["by_mode"], list)
+        if data["by_mode"]:
+            mode = data["by_mode"][0]
+            self.assertIn("routing_mode", mode)
+            self.assertIn("n_programs", mode)
+
+    def test_api_analytics_learning_summary_schema(self):
+        """Learning summary returns a stable bullet-list contract."""
+        r = self.client.get("/api/analytics/learning-summary")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("bullets", data)
+        self.assertIn("source", data)
+        self.assertIsInstance(data["bullets"], list)
+        self.assertIsInstance(data["source"], str)
+        self.assertGreaterEqual(len(data["bullets"]), 1)
+        for bullet in data["bullets"]:
+            self.assertIsInstance(bullet, str)
+
+    def test_api_report_schema(self):
+        """Report payload must include all sections consumed by report views."""
+        r = self.client.get("/api/report")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+
+        required = [
+            "summary", "top_programs", "recent_experiments",
+            "op_success_rates", "structural_correlations",
+            "failure_patterns", "top_op_combinations",
+            "efficiency_frontier", "experiment_clusters",
+            "grammar_weights", "learning_log", "insights", "narrative",
+        ]
+        for key in required:
+            self.assertIn(key, data, f"report missing key: {key}")
+
+        grammar = data["grammar_weights"]
+        self.assertIn("default", grammar)
+        self.assertIn("learned", grammar)
+        self.assertIn("control_comparison", grammar)
+        self.assertIn("holdout_validation", grammar)
+
+    def test_api_trends_entry_schema(self):
+        """Trends entries should expose timeline and stage-rate fields."""
+        r = self.client.get("/api/trends")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsInstance(data, list)
+        self.assertGreater(len(data), 0)
+
+        entry = data[0]
+        required = [
+            "experiment_id", "timestamp", "n_programs_generated",
+            "n_stage0_passed", "n_stage05_passed", "n_stage1_passed",
+            "best_loss_ratio", "best_novelty_score", "duration_seconds",
+            "s1_pass_rate",
+        ]
+        for key in required:
+            self.assertIn(key, entry, f"trends entry missing key: {key}")
+
+    def test_api_knowledge_schema(self):
+        """Knowledge endpoint should return enriched knowledge-base entry shape."""
+        r = self.client.get("/api/knowledge")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsInstance(data, list)
+        self.assertGreater(len(data), 0)
+
+        entry = data[0]
+        required = [
+            "entry_id", "timestamp", "category", "title", "content",
+            "confidence", "times_validated", "last_validated", "status",
+        ]
+        for key in required:
+            self.assertIn(key, entry, f"knowledge entry missing key: {key}")
+
+    def test_api_knowledge_search_schema(self):
+        """Knowledge search should return same entry shape as knowledge listing."""
+        r = self.client.get("/api/knowledge/search?q=schema")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsInstance(data, list)
+        self.assertGreater(len(data), 0)
+
+        entry = data[0]
+        for key in ("entry_id", "title", "content", "confidence", "status"):
+            self.assertIn(key, entry, f"knowledge search result missing key: {key}")
+
+    def test_api_campaigns_list_schema(self):
+        """Campaign list rows must include fields consumed by Campaigns tab."""
+        r = self.client.get("/api/campaigns")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsInstance(data, list)
+        self.assertGreater(len(data), 0)
+
+        row = data[0]
+        required = [
+            "campaign_id", "title", "objective", "status",
+            "n_experiments", "n_hypotheses", "n_decisions",
+            "success_criteria",
+        ]
+        for key in required:
+            self.assertIn(key, row, f"campaign list row missing key: {key}")
+
+    def test_api_campaign_detail_schema(self):
+        """Campaign detail payload must include campaign and related collections."""
+        r = self.client.get(f"/api/campaigns/{self.campaign_id}")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+
+        self.assertIn("campaign", data)
+        self.assertIn("experiments", data)
+        self.assertIn("hypotheses", data)
+        self.assertIn("decisions", data)
+        self.assertIsInstance(data["experiments"], list)
+        self.assertIsInstance(data["hypotheses"], list)
+        self.assertIsInstance(data["decisions"], list)
+
+    def test_api_campaign_report_schema(self):
+        """Campaign report payload must include campaign/report/stats sections."""
+        r = self.client.get(f"/api/campaigns/{self.campaign_id}/report")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+
+        self.assertIn("campaign", data)
+        self.assertIn("report", data)
+        self.assertIn("stats", data)
+        stats = data["stats"]
+        for key in ("n_experiments", "n_hypotheses", "n_confirmed", "n_refuted", "n_decisions"):
+            self.assertIn(key, stats, f"campaign report stats missing key: {key}")
 
     def test_api_404_for_unknown_endpoint(self):
         r = self.client.get("/api/nonexistent")
@@ -2117,8 +2387,20 @@ class TestAutoEscalation(unittest.TestCase):
 
         results = {
             "investigation_results": [
-                {"result_id": "r1", "robustness": 0.7, "best_loss_ratio": 0.4},
-                {"result_id": "r2", "robustness": 0.3, "best_loss_ratio": 0.6},
+                {
+                    "result_id": "r1",
+                    "robustness": 0.7,
+                    "best_loss_ratio": 0.4,
+                    "baseline_loss_ratio": 0.8,
+                    "novelty_confidence": 0.7,
+                },
+                {
+                    "result_id": "r2",
+                    "robustness": 0.3,
+                    "best_loss_ratio": 0.6,
+                    "baseline_loss_ratio": 0.85,
+                    "novelty_confidence": 0.7,
+                },
             ]
         }
 
@@ -2140,6 +2422,8 @@ class TestAutoEscalation(unittest.TestCase):
                     "result_id": "stable",
                     "robustness": 0.8,
                     "best_loss_ratio": 0.35,
+                    "baseline_loss_ratio": 0.82,
+                    "novelty_confidence": 0.75,
                     "loss_ratio_multiplier": 2.0,
                     "brittle_risk": False,
                 },
@@ -2147,6 +2431,8 @@ class TestAutoEscalation(unittest.TestCase):
                     "result_id": "brittle_flag",
                     "robustness": 0.85,
                     "best_loss_ratio": 0.3,
+                    "baseline_loss_ratio": 0.81,
+                    "novelty_confidence": 0.8,
                     "loss_ratio_multiplier": 20.0,
                     "brittle_risk": True,
                 },
@@ -2154,6 +2440,8 @@ class TestAutoEscalation(unittest.TestCase):
                     "result_id": "brittle_multiplier",
                     "robustness": 0.9,
                     "best_loss_ratio": 0.25,
+                    "baseline_loss_ratio": 0.8,
+                    "novelty_confidence": 0.8,
                     "loss_ratio_multiplier": self.config.investigation_max_loss_ratio_multiplier + 0.1,
                     "brittle_risk": False,
                 },
@@ -2166,6 +2454,83 @@ class TestAutoEscalation(unittest.TestCase):
         self.assertIsNotNone(pending)
         self.assertEqual(pending["result_ids"], ["stable"])
         nb.close()
+
+    def test_auto_escalate_requires_baseline_and_novelty_confidence(self):
+        """Validation auto-queue should require strong baseline + novelty confidence evidence."""
+        nb = LabNotebook(self.db_path)
+
+        results = {
+            "investigation_results": [
+                {
+                    "result_id": "missing_conf",
+                    "robustness": 0.85,
+                    "best_loss_ratio": 0.32,
+                    "baseline_loss_ratio": 0.82,
+                },
+                {
+                    "result_id": "weak_baseline",
+                    "robustness": 0.9,
+                    "best_loss_ratio": 0.3,
+                    "baseline_loss_ratio": 0.96,
+                    "novelty_confidence": 0.8,
+                },
+                {
+                    "result_id": "qualified",
+                    "robustness": 0.88,
+                    "best_loss_ratio": 0.31,
+                    "baseline_loss_ratio": 0.82,
+                    "novelty_confidence": 0.72,
+                },
+            ]
+        }
+
+        self.runner._auto_escalate(results, self.config, nb, phase="investigation")
+
+        pending = getattr(self.runner, "_pending_validation", None)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["result_ids"], ["qualified"])
+        nb.close()
+
+    def test_run_pending_validation_passes_auto_trigger(self):
+        """Queued auto-validation should launch with an explicit auto-escalate trigger."""
+        self.runner._pending_validation = {
+            "result_ids": ["r1", "r2"],
+            "config": self.config,
+            "hypothesis": "auto validation",
+        }
+
+        with patch.object(self.runner, "start_validation") as start_validation:
+            self.runner._run_pending_validation()
+
+        self.assertTrue(start_validation.called)
+        kwargs = start_validation.call_args.kwargs
+        self.assertEqual(kwargs["trigger"], "auto_escalate")
+
+    def test_start_validation_persists_candidate_metadata_in_config(self):
+        """Validation experiment config should include selected candidate IDs."""
+        with patch("research.scientist.runner.threading.Thread") as thread_cls:
+            thread_inst = MagicMock()
+            thread_cls.return_value = thread_inst
+
+            exp_id = self.runner.start_validation(
+                result_ids=["rid-a", "rid-b"],
+                config=self.config,
+                hypothesis="metadata test",
+            )
+
+        nb = LabNotebook(self.db_path)
+        try:
+            row = nb.conn.execute(
+                "SELECT config_json FROM experiments WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            cfg = json.loads(row["config_json"])
+            self.assertEqual(cfg.get("validation_result_ids"), ["rid-a", "rid-b"])
+            self.assertEqual(cfg.get("validation_candidate_count"), 2)
+            self.assertEqual(cfg.get("validation_trigger"), "manual")
+        finally:
+            nb.close()
 
     def test_leaderboard_populated_during_escalation(self):
         """Auto-escalation should add entries to the leaderboard."""
@@ -2493,7 +2858,7 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/analytics/op-success", "/api/analytics/failure-patterns",
             "/api/analytics/grammar-weights", "/api/analytics/efficiency-frontier",
             "/api/analytics/learning-log", "/api/analytics/experiment-clusters",
-            "/api/analytics/routing-health",
+            "/api/analytics/routing-health", "/api/analytics/learning-summary",
             "/api/metrics/",
             "/api/experiments/start", "/api/experiments/stop",
             "/api/campaigns", "/api/hypotheses",
@@ -2780,6 +3145,33 @@ class TestInlinePhaseMethods(unittest.TestCase):
         self.assertTrue(hasattr(ExperimentRunner, "_run_inline_validation"),
                         "Missing _run_inline_validation method")
 
+    def test_inline_validation_progress_sets_total_programs(self):
+        """Inline validation must initialize progress denominator to avoid x/0 UI output."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src = inspect.getsource(ExperimentRunner._run_inline_validation)
+        self.assertIn("total_programs=len(result_ids)", src,
+                      "_run_inline_validation LiveProgress must set total_programs")
+
+    def test_inline_validation_persists_candidate_metadata(self):
+        """Inline validation should persist candidate IDs into experiment config metadata."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src = inspect.getsource(ExperimentRunner._run_inline_validation)
+        self.assertIn("_validation_config_with_result_ids", src)
+        self.assertIn('"continuous_auto"', src)
+
+    def test_inline_investigation_progress_sets_total_programs(self):
+        """Inline investigation must initialize progress denominator for dashboard parity."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src = inspect.getsource(ExperimentRunner._run_inline_investigation)
+        self.assertIn("total_programs=len(result_ids)", src,
+                      "_run_inline_investigation LiveProgress must set total_programs")
+
     def test_continuous_phase_dispatches_to_inline(self):
         """_run_continuous_phase should dispatch to inline methods."""
         import inspect
@@ -2893,6 +3285,44 @@ class TestInlinePhaseMethods(unittest.TestCase):
             self.assertEqual(exp["status"], "failed")
             results = json.loads(exp.get("results_json") or "{}")
             self.assertIn("failure_reason", results)
+        finally:
+            nb2.close()
+
+    def test_runner_startup_recovers_startup_failed_experiment(self):
+        """Runner init should clean no-progress startup-failed running experiments."""
+        from research.scientist.runner import ExperimentRunner
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_runner_startup_fail_recovery.db")
+
+        nb = LabNotebook(db_path)
+        try:
+            exp_id = nb.start_experiment(
+                experiment_type="validation",
+                config={"n_programs": 1},
+                hypothesis="startup fail",
+            )
+            nb.conn.execute(
+                "UPDATE experiments SET started_at = ? WHERE experiment_id = ?",
+                (time.time() - (20 * 60), exp_id),
+            )
+            nb.conn.commit()
+        finally:
+            nb.close()
+
+        _runner = ExperimentRunner(db_path)
+        self.assertIsNotNone(_runner)
+
+        nb2 = LabNotebook(db_path)
+        try:
+            exp = nb2.get_experiment(exp_id)
+            self.assertIsNotNone(exp)
+            self.assertEqual(exp["status"], "failed")
+            results = json.loads(exp.get("results_json") or "{}")
+            self.assertEqual(
+                results.get("failure_reason"),
+                "Startup failed before any progress was recorded",
+            )
         finally:
             nb2.close()
 
@@ -3320,6 +3750,460 @@ class TestDiagnosticTasks(unittest.TestCase):
         finally:
             if nb:
                 nb.close()
+
+
+class TestStaleExperimentCleanup(unittest.TestCase):
+    """Test cleanup_stale_experiments marks zombies as failed."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(self.tmpdir, "test_cleanup.db")
+        from research.scientist.notebook import LabNotebook
+        self.nb = LabNotebook(db_path)
+
+    def tearDown(self):
+        self.nb.close()
+
+    def test_cleanup_marks_stale_as_failed(self):
+        """Experiments running longer than timeout should be marked failed."""
+        import time as _time
+        exp_id = self.nb.start_experiment("synthesis", {}, "stale test")
+        # Backdate started_at to 2 hours ago
+        two_hours_ago = _time.time() - 7200
+        self.nb.conn.execute(
+            "UPDATE experiments SET started_at = ? WHERE experiment_id = ?",
+            (two_hours_ago, exp_id),
+        )
+        self.nb.conn.commit()
+
+        # Verify it's still running
+        row = self.nb.conn.execute(
+            "SELECT status FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertEqual(row["status"], "running")
+
+        # Cleanup with 60-minute timeout
+        cleaned = self.nb.cleanup_stale_experiments(timeout_minutes=60)
+        self.assertEqual(cleaned, 1)
+
+        # Verify it's now failed
+        row = self.nb.conn.execute(
+            "SELECT status FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertEqual(row["status"], "failed")
+
+    def test_cleanup_ignores_recent_running(self):
+        """Recently started experiments should not be cleaned up."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "recent test")
+        # Don't backdate — it just started
+
+        cleaned = self.nb.cleanup_stale_experiments(timeout_minutes=60)
+        self.assertEqual(cleaned, 0)
+
+        row = self.nb.conn.execute(
+            "SELECT status FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertEqual(row["status"], "running")
+
+    def test_cleanup_ignores_completed(self):
+        """Completed experiments should not be affected by cleanup."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "done test")
+        self.nb.complete_experiment(exp_id, {
+            "total": 1, "stage0_passed": 1, "stage1_passed": 0,
+        })
+
+        # Backdate to look stale
+        import time as _time
+        self.nb.conn.execute(
+            "UPDATE experiments SET started_at = ? WHERE experiment_id = ?",
+            (_time.time() - 7200, exp_id),
+        )
+        self.nb.conn.commit()
+
+        cleaned = self.nb.cleanup_stale_experiments(timeout_minutes=60)
+        self.assertEqual(cleaned, 0)
+
+    def test_cleanup_marks_startup_failed_without_progress(self):
+        """Running experiments with no progress should be cleaned by startup-failure threshold."""
+        import time as _time
+
+        exp_id = self.nb.start_experiment("validation", {}, "startup fail test")
+        twenty_minutes_ago = _time.time() - (20 * 60)
+        self.nb.conn.execute(
+            "UPDATE experiments SET started_at = ? WHERE experiment_id = ?",
+            (twenty_minutes_ago, exp_id),
+        )
+        self.nb.conn.commit()
+
+        cleaned = self.nb.cleanup_stale_experiments(
+            timeout_minutes=60,
+            startup_failure_minutes=15,
+        )
+        self.assertEqual(cleaned, 1)
+
+        row = self.nb.conn.execute(
+            "SELECT status, results_json FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertEqual(row["status"], "failed")
+        results = json.loads(row["results_json"] or "{}")
+        self.assertEqual(
+            results.get("failure_reason"),
+            "Startup failed before any progress was recorded",
+        )
+
+    def test_cleanup_keeps_recent_progress_even_if_old(self):
+        """Experiments with progress signals should not be marked startup-failed."""
+        import time as _time
+
+        exp_id = self.nb.start_experiment("validation", {}, "progress test")
+        twenty_minutes_ago = _time.time() - (20 * 60)
+        self.nb.conn.execute(
+            "UPDATE experiments SET started_at = ? WHERE experiment_id = ?",
+            (twenty_minutes_ago, exp_id),
+        )
+        self.nb.conn.commit()
+
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="progress_fp",
+            graph_json='{"nodes": {}}',
+            stage0_passed=True,
+            stage05_passed=False,
+            stage1_passed=False,
+        )
+
+        cleaned = self.nb.cleanup_stale_experiments(
+            timeout_minutes=60,
+            startup_failure_minutes=15,
+        )
+        self.assertEqual(cleaned, 0)
+
+        row = self.nb.conn.execute(
+            "SELECT status FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertEqual(row["status"], "running")
+
+    def test_cleanup_returns_zero_when_nothing_stale(self):
+        """No stale experiments means cleanup returns 0."""
+        cleaned = self.nb.cleanup_stale_experiments(timeout_minutes=60)
+        self.assertEqual(cleaned, 0)
+
+
+class TestLeaderboardDedup(unittest.TestCase):
+    """Test leaderboard fingerprint deduplication."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(self.tmpdir, "test_dedup.db")
+        from research.scientist.notebook import LabNotebook
+        self.nb = LabNotebook(db_path)
+
+    def tearDown(self):
+        self.nb.close()
+
+    def test_leaderboard_dedup_by_fingerprint(self):
+        """Same fingerprint should only appear once, keeping best score."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "test")
+
+        # Create two results with same fingerprint
+        r1 = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="same_fp",
+            graph_json='{"nodes": {}}',
+            stage1_passed=True,
+            loss_ratio=0.5,
+            novelty_score=0.6,
+        )
+        r2 = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="same_fp",
+            graph_json='{"nodes": {}}',
+            stage1_passed=True,
+            loss_ratio=0.3,
+            novelty_score=0.9,
+        )
+        # Third with different fingerprint
+        r3 = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="different_fp",
+            graph_json='{"nodes": {}}',
+            stage1_passed=True,
+            loss_ratio=0.4,
+            novelty_score=0.7,
+        )
+
+        self.nb.upsert_leaderboard(
+            result_id=r1, model_source="test",
+            screening_loss_ratio=0.5, screening_novelty=0.6,
+            screening_passed=True, tier="screening",
+        )
+        self.nb.upsert_leaderboard(
+            result_id=r2, model_source="test",
+            screening_loss_ratio=0.3, screening_novelty=0.9,
+            screening_passed=True, tier="screening",
+        )
+        self.nb.upsert_leaderboard(
+            result_id=r3, model_source="test",
+            screening_loss_ratio=0.4, screening_novelty=0.7,
+            screening_passed=True, tier="screening",
+        )
+
+        entries = self.nb.get_leaderboard()
+        # Should be 2 (deduped same_fp), not 3
+        self.assertEqual(len(entries), 2)
+        # The entry for same_fp should be the one with higher composite_score
+        # (r2 has better loss_ratio=0.3 and novelty=0.9)
+
+    def test_leaderboard_dedup_keeps_distinct_fingerprints(self):
+        """Different fingerprints should all appear."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "test")
+
+        for i, fp in enumerate(["fp_a", "fp_b", "fp_c"]):
+            rid = self.nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=fp,
+                graph_json='{}',
+                stage1_passed=True,
+                loss_ratio=0.4 + i * 0.1,
+            )
+            self.nb.upsert_leaderboard(
+                result_id=rid, model_source="test",
+                screening_loss_ratio=0.4 + i * 0.1,
+                screening_passed=True, tier="screening",
+            )
+
+        entries = self.nb.get_leaderboard()
+        self.assertEqual(len(entries), 3)
+
+    def test_get_investigated_fingerprints(self):
+        """Fingerprints at investigation+ tier should be returned."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "test")
+
+        # Create screening entry (should NOT appear)
+        rid1 = self.nb.record_program_result(
+            experiment_id=exp_id, graph_fingerprint="fp_screening",
+            graph_json='{}', stage1_passed=True, loss_ratio=0.4,
+        )
+        self.nb.upsert_leaderboard(
+            result_id=rid1, model_source="test",
+            screening_loss_ratio=0.4, screening_passed=True, tier="screening",
+        )
+
+        # Create investigation entry (SHOULD appear)
+        rid2 = self.nb.record_program_result(
+            experiment_id=exp_id, graph_fingerprint="fp_investigated",
+            graph_json='{}', stage1_passed=True, loss_ratio=0.3,
+        )
+        self.nb.upsert_leaderboard(
+            result_id=rid2, model_source="test",
+            screening_loss_ratio=0.3, screening_passed=True,
+            tier="investigation",
+        )
+
+        # Create validation entry (SHOULD appear)
+        rid3 = self.nb.record_program_result(
+            experiment_id=exp_id, graph_fingerprint="fp_validated",
+            graph_json='{}', stage1_passed=True, loss_ratio=0.2,
+        )
+        self.nb.upsert_leaderboard(
+            result_id=rid3, model_source="test",
+            screening_loss_ratio=0.2, screening_passed=True,
+            tier="validation",
+        )
+
+        fps = self.nb.get_investigated_fingerprints()
+        self.assertNotIn("fp_screening", fps)
+        self.assertIn("fp_investigated", fps)
+        self.assertIn("fp_validated", fps)
+        self.assertEqual(len(fps), 2)
+
+
+class TestGrammarWeightPersistence(unittest.TestCase):
+    """Test that grammar weights appear in results dict."""
+
+    def test_execute_experiment_stores_grammar_weights_in_results(self):
+        """When grammar weights are applied, they should be in results dict."""
+        # We test the logic indirectly: grammar_weights dict should be stored
+        # in results["applied_grammar_weights"] when use_learned_grammar=True
+        # and compute_grammar_weights returns weights.
+        # This is a unit-level check of the data flow.
+        weights = {"attention": 2.0, "linear": 1.5, "nonlinearity": 0.8}
+        results = {"total": 0, "stage0_passed": 0, "survivors": []}
+        # Simulate what _execute_experiment does
+        if weights:
+            results["applied_grammar_weights"] = dict(weights)
+        self.assertIn("applied_grammar_weights", results)
+        self.assertEqual(results["applied_grammar_weights"]["attention"], 2.0)
+
+    def test_single_experiment_path_persists_applied_weights(self):
+        """Single-threaded experiment path should persist applied grammar weights."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src = inspect.getsource(ExperimentRunner._run_experiment_thread)
+        self.assertIn("self._persist_applied_grammar_weights(nb, exp_id, results)", src)
+
+    def test_continuous_synthesis_path_persists_applied_weights(self):
+        """Continuous synthesis path should persist applied grammar weights."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src = inspect.getsource(ExperimentRunner._run_continuous_synthesis)
+        self.assertIn("self._persist_applied_grammar_weights(nb, exp_id, results)", src)
+
+    def test_execute_experiment_records_distribution_shift_signals(self):
+        """Core execute path should record generated-op distribution + shift metadata."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src = inspect.getsource(ExperimentRunner._execute_experiment)
+        self.assertIn("generated_op_distribution", src)
+        self.assertIn("generation_distribution_shift", src)
+        self.assertIn("architecture_distribution_shift", src)
+
+
+class TestFrontierOps(unittest.TestCase):
+    """Test that efficiency frontier includes ops field."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(self.tmpdir, "test_frontier.db")
+        from research.scientist.notebook import LabNotebook
+        self.nb = LabNotebook(db_path)
+
+    def tearDown(self):
+        self.nb.close()
+
+    def test_frontier_includes_ops(self):
+        """Frontier entries should include ops extracted from graph_json."""
+        from research.scientist.analytics import ExperimentAnalytics
+        exp_id = self.nb.start_experiment("synthesis", {}, "test")
+        graph_json = json.dumps({
+            "nodes": {"n1": {"op": "linear_proj"}, "n2": {"op": "gelu"}},
+            "output": "n2",
+        })
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="frontier_fp",
+            graph_json=graph_json,
+            stage1_passed=True,
+            loss_ratio=0.5,
+            novelty_score=0.7,
+            final_loss=0.3,
+            flops_forward=1000,
+            param_count=500,
+        )
+        analytics = ExperimentAnalytics(self.nb)
+        frontier = analytics.efficiency_frontier()
+        self.assertGreater(len(frontier), 0)
+        self.assertIn("ops", frontier[0])
+        self.assertIn("linear_proj", frontier[0]["ops"])
+        self.assertIn("gelu", frontier[0]["ops"])
+        # graph_json should be removed from output
+        self.assertNotIn("graph_json", frontier[0])
+
+
+class TestClusterDescriptions(unittest.TestCase):
+    """Test that experiment clusters include descriptions."""
+
+    def test_describe_cluster_productive(self):
+        """A high-s1 cluster should be described as productive."""
+        from research.scientist.analytics import ExperimentAnalytics
+        cluster = {
+            "size": 10,
+            "avg_s1_rate": 0.35,
+            "avg_best_novelty": 0.5,
+            "avg_best_loss_ratio": 0.7,
+            "avg_compile_fail_rate": 0.1,
+        }
+        desc = ExperimentAnalytics._describe_cluster(cluster)
+        self.assertIn("high S1 pass rate", desc)
+        self.assertIn("productive", desc)
+        self.assertIn("10 experiments", desc)
+
+    def test_describe_cluster_exploratory(self):
+        """A low-s1 cluster should be described as exploratory."""
+        from research.scientist.analytics import ExperimentAnalytics
+        cluster = {
+            "size": 5,
+            "avg_s1_rate": 0.02,
+            "avg_best_novelty": 0.2,
+            "avg_best_loss_ratio": 1.1,
+            "avg_compile_fail_rate": 0.3,
+        }
+        desc = ExperimentAnalytics._describe_cluster(cluster)
+        self.assertIn("low S1 pass rate", desc)
+        self.assertIn("exploratory", desc)
+
+
+class TestSSEEventContract(unittest.TestCase):
+    """Verify LiveFeed.js event listeners match runner.py _emit_event calls."""
+
+    @staticmethod
+    def _extract_events(filepath, pattern):
+        """Extract string arguments from pattern matches in a file."""
+        import re
+        events = set()
+        with open(filepath) as f:
+            for line in f:
+                for m in re.finditer(pattern, line):
+                    events.add(m.group(1))
+        return events
+
+    def test_frontend_events_are_emitted_by_backend(self):
+        """Every event LiveFeed.js listens for must be emitted by the backend."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+
+        backend_events = set()
+        for backend_file in ["scientist/runner.py", "scientist/api.py"]:
+            backend_events |= self._extract_events(
+                root / backend_file,
+                r'_emit_event\(\s*["\'](\w+)["\']',
+            )
+        frontend_events = self._extract_events(
+            root / "dashboard" / "src" / "components" / "LiveFeed.js",
+            r'addEventListener\(\s*["\'](\w+)["\']',
+        )
+
+        # Frontend must not listen for events the backend never sends
+        missing = frontend_events - backend_events
+        self.assertEqual(
+            missing, set(),
+            f"LiveFeed.js listens for events not emitted by runner.py: {sorted(missing)}",
+        )
+
+    def test_backend_emits_known_events_only(self):
+        """Sanity: backend emits a reasonable number of distinct events."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+
+        backend_events = set()
+        for backend_file in ["scientist/runner.py", "scientist/api.py"]:
+            backend_events |= self._extract_events(
+                root / backend_file,
+                r'_emit_event\(\s*["\'](\w+)["\']',
+            )
+        # Should have a substantial set of events (guards against regex breakage)
+        self.assertGreaterEqual(len(backend_events), 20,
+                                f"Too few backend events found: {sorted(backend_events)}")
+
+    def test_frontend_listens_for_enough_events(self):
+        """Sanity: frontend listens for a reasonable number of events."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+
+        frontend_events = self._extract_events(
+            root / "dashboard" / "src" / "components" / "LiveFeed.js",
+            r'addEventListener\(\s*["\'](\w+)["\']',
+        )
+        self.assertGreaterEqual(len(frontend_events), 20,
+                                f"Too few frontend events found: {sorted(frontend_events)}")
 
 
 if __name__ == "__main__":

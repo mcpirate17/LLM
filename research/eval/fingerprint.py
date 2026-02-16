@@ -164,8 +164,7 @@ def _get_representations(model: nn.Module, input_ids: torch.Tensor,
                          dev: torch.device) -> Optional[torch.Tensor]:
     """Get output representations from a model."""
     try:
-        with torch.amp.autocast(device_type=dev.type, dtype=torch.float32):
-            logits = model(input_ids)
+        logits = model(input_ids)
         return logits
     except Exception as e:
         logger.warning("Failed to get representations: %s", e)
@@ -186,8 +185,7 @@ def _analyze_interactions(
         # Use a single sample for efficiency
         ids = input_ids[:1]
 
-        with torch.amp.autocast(device_type=dev.type, dtype=torch.float32):
-            base_out = model(ids)  # (1, S, V)
+        base_out = model(ids)  # (1, S, V)
 
         # Measure how much each position affects each other position
         # by perturbing one token at a time (sampling a few positions)
@@ -198,8 +196,7 @@ def _analyze_interactions(
         for i, pos in enumerate(positions):
             perturbed = ids.clone()
             perturbed[0, pos] = (ids[0, pos] + 1) % 32000
-            with torch.amp.autocast(device_type=dev.type, dtype=torch.float32):
-                pert_out = model(perturbed)
+            pert_out = model(perturbed)
             diff = (pert_out - base_out).abs().mean(dim=-1).squeeze(0)  # (S,)
             influence_matrix[i] = diff
 

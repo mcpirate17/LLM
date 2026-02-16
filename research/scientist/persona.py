@@ -594,6 +594,179 @@ class Aria:
 
         return "\n".join(lines)
 
+    def explain_grammar_weights(
+        self,
+        default_weights: Dict[str, float],
+        learned_weights: Optional[Dict[str, float]],
+    ) -> str:
+        """Generate a concise plain-language grammar-weight explanation.
+
+        Uses configured LLM backend when available and falls back to a
+        deterministic summary when unavailable.
+        """
+        learned = learned_weights or {}
+        if not default_weights:
+            return (
+                "No grammar-weight baseline is available yet. Run a few experiments so I can "
+                "summarize which operation categories are helping or hurting learning."
+            )
+
+        llm = self._get_llm()
+        if llm:
+            try:
+                deltas = []
+                for category, base in sorted(default_weights.items()):
+                    cur = learned.get(category, base)
+                    deltas.append(f"- {category}: default={base:.2f}, learned={cur:.2f}, delta={cur - base:+.2f}")
+                prompt = (
+                    "Summarize these grammar-weight updates for an ML engineer in 3 short sentences. "
+                    "Explain which operation categories are being rewarded or penalized and why that "
+                    "matters for architecture search.\n\n"
+                    + "\n".join(deltas)
+                )
+                resp = llm.generate(prompt, max_tokens=180)
+                self._track_cost(resp)
+                if resp.text and resp.text.strip():
+                    return resp.text.strip()
+            except Exception as e:
+                logger.warning("LLM grammar-weight explanation failed, falling back: %s", e)
+
+        delta_rows = []
+        for category, base in sorted(default_weights.items()):
+            cur = learned.get(category, base)
+            delta_rows.append((category, cur - base, cur, base))
+        delta_rows.sort(key=lambda row: abs(row[1]), reverse=True)
+
+        increased = [row for row in delta_rows if row[1] > 0.05][:2]
+        decreased = [row for row in delta_rows if row[1] < -0.05][:2]
+
+        if not increased and not decreased:
+            return (
+                "Grammar weights are currently close to default values, which suggests the system has "
+                "not yet seen enough consistent evidence to strongly favor specific operation categories."
+            )
+
+        parts = []
+        if increased:
+            winners = ", ".join(
+                f"{cat.replace('_', ' ')} (+{delta:.2f})" for cat, delta, _cur, _base in increased
+            )
+            parts.append(f"The search is rewarding {winners}, because these categories are showing stronger learning outcomes.")
+        if decreased:
+            losers = ", ".join(
+                f"{cat.replace('_', ' ')} ({delta:.2f})" for cat, delta, _cur, _base in decreased
+            )
+            parts.append(f"It is penalizing {losers}, which likely reflects weaker survival or learning rates in recent experiments.")
+        parts.append(
+            "In practice, this shifts generation probability toward operation families that are more likely to produce learnable architectures."
+        )
+        return " ".join(parts)
+
+    def summarize_learning_bullets(self, learning_data: Dict) -> Dict[str, object]:
+        """Summarize current learning state into 3-5 concise bullets.
+
+        Uses configured LLM backend when available and falls back to a
+        deterministic summary when unavailable.
+        """
+
+        summary = learning_data.get("summary") or {}
+        grammar_default = learning_data.get("grammar_default") or {}
+        grammar_learned = learning_data.get("grammar_learned") or {}
+        frontier = learning_data.get("frontier") or []
+        clusters = (learning_data.get("clusters") or {}).get("clusters") or []
+        recent_experiments = learning_data.get("recent_experiments") or []
+
+        llm = self._get_llm()
+        if llm:
+            try:
+                delta_lines = []
+                for category, base in sorted(grammar_default.items()):
+                    cur = grammar_learned.get(category, base)
+                    delta_lines.append(f"{category}: {base:.2f} -> {cur:.2f}")
+
+                context = (
+                    f"Total programs: {summary.get('total_programs_evaluated', 0)}\n"
+                    f"Stage1 survivors: {summary.get('stage1_survivors', 0)}\n"
+                    f"Survival rate: {summary.get('survival_rate', 0):.4f}\n"
+                    f"Frontier size: {len(frontier)}\n"
+                    f"Cluster count: {len(clusters)}\n"
+                    f"Recent experiments: {len(recent_experiments)}\n"
+                    f"Grammar deltas:\n- " + "\n- ".join(delta_lines[:10])
+                )
+                prompt = (
+                    "Write exactly 4 concise bullets for a dashboard card titled 'What I've learned'. "
+                    "Each bullet should be one sentence and grounded in the metrics below. "
+                    "Avoid hype; focus on actionable interpretation.\n\n"
+                    f"{context}"
+                )
+                resp = llm.generate(prompt, max_tokens=260)
+                self._track_cost(resp)
+                text = (resp.text or "").strip()
+                if text:
+                    parsed = []
+                    for line in text.splitlines():
+                        stripped = line.strip()
+                        if not stripped:
+                            continue
+                        stripped = re.sub(r"^[-*\u2022\d\.\)\s]+", "", stripped).strip()
+                        if stripped:
+                            parsed.append(stripped)
+                    if len(parsed) >= 3:
+                        return {"bullets": parsed[:5], "source": "llm"}
+            except Exception as e:
+                logger.warning("LLM learning-bullet summary failed, falling back: %s", e)
+
+        bullets: List[str] = []
+
+        total = int(summary.get("total_programs_evaluated") or 0)
+        survivors = int(summary.get("stage1_survivors") or 0)
+        survival_rate = (survivors / max(total, 1)) if total > 0 else 0.0
+        bullets.append(
+            f"The search has evaluated {total} programs with {survivors} Stage 1 survivors ({survival_rate * 100:.1f}% survival), indicating {'productive' if survival_rate >= 0.03 else 'early-stage'} grammar quality."
+        )
+
+        deltas = []
+        for category, base in sorted(grammar_default.items()):
+            cur = grammar_learned.get(category, base)
+            deltas.append((category, float(cur) - float(base)))
+        deltas.sort(key=lambda item: abs(item[1]), reverse=True)
+        increased = [d for d in deltas if d[1] > 0.05][:2]
+        decreased = [d for d in deltas if d[1] < -0.05][:2]
+        if increased or decreased:
+            parts = []
+            if increased:
+                parts.append("rewarding " + ", ".join(f"{name.replace('_', ' ')} ({delta:+.2f})" for name, delta in increased))
+            if decreased:
+                parts.append("downweighting " + ", ".join(f"{name.replace('_', ' ')} ({delta:+.2f})" for name, delta in decreased))
+            bullets.append("Grammar adaptation is " + " while ".join(parts) + ".")
+
+        if frontier:
+            bullets.append(
+                f"The efficiency frontier currently contains {len(frontier)} non-dominated survivor{'s' if len(frontier) != 1 else ''}, which defines the best observed loss-vs-compute trade-offs."
+            )
+
+        if clusters:
+            best_cluster = max(clusters, key=lambda c: float(c.get("avg_s1_rate") or 0.0))
+            bullets.append(
+                f"Cluster {best_cluster.get('cluster_id', '?')} is the most productive cohort at {float(best_cluster.get('avg_s1_rate') or 0.0) * 100:.1f}% average S1 pass, suggesting a repeatable design regime."
+            )
+
+        if recent_experiments:
+            recent = recent_experiments[:5]
+            recent_total = sum(int(e.get("n_programs_generated") or 0) for e in recent)
+            recent_s1 = sum(int(e.get("n_stage1_passed") or 0) for e in recent)
+            recent_rate = recent_s1 / max(recent_total, 1) if recent_total > 0 else 0.0
+            bullets.append(
+                f"In the most recent experiments, Stage 1 pass rate is {recent_rate * 100:.1f}% ({recent_s1}/{recent_total}), which helps confirm whether recent grammar updates are improving outcomes."
+            )
+
+        while len(bullets) < 3:
+            bullets.append(
+                "Data is still sparse in some analytics slices, so confidence in long-term trends remains provisional."
+            )
+
+        return {"bullets": bullets[:5], "source": "rule-based"}
+
     def generate_report_narrative(self, report_data: Dict) -> str:
         """Generate an executive narrative for the research report.
 

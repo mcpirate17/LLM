@@ -554,30 +554,73 @@ class LabNotebook:
     def __exit__(self, *args):
         self.close()
 
-    def cleanup_stale_experiments(self, timeout_minutes: int = 60) -> int:
-        """Mark experiments stuck in 'running' status as failed.
+    def cleanup_stale_experiments(
+        self,
+        timeout_minutes: int = 60,
+        startup_failure_minutes: int = 15,
+    ) -> int:
+        """Mark stale or startup-failed running experiments as failed.
+
+        - Long-running stale experiments are cleaned after ``timeout_minutes``.
+        - Runs with no progress signals are cleaned after
+          ``startup_failure_minutes`` to handle interrupted startup paths.
 
         Returns the number of experiments cleaned up.
         """
-        cutoff = time.time() - (timeout_minutes * 60)
-        rows = self.conn.execute(
+        now = time.time()
+        cutoff = now - (timeout_minutes * 60)
+        startup_cutoff = now - (startup_failure_minutes * 60)
+
+        stale_rows = self.conn.execute(
             "SELECT experiment_id FROM experiments "
             "WHERE status = 'running' AND started_at < ?",
             (cutoff,),
         ).fetchall()
+        stale_ids = {r["experiment_id"] for r in stale_rows}
 
-        if not rows:
+        startup_failed_rows = self.conn.execute(
+            """
+            SELECT e.experiment_id
+            FROM experiments e
+            WHERE e.status = 'running'
+              AND e.started_at < ?
+              AND NOT EXISTS (
+                SELECT 1 FROM program_results pr WHERE pr.experiment_id = e.experiment_id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM metrics_log ml WHERE ml.experiment_id = e.experiment_id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM entries en
+                WHERE en.experiment_id = e.experiment_id
+                  AND en.entry_type != 'hypothesis'
+              )
+            """,
+            (startup_cutoff,),
+        ).fetchall()
+        startup_failed_ids = {r["experiment_id"] for r in startup_failed_rows}
+
+        if not stale_ids and not startup_failed_ids:
             return 0
 
-        exp_ids = [r["experiment_id"] for r in rows]
+        updates = []
+        all_ids = stale_ids | startup_failed_ids
+        for experiment_id in all_ids:
+            if experiment_id in startup_failed_ids and experiment_id not in stale_ids:
+                reason = "Startup failed before any progress was recorded"
+            else:
+                reason = "Process terminated while running"
+            updates.append((reason, experiment_id))
+
         self.conn.executemany(
             "UPDATE experiments SET status = 'failed', "
             "results_json = json_set(COALESCE(results_json, '{}'), '$.failure_reason', ?) "
             "WHERE experiment_id = ?",
-            [("Process terminated while running", eid) for eid in exp_ids],
+            updates,
         )
         self.conn.commit()
-        return len(exp_ids)
+        return len(all_ids)
 
     def get_resumable_experiment(self, experiment_id: str) -> Optional[Dict]:
         """Get experiment data for resume if status is 'running' or 'failed'.
@@ -1365,18 +1408,31 @@ class LabNotebook:
         if sort_by not in valid_sorts:
             sort_by = "composite_score"
 
-        query = "SELECT * FROM leaderboard WHERE 1=1"
+        query = (
+            "SELECT l.*, pr.graph_json AS _graph_json, "
+            "pr.routing_mode AS _routing_mode, "
+            "pr.graph_fingerprint AS _graph_fingerprint "
+            "FROM leaderboard l "
+            "LEFT JOIN program_results pr ON pr.result_id = l.result_id "
+            "WHERE 1=1"
+        )
         params: List[Any] = []
         if tier:
-            query += " AND tier = ?"
+            query += " AND l.tier = ?"
             params.append(tier)
-        query += f" ORDER BY {sort_by} DESC NULLS LAST LIMIT ?"
+        query += f" ORDER BY l.{sort_by} DESC NULLS LAST LIMIT ?"
         params.append(limit)
 
         rows = self.conn.execute(query, params).fetchall()
         results = []
         for r in rows:
             d = dict(r)
+            d["architecture_family"] = self._classify_architecture_family(
+                graph_json=d.get("_graph_json"),
+                routing_mode=d.get("_routing_mode"),
+            )
+            d.pop("_graph_json", None)
+            d.pop("_routing_mode", None)
             if d.get("investigation_best_training"):
                 try:
                     d["investigation_best_training_parsed"] = json.loads(
@@ -1384,7 +1440,99 @@ class LabNotebook:
                 except (json.JSONDecodeError, TypeError):
                     pass
             results.append(d)
-        return results
+
+        # Deduplicate by graph fingerprint: keep best composite_score per arch
+        seen_fingerprints: Dict[str, int] = {}
+        deduped = []
+        for entry in results:
+            fp = entry.get("_graph_fingerprint")
+            if fp:
+                if fp in seen_fingerprints:
+                    # Keep the one with higher composite_score
+                    existing_idx = seen_fingerprints[fp]
+                    existing_score = deduped[existing_idx].get("composite_score") or 0
+                    new_score = entry.get("composite_score") or 0
+                    if new_score > existing_score:
+                        deduped[existing_idx] = entry
+                    continue
+                seen_fingerprints[fp] = len(deduped)
+            deduped.append(entry)
+
+        # Clean up internal field
+        for entry in deduped:
+            entry.pop("_graph_fingerprint", None)
+
+        return deduped
+
+    def get_investigated_fingerprints(self) -> set:
+        """Return fingerprints that have already been investigated or beyond."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT pr.graph_fingerprint "
+            "FROM leaderboard l "
+            "JOIN program_results pr ON pr.result_id = l.result_id "
+            "WHERE l.tier IN ('investigation', 'validation', 'breakthrough')"
+        ).fetchall()
+        return {r[0] for r in rows if r[0]}
+
+    @staticmethod
+    def _classify_architecture_family(
+        graph_json: Optional[str],
+        routing_mode: Optional[str],
+    ) -> str:
+        """Map graph structure to a compact architecture family label."""
+        if routing_mode:
+            return "Routed-MoE"
+        if not graph_json:
+            return "Unknown"
+
+        try:
+            graph = json.loads(graph_json)
+            nodes = graph.get("nodes")
+            if isinstance(nodes, dict):
+                node_iter = [n for n in nodes.values() if isinstance(n, dict)]
+            elif isinstance(nodes, list):
+                node_iter = [n for n in nodes if isinstance(n, dict)]
+            else:
+                node_iter = []
+            ops = {str(n.get("op_name", "")).strip() for n in node_iter}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return "Unknown"
+
+        if not ops:
+            return "Unknown"
+
+        attention_ops = {
+            "attention", "self_attention", "mha", "multihead_attention", "qkv_attention",
+            "softmax_attention",
+        }
+        conv_ops = {"conv1d", "conv1d_seq", "depthwise_conv1d"}
+        spectral_ops = {"sin", "cos", "fft", "ifft", "fourier_mix"}
+        gating_ops = {"sigmoid", "tanh", "silu", "gelu", "maximum", "minimum", "swiglu"}
+        mlp_ops = {"linear_proj", "linear_proj_up", "linear_proj_down", "learnable_bias"}
+
+        has_attention = bool(ops & attention_ops)
+        has_conv = bool(ops & conv_ops)
+        has_spectral = bool(ops & spectral_ops)
+        has_gating = bool(ops & gating_ops)
+        has_mlp = bool(ops & mlp_ops)
+
+        if has_attention:
+            if has_conv or has_spectral or has_gating:
+                return "Hybrid-Attention"
+            return "Attention"
+        if has_conv and has_spectral:
+            return "Spectral-Conv"
+        if has_spectral:
+            return "Spectral-Mixer"
+        if has_conv:
+            return "Conv-Mixer"
+        if has_gating and has_mlp:
+            return "Gated-MLP"
+        if has_mlp:
+            return "MLP-Mixer"
+        if has_gating:
+            return "Nonlinear-Mixer"
+        return "Hybrid-Mixer"
 
     def promote_to_tier(self, entry_id: str, tier: str,
                         **kwargs) -> None:

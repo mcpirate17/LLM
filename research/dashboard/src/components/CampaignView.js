@@ -45,15 +45,20 @@ function StatusBadge({ status, colors }) {
 function CampaignList({ onSelectCampaign }) {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/campaigns`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => { setCampaigns(Array.isArray(d) ? d : []); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch(e => { setError('Failed to load campaigns: ' + e.message); setLoading(false); });
   }, []);
 
   if (loading) return <p style={{ color: 'var(--text-muted)' }}>Loading campaigns...</p>;
+  if (error) return <p style={{ color: 'var(--accent-red)' }}>{error}</p>;
   if (campaigns.length === 0) return <p style={{ color: 'var(--text-muted)' }}>No campaigns yet. Start a continuous experiment to auto-create one.</p>;
 
   return (
@@ -167,32 +172,49 @@ function CampaignDetail({ campaignId, onBack }) {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [activeSection, setActiveSection] = useState('timeline');
+  const [error, setError] = useState(null);
+  const [reportError, setReportError] = useState(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/campaigns/${campaignId}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch(e => { setError('Failed to load campaign: ' + e.message); setLoading(false); });
   }, [campaignId]);
 
   const generateReport = async () => {
     setGenerating(true);
+    setReportError(null);
     try {
       const r = await fetch(`${API_BASE}/api/campaigns/${campaignId}/report`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       setReport(d);
     } catch (e) {
-      console.error(e);
+      setReportError('Failed to generate report: ' + e.message);
     }
     setGenerating(false);
   };
 
   if (loading) return <p style={{ color: 'var(--text-muted)' }}>Loading...</p>;
+  if (error) return <p style={{ color: 'var(--accent-red)' }}>{error}</p>;
   if (!data) return <p style={{ color: 'var(--accent-red)' }}>Campaign not found</p>;
 
-  const { campaign, experiments, hypotheses, decisions } = data;
+  const campaign = data.campaign || {};
+  const experiments = Array.isArray(data.experiments) ? data.experiments : [];
+  const hypotheses = Array.isArray(data.hypotheses) ? data.hypotheses : [];
+  const decisions = Array.isArray(data.decisions) ? data.decisions : [];
   const confirmed = hypotheses.filter(h => h.status === 'confirmed').length;
   const refuted = hypotheses.filter(h => h.status === 'refuted').length;
+  const sectionTabs = [
+    { key: 'timeline', label: `Timeline (${experiments.length})` },
+    { key: 'hypotheses', label: `Hypotheses (${hypotheses.length})` },
+    { key: 'decisions', label: `Decisions (${decisions.length})` },
+    { key: 'report', label: 'Report' },
+  ];
 
   return (
     <div>
@@ -211,6 +233,9 @@ function CampaignDetail({ campaignId, onBack }) {
         </p>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0' }}>
           <strong>Success Criteria:</strong> {campaign.success_criteria}
+        </p>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>
+          Campaign detail links objective, experiment evidence, hypothesis outcomes, and decisions in one place.
         </p>
 
         {/* Stats */}
@@ -236,14 +261,14 @@ function CampaignDetail({ campaignId, onBack }) {
 
       {/* Section tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        {['timeline', 'hypotheses', 'decisions', 'report'].map(s => (
+        {sectionTabs.map(tab => (
           <button
-            key={s}
-            className={`tab ${activeSection === s ? 'active' : ''}`}
-            onClick={() => setActiveSection(s)}
+            key={tab.key}
+            className={`tab ${activeSection === tab.key ? 'active' : ''}`}
+            onClick={() => setActiveSection(tab.key)}
             style={{ padding: '4px 12px', fontSize: 12 }}
           >
-            {s.charAt(0).toUpperCase() + s.slice(1)}
+            {tab.label}
           </button>
         ))}
       </div>
@@ -293,7 +318,13 @@ function CampaignDetail({ campaignId, onBack }) {
       {activeSection === 'hypotheses' && (
         <div className="card" style={{ padding: 16 }}>
           <h3 style={{ fontSize: 14, marginBottom: 12 }}>Hypothesis Chain</h3>
-          <HypothesisChain hypotheses={hypotheses} />
+          {hypotheses.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)' }}>
+              No hypotheses are logged yet for this campaign.
+            </p>
+          ) : (
+            <HypothesisChain hypotheses={hypotheses} />
+          )}
         </div>
       )}
 
@@ -301,7 +332,13 @@ function CampaignDetail({ campaignId, onBack }) {
       {activeSection === 'decisions' && (
         <div className="card" style={{ padding: 16 }}>
           <h3 style={{ fontSize: 14, marginBottom: 12 }}>Decision Log</h3>
-          <DecisionLog decisions={decisions} />
+          {decisions.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)' }}>
+              No go/no-go decisions have been recorded yet.
+            </p>
+          ) : (
+            <DecisionLog decisions={decisions} />
+          )}
         </div>
       )}
 
@@ -309,13 +346,16 @@ function CampaignDetail({ campaignId, onBack }) {
       {activeSection === 'report' && (
         <div className="card" style={{ padding: 16 }}>
           <h3 style={{ fontSize: 14, marginBottom: 12 }}>Campaign Report</h3>
+          {reportError && (
+            <p style={{ color: 'var(--accent-red)', marginBottom: 8 }}>{reportError}</p>
+          )}
           {report ? (
             <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
               {report.report}
             </div>
-          ) : (
+          ) : !reportError && (
             <p style={{ color: 'var(--text-muted)' }}>
-              Click "Generate Report" above to create a compiled research narrative.
+              Click "Generate Report" above to compile the current hypotheses, evidence, and decisions into one narrative.
             </p>
           )}
         </div>
@@ -339,6 +379,10 @@ function CampaignView() {
   return (
     <div>
       <h2 style={{ fontSize: 16, marginBottom: 16 }}>Research Campaigns</h2>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Campaigns group related experiments into a longer research thread with explicit goals, evolving hypotheses,
+        and go/no-go decisions.
+      </p>
       <CampaignList onSelectCampaign={setSelectedCampaign} />
     </div>
   );

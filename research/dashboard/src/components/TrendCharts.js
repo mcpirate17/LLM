@@ -137,14 +137,18 @@ const COLUMNS = [
 function TrendCharts() {
   const [trends, setTrends] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [sortKey, setSortKey] = useState('_score');
   const [sortDesc, setSortDesc] = useState(true);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/trends`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => { setTrends(d); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch(e => { setError('Failed to load trends: ' + e.message); setLoading(false); });
   }, []);
 
   const handleSort = (key) => {
@@ -177,11 +181,12 @@ function TrendCharts() {
   }, [augmented, sortKey, sortDesc]);
 
   if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading trends...</p></div>;
+  if (error) return <div className="card"><p style={{ color: 'var(--accent-red)' }}>{error}</p></div>;
   if (!trends || trends.length === 0) {
     return (
       <div className="card">
         <div className="card-title">Experiment Trends</div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           No completed experiments yet. Trends will appear after 2+ experiments.
         </p>
       </div>

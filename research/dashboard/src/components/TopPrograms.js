@@ -122,7 +122,7 @@ function TopPrograms({ programs, compact, onSelectProgram }) {
     return (
       <div className="card">
         <div className="card-title">Top Programs {compact ? '(Preview)' : ''}</div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           No surviving programs yet.
         </p>
       </div>

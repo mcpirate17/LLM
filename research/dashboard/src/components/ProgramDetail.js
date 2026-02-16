@@ -232,24 +232,78 @@ function HypothesisInfo({ hypothesis }) {
   );
 }
 
-function ProgramDetail({ resultId, onClose }) {
+function BenchmarkEvidenceSnapshot({ program, leaderboardEntry }) {
+  const tier = leaderboardEntry?.tier;
+  const isBreakthrough = tier === 'breakthrough';
+  const ratio = Number(program?.baseline_loss_ratio);
+  const hasRatio = Number.isFinite(ratio);
+  const beatsBaseline = hasRatio && ratio < 1;
+
+  if (!hasRatio && !isBreakthrough) return null;
+
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: 10,
+      background: 'var(--bg-tertiary)',
+      borderRadius: 6,
+      borderLeft: `3px solid ${beatsBaseline ? 'var(--accent-green)' : 'var(--accent-yellow)'}`,
+    }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 6 }}>
+        Benchmark Evidence Snapshot
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+        <div>
+          <strong>Fixed-seed baseline ratio:</strong>{' '}
+          {hasRatio ? ratio.toFixed(3) : 'Unavailable'}
+          {hasRatio && (
+            <span style={{ marginLeft: 6, color: beatsBaseline ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+              {beatsBaseline ? '(< 1.0, beats baseline)' : '(≥ 1.0, below baseline)'}
+            </span>
+          )}
+        </div>
+        <div>
+          <strong>Interpretation:</strong>{' '}
+          {hasRatio
+            ? (beatsBaseline
+              ? 'This architecture outperforms the fixed-seed transformer baseline on the same setup.'
+              : 'This architecture does not yet beat the fixed-seed transformer baseline on this snapshot.')
+            : 'Baseline comparison was not recorded for this result.'}
+        </div>
+        {isBreakthrough && (
+          <div>
+            <strong>Breakthrough note:</strong> tier promotion also requires multi-seed stability and robustness checks beyond this fixed-seed snapshot.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProgramDetail({ resultId, onClose, onActionComplete }) {
   const [program, setProgram] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [scaleUpOpen, setScaleUpOpen] = useState(false);
   const [scaleUpConfig, setScaleUpConfig] = useState({ steps: 5000, batch_size: 8, seq_len: 512 });
   const [scaleUpStarting, setScaleUpStarting] = useState(false);
   const [leaderboardEntry, setLeaderboardEntry] = useState(null);
   const [actionStarting, setActionStarting] = useState(null);
+  const [actionError, setActionError] = useState(null);
   const [linkedHypothesis, setLinkedHypothesis] = useState(null);
   const [linkedDecision, setLinkedDecision] = useState(null);
 
   useEffect(() => {
     if (!resultId) return;
     setLoading(true);
+    setError(null);
     setLinkedHypothesis(null);
     setLinkedDecision(null);
     fetch(`${API_BASE}/api/programs/${resultId}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => {
         setProgram(d);
         setLoading(false);
@@ -285,7 +339,7 @@ function ProgramDetail({ resultId, onClose }) {
             .catch(() => {});
         }
       })
-      .catch(() => setLoading(false));
+      .catch(e => { setError('Failed to load program: ' + e.message); setLoading(false); });
     // Fetch leaderboard entry for this result
     fetch(`${API_BASE}/api/leaderboard?limit=200`)
       .then(r => r.ok ? r.json() : null)
@@ -315,6 +369,8 @@ function ProgramDetail({ resultId, onClose }) {
 
         {loading ? (
           <p style={{ color: 'var(--text-muted)' }}>Loading...</p>
+        ) : error ? (
+          <p style={{ color: 'var(--accent-red)' }}>{error}</p>
         ) : !program ? (
           <p style={{ color: 'var(--accent-red)' }}>Program not found</p>
         ) : (
@@ -357,6 +413,18 @@ function ProgramDetail({ resultId, onClose }) {
                 {program.error_message || program.stage0_error}
               </div>
             )}
+            {actionError && (
+              <div style={{
+                padding: 8,
+                background: 'rgba(248, 81, 73, 0.1)',
+                border: '1px solid var(--accent-red)',
+                borderRadius: 4,
+                fontSize: 12,
+                color: 'var(--accent-red)',
+              }}>
+                {actionError}
+              </div>
+            )}
 
             {/* Metrics + Radar side by side */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -391,6 +459,8 @@ function ProgramDetail({ resultId, onClose }) {
                   <MetricRow label="Similar To" value={program.most_similar_to} />
                 </div>
 
+                <BenchmarkEvidenceSnapshot program={program} leaderboardEntry={leaderboardEntry} />
+
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8, marginTop: 12 }}>
                   Sandbox Timing
                 </div>
@@ -411,8 +481,37 @@ function ProgramDetail({ resultId, onClose }) {
             {/* CKA Similarity bars */}
             {(program.fp_cka_vs_transformer != null || program.fp_cka_vs_ssm != null) && (
               <div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
-                  CKA Similarity to Known Architectures
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
+                    CKA Similarity to Known Architectures
+                  </div>
+                  {(program.cka_source || program.cka_artifact_version) && (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {program.cka_source && (
+                        <span style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          padding: '2px 6px',
+                          borderRadius: 4,
+                          background: program.cka_source === 'artifact' ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
+                          color: program.cka_source === 'artifact' ? 'var(--accent-green)' : 'var(--accent-red)',
+                        }}>
+                          {program.cka_source === 'artifact' ? 'Artifact CKA' : 'Fallback CKA'}
+                        </span>
+                      )}
+                      {program.cka_artifact_version && (
+                        <span style={{
+                          fontSize: 10,
+                          padding: '2px 6px',
+                          borderRadius: 4,
+                          background: 'var(--bg-tertiary)',
+                          color: 'var(--text-muted)',
+                        }}>
+                          {program.cka_artifact_version}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {[
                   { label: 'Transformer', value: program.fp_cka_vs_transformer, color: 'var(--accent-blue)' },
@@ -551,6 +650,7 @@ function ProgramDetail({ resultId, onClose }) {
                         onClick={async () => {
                           setScaleUpStarting(true);
                           try {
+                            setActionError(null);
                             const res = await fetch(`${API_BASE}/api/experiments/start`, {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
@@ -564,13 +664,14 @@ function ProgramDetail({ resultId, onClose }) {
                             });
                             if (!res.ok) {
                               const err = await res.json();
-                              alert(err.error || 'Failed to start scale-up');
+                              setActionError(err.error || 'Failed to start scale-up');
                             } else {
                               setScaleUpOpen(false);
+                              if (onActionComplete) onActionComplete();
                               onClose();
                             }
                           } catch (e) {
-                            alert('Error: ' + e.message);
+                            setActionError('Error: ' + e.message);
                           }
                           setScaleUpStarting(false);
                         }}
@@ -604,6 +705,7 @@ function ProgramDetail({ resultId, onClose }) {
                     onClick={async () => {
                       setActionStarting('investigate');
                       try {
+                        setActionError(null);
                         const res = await fetch(`${API_BASE}/api/experiments/start`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
@@ -611,12 +713,13 @@ function ProgramDetail({ resultId, onClose }) {
                         });
                         if (!res.ok) {
                           const err = await res.json();
-                          alert(err.error || 'Failed to start investigation');
+                          setActionError(err.error || 'Failed to start investigation');
                         } else {
+                          if (onActionComplete) onActionComplete();
                           onClose();
                         }
                       } catch (e) {
-                        alert('Error: ' + e.message);
+                        setActionError('Error: ' + e.message);
                       }
                       setActionStarting(null);
                     }}
@@ -633,6 +736,7 @@ function ProgramDetail({ resultId, onClose }) {
                     onClick={async () => {
                       setActionStarting('validate');
                       try {
+                        setActionError(null);
                         const res = await fetch(`${API_BASE}/api/experiments/start`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
@@ -640,12 +744,13 @@ function ProgramDetail({ resultId, onClose }) {
                         });
                         if (!res.ok) {
                           const err = await res.json();
-                          alert(err.error || 'Failed to start validation');
+                          setActionError(err.error || 'Failed to start validation');
                         } else {
+                          if (onActionComplete) onActionComplete();
                           onClose();
                         }
                       } catch (e) {
-                        alert('Error: ' + e.message);
+                        setActionError('Error: ' + e.message);
                       }
                       setActionStarting(null);
                     }}

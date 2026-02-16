@@ -73,6 +73,7 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
   const [llmForm, setLlmForm] = useState({ backend: '', api_key: '', model: '', host: '' });
   const [llmSaving, setLlmSaving] = useState(false);
   const [llmMessage, setLlmMessage] = useState('');
+  const [actionError, setActionError] = useState('');
   // Scale-up state
   const [scaleUpUseTop, setScaleUpUseTop] = useState(true);
   const [scaleUpTopN, setScaleUpTopN] = useState(5);
@@ -106,6 +107,7 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
   const [investTopN, setInvestTopN] = useState(5);
 
   const handleStart = () => {
+    setActionError('');
     if (mode === 'investigation') {
       const payload = {
         ...config,
@@ -121,16 +123,16 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
               .map(p => p.result_id)
               .slice(0, investTopN);
             if (ids.length === 0) {
-              alert('No Stage 1 survivors found to investigate');
+              setActionError('No Stage 1 survivors found to investigate.');
               return;
             }
             onStart({ ...payload, result_ids: ids });
           })
-          .catch(e => alert('Failed to fetch programs: ' + e.message));
+          .catch(e => setActionError('Failed to fetch programs: ' + e.message));
       } else {
         const ids = investIds.split(',').map(s => s.trim()).filter(Boolean);
         if (ids.length === 0) {
-          alert('Please enter at least one result ID');
+          setActionError('Please enter at least one result ID.');
           return;
         }
         onStart({ ...payload, result_ids: ids });
@@ -152,16 +154,16 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
               .map(e => e.result_id)
               .slice(0, investTopN);
             if (ids.length === 0) {
-              alert('No investigation survivors found to validate');
+              setActionError('No investigation survivors found to validate.');
               return;
             }
             onStart({ ...payload, result_ids: ids });
           })
-          .catch(e => alert('Failed to fetch leaderboard: ' + e.message));
+          .catch(e => setActionError('Failed to fetch leaderboard: ' + e.message));
       } else {
         const ids = investIds.split(',').map(s => s.trim()).filter(Boolean);
         if (ids.length === 0) {
-          alert('Please enter at least one result ID');
+          setActionError('Please enter at least one result ID.');
           return;
         }
         onStart({ ...payload, result_ids: ids });
@@ -187,16 +189,16 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
               .map(p => p.result_id)
               .slice(0, scaleUpTopN);
             if (ids.length === 0) {
-              alert('No Stage 1 survivors found to scale up');
+              setActionError('No Stage 1 survivors found to scale up.');
               return;
             }
             onStart({ ...payload, result_ids: ids });
           })
-          .catch(e => alert('Failed to fetch top programs: ' + e.message));
+          .catch(e => setActionError('Failed to fetch top programs: ' + e.message));
       } else {
         const ids = scaleUpIds.split(',').map(s => s.trim()).filter(Boolean);
         if (ids.length === 0) {
-          alert('Please enter at least one result ID');
+          setActionError('Please enter at least one result ID.');
           return;
         }
         onStart({ ...payload, result_ids: ids });
@@ -284,15 +286,39 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
 
   const isEvolutionMode = mode === 'evolve' || mode === 'novelty';
   const isScaleUpMode = mode === 'scale_up';
-  const isGenerationProgress = progress?.total_generations > 0;
+  const generationTotal = progress?.total_generations || 0;
+  const generationCurrent = progress?.current_generation || 0;
+  const programTotal = progress?.total_programs || 0;
+  const programCurrent = progress?.current_program || 0;
+  const progressStatus = String(progress?.status || '').toLowerCase();
+  const isGenerationProgress = generationTotal > 0;
 
   const pct = isGenerationProgress
-    ? (progress.total_generations > 0
-        ? Math.round((progress.current_generation / progress.total_generations) * 100)
+    ? (generationTotal > 0
+        ? Math.round((generationCurrent / generationTotal) * 100)
         : 0)
-    : (progress?.total_programs > 0
-        ? Math.round((progress.current_program / progress.total_programs) * 100)
+    : (programTotal > 0
+        ? Math.round((programCurrent / programTotal) * 100)
         : 0);
+
+  const programProgressText = (() => {
+    if (programTotal > 0) {
+      return `${programCurrent} / ${programTotal} programs (${pct}%)`;
+    }
+    if (programCurrent > 0) {
+      return `${programCurrent} / ? programs (in progress)`;
+    }
+
+    if (['investigating', 'validating', 'scale_up'].includes(progressStatus)) {
+      return '0 / ? programs (initializing)';
+    }
+
+    if (progressStatus === 'resuming') {
+      return 'Resuming experiment state...';
+    }
+
+    return 'Initializing experiment...';
+  })();
 
   return (
     <div className="card control-panel">
@@ -304,6 +330,19 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
           strategy between experiments. Evolution and Novelty modes use population-based search
           to breed better architectures over generations.
         </p>
+      )}
+      {actionError && (
+        <div style={{
+          marginBottom: 12,
+          padding: '8px 10px',
+          borderRadius: 6,
+          border: '1px solid var(--accent-red)',
+          background: 'rgba(248, 81, 73, 0.1)',
+          color: 'var(--accent-red)',
+          fontSize: 12,
+        }}>
+          {actionError}
+        </div>
       )}
 
       {/* System Status */}
@@ -1093,7 +1132,7 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
             <span className="progress-text">
               {isGenerationProgress
                 ? `Gen ${progress?.current_generation || 0} / ${progress?.total_generations || 0} (${pct}%)`
-                : `${progress?.current_program || 0} / ${progress?.total_programs || 0} programs (${pct}%)`
+                : programProgressText
               }
             </span>
           </div>

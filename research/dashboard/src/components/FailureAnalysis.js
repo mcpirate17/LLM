@@ -31,18 +31,24 @@ function FunnelBar({ label, value, total, color }) {
 function FailureAnalysis({ experimentId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!experimentId) return;
     setLoading(true);
+    setError(null);
     fetch(`${API_BASE}/api/experiments/${experimentId}/failures`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch(e => { setError('Failed to load failure analysis: ' + e.message); setLoading(false); });
   }, [experimentId]);
 
   if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading failure analysis...</p></div>;
-  if (!data || data.total === 0) return <div className="card"><p style={{ color: 'var(--text-muted)' }}>No data</p></div>;
+  if (error) return <div className="card"><p style={{ color: 'var(--accent-red)' }}>{error}</p></div>;
+  if (!data || data.total === 0) return <div className="card"><p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No failure data for this experiment.</p></div>;
 
   const funnel = data.funnel || {};
   const errors = data.errors || {};
@@ -51,6 +57,9 @@ function FailureAnalysis({ experimentId }) {
   return (
     <div className="card">
       <div className="card-title">Failure Analysis</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Where and why generated architectures fail. The funnel shows how many survive each evaluation stage. Stage-at-death reveals which stage kills the most candidates, and top errors show the most common failure modes.
+      </p>
 
       {/* Stage Funnel */}
       <div style={{ marginBottom: 16 }}>

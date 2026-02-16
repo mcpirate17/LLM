@@ -451,6 +451,7 @@ def create_app(
     def api_grammar_weights():
         """Current vs learned grammar weights."""
         nb = LabNotebook(notebook_path)
+        aria = get_aria()
         try:
             from .analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
@@ -458,11 +459,13 @@ def create_app(
             learned = analytics.compute_grammar_weights()
             control_comparison = analytics.control_experiment_comparison()
             holdout = analytics.holdout_validation()
+            explanation = aria.explain_grammar_weights(defaults, learned)
             return jsonify({
                 "default": defaults,
                 "learned": learned,
                 "control_comparison": control_comparison,
                 "holdout_validation": holdout,
+                "explanation": explanation,
             })
         except Exception as e:
             logger.error(f"Error in grammar-weights: {e}")
@@ -505,9 +508,39 @@ def create_app(
         try:
             from .analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
-            return jsonify(analytics.routing_health())
+            payload = analytics.routing_health() or {}
+            payload.setdefault("available", False)
+            payload.setdefault("by_mode", [])
+            payload.setdefault("explanation", "Routing telemetry is unavailable.")
+            return jsonify(payload)
         except Exception as e:
             logger.error(f"Error in routing-health: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/learning-summary")
+    def api_learning_summary():
+        """Aria-generated 3-5 bullet summary of what the system has learned."""
+        nb = LabNotebook(notebook_path)
+        aria = get_aria()
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+
+            payload = aria.summarize_learning_bullets({
+                "summary": nb.get_dashboard_summary(),
+                "grammar_default": analytics.get_current_grammar_weights(),
+                "grammar_learned": analytics.compute_grammar_weights(),
+                "frontier": analytics.efficiency_frontier(),
+                "clusters": analytics.experiment_clusters(),
+                "recent_experiments": nb.get_recent_experiments(10),
+            })
+            payload.setdefault("bullets", [])
+            payload.setdefault("source", "rule-based")
+            return jsonify(payload)
+        except Exception as e:
+            logger.error(f"Error in learning-summary: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -1039,8 +1072,14 @@ def create_app(
         """Complete a campaign."""
         nb = LabNotebook(notebook_path)
         try:
+            campaign = nb.get_campaign(campaign_id)
             nb.update_campaign(campaign_id, status="completed",
                                completed_at=time.time())
+            runner = _get_runner(notebook_path)
+            runner._emit_event("campaign_completed", {
+                "campaign_id": campaign_id,
+                "title": (campaign or {}).get("title", ""),
+            })
             return jsonify({"status": "completed"})
         except Exception as e:
             logger.error(f"Error completing campaign: {e}")

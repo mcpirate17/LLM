@@ -219,6 +219,7 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const [data, setData] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [selectedProgramId, setSelectedProgramId] = useState(null);
   const [progSortKey, setProgSortKey] = useState('_score');
   const [progSortDesc, setProgSortDesc] = useState(true);
@@ -226,17 +227,30 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   useEffect(() => {
     if (!experimentId) return;
     setLoading(true);
+    setError(null);
     Promise.all([
-      fetch(`${API_BASE}/api/experiments/${experimentId}`).then(r => r.json()),
+      fetch(`${API_BASE}/api/experiments/${experimentId}`).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      }),
       fetch(`${API_BASE}/api/experiments/${experimentId}/analysis`).then(r => r.json()).catch(() => null),
     ]).then(([expData, analysisData]) => {
       setData(expData);
       setAnalysis(analysisData);
       setLoading(false);
-    }).catch(() => setLoading(false));
+    }).catch(e => {
+      const msg = e.message.includes('404')
+        ? 'This experiment could not be found. It may have been deleted.'
+        : e.message.includes('500')
+        ? 'Server error while loading experiment. Try again later.'
+        : 'Failed to load experiment: ' + e.message;
+      setError(msg);
+      setLoading(false);
+    });
   }, [experimentId]);
 
   if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading experiment...</p></div>;
+  if (error) return <div className="card"><p style={{ color: 'var(--accent-red)' }}>{error}</p></div>;
   if (!data || !data.experiment) return <div className="card"><p style={{ color: 'var(--accent-red)' }}>Experiment not found</p></div>;
 
   const exp = data.experiment;
@@ -311,16 +325,23 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
       )}
 
       {/* Insights */}
-      {exp.insights && exp.insights.length > 0 && (
-        <div className="card">
-          <div className="card-title">Insights</div>
-          {exp.insights.map((insight, i) => (
+      <div className="card">
+        <div className="card-title">Insights</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+          Patterns and takeaways Aria extracted from this experiment's results.
+        </p>
+        {exp.insights && exp.insights.length > 0 ? (
+          exp.insights.map((insight, i) => (
             <div key={i} className="insight-card">
               <div className="insight-content">{insight}</div>
             </div>
-          ))}
-        </div>
-      )}
+          ))
+        ) : (
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+            No insights generated for this experiment yet.
+          </p>
+        )}
+      </div>
 
       {/* Two-column: Failure Analysis + Programs Table */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16 }}>
@@ -340,10 +361,13 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
       </div>
 
       {/* Notebook Entries */}
-      {entries.length > 0 && (
-        <div className="card">
-          <div className="card-title">Notebook Entries</div>
-          {entries.slice(0, 10).map((entry, i) => (
+      <div className="card">
+        <div className="card-title">Notebook Entries</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+          Chronological log of observations, decisions, and errors recorded during this experiment.
+        </p>
+        {entries.length > 0 ? (
+          entries.slice(0, 10).map((entry, i) => (
             <div key={i} className={`notebook-entry ${entry.entry_type}`}>
               <div className="entry-header">
                 <span className="entry-title">{entry.title}</span>
@@ -351,9 +375,13 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
               </div>
               <div className="entry-content">{entry.content}</div>
             </div>
-          ))}
-        </div>
-      )}
+          ))
+        ) : (
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+            No notebook entries recorded for this experiment.
+          </p>
+        )}
+      </div>
 
       {/* Program Detail Modal */}
       {selectedProgramId && (

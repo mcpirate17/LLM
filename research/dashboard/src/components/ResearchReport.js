@@ -49,6 +49,7 @@ const DISC_COLUMNS = [
   { key: 'loss_ratio', label: 'Loss Ratio' },
   { key: 'novelty_score', label: 'Novelty' },
   { key: 'baseline_loss_ratio', label: 'Baseline' },
+  { key: 'cka_source', label: 'CKA Source' },
   { key: 'most_similar_to', label: 'Similar To' },
   { key: 'rating', label: 'Rating' },
 ];
@@ -95,6 +96,9 @@ function DiscoveryRankings({ programs }) {
   return (
     <div className="card">
       <div className="card-title">Discovery Rankings</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        The strongest architectures discovered, ranked by a composite of learning speed, novelty, and baseline comparison. Score combines loss ratio (35%), novelty (25%), baseline performance (30%), and identification (10%).
+      </p>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
@@ -141,6 +145,25 @@ function DiscoveryRankings({ programs }) {
                   fontWeight: p.baseline_loss_ratio != null && p.baseline_loss_ratio < 1 ? 600 : 'normal',
                 }}>
                   {p.baseline_loss_ratio != null ? p.baseline_loss_ratio.toFixed(3) : '--'}
+                </td>
+                <td style={{ padding: '6px' }}>
+                  {p.cka_source ? (
+                    <span style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      padding: '2px 6px',
+                      borderRadius: 4,
+                      background: p.cka_source === 'artifact' ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
+                      color: p.cka_source === 'artifact' ? 'var(--accent-green)' : 'var(--accent-red)',
+                    }}>
+                      {p.cka_source === 'artifact' ? 'artifact' : 'fallback'}
+                    </span>
+                  ) : '--'}
+                  {p.cka_artifact_version && (
+                    <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-muted)' }}>
+                      {p.cka_artifact_version}
+                    </span>
+                  )}
                 </td>
                 <td style={{ padding: '6px', color: 'var(--text-muted)', fontSize: 11 }}>
                   {p.most_similar_to || '--'}
@@ -378,6 +401,9 @@ function ResearchReport() {
       {experiments.length > 0 && (
         <div className="card">
           <div className="card-title">Experiment Timeline</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            Chronological view of experiments showing how pass rates and discovery quality evolved over the search.
+          </p>
           <div style={{ maxHeight: 400, overflowY: 'auto' }}>
             {experiments.map((exp, i) => {
               const s1 = exp.n_stage1_passed || 0;
@@ -418,6 +444,9 @@ function ResearchReport() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card">
           <div className="card-title">What Works</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            Operation types and patterns that consistently appear in successful architectures that passed Stage 1 learning evaluation.
+          </p>
           {bestOps.length > 0 ? (
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase' }}>Top Performing Ops</div>
@@ -478,6 +507,9 @@ function ResearchReport() {
 
         <div className="card">
           <div className="card-title">What Doesn't Work</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            Operation types and patterns that consistently lead to failure — compilation errors, numerical instability, or inability to learn.
+          </p>
           {Object.keys(failureByType).length > 0 || Object.keys(failureByStage).length > 0 ? (
             <>
               {Object.keys(failureByStage).length > 0 && (
@@ -532,6 +564,9 @@ function ResearchReport() {
       {grammarWeights.learned && grammarWeights.default && (
         <div className="card">
           <div className="card-title">Grammar Evolution</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            How the generation weights shifted over time. Rising bars mean the system generates more of that operation; falling bars mean it learned to avoid it.
+          </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase' }}>Weight Changes</div>
@@ -585,6 +620,9 @@ function ResearchReport() {
       {frontier.length > 0 && (
         <div className="card">
           <div className="card-title">Efficiency Frontier</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            Trade-off between model size (parameters) and learning speed (loss ratio). Points on the frontier are the best architectures at each size — nothing else learns faster for the same parameter budget.
+          </p>
           <EfficiencyChart frontier={frontier} />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
             {frontier.length} Pareto-optimal programs (lower loss, fewer FLOPs = better)
@@ -596,6 +634,9 @@ function ResearchReport() {
       {insights.length > 0 && (
         <div className="card">
           <div className="card-title">Insights & Recommendations</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            Key takeaways and suggested next steps synthesized from all experiments.
+          </p>
           {insights.slice(0, 15).map((ins, i) => (
             <div key={i} style={{
               padding: '8px 12px', borderBottom: '1px solid var(--border)',

@@ -112,7 +112,7 @@ function InsightsPanel({ insights, compact }) {
     return (
       <div className="card">
         <div className="card-title">Insights {compact ? '(Preview)' : ''}</div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           No insights recorded yet. Run experiments to generate insights.
         </p>
       </div>
@@ -138,6 +138,7 @@ function InsightsPanel({ insights, compact }) {
               <th
                 key={col.key}
                 onClick={() => handleSort(col.key)}
+                aria-label={`Sort insights by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
                 style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
               >
                 {col.label}
@@ -162,7 +163,17 @@ function InsightsPanel({ insights, compact }) {
               <React.Fragment key={insight.insight_id || i}>
                 <tr
                   style={{ cursor: 'pointer' }}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isExpanded}
+                  aria-label={`${isExpanded ? 'Collapse' : 'Expand'} insight ${(insight.category || 'item').replace('_', ' ')}`}
                   onClick={() => setExpandedId(isExpanded ? null : (insight.insight_id || i))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setExpandedId(isExpanded ? null : (insight.insight_id || i));
+                    }
+                  }}
                 >
                   <td style={{ fontWeight: 600, color: scoreColor(score) }}>
                     {score}

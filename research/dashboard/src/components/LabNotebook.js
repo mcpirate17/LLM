@@ -105,7 +105,7 @@ function LabNotebook({ entries }) {
     return (
       <div className="card">
         <div className="card-title">Lab Notebook</div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           No entries yet. The lab notebook will fill as Aria runs experiments.
         </p>
       </div>
@@ -115,6 +115,10 @@ function LabNotebook({ entries }) {
   return (
     <div className="card">
       <div className="card-title">Lab Notebook — Recent Entries</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Chronological research log of hypotheses, observations, results, and decisions. Use this to understand why
+        the system changed strategy and what evidence supported each step.
+      </p>
       <table className="data-table">
         <thead>
           <tr>
@@ -122,6 +126,7 @@ function LabNotebook({ entries }) {
               <th
                 key={col.key}
                 onClick={() => handleSort(col.key)}
+                aria-label={`Sort notebook entries by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
                 style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
               >
                 {col.label}
@@ -146,7 +151,17 @@ function LabNotebook({ entries }) {
               <React.Fragment key={entry.entry_id || i}>
                 <tr
                   style={{ cursor: 'pointer' }}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isExpanded}
+                  aria-label={`${isExpanded ? 'Collapse' : 'Expand'} notebook entry ${entry.title || entry.entry_type || 'row'}`}
                   onClick={() => setExpandedId(isExpanded ? null : (entry.entry_id || i))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setExpandedId(isExpanded ? null : (entry.entry_id || i));
+                    }
+                  }}
                 >
                   <td style={{ fontWeight: 600, color: scoreColor(score) }}>
                     {score}
