@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 _runner: Optional[ExperimentRunner] = None
 
 
+def _deduplicate_insights(insights: list) -> list:
+    """Keep only the most recent insight per unique content string."""
+    seen: dict = {}
+    for ins in insights:
+        content = ins.get("content", "")
+        if content not in seen:
+            seen[content] = ins
+    return list(seen.values())
+
+
 def _get_sse_timeout_seconds() -> float:
     """Get SSE stream polling timeout from env with safe fallback."""
     raw = os.environ.get("ARIA_SSE_TIMEOUT_SECONDS", "30")
@@ -108,9 +118,10 @@ def create_app(
         runner = _get_runner(notebook_path)
         aria = get_aria()
         try:
+            summary = nb.get_dashboard_summary()
             return jsonify({
-                "aria": aria.get_status(),
-                "summary": nb.get_dashboard_summary(),
+                "aria": aria.get_status(db_summary=summary),
+                "summary": summary,
                 "is_running": runner.is_running,
                 "progress": runner.progress.to_dict(),
             })
@@ -283,11 +294,18 @@ def create_app(
 
     @app.route("/api/insights")
     def api_insights():
-        """List active insights."""
+        """List active insights, deduplicated by content (keeps latest)."""
         category = request.args.get("category")
         nb = LabNotebook(notebook_path)
         try:
-            return jsonify(nb.get_insights(category=category))
+            raw = nb.get_insights(category=category, limit=200)
+            # Deduplicate: keep the most recent insight per unique content
+            seen: dict = {}
+            for ins in raw:
+                content = ins.get("content", "")
+                if content not in seen:
+                    seen[content] = ins
+            return jsonify(list(seen.values()))
         except Exception as e:
             logger.error(f"Error in /api/insights: {e}")
             return jsonify({"error": str(e)}), 500
@@ -349,11 +367,11 @@ def create_app(
                 logger.warning("Failed enriching dashboard campaign metadata: %s", e)
 
             data = {
-                "aria": aria.get_status(),
+                "aria": aria.get_status(db_summary=summary),
                 "summary": summary,
                 "recent_experiments": nb.get_recent_experiments(10),
                 "top_programs": nb.get_top_programs(10),
-                "insights": nb.get_insights(limit=10),
+                "insights": _deduplicate_insights(nb.get_insights(limit=50)),
                 "recent_entries": nb.get_entries(limit=20),
                 "is_running": runner.is_running,
                 "progress": runner.progress.to_dict(),
@@ -519,6 +537,20 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/analytics/learning-trajectory")
+    def api_learning_trajectory():
+        """S1 rate trend over time with regression analysis."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            return jsonify(analytics.learning_trajectory())
+        except Exception as e:
+            logger.error(f"Error in learning-trajectory: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/analytics/learning-summary")
     def api_learning_summary():
         """Aria-generated 3-5 bullet summary of what the system has learned."""
@@ -535,6 +567,7 @@ def create_app(
                 "frontier": analytics.efficiency_frontier(),
                 "clusters": analytics.experiment_clusters(),
                 "recent_experiments": nb.get_recent_experiments(10),
+                "trajectory": analytics.learning_trajectory(),
             })
             payload.setdefault("bullets", [])
             payload.setdefault("source", "rule-based")

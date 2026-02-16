@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { scoreColor } from '../utils/format';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -112,15 +113,9 @@ function opScore(stats) {
   return Math.round(Math.max(0, Math.min(100, s1 + s05 + s0 + nov + usage)));
 }
 
-function opScoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
-  return 'var(--accent-red)';
-}
-
 const OP_COLUMNS = [
   { key: '_score', label: 'Score' },
+  { key: '_reliabilityOrder', label: 'Reliability' },
   { key: 'rating', label: 'Rating' },
   { key: 'op', label: 'Op' },
   { key: 'n_used', label: 'Used' },
@@ -131,6 +126,23 @@ const OP_COLUMNS = [
 ];
 
 const RATING_ORDER = { Strong: 4, Good: 3, Some: 2, Compiles: 1, Weak: 0 };
+
+function opScoreBreakdown(stats) {
+  const s1 = Math.min((stats.s1_rate || 0) / 0.15, 1.0) * 40;
+  const s05 = Math.min((stats.s05_rate || 0), 1.0) * 20;
+  const s0 = Math.min((stats.s0_rate || 0), 1.0) * 10;
+  const novelty = Math.min((stats.avg_novelty || 0), 1.0) * 20;
+  const usage = Math.min((stats.n_used || 0) / 100, 1.0) * 10;
+  return { s1, s05, s0, novelty, usage };
+}
+
+function opReliability(stats) {
+  const n = stats.n_used || 0;
+  if (n >= 100) return { label: 'High', color: 'var(--accent-green)', order: 3, tip: 'High confidence: large sample size' };
+  if (n >= 40) return { label: 'Medium', color: 'var(--accent-yellow)', order: 2, tip: 'Moderate confidence: useful but still noisy' };
+  if (n >= 15) return { label: 'Low', color: 'var(--accent-orange, #f0883e)', order: 1, tip: 'Low confidence: small sample size' };
+  return { label: 'Very Low', color: 'var(--accent-red)', order: 0, tip: 'Very low confidence: treat as exploratory only' };
+}
 
 function OpSuccessTable({ opRates }) {
   const [sortKey, setSortKey] = useState('_score');
@@ -148,6 +160,8 @@ function OpSuccessTable({ opRates }) {
       ...stats,
       _score: opScore(stats),
       _rating: opRating(stats),
+      _reliability: opReliability(stats),
+      _reliabilityOrder: opReliability(stats).order,
     }));
   }, [opRates]);
 
@@ -156,6 +170,7 @@ function OpSuccessTable({ opRates }) {
     arr.sort((a, b) => {
       let va, vb;
       if (sortKey === '_score') { va = a._score; vb = b._score; }
+      else if (sortKey === '_reliabilityOrder') { va = a._reliabilityOrder || 0; vb = b._reliabilityOrder || 0; }
       else if (sortKey === 'rating') { va = RATING_ORDER[a._rating.label] || 0; vb = RATING_ORDER[b._rating.label] || 0; }
       else if (sortKey === 'op') { va = a.op; vb = b.op; }
       else { va = a[sortKey]; vb = b[sortKey]; }
@@ -195,6 +210,7 @@ function OpSuccessTable({ opRates }) {
                 <th
                   key={col.key}
                   onClick={() => handleSort(col.key)}
+                  aria-label={`Sort op success table by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
                   style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                 >
                   {col.label}
@@ -210,10 +226,22 @@ function OpSuccessTable({ opRates }) {
           <tbody>
             {sorted.map((row) => {
               const rating = row._rating;
+              const reliability = row._reliability;
+              const nUsed = row.n_used || 0;
+              const s0Count = Math.round((row.s0_rate || 0) * nUsed);
+              const s05Count = Math.round((row.s05_rate || 0) * nUsed);
+              const s1Count = Math.round((row.s1_rate || 0) * nUsed);
               return (
                 <tr key={row.op}>
-                  <td style={{ fontWeight: 600, color: opScoreColor(row._score) }}>
-                    {row._score}
+                  <td style={{ fontWeight: 600, color: scoreColor(row._score) }}>
+                    <span title={`S1 ${(opScoreBreakdown(row).s1 || 0).toFixed(1)}/40 | S0.5 ${(opScoreBreakdown(row).s05 || 0).toFixed(1)}/20 | S0 ${(opScoreBreakdown(row).s0 || 0).toFixed(1)}/10 | Novelty ${(opScoreBreakdown(row).novelty || 0).toFixed(1)}/20 | Usage ${(opScoreBreakdown(row).usage || 0).toFixed(1)}/10`}>
+                      {row._score}
+                    </span>
+                  </td>
+                  <td title={reliability.tip}>
+                    <span style={{ color: reliability.color, fontSize: 11, fontWeight: 600 }}>
+                      {reliability.label}
+                    </span>
                   </td>
                   <td title={rating.tip}>
                     <span style={{
@@ -227,23 +255,23 @@ function OpSuccessTable({ opRates }) {
                   <td style={{
                     color: row.s0_rate > 0.7 ? 'var(--accent-green)' : row.s0_rate > 0.4 ? 'var(--accent-yellow)' : 'var(--accent-red)'
                   }}>
-                    {(row.s0_rate * 100).toFixed(0)}%
+                    {(row.s0_rate * 100).toFixed(0)}% ({s0Count}/{nUsed})
                   </td>
                   <td style={{
                     color: row.s05_rate > 0.5 ? 'var(--accent-green)' : row.s05_rate > 0.2 ? 'var(--accent-yellow)' : 'var(--accent-red)'
                   }}>
-                    {(row.s05_rate * 100).toFixed(0)}%
+                    {(row.s05_rate * 100).toFixed(0)}% ({s05Count}/{nUsed})
                   </td>
                   <td style={{
                     fontWeight: row.s1_rate > 0.05 ? 600 : 'normal',
                     color: row.s1_rate > 0.15 ? 'var(--accent-green)' : row.s1_rate > 0.05 ? 'var(--accent-yellow)' : row.s1_rate > 0 ? 'var(--accent-orange, #f0883e)' : 'var(--text-muted)'
                   }}>
-                    {(row.s1_rate * 100).toFixed(1)}%
+                    {(row.s1_rate * 100).toFixed(1)}% ({s1Count}/{nUsed})
                   </td>
                   <td style={{
                     color: (row.avg_novelty || 0) > 0.7 ? 'var(--accent-green)' : (row.avg_novelty || 0) > 0.4 ? 'var(--accent-yellow)' : 'var(--text-muted)'
                   }}>
-                    {row.avg_novelty?.toFixed(3) || '--'}
+                    {row.avg_novelty != null ? row.avg_novelty.toFixed(3) : 'not computed'}
                   </td>
                 </tr>
               );
@@ -416,6 +444,92 @@ function EfficiencyFrontier({ frontier }) {
   );
 }
 
+function LearningTrajectory({ trajectory }) {
+  if (!trajectory || trajectory.trend === 'insufficient_data') {
+    return (
+      <div className="card">
+        <div className="card-title">Learning Trajectory</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          Need at least 3 experiments to compute a learning trajectory.
+        </p>
+      </div>
+    );
+  }
+
+  const trendColor = trajectory.trend === 'improving'
+    ? 'var(--accent-green)'
+    : trajectory.trend === 'declining'
+      ? 'var(--accent-red)'
+      : 'var(--accent-yellow)';
+
+  const trendLabel = trajectory.trend === 'improving'
+    ? 'Improving'
+    : trajectory.trend === 'declining'
+      ? 'Declining'
+      : 'Plateaued';
+
+  const points = trajectory.points || [];
+  const W = 300, H = 80, pad = 4;
+
+  let sparkline = null;
+  if (points.length >= 2) {
+    const rates = points.map(p => p.s1_rate);
+    const maxR = Math.max(...rates, 0.01);
+    const step = (W - 2 * pad) / (rates.length - 1);
+    const pts = rates.map((r, i) => {
+      const x = pad + i * step;
+      const y = H - pad - (r / maxR) * (H - 2 * pad);
+      return `${x},${y}`;
+    });
+    sparkline = (
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
+        <polyline points={pts.join(' ')} fill="none" stroke={trendColor} strokeWidth={2} />
+        {pts.map((pt, i) => {
+          const [x, y] = pt.split(',');
+          return <circle key={i} cx={x} cy={y} r={2.5} fill={trendColor} />;
+        })}
+      </svg>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Learning Trajectory</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Tracks the stage-1 survival rate across recent experiments to show whether the
+        AI scientist's search strategy is getting better at finding architectures that learn.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <span style={{
+          fontSize: 14, fontWeight: 700, color: trendColor,
+          padding: '2px 10px', borderRadius: 12,
+          background: trajectory.trend === 'improving'
+            ? 'rgba(63,185,80,0.15)'
+            : trajectory.trend === 'declining'
+              ? 'rgba(248,81,73,0.15)'
+              : 'rgba(210,153,34,0.15)',
+        }}>
+          {trendLabel}
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          Recent S1 rate: {((trajectory.recent_s1_rate || 0) * 100).toFixed(1)}%
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          Slope: {(trajectory.slope || 0) > 0 ? '+' : ''}{((trajectory.slope || 0) * 100).toFixed(2)}%/exp
+        </span>
+      </div>
+      {sparkline}
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+        <span>{points.length} experiments</span>
+        <span>Overall S1: {((trajectory.overall_s1_rate || 0) * 100).toFixed(1)}%</span>
+        {trajectory.weight_adjustments != null && (
+          <span>{trajectory.weight_adjustments} weight adjustments</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ExperimentClusters({ clustersData }) {
   if (!clustersData || !clustersData.clusters || clustersData.clusters.length === 0) {
     return (
@@ -539,8 +653,8 @@ function RoutingHealth({ data }) {
                 <td>{row.n_programs ?? 0}</td>
                 <td>{((row.stage1_pass_rate || 0) * 100).toFixed(1)}%</td>
                 <td>{((row.avg_drop_rate || 0) * 100).toFixed(1)}%</td>
-                <td>{row.avg_utilization_entropy != null ? Number(row.avg_utilization_entropy).toFixed(3) : '--'}</td>
-                <td>{row.avg_confidence_mean != null ? Number(row.avg_confidence_mean).toFixed(3) : '--'}</td>
+                <td>{row.avg_utilization_entropy != null ? Number(row.avg_utilization_entropy).toFixed(3) : 'not measured'}</td>
+                <td>{row.avg_confidence_mean != null ? Number(row.avg_confidence_mean).toFixed(3) : 'not measured'}</td>
               </tr>
             ))}
           </tbody>
@@ -580,8 +694,10 @@ function LearningPanel() {
   const [clusters, setClusters] = useState(null);
   const [routingHealth, setRoutingHealth] = useState(null);
   const [learningSummary, setLearningSummary] = useState(null);
+  const [trajectory, setTrajectory] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   useEffect(() => {
     const safeFetch = (url) => fetch(url).then(r => {
@@ -597,8 +713,9 @@ function LearningPanel() {
       safeFetch(`${API_BASE}/api/analytics/experiment-clusters`),
       safeFetch(`${API_BASE}/api/analytics/routing-health`),
       safeFetch(`${API_BASE}/api/analytics/learning-summary`),
-    ]).then(([w, ops, lg, fr, cl, rh, ls]) => {
-      if (!w && !ops && !lg && !fr && !cl && !rh && !ls) {
+      safeFetch(`${API_BASE}/api/analytics/learning-trajectory`),
+    ]).then(([w, ops, lg, fr, cl, rh, ls, lt]) => {
+      if (!w && !ops && !lg && !fr && !cl && !rh && !ls && !lt) {
         setError('Failed to load analytics data. The API may be unavailable.');
       }
       setWeights(w);
@@ -608,6 +725,8 @@ function LearningPanel() {
       setClusters(cl);
       setRoutingHealth(rh);
       setLearningSummary(ls);
+      setTrajectory(lt);
+      setLastUpdated(new Date());
       setLoading(false);
     }).catch(e => {
       setError('Failed to load analytics: ' + e.message);
@@ -631,8 +750,12 @@ function LearningPanel() {
           compositions of operations, testing if they compile and learn, and evolving the search
           grammar toward successful patterns. This tab shows what the system has learned so far.
         </p>
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '8px 0 0' }}>
+          Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Sources: analytics endpoints
+        </p>
       </div>
       <WhatIHaveLearned summary={learningSummary} />
+      <LearningTrajectory trajectory={trajectory} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <GrammarWeightsChart
           defaultWeights={weights?.default}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -36,11 +37,31 @@ function discoveryScore(p) {
   return Math.round(Math.max(0, Math.min(100, lossScore + noveltyScore + baselineScore + similarBonus)));
 }
 
+function discoveryScoreBreakdown(p) {
+  const loss = p.loss_ratio != null ? Math.max(0, 1 - (p.loss_ratio - 0.2) / 0.8) * 35 : 0;
+  const novelty = p.novelty_score != null ? Math.min(p.novelty_score, 1.0) * 25 : 0;
+  const baseline = p.baseline_loss_ratio != null ? Math.max(0, Math.min(1, 1.5 - p.baseline_loss_ratio)) * 30 : 0;
+  const id = p.most_similar_to ? 10 : 0;
+  return {
+    total: Math.round(Math.max(0, Math.min(100, loss + novelty + baseline + id))),
+    loss,
+    novelty,
+    baseline,
+    id,
+  };
+}
+
 function discScoreColor(score) {
   if (score >= 70) return 'var(--accent-green)';
   if (score >= 40) return 'var(--accent-yellow)';
   if (score >= 20) return 'var(--accent-orange, #f0883e)';
   return 'var(--accent-red)';
+}
+
+function reliabilityBand(sampleSize) {
+  if (sampleSize >= 30) return { label: 'high', color: 'var(--accent-green)' };
+  if (sampleSize >= 12) return { label: 'medium', color: 'var(--accent-yellow)' };
+  return { label: 'low', color: 'var(--accent-red)' };
 }
 
 const DISC_COLUMNS = [
@@ -56,9 +77,16 @@ const DISC_COLUMNS = [
 
 const DISC_RATING_ORDER = { 'S1 - Exceptional': 4, 'S1 - Strong': 3, 'S1 - Moderate': 2, 'S1 - Marginal': 1 };
 
-function DiscoveryRankings({ programs }) {
+function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidate }) {
   const [sortKey, setSortKey] = useState('_score');
   const [sortDesc, setSortDesc] = useState(true);
+  const [copiedValue, copyText] = useCopyToClipboard();
+
+  const sortAriaValue = (columnKey) => {
+    const normalized = columnKey === 'rating' ? '_ratingOrder' : columnKey;
+    if (sortKey !== normalized) return 'none';
+    return sortDesc ? 'descending' : 'ascending';
+  };
 
   const handleSort = (key) => {
     if (key === 'rating') key = '_ratingOrder';
@@ -76,7 +104,7 @@ function DiscoveryRankings({ programs }) {
       else if (lr < 0.5 && nov > 0.5) rLabel = 'S1 - Strong';
       else if (lr < 0.7) rLabel = 'S1 - Moderate';
       else rLabel = 'S1 - Marginal';
-      return { ...p, _score: discoveryScore(p), _ratingOrder: DISC_RATING_ORDER[rLabel] || 0 };
+      return { ...p, _score: discoveryScore(p), _scoreBreakdown: discoveryScoreBreakdown(p), _ratingOrder: DISC_RATING_ORDER[rLabel] || 0 };
     });
     aug.sort((a, b) => {
       let va, vb;
@@ -97,17 +125,24 @@ function DiscoveryRankings({ programs }) {
     <div className="card">
       <div className="card-title">Discovery Rankings</div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        The strongest architectures discovered, ranked by a composite of learning speed, novelty, and baseline comparison. Score combines loss ratio (35%), novelty (25%), baseline performance (30%), and identification (10%).
+        The strongest architectures discovered, ranked by a composite of learning speed, novelty, and baseline comparison.
+        Higher score is better and is meant for triage (not a publication-grade metric).
+      </p>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        <strong>Score bands:</strong> 70+ strong follow-up, 40-69 promising, below 40 low priority. Click a fingerprint to open full program detail.
       </p>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-              <th style={{ padding: '8px 6px', color: 'var(--text-muted)' }}>#</th>
+              <th scope="col" style={{ padding: '8px 6px', color: 'var(--text-muted)' }}>#</th>
               {DISC_COLUMNS.map(col => (
                 <th
                   key={col.key}
                   onClick={() => handleSort(col.key)}
+                  scope="col"
+                  aria-sort={sortAriaValue(col.key)}
+                  aria-label={`Sort by ${col.label}`}
                   style={{ padding: '8px 6px', color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                 >
                   {col.label}
@@ -125,10 +160,47 @@ function DiscoveryRankings({ programs }) {
               <tr key={p.result_id || i} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px', color: 'var(--text-muted)' }}>{i + 1}</td>
                 <td style={{ padding: '6px', fontWeight: 600, color: discScoreColor(p._score) }}>
-                  {p._score}
+                  <span title={`Loss ${(p._scoreBreakdown.loss || 0).toFixed(1)}/35 | Novelty ${(p._scoreBreakdown.novelty || 0).toFixed(1)}/25 | Baseline ${(p._scoreBreakdown.baseline || 0).toFixed(1)}/30 | ID ${(p._scoreBreakdown.id || 0).toFixed(1)}/10`}>
+                    {p._score}
+                  </span>
                 </td>
-                <td style={{ padding: '6px', fontFamily: 'monospace', color: 'var(--accent-blue)' }}>
-                  {(p.graph_fingerprint || '').slice(0, 12)}
+                <td style={{ padding: '6px' }}>
+                  {p.result_id && onSelectProgram ? (
+                    <>
+                      <button
+                        className="refresh-btn"
+                        style={{ fontSize: 11, padding: '3px 8px', fontFamily: 'monospace' }}
+                        onClick={() => onSelectProgram(p.result_id)}
+                        aria-label={`Open program details for fingerprint ${(p.graph_fingerprint || '').slice(0, 12)}`}
+                      >
+                        {(p.graph_fingerprint || '').slice(0, 12)}
+                      </button>
+                      {p.graph_fingerprint && (
+                        <button
+                          className="refresh-btn"
+                          style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
+                          onClick={() => copyText(p.graph_fingerprint)}
+                          aria-label={`Copy fingerprint ${p.graph_fingerprint}`}
+                        >
+                          {copiedValue === p.graph_fingerprint ? 'Copied FP' : 'Copy FP'}
+                        </button>
+                      )}
+                      {p.result_id && (
+                        <button
+                          className="refresh-btn"
+                          style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4 }}
+                          onClick={() => copyText(p.result_id)}
+                          aria-label={`Copy result id ${p.result_id}`}
+                        >
+                          {copiedValue === p.result_id ? 'Copied ID' : 'Copy ID'}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)' }}>
+                      {(p.graph_fingerprint || '').slice(0, 12)}
+                    </span>
+                  )}
                 </td>
                 <td style={{
                   padding: '6px', fontWeight: 600,
@@ -170,6 +242,30 @@ function DiscoveryRankings({ programs }) {
                 </td>
                 <td style={{ padding: '6px' }}>
                   {p.loss_ratio != null && <RatingBadge program={p} />}
+                  {p.result_id && (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {onInvestigate && (
+                        <button
+                          className="refresh-btn"
+                          style={{ fontSize: 10, padding: '1px 6px' }}
+                          onClick={() => onInvestigate([p.result_id])}
+                          aria-label={`Investigate program ${p.result_id}`}
+                        >
+                          Investigate
+                        </button>
+                      )}
+                      {onValidate && (
+                        <button
+                          className="refresh-btn"
+                          style={{ fontSize: 10, padding: '1px 6px' }}
+                          onClick={() => onValidate([p.result_id])}
+                          aria-label={`Validate program ${p.result_id}`}
+                        >
+                          Validate
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
@@ -297,10 +393,11 @@ function generateMarkdown(data) {
   return lines.join('\n');
 }
 
-function ResearchReport() {
+function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, onValidate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   useEffect(() => {
     setLoading(true);
@@ -309,7 +406,11 @@ function ResearchReport() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then(d => { setData(d); setLoading(false); })
+      .then(d => {
+        setData(d);
+        setLastUpdated(new Date());
+        setLoading(false);
+      })
       .catch(e => { setError(e.message); setLoading(false); });
   }, []);
 
@@ -348,6 +449,35 @@ function ResearchReport() {
     : [];
   const bestOps = sortedOps.filter(op => (op.s1_rate || 0) > 0).slice(0, 10);
   const worstOps = sortedOps.filter(op => (op.s1_rate || 0) === 0 && (op.total_count || 0) > 5).slice(0, 10);
+  const confidenceFactors = {
+    experiments: Math.min(1, (s.total_experiments || 0) / 5),
+    programs: Math.min(1, totalProg / 500),
+    rankings: Math.min(1, top.length / 10),
+    opCoverage: Math.min(1, sortedOps.length / 8),
+  };
+  const confidenceScore = Math.round((
+    confidenceFactors.experiments +
+    confidenceFactors.programs +
+    confidenceFactors.rankings +
+    confidenceFactors.opCoverage
+  ) / 4 * 100);
+  const confidenceBand = confidenceScore >= 75
+    ? { label: 'High confidence', color: 'var(--accent-green)' }
+    : confidenceScore >= 45
+      ? { label: 'Moderate confidence', color: 'var(--accent-yellow)' }
+      : { label: 'Low confidence', color: 'var(--accent-red)' };
+  const confidenceWarnings = [
+    (s.total_experiments || 0) < 3 ? 'Fewer than 3 experiments: trends can change quickly with one additional run.' : null,
+    totalProg < 200 ? `Only ${totalProg} programs evaluated: ranking order is still volatile.` : null,
+    top.length < 5 ? 'Discovery ranking depth is shallow (<5 candidates).' : null,
+    sortedOps.length < 4 ? 'Limited op-level coverage: “What Works” and “What Doesn’t Work” are early signals only.' : null,
+  ].filter(Boolean);
+  const confidenceStrengths = [
+    (s.total_experiments || 0) >= 5 ? `${s.total_experiments || 0} experiments provide multi-run evidence.` : null,
+    totalProg >= 500 ? `${totalProg.toLocaleString()} programs reduce random ranking swings.` : null,
+    top.length >= 10 ? `${top.length} ranked discoveries improve selection confidence.` : null,
+    sortedOps.length >= 8 ? `${sortedOps.length} ops observed gives broader operation-level signal.` : null,
+  ].filter(Boolean);
 
   // Failure breakdown
   const failureByType = failures.by_error_type || failures;
@@ -362,6 +492,9 @@ function ResearchReport() {
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             Consolidated findings from {s.total_experiments || 0} experiments
           </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Source: /api/report
+          </div>
         </div>
         <button className="start-btn" onClick={handleExport} style={{ padding: '8px 16px', fontSize: 13 }}>
           Export Markdown
@@ -371,6 +504,10 @@ function ResearchReport() {
       {/* Executive Summary */}
       <div className="card">
         <div className="card-title">Executive Summary</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+          Fast snapshot of search productivity and quality. Use this first to decide whether to inspect rankings,
+          failure patterns, or grammar updates in more detail.
+        </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12, marginBottom: 16 }}>
           <StatCard label="Experiments" value={s.total_experiments || 0} color="var(--accent-blue)" />
           <StatCard label="Programs Tested" value={totalProg.toLocaleString()} color="var(--accent-purple)" />
@@ -392,9 +529,79 @@ function ResearchReport() {
         )}
       </div>
 
+      <div className="card">
+        <div className="card-title">How to Read This Report</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          <div><strong>1. Discovery Rankings:</strong> pick candidates worth follow-up and open their full program details.</div>
+          <div><strong>2. Timeline + What Works/Doesn't:</strong> verify whether trends are stable across experiments.</div>
+          <div><strong>3. Grammar Evolution + Frontier:</strong> check if learned generation policy is moving toward better efficiency.</div>
+          <div><strong>4. Insights:</strong> turn repeated patterns into next experiment hypotheses.</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Metric Glossary</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          <div><strong>Loss Ratio:</strong> lower is better; compares post-training loss scale between candidates.</div>
+          <div><strong>Baseline Loss Ratio:</strong> candidate loss versus fixed baseline; below 1.0 means candidate beats baseline.</div>
+          <div><strong>Novelty Score:</strong> structural/behavioral difference signal; higher means less similar to prior programs.</div>
+          <div><strong>Discovery Score:</strong> triage composite from loss, novelty, baseline comparison, and identity bonus.</div>
+          <div><strong>S1 Survivor:</strong> program passed stage-1 learning evaluation and is eligible for deeper review.</div>
+          <div><strong>CKA Source:</strong> `artifact` means reference-backed similarity; `fallback` means heuristic fallback path.</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Confidence & Data Sufficiency</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          This callout estimates how stable current conclusions are based on sample size and coverage.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Current confidence:</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: confidenceBand.color }}>
+            {confidenceBand.label} ({confidenceScore}%)
+          </span>
+        </div>
+        <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Experiment depth: {(confidenceFactors.experiments * 100).toFixed(0)}%</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Program volume: {(confidenceFactors.programs * 100).toFixed(0)}%</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ranking coverage: {(confidenceFactors.rankings * 100).toFixed(0)}%</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Op coverage: {(confidenceFactors.opCoverage * 100).toFixed(0)}%</div>
+        </div>
+        {confidenceWarnings.length > 0 && (
+          <div style={{ marginBottom: confidenceStrengths.length > 0 ? 8 : 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+              Cautions
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {confidenceWarnings.map((item, idx) => (
+                <li key={`${item}-${idx}`}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {confidenceStrengths.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+              Supporting signals
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {confidenceStrengths.map((item, idx) => (
+                <li key={`${item}-${idx}`}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
       {/* Discovery Rankings */}
       {top.length > 0 && (
-        <DiscoveryRankings programs={top} />
+        <DiscoveryRankings
+          programs={top}
+          onSelectProgram={onSelectProgram}
+          onInvestigate={onInvestigate}
+          onValidate={onValidate}
+        />
       )}
 
       {/* Experiment Timeline */}
@@ -433,6 +640,16 @@ function ResearchReport() {
                   }}>
                     {confirmed ? 'Confirmed' : 'Refuted'}
                   </span>
+                  {onSelectExperiment && exp.experiment_id && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 11, padding: '4px 8px', marginLeft: 8 }}
+                      onClick={() => onSelectExperiment(exp.experiment_id)}
+                      aria-label={`Open experiment ${exp.experiment_id}`}
+                    >
+                      Open
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -447,6 +664,9 @@ function ResearchReport() {
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
             Operation types and patterns that consistently appear in successful architectures that passed Stage 1 learning evaluation.
           </p>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+            Use this section as a whitelist for future hypotheses: prioritize ops/combinations with repeatable S1 success.
+          </p>
           {bestOps.length > 0 ? (
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase' }}>Top Performing Ops</div>
@@ -456,8 +676,24 @@ function ResearchReport() {
                   borderBottom: '1px solid var(--border)',
                 }}>
                   <span style={{ fontSize: 12, fontFamily: 'monospace' }}>{op.op_name}</span>
-                  <span style={{ fontSize: 12, color: 'var(--accent-green)', fontWeight: 600 }}>
-                    {((op.s1_rate || 0) * 100).toFixed(1)}%
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: 'var(--accent-green)', fontWeight: 600 }}>
+                      {((op.s1_rate || 0) * 100).toFixed(1)}%
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      ({op.s1_count ?? Math.round((op.s1_rate || 0) * (op.total_count || 0))}/{op.total_count || 0})
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        textTransform: 'uppercase',
+                        color: reliabilityBand(op.total_count || 0).color,
+                      }}
+                      title="Reliability from sample size: high (>=30), medium (12-29), low (<12)."
+                    >
+                      {reliabilityBand(op.total_count || 0).label}
+                    </span>
                   </span>
                 </div>
               ))}
@@ -510,6 +746,9 @@ function ResearchReport() {
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
             Operation types and patterns that consistently lead to failure — compilation errors, numerical instability, or inability to learn.
           </p>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+            Use this section as a blacklist: reduce or constrain these patterns in upcoming runs to save search budget.
+          </p>
           {Object.keys(failureByType).length > 0 || Object.keys(failureByStage).length > 0 ? (
             <>
               {Object.keys(failureByStage).length > 0 && (
@@ -552,7 +791,25 @@ function ResearchReport() {
                   borderBottom: '1px solid var(--border)',
                 }}>
                   <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{op.op_name}</span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{op.total_count} uses</span>
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      0/{op.total_count || 0} S1
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      ({op.total_count || 0} uses)
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        textTransform: 'uppercase',
+                        color: reliabilityBand(op.total_count || 0).color,
+                      }}
+                      title="Reliability from sample size: high (>=30), medium (12-29), low (<12)."
+                    >
+                      {reliabilityBand(op.total_count || 0).label}
+                    </span>
+                  </span>
                 </div>
               ))}
             </div>
@@ -566,6 +823,9 @@ function ResearchReport() {
           <div className="card-title">Grammar Evolution</div>
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
             How the generation weights shifted over time. Rising bars mean the system generates more of that operation; falling bars mean it learned to avoid it.
+          </p>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+            Treat large weight deltas as policy changes; verify they align with the "What Works" and "What Doesn't Work" evidence above.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div>
@@ -623,6 +883,9 @@ function ResearchReport() {
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
             Trade-off between model size (parameters) and learning speed (loss ratio). Points on the frontier are the best architectures at each size — nothing else learns faster for the same parameter budget.
           </p>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+            Choose candidates on this curve when you need better learning with limited compute budget.
+          </p>
           <EfficiencyChart frontier={frontier} />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
             {frontier.length} Pareto-optimal programs (lower loss, fewer FLOPs = better)
@@ -636,6 +899,9 @@ function ResearchReport() {
           <div className="card-title">Insights & Recommendations</div>
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
             Key takeaways and suggested next steps synthesized from all experiments.
+          </p>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+            Convert high-confidence items into explicit hypotheses so they can be validated in campaign and timeline views.
           </p>
           {insights.slice(0, 15).map((ins, i) => (
             <div key={i} style={{

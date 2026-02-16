@@ -1,16 +1,7 @@
 import React, { useState, useMemo } from 'react';
-
-function formatTime(timestamp) {
-  if (!timestamp) return '--';
-  return new Date(timestamp * 1000).toLocaleString();
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return '--';
-  if (seconds < 60) return `${seconds.toFixed(0)}s`;
-  if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
-  return `${(seconds / 3600).toFixed(1)}h`;
-}
+import { formatTime, formatDuration, scoreColor } from '../utils/format';
+import { noveltyColor } from '../utils/colors';
+import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 /** Color-code experiment outcome: green (good), amber (ok), red (bad) */
 function experimentRating(exp) {
@@ -64,11 +55,29 @@ function experimentScore(exp) {
   return Math.round(Math.max(0, Math.min(100, score)));
 }
 
-function scoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
-  return 'var(--accent-red)';
+function experimentScoreBreakdown(exp) {
+  const n = exp.n_programs_generated || 0;
+  const s1 = exp.n_stage1_passed || 0;
+  const passRate = n > 0 ? Math.min(s1 / n / 0.10, 1.0) : 0;
+  const lossScore = exp.best_loss_ratio != null
+    ? Math.max(0, 1 - (exp.best_loss_ratio - 0.2) / 0.8)
+    : 0;
+  const noveltyScore = exp.best_novelty_score != null
+    ? Math.min(exp.best_novelty_score, 1.0)
+    : 0;
+  const completionScore = exp.status === 'completed' ? 1.0 : 0;
+
+  return {
+    passRate: passRate * 40,
+    loss: lossScore * 30,
+    novelty: noveltyScore * 20,
+    completion: completionScore * 10,
+  };
+}
+
+function metricText(value, fallbackReason, formatter) {
+  if (value == null) return fallbackReason;
+  return formatter(value);
 }
 
 const COLUMNS = [
@@ -88,6 +97,7 @@ const COLUMNS = [
 function ExperimentList({ experiments, onSelectExperiment }) {
   const [sortKey, setSortKey] = useState('score');
   const [sortDesc, setSortDesc] = useState(true);
+  const [copiedValue, copyText] = useCopyToClipboard();
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -183,7 +193,13 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                 style={{ cursor: onSelectExperiment ? 'pointer' : 'default' }}
                 onClick={() => onSelectExperiment && onSelectExperiment(exp.experiment_id)}>
                 <td style={{ fontWeight: 600, color: isActiveValidation ? 'var(--accent-blue)' : scoreColor(score) }}>
-                  {isActiveValidation ? '--' : score}
+                  {isActiveValidation ? (
+                    'running validation'
+                  ) : (
+                    <span title={`S1 rate ${(experimentScoreBreakdown(exp).passRate || 0).toFixed(1)}/40 | Loss ${(experimentScoreBreakdown(exp).loss || 0).toFixed(1)}/30 | Novelty ${(experimentScoreBreakdown(exp).novelty || 0).toFixed(1)}/20 | Completion ${(experimentScoreBreakdown(exp).completion || 0).toFixed(1)}/10`}>
+                      {score}
+                    </span>
+                  )}
                 </td>
                 <td title={rating.tip}>
                   <span style={{
@@ -194,6 +210,19 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                 </td>
                 <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
                   {exp.experiment_id}
+                  {exp.experiment_id && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyText(exp.experiment_id);
+                      }}
+                      aria-label={`Copy experiment id ${exp.experiment_id}`}
+                    >
+                      {copiedValue === exp.experiment_id ? 'Copied' : 'Copy'}
+                    </button>
+                  )}
                 </td>
                 <td>{exp.experiment_type}</td>
                 <td>
@@ -205,20 +234,28 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                 <td>{exp.n_programs_generated || 0}</td>
                 <td style={{ color: (exp.n_stage1_passed || 0) > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
                   {exp.n_stage1_passed || 0}
+                  <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                    / {exp.n_programs_generated || 0}
+                    {(exp.n_programs_generated || 0) > 0 && ` (${(((exp.n_stage1_passed || 0) / exp.n_programs_generated) * 100).toFixed(1)}%)`}
+                  </span>
                 </td>
                 <td style={{
                   color: exp.best_loss_ratio != null
                     ? (exp.best_loss_ratio < 0.5 ? 'var(--accent-green)' : exp.best_loss_ratio < 0.8 ? 'var(--accent-yellow)' : 'var(--text-muted)')
                     : 'var(--text-muted)'
                 }}>
-                  {exp.best_loss_ratio?.toFixed(3) || '--'}
+                  {metricText(
+                    exp.best_loss_ratio,
+                    (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'not yet evaluated',
+                    (v) => v.toFixed(3),
+                  )}
                 </td>
-                <td style={{
-                  color: exp.best_novelty_score != null
-                    ? (exp.best_novelty_score > 0.8 ? 'var(--accent-green)' : exp.best_novelty_score > 0.5 ? 'var(--accent-yellow)' : 'var(--text-muted)')
-                    : 'var(--text-muted)'
-                }}>
-                  {exp.best_novelty_score?.toFixed(3) || '--'}
+                <td style={{ color: noveltyColor(exp.best_novelty_score) }}>
+                  {metricText(
+                    exp.best_novelty_score,
+                    (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'insufficient data',
+                    (v) => v.toFixed(3),
+                  )}
                 </td>
                 <td>{formatDuration(exp.duration_seconds)}</td>
                 <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>

@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from 'react';
+import { formatTime, scoreColor } from '../utils/format';
+import { confidenceColor } from '../utils/colors';
 
 const CATEGORY_COLORS = {
   pattern: 'var(--accent-blue)',
@@ -33,13 +35,6 @@ function insightScore(insight) {
   return Math.round(Math.max(0, Math.min(100, conf + cat + status + evidence)));
 }
 
-function scoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
-  return 'var(--text-muted)';
-}
-
 const COLUMNS_FULL = [
   { key: '_score', label: 'Score' },
   { key: 'category', label: 'Category' },
@@ -56,10 +51,6 @@ const COLUMNS_COMPACT = [
   { key: 'confidence', label: 'Conf' },
 ];
 
-function formatTime(timestamp) {
-  if (!timestamp) return '';
-  return new Date(timestamp * 1000).toLocaleString();
-}
 
 function InsightsPanel({ insights, compact }) {
   const [sortKey, setSortKey] = useState('_score');
@@ -193,8 +184,7 @@ function InsightsPanel({ insights, compact }) {
                   </td>
                   <td>
                     <span style={{
-                      color: (insight.confidence || 0) >= 0.7 ? 'var(--accent-green)'
-                        : (insight.confidence || 0) >= 0.4 ? 'var(--accent-yellow)' : 'var(--text-muted)',
+                      color: confidenceColor(insight.confidence),
                       fontWeight: (insight.confidence || 0) >= 0.7 ? 600 : 400,
                     }}>
                       {((insight.confidence || 0.5) * 100).toFixed(0)}%

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import AriaAvatar from './components/AriaAvatar';
 import AriaStatus from './components/AriaStatus';
 import SummaryCards from './components/SummaryCards';
@@ -23,6 +23,20 @@ import './App.css';
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
 function App() {
+  const TAB_LABELS = {
+    overview: 'Overview',
+    experiments: 'Experiments',
+    programs: 'Programs (Raw)',
+    leaderboard: 'Leaderboard (Curated)',
+    campaigns: 'Campaigns',
+    knowledge: 'Knowledge',
+    trends: 'Trends',
+    learning: 'Learning',
+    notebook: 'Notebook',
+    insights: 'Insights',
+    report: 'Report',
+    help: 'Help',
+  };
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
@@ -198,6 +212,19 @@ function App() {
   };
 
   const ariaMood = data?.aria?.mood || 'curious';
+  const compactInsights = useMemo(() => {
+    const insights = Array.isArray(data?.insights) ? data.insights : [];
+    const deduped = [];
+    const seen = new Set();
+    for (const insight of insights) {
+      const key = `${(insight?.category || '').toLowerCase()}::${(insight?.content || '').trim().toLowerCase()}`;
+      if (key === '::' || seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(insight);
+      if (deduped.length >= 5) break;
+    }
+    return deduped;
+  }, [data?.insights]);
 
   return (
     <div className="app">
@@ -229,19 +256,33 @@ function App() {
       </header>
 
       <nav className="tab-nav">
-        {['overview', 'experiments', 'programs', 'leaderboard', 'campaigns', 'knowledge', 'trends', 'learning', 'notebook', 'insights', 'report', 'help'].map(tab => (
-          <button
-            key={tab}
-            className={`tab ${activeTab === tab ? 'active' : ''} ${
-              tab === 'experiment-detail' ? 'hidden' : ''
-            }`}
-            onClick={() => {
-              setActiveTab(tab);
-              if (tab !== 'experiment-detail') setSelectedExperiment(null);
-            }}
-          >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
-          </button>
+        {[
+          { section: null, tabs: ['overview'] },
+          { section: 'Research', tabs: ['experiments', 'programs', 'leaderboard'] },
+          { section: 'Analysis', tabs: ['trends', 'learning', 'insights', 'report'] },
+          { section: 'Meta', tabs: ['campaigns', 'knowledge', 'notebook', 'help'] },
+        ].map(group => (
+          <React.Fragment key={group.section || 'main'}>
+            {group.section && (
+              <span style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, padding: '0 4px', alignSelf: 'center', userSelect: 'none' }}>
+                {group.section}
+              </span>
+            )}
+            {group.tabs.map(tab => (
+              <button
+                key={tab}
+                className={`tab ${activeTab === tab ? 'active' : ''} ${
+                  tab === 'experiment-detail' ? 'hidden' : ''
+                }`}
+                onClick={() => {
+                  setActiveTab(tab);
+                  if (tab !== 'experiment-detail') setSelectedExperiment(null);
+                }}
+              >
+                {TAB_LABELS[tab] || (tab.charAt(0).toUpperCase() + tab.slice(1))}
+              </button>
+            ))}
+          </React.Fragment>
         ))}
       </nav>
 
@@ -298,10 +339,11 @@ function App() {
             <div className="overview-bottom">
               <TopPrograms
                 programs={data?.top_programs?.slice(0, 5)}
+                totalCount={data?.top_programs?.length || 0}
                 compact
                 onSelectProgram={handleSelectProgram}
               />
-              <InsightsPanel insights={data?.insights?.slice(0, 5)} compact />
+              <InsightsPanel insights={compactInsights} compact />
             </div>
           </div>
         )}
@@ -351,15 +393,17 @@ function App() {
         )}
 
         {activeTab === 'campaigns' && (
-          <CampaignView />
+          <CampaignView
+            onSelectExperiment={handleSelectExperiment}
+          />
         )}
 
         {activeTab === 'knowledge' && (
-          <KnowledgeBase />
+          <KnowledgeBase onSelectExperiment={handleSelectExperiment} />
         )}
 
         {activeTab === 'trends' && (
-          <TrendCharts />
+          <TrendCharts onSelectExperiment={handleSelectExperiment} />
         )}
 
         {activeTab === 'learning' && (
@@ -373,7 +417,10 @@ function App() {
                 Fresh notebook fetch failed ({tabErrors.entries}); showing dashboard snapshot.
               </div>
             )}
-            <LabNotebook entries={tabData.entries || data?.recent_entries} />
+            <LabNotebook
+              entries={tabData.entries || data?.recent_entries}
+              onSelectExperiment={handleSelectExperiment}
+            />
           </>
         )}
 
@@ -389,7 +436,12 @@ function App() {
         )}
 
         {activeTab === 'report' && (
-          <ResearchReport />
+          <ResearchReport
+            onSelectProgram={handleSelectProgram}
+            onSelectExperiment={handleSelectExperiment}
+            onInvestigate={handleInvestigate}
+            onValidate={handleValidate}
+          />
         )}
 
         {activeTab === 'help' && (

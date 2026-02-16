@@ -34,7 +34,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -241,8 +241,17 @@ class Aria:
 
     # ── LLM-enhanced methods with rule-based fallback ──
 
-    def formulate_hypothesis(self, context: str = "", **kwargs) -> str:
-        """Generate a hypothesis. Uses LLM if available, else templates."""
+    def formulate_hypothesis(
+        self,
+        context: str = "",
+        return_metadata: bool = False,
+        **kwargs,
+    ) -> Union[str, Tuple[str, Dict]]:
+        """Generate a hypothesis. Uses LLM if available, else templates.
+
+        When ``return_metadata`` is True, returns ``(hypothesis, metadata)``
+        where metadata includes provenance details for notebook traceability.
+        """
         llm = self._get_llm()
         if llm and context:
             try:
@@ -253,11 +262,32 @@ class Aria:
                 if resp.text.strip():
                     hyp = resp.text.strip()
                     self.state.current_hypothesis = hyp
+                    if return_metadata:
+                        return hyp, {
+                            "source": "llm_context",
+                            "llm_used": True,
+                            "fallback_used": False,
+                            "used_context": bool(context),
+                            "review_status": "not_reviewed",
+                            "confidence": None,
+                            "critique": None,
+                        }
                     return hyp
             except Exception as e:
                 logger.warning(f"LLM hypothesis failed, falling back: {e}")
 
-        return self._rule_based_hypothesis(**kwargs)
+        hyp = self._rule_based_hypothesis(**kwargs)
+        if return_metadata:
+            return hyp, {
+                "source": "rule_based_fallback" if context else "rule_based",
+                "llm_used": False,
+                "fallback_used": bool(context),
+                "used_context": bool(context),
+                "review_status": "not_reviewed",
+                "confidence": None,
+                "critique": None,
+            }
+        return hyp
 
     def _rule_based_hypothesis(self, **kwargs) -> str:
         """Original template-based hypothesis generation."""
@@ -649,17 +679,26 @@ class Aria:
         parts = []
         if increased:
             winners = ", ".join(
-                f"{cat.replace('_', ' ')} (+{delta:.2f})" for cat, delta, _cur, _base in increased
+                f"{cat.replace('_', ' ')} ({_base:.1f}\u2192{_cur:.1f})"
+                for cat, delta, _cur, _base in increased
             )
             parts.append(f"The search is rewarding {winners}, because these categories are showing stronger learning outcomes.")
         if decreased:
             losers = ", ".join(
-                f"{cat.replace('_', ' ')} ({delta:.2f})" for cat, delta, _cur, _base in decreased
+                f"{cat.replace('_', ' ')} ({_base:.1f}\u2192{_cur:.1f})"
+                for cat, delta, _cur, _base in decreased
             )
             parts.append(f"It is penalizing {losers}, which likely reflects weaker survival or learning rates in recent experiments.")
-        parts.append(
-            "In practice, this shifts generation probability toward operation families that are more likely to produce learnable architectures."
-        )
+
+        # Summarize net shift magnitude
+        total_increased = sum(abs(d) for d in [r[1] for r in delta_rows] if d > 0.05)
+        total_decreased = sum(abs(d) for d in [r[1] for r in delta_rows] if d < -0.05)
+        n_adjustments = len(increased) + len(decreased)
+        if n_adjustments > 0:
+            parts.append(
+                f"Across {n_adjustments} adjusted categories, net shift is "
+                f"+{total_increased:.1f} toward winners and -{total_decreased:.1f} away from underperformers."
+            )
         return " ".join(parts)
 
     def summarize_learning_bullets(self, learning_data: Dict) -> Dict[str, object]:
@@ -724,6 +763,23 @@ class Aria:
         bullets.append(
             f"The search has evaluated {total} programs with {survivors} Stage 1 survivors ({survival_rate * 100:.1f}% survival), indicating {'productive' if survival_rate >= 0.03 else 'early-stage'} grammar quality."
         )
+
+        # Learning trajectory bullet
+        trajectory = learning_data.get("trajectory") or {}
+        trend = trajectory.get("trend", "")
+        if trend in ("improving", "plateaued", "declining"):
+            slope = trajectory.get("slope", 0)
+            recent = trajectory.get("recent_s1_rate", 0)
+            n_adj = trajectory.get("weight_adjustments", 0)
+            trend_desc = {
+                "improving": "S1 pass rate is trending upward",
+                "plateaued": "S1 pass rate has plateaued",
+                "declining": "S1 pass rate is trending downward",
+            }[trend]
+            bullets.append(
+                f"{trend_desc} (recent avg {recent * 100:.1f}%, slope {slope:+.4f}/experiment). "
+                f"Grammar weights have been adjusted {n_adj} time{'s' if n_adj != 1 else ''} so far."
+            )
 
         deltas = []
         for category, base in sorted(grammar_default.items()):
@@ -992,9 +1048,13 @@ class Aria:
 
         return "\n".join(sections)
 
-    def get_status(self) -> Dict:
-        """Get Aria's current status for the dashboard."""
-        return {
+    def get_status(self, db_summary: Optional[Dict] = None) -> Dict:
+        """Get Aria's current status for the dashboard.
+
+        If *db_summary* (from ``LabNotebook.get_dashboard_summary()``) is
+        provided, all-time counters are included alongside daily counters.
+        """
+        status = {
             "name": self.NAME,
             "title": self.TITLE,
             "avatar": self.AVATAR,
@@ -1007,6 +1067,11 @@ class Aria:
             "recent_insights": self.state.insights[-5:] if self.state.insights else [],
             "llm_enabled": self._get_llm() is not None,
         }
+        if db_summary:
+            status["total_experiments"] = db_summary.get("total_experiments", 0)
+            status["total_programs"] = db_summary.get("total_programs_evaluated", 0)
+            status["stage1_survivors"] = db_summary.get("stage1_survivors", 0)
+        return status
 
     def formulate_investigation_hypothesis(self, context: str = "") -> str:
         """Generate investigation hypothesis for promising candidates."""
@@ -1745,18 +1810,36 @@ class Aria:
         entries = []
         # Extract from confirmed hypotheses
         for h in hypotheses:
+            prediction = h.get("prediction", "")
+            outcome = h.get("outcome_summary", "")
+            reasoning = h.get("reasoning", "")
+            test_method = h.get("test_method", "")
             if h.get("status") == "confirmed":
+                parts = [f"Hypothesis: {prediction}"]
+                if reasoning:
+                    parts.append(f"Reasoning: {reasoning}")
+                if test_method:
+                    parts.append(f"Test: {test_method}")
+                if outcome:
+                    parts.append(f"Outcome: {outcome}")
                 entries.append({
                     "category": "principle",
-                    "title": f"Confirmed: {h.get('prediction', '')[:50]}",
-                    "content": h.get("outcome_summary", h.get("prediction", ""))[:200],
+                    "title": f"Confirmed: {prediction}",
+                    "content": "\n".join(parts),
                     "confidence": h.get("confidence_after", 0.6),
                 })
             elif h.get("status") == "refuted":
+                parts = [f"Hypothesis: {prediction}"]
+                if reasoning:
+                    parts.append(f"Reasoning: {reasoning}")
+                if test_method:
+                    parts.append(f"Test: {test_method}")
+                if outcome:
+                    parts.append(f"Outcome: {outcome}")
                 entries.append({
                     "category": "anti_pattern",
-                    "title": f"Refuted: {h.get('prediction', '')[:50]}",
-                    "content": h.get("outcome_summary", h.get("prediction", ""))[:200],
+                    "title": f"Refuted: {prediction}",
+                    "content": "\n".join(parts),
                     "confidence": h.get("confidence_after", 0.6),
                 })
         return entries[:5]  # limit to 5

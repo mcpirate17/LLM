@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
+import { formatTime, formatDuration } from '../utils/format';
+import { lossColor, noveltyColor } from '../utils/colors';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -8,18 +10,6 @@ const API_BASE = process.env.REACT_APP_API_URL || '';
  * ExperimentDetail — Full experiment breakdown with hypothesis, funnel,
  * all programs table, failure analysis, and Aria's LLM analysis.
  */
-
-function formatTime(timestamp) {
-  if (!timestamp) return '--';
-  return new Date(timestamp * 1000).toLocaleString();
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return '--';
-  if (seconds < 60) return `${seconds.toFixed(0)}s`;
-  if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
-  return `${(seconds / 3600).toFixed(1)}h`;
-}
 
 /** Rate a program row: green (learned well), amber (compiles), red (failed early) */
 function programRowRating(p) {
@@ -174,17 +164,10 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
                   <td><span className={`badge ${p.stage0_passed ? 'pass' : 'fail'}`}>{p.stage0_passed ? 'P' : 'F'}</span></td>
                   <td><span className={`badge ${p.stage05_passed ? 'pass' : 'fail'}`}>{p.stage05_passed ? 'P' : 'F'}</span></td>
                   <td><span className={`badge ${p.stage1_passed ? 'pass' : 'fail'}`}>{p.stage1_passed ? 'P' : 'F'}</span></td>
-                  <td style={{
-                    color: (p.novelty_score || 0) > 0.8 ? 'var(--accent-green)'
-                      : (p.novelty_score || 0) > 0.5 ? 'var(--accent-yellow)' : 'var(--text-muted)'
-                  }}>
+                  <td style={{ color: noveltyColor(p.novelty_score) }}>
                     {p.novelty_score?.toFixed(3) || '--'}
                   </td>
-                  <td style={{
-                    color: p.loss_ratio != null
-                      ? (p.loss_ratio < 0.5 ? 'var(--accent-green)' : p.loss_ratio < 0.7 ? 'var(--accent-yellow)' : 'var(--accent-orange, #f0883e)')
-                      : 'var(--text-muted)'
-                  }}>
+                  <td style={{ color: lossColor(p.loss_ratio) }}>
                     {p.loss_ratio?.toFixed(4) || '--'}
                   </td>
                   <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : '--'}</td>

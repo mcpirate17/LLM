@@ -51,6 +51,34 @@ function AriaStatus({ aria }) {
         </div>
       </div>
 
+      {(aria.total_experiments != null || aria.total_programs != null) && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', fontWeight: 600 }}>
+            All-time
+          </div>
+          <div className="aria-stats">
+            {aria.total_experiments != null && (
+              <div className="aria-stat">
+                <span className="aria-stat-label">Experiments</span>
+                <span>{aria.total_experiments}</span>
+              </div>
+            )}
+            {aria.total_programs != null && (
+              <div className="aria-stat">
+                <span className="aria-stat-label">Programs</span>
+                <span>{aria.total_programs}</span>
+              </div>
+            )}
+            {aria.stage1_survivors != null && (
+              <div className="aria-stat">
+                <span className="aria-stat-label">S1 Survivors</span>
+                <span>{aria.stage1_survivors}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {aria.recent_insights && aria.recent_insights.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>

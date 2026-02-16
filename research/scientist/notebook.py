@@ -653,6 +653,7 @@ class LabNotebook:
         config: Dict,
         hypothesis: Optional[str] = None,
         research_question: Optional[str] = None,
+        hypothesis_metadata: Optional[Dict] = None,
     ) -> str:
         """Start a new experiment. Returns experiment ID."""
         exp_id = str(uuid.uuid4())[:12]
@@ -671,12 +672,24 @@ class LabNotebook:
         self.conn.commit()
 
         # Log entry
+        source = (hypothesis_metadata or {}).get("source", "unknown")
+        confidence = (hypothesis_metadata or {}).get("confidence")
+        critique = (hypothesis_metadata or {}).get("critique")
+        confidence_text = confidence if confidence is not None else "not provided"
+        critique_text = critique if critique else "not provided"
         self.add_entry(ExperimentEntry(
             entry_type="hypothesis",
             title=f"Experiment {exp_id} started",
-            content=f"Type: {experiment_type}\nHypothesis: {hypothesis or 'exploratory'}",
+            content=(
+                f"Type: {experiment_type}\n"
+                f"Hypothesis: {hypothesis or 'exploratory'}\n"
+                f"Provenance: {source}\n"
+                f"Confidence: {confidence_text}\n"
+                f"Critique: {critique_text}"
+            ),
             experiment_id=exp_id,
             tags=["experiment_start"],
+            metadata=hypothesis_metadata or {},
         ))
 
         return exp_id

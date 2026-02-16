@@ -100,21 +100,78 @@ The system status badge on the dashboard shows whether an LLM backend is active.
   },
   {
     title: 'Dashboard Tabs',
-    content: `**Overview** - Aria's status, experiment control panel, summary stats, live feed during runs, top programs and insights.
+    content: `Tabs are grouped into three sections:
 
-**Experiments** - List of all experiments with status, pass rates, and key metrics. Click to drill down.
+**Research** — Core experiment data
+- **Overview** - Aria's status, control panel, summary stats, live feed, top programs and insights
+- **Experiments** - All experiments with pass rates and key metrics. Click to drill down
+- **Programs (Raw)** - S1 survivors ranked by novelty or loss. Click for full detail
+- **Leaderboard (Curated)** - Promotion pipeline: screening → investigation → validation → breakthrough
 
-**Programs** - Top programs ranked by novelty or loss ratio. Click for full detail including behavioral fingerprint and graph structure.
+**Analysis** — Trends and learning signals
+- **Trends** - Cross-experiment charts (S1 pass rate, novelty, loss ratio over time)
+- **Learning** - Grammar weight evolution, op success rates, trajectory, clusters
+- **Insights** - Data-driven patterns: top/bottom ops, correlations, failure modes
+- **Report** - Consolidated research report with discovery rankings and efficiency frontier
 
-**Trends** - Cross-experiment charts showing S1 pass rate, novelty, and loss ratio over time.
+**Meta** — Campaign, knowledge, and audit trail
+- **Campaigns** - Goal-oriented experiment groups with hypotheses and decisions
+- **Knowledge** - Curated lessons extracted from past experiments
+- **Notebook** - Raw lab notebook entries: hypotheses, observations, analyses, errors
+- **Help** - This panel`
+  },
+  {
+    title: 'Color Legend',
+    content: `Colors are used consistently across the dashboard:
 
-**Learning** - Grammar weight evolution, op success rates, learning log audit trail.
+**Score colors** (used in all scored tables):
+- Green (70+) — Strong performance, high confidence
+- Yellow (40-69) — Moderate, worth investigating
+- Orange (20-39) — Weak signal, low confidence
+- Red (<20) — Poor or failing
 
-**Notebook** - Raw lab notebook entries: hypotheses, observations, analyses, errors, and insights.
+**Tier colors** (Leaderboard):
+- Blue — Screening (initial candidates)
+- Yellow — Investigation (promising, under study)
+- Purple — Validation (strong, multi-seed testing)
+- Green — Breakthrough (beats baseline, publication-ready)
 
-**Insights** - Data-driven insights from analytics: top/bottom ops, structural correlations, failure patterns, winning combinations.
+**Rating colors** (Programs, Experiments):
+- Green — Excellent/Strong: beats transformer baseline or high S1 rate
+- Yellow — Promising/Good: learns but hasn't beaten baseline yet
+- Orange — Marginal/Compiles: passes early stages but weak learning
+- Red — Weak/Failed: rarely compiles or learns
 
-**Help** - This panel.`
+**Category colors** (Insights):
+- Blue — Pattern (general observation)
+- Red — Failure mode (what goes wrong)
+- Green — Success factor (what works)
+- Purple — Hypothesis (testable prediction)
+
+**Category colors** (Knowledge):
+- Blue — Principle (confirmed design rule)
+- Red — Anti-pattern (confirmed failure mode)
+- Green — Sweet spot (optimal parameter range)
+- Purple — Correlation (observed relationship)
+- Yellow — Tool insight (system behavior observation)`
+  },
+  {
+    title: 'Score Formulas',
+    content: `Each page scores items differently based on what matters for that context. All scores are 0-100.
+
+**Experiment Score** (Experiments tab): S1 rate (40%) + Loss ratio (30%) + Novelty (20%) + Completion (10%)
+
+**Program Score** (Programs tab): Loss ratio (35%) + Novelty (25%) + Baseline ratio (25%) + Throughput (15%)
+
+**Leaderboard Score** (Leaderboard tab): Adaptive by tier — earlier tiers weight the tier bonus higher, later tiers weight validation metrics (baseline ratio, multi-seed consistency) higher.
+
+**Trend Score** (Trends tab): S1 rate (35%) + Loss ratio (30%) + Novelty (25%) + Efficiency (10%)
+
+**Op Score** (Learning tab): S1 rate (40%) + S0.5 rate (20%) + S0 rate (10%) + Novelty (20%) + Usage (10%)
+
+**Insight Score** (Insights tab): Confidence (40%) + Category importance (30%) + Status (20%) + Evidence (10%)
+
+All scores show a tooltip breakdown on hover. Lower loss ratio = better. Higher novelty = more structurally different.`
   },
 ];
 

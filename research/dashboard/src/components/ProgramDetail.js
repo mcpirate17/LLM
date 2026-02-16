@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import GraphViewer from './GraphViewer';
+import { lossColor, noveltyColor } from '../utils/colors';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -436,7 +437,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete }) {
                   <MetricRow label="Parameters" value={program.param_count ? `${(program.param_count / 1e6).toFixed(2)}M` : null} />
                   <MetricRow label="Loss Ratio" value={program.loss_ratio != null ?
                     <span style={{
-                      color: program.loss_ratio < 0.5 ? 'var(--accent-green)' : program.loss_ratio < 0.7 ? 'var(--accent-yellow)' : 'var(--accent-orange, #f0883e)',
+                      color: lossColor(program.loss_ratio),
                       fontWeight: program.loss_ratio < 0.5 ? 600 : 'normal',
                     }} title={program.loss_ratio < 0.5 ? 'Learned quickly — strong candidate' : program.loss_ratio < 0.7 ? 'Moderate learning' : 'Slow learning'}>
                       {fmt(program.loss_ratio)}
@@ -452,7 +453,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete }) {
                   <MetricRow label="Throughput" value={program.throughput_tok_s != null ? `${Number(program.throughput_tok_s).toFixed(0)} tok/s` : null} />
                   <MetricRow label="Novelty" value={program.novelty_score != null ?
                     <span style={{
-                      color: (program.novelty_score || 0) > 0.8 ? 'var(--accent-green)' : (program.novelty_score || 0) > 0.5 ? 'var(--accent-yellow)' : 'var(--text-muted)',
+                      color: noveltyColor(program.novelty_score),
                     }} title={program.novelty_score > 0.8 ? 'Very different from known architectures' : program.novelty_score > 0.5 ? 'Moderately novel' : 'Similar to existing architectures'}>
                       {fmt(program.novelty_score, 3)}
                     </span> : null} />

@@ -1,4 +1,7 @@
 import React, { useState, useMemo } from 'react';
+import { scoreColor } from '../utils/format';
+import { lossColor, noveltyColor } from '../utils/colors';
+import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 /** Rate a program: green (excellent), amber (promising), red (weak) */
 function programRating(p) {
@@ -44,11 +47,31 @@ function programScore(p) {
   return Math.round(Math.max(0, Math.min(100, score)));
 }
 
-function scoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
-  return 'var(--accent-red)';
+function programScoreBreakdown(p) {
+  const lossScore = p.loss_ratio != null
+    ? Math.max(0, 1 - (p.loss_ratio - 0.2) / 0.8)
+    : 0;
+  const noveltyScore = p.novelty_score != null
+    ? Math.min(p.novelty_score, 1.0)
+    : 0;
+  const baselineScore = p.baseline_loss_ratio != null
+    ? Math.max(0, Math.min(1, 1.5 - p.baseline_loss_ratio))
+    : 0;
+  const tpScore = p.throughput_tok_s != null
+    ? Math.min(p.throughput_tok_s / 5000, 1.0)
+    : 0;
+
+  return {
+    loss: lossScore * 35,
+    novelty: noveltyScore * 25,
+    baseline: baselineScore * 25,
+    throughput: tpScore * 15,
+  };
+}
+
+function metricText(value, fallbackReason, formatter) {
+  if (value == null) return fallbackReason;
+  return formatter(value);
 }
 
 const COLUMNS_FULL = [
@@ -72,9 +95,10 @@ const COLUMNS_COMPACT = [
   { key: 'param_count', label: 'Params' },
 ];
 
-function TopPrograms({ programs, compact, onSelectProgram }) {
+function TopPrograms({ programs, compact, onSelectProgram, totalCount }) {
   const [sortKey, setSortKey] = useState('score');
   const [sortDesc, setSortDesc] = useState(true);
+  const [copiedValue, copyText] = useCopyToClipboard();
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -132,14 +156,16 @@ function TopPrograms({ programs, compact, onSelectProgram }) {
   return (
     <div className="card">
       <div className="card-title">
-        Top Programs {compact ? `(${programs.length})` : `— ${programs.length} Survivors`}
+        Top Programs {compact
+          ? `(${programs.length}${totalCount > programs.length ? ` of ${totalCount}` : ''})`
+          : `— ${programs.length} Survivors`}
       </div>
       {!compact && (
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-          These are the best-performing alternative architectures discovered so far. Each one passed all
-          evaluation stages and demonstrated actual learning ability. Lower loss ratio = learned faster.
-          Higher novelty = more structurally different from known architectures (transformers, SSMs, convnets).
-          Click any row to see its full computation graph and metrics.
+          Raw survivor view: these are Stage-1-passing programs ordered by selected metric, useful for broad exploration.
+          For decision-ready candidates with tiered evidence, use Leaderboard (Curated).
+          Lower loss ratio = learned faster. Higher novelty = more structurally different from known architectures.
+          Click any row to inspect full graph and metrics.
         </p>
       )}
       <table className="data-table">
@@ -170,7 +196,9 @@ function TopPrograms({ programs, compact, onSelectProgram }) {
                 style={{ cursor: onSelectProgram ? 'pointer' : 'default' }}
                 onClick={() => onSelectProgram && onSelectProgram(p.result_id)}>
                 <td style={{ fontWeight: 600, color: scoreColor(score) }}>
-                  {score}
+                  <span title={`Loss ${(programScoreBreakdown(p).loss || 0).toFixed(1)}/35 | Novelty ${(programScoreBreakdown(p).novelty || 0).toFixed(1)}/25 | Baseline ${(programScoreBreakdown(p).baseline || 0).toFixed(1)}/25 | Throughput ${(programScoreBreakdown(p).throughput || 0).toFixed(1)}/15`}>
+                    {score}
+                  </span>
                 </td>
                 {!compact && (
                   <td title={rating.tip}>
@@ -181,34 +209,61 @@ function TopPrograms({ programs, compact, onSelectProgram }) {
                     <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
                   </td>
                 )}
-                <td style={{ fontFamily: 'monospace', fontSize: 12, color: onSelectProgram ? 'var(--accent-blue)' : 'inherit' }}>
+                <td
+                  style={{ fontFamily: 'monospace', fontSize: 12, color: onSelectProgram ? 'var(--accent-blue)' : 'inherit' }}
+                  title={p.graph_fingerprint || 'not available'}
+                >
                   {p.graph_fingerprint?.slice(0, 10) || '--'}
+                  {p.graph_fingerprint && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyText(p.graph_fingerprint);
+                      }}
+                      aria-label={`Copy fingerprint ${p.graph_fingerprint}`}
+                    >
+                      {copiedValue === p.graph_fingerprint ? 'Copied' : 'Copy'}
+                    </button>
+                  )}
+                  {p.result_id && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyText(p.result_id);
+                      }}
+                      aria-label={`Copy result id ${p.result_id}`}
+                    >
+                      {copiedValue === p.result_id ? 'Copied ID' : 'Copy ID'}
+                    </button>
+                  )}
                 </td>
                 <td>
-                  <span style={{
-                    color: (p.novelty_score || 0) > 0.8 ? 'var(--accent-green)'
-                      : (p.novelty_score || 0) > 0.5 ? 'var(--accent-yellow)' : 'var(--text-muted)'
-                  }}>
-                    {p.novelty_score?.toFixed(3) || '--'}
+                  <span style={{ color: noveltyColor(p.novelty_score) }}>
+                    {metricText(p.novelty_score, 'not computed', (v) => v.toFixed(3))}
                   </span>
                 </td>
                 {!compact && <td>{p.structural_novelty?.toFixed(3) || '--'}</td>}
                 {!compact && <td>{p.behavioral_novelty?.toFixed(3) || '--'}</td>}
-                <td style={{
-                  color: p.loss_ratio != null
-                    ? (p.loss_ratio < 0.5 ? 'var(--accent-green)' : p.loss_ratio < 0.7 ? 'var(--accent-yellow)' : 'var(--accent-orange, #f0883e)')
-                    : 'var(--text-muted)'
-                }}>
-                  {p.loss_ratio?.toFixed(4) || '--'}
+                <td style={{ color: lossColor(p.loss_ratio) }}>
+                  {metricText(p.loss_ratio, 'not computed', (v) => v.toFixed(4))}
                 </td>
-                <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : '--'}</td>
-                {!compact && <td>{p.most_similar_to || '--'}</td>}
-                {!compact && <td>{p.throughput_tok_s ? `${Number(p.throughput_tok_s).toFixed(0)} tok/s` : '--'}</td>}
+                <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : 'not available'}</td>
+                {!compact && <td title={p.most_similar_to || 'not available'}>{p.most_similar_to || '--'}</td>}
+                {!compact && <td>{p.throughput_tok_s ? `${Number(p.throughput_tok_s).toFixed(0)} tok/s` : 'not measured'}</td>}
               </tr>
             );
           })}
         </tbody>
       </table>
+      {!compact && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+          Tip: use Copy on fingerprint cells to reuse IDs in validation/investigation workflows.
+        </div>
+      )}
       {!compact && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, display: 'flex', gap: 16 }}>
           <span><span style={{ color: 'var(--accent-green)' }}>Green</span> = outperforms transformer or high novelty + fast learning</span>

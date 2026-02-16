@@ -508,13 +508,44 @@ class ExperimentRunner:
 
         # Pre-generate experiment ID
         nb = self._make_notebook()
+        hypothesis_metadata = {
+            "source": "user_input" if hypothesis is not None else "unknown",
+            "llm_used": False,
+            "fallback_used": False,
+            "used_context": False,
+            "review_status": "not_reviewed",
+            "confidence": None,
+            "critique": None,
+        }
         if hypothesis is None:
-            hypothesis = self.aria.formulate_hypothesis()
+            context = self._build_start_experiment_hypothesis_context(nb, config)
+            result = None
+            if context:
+                result = self.aria.formulate_hypothesis(
+                    context=context,
+                    return_metadata=True,
+                )
+                hypothesis_metadata["used_context"] = True
+            else:
+                result = self.aria.formulate_hypothesis(return_metadata=True)
+
+            if isinstance(result, tuple):
+                hypothesis, meta = result
+                hypothesis_metadata.update(meta or {})
+            else:
+                hypothesis = result
+                hypothesis_metadata["source"] = (
+                    "rule_based_fallback" if context else "rule_based"
+                )
+
+            if context:
+                hypothesis_metadata["context_char_count"] = len(context)
 
         exp_id = nb.start_experiment(
             experiment_type="synthesis",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=hypothesis_metadata,
         )
         nb.close()
 
@@ -540,6 +571,35 @@ class ExperimentRunner:
         )
         self._thread.start()
         return exp_id
+
+    def _build_start_experiment_hypothesis_context(
+        self, nb: LabNotebook, config: RunConfig,
+    ) -> str:
+        """Build context for hypothesis generation in manual start_experiment.
+
+        Ensures manual starts use the same context-aware hypothesis pathway as
+        continuous mode whenever history/analytics are available.
+        """
+        try:
+            recent = nb.get_recent_experiments(10)
+            leaderboard = nb.get_leaderboard(limit=20)
+            analytics_data = self._gather_analytics_data(nb)
+            context = build_mode_selection_context(
+                recent_experiments=recent,
+                leaderboard=leaderboard,
+                analytics_data=analytics_data,
+                current_mode="synthesis",
+                n_experiments_in_session=len(recent),
+                cost_spent=self.aria.total_cost,
+                budget=config.max_cost_dollars,
+            )
+            if config.max_cost_dollars > 0:
+                context += (f"\n\nBudget: ${self.aria.total_cost:.2f} spent "
+                            f"of ${config.max_cost_dollars:.2f}")
+            return context
+        except Exception as e:
+            logger.debug("Failed to build manual hypothesis context: %s", e)
+            return ""
 
     def start_continuous(self, config: RunConfig) -> str:
         """Start continuous experiment mode in background."""
@@ -1362,7 +1422,38 @@ class ExperimentRunner:
                 structured_hyp = None
 
         if structured_hyp is None:
-            hypothesis = self.aria.formulate_hypothesis(context=context)
+            result = self.aria.formulate_hypothesis(
+                context=context,
+                return_metadata=True,
+            )
+            if isinstance(result, tuple):
+                hypothesis, basic_hyp_meta = result
+            else:
+                hypothesis = result
+                basic_hyp_meta = {
+                    "source": "rule_based_fallback",
+                    "llm_used": False,
+                    "fallback_used": True,
+                    "used_context": True,
+                    "review_status": "not_reviewed",
+                    "confidence": None,
+                    "critique": None,
+                }
+            hypothesis_metadata = {
+                **basic_hyp_meta,
+                "context_char_count": len(context),
+            }
+        else:
+            hypothesis_metadata = {
+                "source": "structured_hypothesis",
+                "llm_used": True,
+                "fallback_used": False,
+                "used_context": True,
+                "review_status": "not_reviewed",
+                "confidence": structured_hyp.get("confidence"),
+                "critique": structured_hyp.get("critique"),
+                "hypothesis_id": hypothesis_id,
+            }
 
         exp_config = config.to_dict()
         if is_control:
@@ -1373,6 +1464,7 @@ class ExperimentRunner:
             experiment_type="synthesis",
             config=exp_config,
             hypothesis=hypothesis,
+            hypothesis_metadata=hypothesis_metadata,
         )
 
         if is_control:
@@ -3341,11 +3433,22 @@ class ExperimentRunner:
         try:
             from .analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
-            insights = analytics.compute_insights()
-            for insight in insights:
-                nb.record_insight("pattern", insight, exp_id, confidence=0.7)
-                self.aria.add_insight(insight)
-            return insights
+            structured = analytics.compute_insights()
+
+            # Deduplicate: skip insights whose content already exists
+            existing = {row["content"] for row in nb.get_insights(limit=200)}
+
+            recorded = []
+            for ins in structured:
+                content = ins if isinstance(ins, str) else ins.get("content", "")
+                if content in existing:
+                    continue
+                category = ins.get("category", "pattern") if isinstance(ins, dict) else "pattern"
+                confidence = ins.get("confidence", 0.7) if isinstance(ins, dict) else 0.7
+                nb.record_insight(category, content, exp_id, confidence=confidence)
+                self.aria.add_insight(content)
+                recorded.append(content)
+            return recorded
         except Exception:
             pass
 

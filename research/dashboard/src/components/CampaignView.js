@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -46,6 +47,7 @@ function CampaignList({ onSelectCampaign }) {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/campaigns`)
@@ -53,7 +55,11 @@ function CampaignList({ onSelectCampaign }) {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then(d => { setCampaigns(Array.isArray(d) ? d : []); setLoading(false); })
+      .then(d => {
+        setCampaigns(Array.isArray(d) ? d : []);
+        setLastUpdated(new Date());
+        setLoading(false);
+      })
       .catch(e => { setError('Failed to load campaigns: ' + e.message); setLoading(false); });
   }, []);
 
@@ -63,12 +69,24 @@ function CampaignList({ onSelectCampaign }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Source: /api/campaigns
+      </div>
       {campaigns.map(c => (
         <div
           key={c.campaign_id}
           className="card"
           style={{ cursor: 'pointer', padding: 16 }}
+          role="button"
+          tabIndex={0}
+          aria-label={`Open campaign ${c.title || c.campaign_id}`}
           onClick={() => onSelectCampaign(c.campaign_id)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onSelectCampaign(c.campaign_id);
+            }
+          }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <h3 style={{ margin: 0, fontSize: 15 }}>{c.title}</h3>
@@ -79,6 +97,19 @@ function CampaignList({ onSelectCampaign }) {
             <span>{c.n_experiments || 0} experiments</span>
             <span>{c.n_hypotheses || 0} hypotheses</span>
             <span>{c.n_decisions || 0} decisions</span>
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+            <button
+              className="refresh-btn"
+              style={{ fontSize: 11, padding: '4px 10px' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectCampaign(c.campaign_id);
+              }}
+              aria-label={`Open details for campaign ${c.title || c.campaign_id}`}
+            >
+              Open Details
+            </button>
           </div>
         </div>
       ))}
@@ -145,28 +176,154 @@ function HypothesisChain({ hypotheses }) {
   );
 }
 
-function DecisionLog({ decisions }) {
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || value.trim() === '') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function DecisionLog({ decisions, hypotheses, experiments, onSelectExperiment }) {
   if (!decisions || decisions.length === 0) return null;
+
+  const hypothesisById = new Map((hypotheses || []).map(h => [h.hypothesis_id, h]));
+  const experimentById = new Map((experiments || []).map(exp => [exp.experiment_id, exp]));
+  const [copiedValue, copyText] = useCopyToClipboard();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {decisions.map(d => (
-        <div key={d.decision_id} style={{
-          padding: 10, background: 'var(--bg-secondary)', borderRadius: 4,
-          borderLeft: `3px solid ${DECISION_COLORS[d.decision_type] || 'var(--border)'}`,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <StatusBadge status={d.decision_type} colors={DECISION_COLORS} />
-            <span style={{ fontSize: 13, fontWeight: 500 }}>{d.subject}</span>
+      {decisions.map(d => {
+        const evidenceIds = parseJsonArray(d.evidence_ids);
+        const alternatives = parseJsonArray(d.alternatives_considered);
+        const linkedHypotheses = evidenceIds
+          .map(id => hypothesisById.get(id))
+          .filter(Boolean);
+        const linkedExperiments = evidenceIds
+          .map(id => experimentById.get(id))
+          .filter(Boolean);
+
+        return (
+          <div key={d.decision_id} style={{
+            padding: 10, background: 'var(--bg-secondary)', borderRadius: 4,
+            borderLeft: `3px solid ${DECISION_COLORS[d.decision_type] || 'var(--border)'}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <StatusBadge status={d.decision_type} colors={DECISION_COLORS} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>{d.subject}</span>
+              {d.decision_id && (
+                <>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                    {d.decision_id}
+                  </span>
+                  <button
+                    className="refresh-btn"
+                    style={{ fontSize: 10, padding: '1px 6px' }}
+                    onClick={() => copyText(d.decision_id)}
+                    aria-label={`Copy decision id ${d.decision_id}`}
+                  >
+                    {copiedValue === d.decision_id ? 'Copied ID' : 'Copy ID'}
+                  </button>
+                </>
+              )}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{d.rationale}</div>
+
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              <div>
+                <strong>Evidence IDs:</strong> {evidenceIds.length > 0 ? evidenceIds.length : 'not linked'}
+                {evidenceIds.length > 0 && (
+                  <button
+                    className="refresh-btn"
+                    style={{ fontSize: 10, padding: '1px 6px', marginLeft: 8 }}
+                    onClick={() => copyText(evidenceIds.join(','))}
+                    aria-label={`Copy evidence ids for decision ${d.decision_id}`}
+                  >
+                    {copiedValue === evidenceIds.join(',') ? 'Copied Evidence' : 'Copy Evidence IDs'}
+                  </button>
+                )}
+              </div>
+              <div>
+                <strong>Linked hypotheses:</strong> {linkedHypotheses.length > 0 ? linkedHypotheses.length : 'none matched'}
+              </div>
+              <div>
+                <strong>Linked experiments:</strong> {linkedExperiments.length > 0 ? linkedExperiments.length : 'none matched'}
+              </div>
+            </div>
+
+            {linkedHypotheses.length > 0 && (
+              <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: 'var(--bg-tertiary)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                  Supporting hypotheses
+                </div>
+                {linkedHypotheses.map(h => (
+                  <div key={h.hypothesis_id} style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                    <span style={{ fontFamily: 'monospace', marginRight: 6 }}>{h.hypothesis_id}</span>
+                    {h.prediction || 'No prediction text'}
+                    {h.status && (
+                      <span style={{ marginLeft: 6 }}>
+                        <StatusBadge status={h.status} colors={HYPOTHESIS_COLORS} />
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {linkedExperiments.length > 0 && (
+              <div style={{ marginTop: 8, padding: 8, borderRadius: 4, background: 'var(--bg-tertiary)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                  Supporting experiments & observed metrics
+                </div>
+                {linkedExperiments.map(exp => (
+                  <div key={exp.experiment_id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
+                      {exp.experiment_id}
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      S1 {exp.n_stage1_passed || 0}/{exp.n_programs_generated || 0}
+                    </span>
+                    {exp.best_loss_ratio != null && (
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        best loss {exp.best_loss_ratio.toFixed(4)}
+                      </span>
+                    )}
+                    {exp.best_novelty_score != null && (
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        novelty {exp.best_novelty_score.toFixed(3)}
+                      </span>
+                    )}
+                    {onSelectExperiment && exp.experiment_id && (
+                      <button
+                        className="refresh-btn"
+                        style={{ fontSize: 10, padding: '2px 7px' }}
+                        onClick={() => onSelectExperiment(exp.experiment_id)}
+                        aria-label={`Open supporting experiment ${exp.experiment_id}`}
+                      >
+                        Open Experiment
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {alternatives.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                <strong>Alternatives considered:</strong> {alternatives.length}
+              </div>
+            )}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{d.rationale}</div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function CampaignDetail({ campaignId, onBack }) {
+function CampaignDetail({ campaignId, onBack, onSelectExperiment }) {
   const [data, setData] = useState(null);
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -174,6 +331,8 @@ function CampaignDetail({ campaignId, onBack }) {
   const [activeSection, setActiveSection] = useState('timeline');
   const [error, setError] = useState(null);
   const [reportError, setReportError] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [reportGeneratedAt, setReportGeneratedAt] = useState(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/campaigns/${campaignId}`)
@@ -181,7 +340,11 @@ function CampaignDetail({ campaignId, onBack }) {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then(d => { setData(d); setLoading(false); })
+      .then(d => {
+        setData(d);
+        setLastUpdated(new Date());
+        setLoading(false);
+      })
       .catch(e => { setError('Failed to load campaign: ' + e.message); setLoading(false); });
   }, [campaignId]);
 
@@ -193,6 +356,7 @@ function CampaignDetail({ campaignId, onBack }) {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       setReport(d);
+      setReportGeneratedAt(new Date());
     } catch (e) {
       setReportError('Failed to generate report: ' + e.message);
     }
@@ -209,6 +373,58 @@ function CampaignDetail({ campaignId, onBack }) {
   const decisions = Array.isArray(data.decisions) ? data.decisions : [];
   const confirmed = hypotheses.filter(h => h.status === 'confirmed').length;
   const refuted = hypotheses.filter(h => h.status === 'refuted').length;
+  const resolvedHypotheses = confirmed + refuted;
+  const pendingHypotheses = hypotheses.filter(h => h.status !== 'confirmed' && h.status !== 'refuted').length;
+  const experimentsWithEvidence = experiments.filter(exp => ((exp.n_programs_generated || exp.n_programs || 0) > 0)).length;
+  const evidenceCoveragePct = experiments.length > 0 ? Math.round((experimentsWithEvidence / experiments.length) * 100) : 0;
+  const hypothesisResolutionPct = hypotheses.length > 0 ? Math.round((resolvedHypotheses / hypotheses.length) * 100) : 0;
+  const decisionCoveragePct = resolvedHypotheses > 0
+    ? Math.min(100, Math.round((decisions.length / resolvedHypotheses) * 100))
+    : (decisions.length > 0 ? 100 : 0);
+  const progressSignals = [
+    {
+      label: 'Evidence Coverage',
+      pct: evidenceCoveragePct,
+      detail: `${experimentsWithEvidence}/${experiments.length || 0} experiments produced measurable evidence`,
+    },
+    {
+      label: 'Hypothesis Resolution',
+      pct: hypothesisResolutionPct,
+      detail: `${resolvedHypotheses}/${hypotheses.length || 0} hypotheses resolved (confirmed/refuted)`,
+    },
+    {
+      label: 'Decision Coverage',
+      pct: decisionCoveragePct,
+      detail: `${decisions.length}/${resolvedHypotheses || 0} decisions linked to resolved hypotheses`,
+    },
+  ];
+  const blockers = [
+    experiments.length === 0 ? 'No experiments run yet for this objective.' : null,
+    hypotheses.length === 0 ? 'No explicit hypotheses are captured from current evidence.' : null,
+    pendingHypotheses > 0 ? `${pendingHypotheses} hypotheses are still pending outcome.` : null,
+    decisions.length === 0 && hypotheses.length > 0 ? 'No go/no-go decision recorded yet.' : null,
+  ].filter(Boolean);
+  const campaignHealth = experiments.length === 0
+    ? { label: 'Not Started', color: 'var(--accent-red)' }
+    : blockers.length >= 2
+      ? { label: 'At Risk', color: 'var(--accent-yellow)' }
+      : pendingHypotheses === 0 && decisions.length > 0
+        ? { label: 'Decision-Ready', color: 'var(--accent-green)' }
+        : { label: 'In Progress', color: 'var(--accent-blue)' };
+  const statusMeaning = campaign.status === 'active'
+    ? 'Actively collecting evidence from new experiments.'
+    : campaign.status === 'paused'
+      ? 'Temporarily paused; no new evidence is being generated.'
+      : campaign.status === 'completed'
+        ? 'Research thread completed; decisions are finalized.'
+        : 'Not actively progressing.';
+  const nextBestAction = experiments.length === 0
+    ? 'Run a first experiment to create evidence for this objective.'
+    : hypotheses.length === 0
+      ? 'Capture at least one explicit hypothesis from current evidence.'
+      : decisions.length === 0
+        ? 'Record a go/no-go decision from the strongest evidence.'
+        : 'Generate a campaign report to summarize what changed and why.';
   const sectionTabs = [
     { key: 'timeline', label: `Timeline (${experiments.length})` },
     { key: 'hypotheses', label: `Hypotheses (${hypotheses.length})` },
@@ -237,6 +453,9 @@ function CampaignDetail({ campaignId, onBack }) {
         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>
           Campaign detail links objective, experiment evidence, hypothesis outcomes, and decisions in one place.
         </p>
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '8px 0 0' }}>
+          Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Source: /api/campaigns/{campaignId}
+        </p>
 
         {/* Stats */}
         <div style={{ display: 'flex', gap: 24, marginTop: 12, fontSize: 13 }}>
@@ -259,6 +478,60 @@ function CampaignDetail({ campaignId, onBack }) {
         </div>
       </div>
 
+      <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+        <h3 style={{ fontSize: 14, marginBottom: 10 }}>Campaign Purpose & Status</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            <strong>Why this campaign exists:</strong> {campaign.objective}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            <strong>Current status:</strong> {statusMeaning}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            <strong>Current evidence state:</strong> {confirmed} confirmed, {refuted} refuted, {pendingHypotheses} pending hypotheses.
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            <strong>Next best action:</strong> {nextBestAction}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            <strong>Progress health:</strong>{' '}
+            <span style={{ color: campaignHealth.color, fontWeight: 600 }}>{campaignHealth.label}</span>
+          </div>
+          <div style={{ marginTop: 4, display: 'grid', gap: 8 }}>
+            {progressSignals.map(signal => (
+              <div key={signal.label}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>{signal.label}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{signal.pct}%</span>
+                </div>
+                <div style={{ height: 8, borderRadius: 999, background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      height: '100%',
+                      width: `${signal.pct}%`,
+                      background: signal.pct >= 70 ? 'var(--accent-green)' : signal.pct >= 40 ? 'var(--accent-yellow)' : 'var(--accent-red)',
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{signal.detail}</div>
+              </div>
+            ))}
+          </div>
+          {blockers.length > 0 && (
+            <div style={{ marginTop: 4, padding: '8px 10px', borderRadius: 6, background: 'var(--bg-tertiary)' }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                Current blockers
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 16, color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.5 }}>
+                {blockers.map((item, idx) => (
+                  <li key={`${item}-${idx}`}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Section tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {sectionTabs.map(tab => (
@@ -277,6 +550,10 @@ function CampaignDetail({ campaignId, onBack }) {
       {activeSection === 'timeline' && (
         <div className="card" style={{ padding: 16 }}>
           <h3 style={{ fontSize: 14, marginBottom: 12 }}>Experiment Timeline</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            This timeline is the evidence trail for the campaign. Open any experiment to inspect exact programs,
+            failures, and metrics that informed the hypotheses and decisions.
+          </p>
           {experiments.length === 0 ? (
             <p style={{ color: 'var(--text-muted)' }}>No experiments yet.</p>
           ) : (
@@ -306,6 +583,18 @@ function CampaignDetail({ campaignId, onBack }) {
                         <StatusBadge status={linkedHyp.status} colors={HYPOTHESIS_COLORS} />
                       </div>
                     )}
+                    {onSelectExperiment && exp.experiment_id && (
+                      <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                        <button
+                          className="refresh-btn"
+                          style={{ fontSize: 11, padding: '4px 10px' }}
+                          onClick={() => onSelectExperiment(exp.experiment_id)}
+                          aria-label={`Open experiment ${exp.experiment_id}`}
+                        >
+                          Open Experiment
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -332,12 +621,20 @@ function CampaignDetail({ campaignId, onBack }) {
       {activeSection === 'decisions' && (
         <div className="card" style={{ padding: 16 }}>
           <h3 style={{ fontSize: 14, marginBottom: 12 }}>Decision Log</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+            Each decision shows traceability links to its supporting hypothesis and experiment evidence where IDs were recorded.
+          </p>
           {decisions.length === 0 ? (
             <p style={{ color: 'var(--text-muted)' }}>
               No go/no-go decisions have been recorded yet.
             </p>
           ) : (
-            <DecisionLog decisions={decisions} />
+            <DecisionLog
+              decisions={decisions}
+              hypotheses={hypotheses}
+              experiments={experiments}
+              onSelectExperiment={onSelectExperiment}
+            />
           )}
         </div>
       )}
@@ -350,9 +647,14 @@ function CampaignDetail({ campaignId, onBack }) {
             <p style={{ color: 'var(--accent-red)', marginBottom: 8 }}>{reportError}</p>
           )}
           {report ? (
-            <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-              {report.report}
-            </div>
+            <>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                Report generated: {reportGeneratedAt ? reportGeneratedAt.toLocaleTimeString() : 'just now'} · Source: /api/campaigns/{campaignId}/report
+              </div>
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                {report.report}
+              </div>
+            </>
           ) : !reportError && (
             <p style={{ color: 'var(--text-muted)' }}>
               Click "Generate Report" above to compile the current hypotheses, evidence, and decisions into one narrative.
@@ -364,7 +666,7 @@ function CampaignDetail({ campaignId, onBack }) {
   );
 }
 
-function CampaignView() {
+function CampaignView({ onSelectExperiment }) {
   const [selectedCampaign, setSelectedCampaign] = useState(null);
 
   if (selectedCampaign) {
@@ -372,6 +674,7 @@ function CampaignView() {
       <CampaignDetail
         campaignId={selectedCampaign}
         onBack={() => setSelectedCampaign(null)}
+        onSelectExperiment={onSelectExperiment}
       />
     );
   }
@@ -380,8 +683,8 @@ function CampaignView() {
     <div>
       <h2 style={{ fontSize: 16, marginBottom: 16 }}>Research Campaigns</h2>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        Campaigns group related experiments into a longer research thread with explicit goals, evolving hypotheses,
-        and go/no-go decisions.
+        Campaigns are long-running research threads: they connect one objective to the experiments run, hypotheses tested,
+        and decisions made. Use Open Details to inspect the evidence trail and generate a campaign narrative.
       </p>
       <CampaignList onSelectCampaign={setSelectedCampaign} />
     </div>

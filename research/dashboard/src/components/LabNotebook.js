@@ -1,9 +1,6 @@
 import React, { useState, useMemo } from 'react';
-
-function formatTime(timestamp) {
-  if (!timestamp) return '';
-  return new Date(timestamp * 1000).toLocaleString();
-}
+import { formatTime, scoreColor } from '../utils/format';
+import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 const TYPE_ORDER = {
   insight: 6,
@@ -43,11 +40,18 @@ function entryScore(entry) {
   return Math.round(Math.max(0, Math.min(100, typeScore + contentScore + tagScore + expScore)));
 }
 
-function scoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
-  return 'var(--text-muted)';
+function entryScoreBreakdown(entry) {
+  const typeScore = ((TYPE_ORDER[entry.entry_type] || 0) / 6) * 50;
+  const contentLen = (entry.content || '').length;
+  const contentScore = Math.min(contentLen / 500, 1.0) * 30;
+  const tagScore = entry.tags ? 10 : 0;
+  const expScore = entry.experiment_id ? 10 : 0;
+  return {
+    type: typeScore,
+    content: contentScore,
+    tags: tagScore,
+    experiment: expScore,
+  };
 }
 
 const COLUMNS = [
@@ -59,10 +63,11 @@ const COLUMNS = [
   { key: 'timestamp', label: 'Time' },
 ];
 
-function LabNotebook({ entries }) {
+function LabNotebook({ entries, onSelectExperiment }) {
   const [sortKey, setSortKey] = useState('_score');
   const [sortDesc, setSortDesc] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
+  const [copiedValue, copyText] = useCopyToClipboard();
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -101,6 +106,13 @@ function LabNotebook({ entries }) {
     return arr;
   }, [augmented, sortKey, sortDesc]);
 
+  const latestTimestamp = useMemo(() => {
+    if (!entries || entries.length === 0) return null;
+    const timestamps = entries.map((entry) => entry.timestamp).filter((timestamp) => timestamp != null);
+    if (timestamps.length === 0) return null;
+    return Math.max(...timestamps);
+  }, [entries]);
+
   if (!entries || entries.length === 0) {
     return (
       <div className="card">
@@ -115,6 +127,9 @@ function LabNotebook({ entries }) {
   return (
     <div className="card">
       <div className="card-title">Lab Notebook — Recent Entries</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+        Latest entry: {latestTimestamp ? formatTime(latestTimestamp) : 'not available'}
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         Chronological research log of hypotheses, observations, results, and decisions. Use this to understand why
         the system changed strategy and what evidence supported each step.
@@ -164,7 +179,9 @@ function LabNotebook({ entries }) {
                   }}
                 >
                   <td style={{ fontWeight: 600, color: scoreColor(score) }}>
-                    {score}
+                    <span title={`Type ${(entryScoreBreakdown(entry).type || 0).toFixed(1)}/50 | Content ${(entryScoreBreakdown(entry).content || 0).toFixed(1)}/30 | Tags ${(entryScoreBreakdown(entry).tags || 0).toFixed(1)}/10 | Experiment ${(entryScoreBreakdown(entry).experiment || 0).toFixed(1)}/10`}>
+                      {score}
+                    </span>
                   </td>
                   <td>
                     <span style={{
@@ -214,6 +231,47 @@ function LabNotebook({ entries }) {
                         whiteSpace: 'pre-wrap',
                       }}>
                         {entry.content}
+                        <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {entry.experiment_id && onSelectExperiment && (
+                            <button
+                              className="refresh-btn"
+                              style={{ fontSize: 11, padding: '3px 8px' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onSelectExperiment(entry.experiment_id);
+                              }}
+                              aria-label={`Open linked experiment ${entry.experiment_id}`}
+                            >
+                              Open Experiment
+                            </button>
+                          )}
+                          {entry.experiment_id && (
+                            <button
+                              className="refresh-btn"
+                              style={{ fontSize: 11, padding: '3px 8px' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                copyText(entry.experiment_id);
+                              }}
+                              aria-label={`Copy experiment id ${entry.experiment_id}`}
+                            >
+                              {copiedValue === entry.experiment_id ? 'Copied Exp ID' : 'Copy Exp ID'}
+                            </button>
+                          )}
+                          {entry.entry_id && (
+                            <button
+                              className="refresh-btn"
+                              style={{ fontSize: 11, padding: '3px 8px' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                copyText(entry.entry_id);
+                              }}
+                              aria-label={`Copy entry id ${entry.entry_id}`}
+                            >
+                              {copiedValue === entry.entry_id ? 'Copied Entry ID' : 'Copy Entry ID'}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </td>
                   </tr>

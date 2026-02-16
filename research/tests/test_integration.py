@@ -2859,6 +2859,7 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/analytics/grammar-weights", "/api/analytics/efficiency-frontier",
             "/api/analytics/learning-log", "/api/analytics/experiment-clusters",
             "/api/analytics/routing-health", "/api/analytics/learning-summary",
+            "/api/analytics/learning-trajectory",
             "/api/metrics/",
             "/api/experiments/start", "/api/experiments/stop",
             "/api/campaigns", "/api/hypotheses",
@@ -3252,6 +3253,66 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         log_call = nb.log_learning_event.call_args
         self.assertEqual(log_call.args[0], "grammar_control_experiment")
+
+    def test_start_experiment_builds_context_for_hypothesis(self):
+        """Manual start_experiment should pass rich context into formulate_hypothesis."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_start_hypothesis_context.db")
+        runner = ExperimentRunner(db_path)
+
+        runner._ensure_math_spaces = MagicMock()
+        runner._run_experiment_thread = MagicMock(return_value=None)
+        runner.aria.formulate_hypothesis = MagicMock(return_value="context-aware hypothesis")
+
+        config = RunConfig(n_programs=1, max_cost_dollars=10.0)
+        exp_id = runner.start_experiment(config=config, hypothesis=None)
+
+        self.assertIsNotNone(exp_id)
+        runner.aria.formulate_hypothesis.assert_called_once()
+        call = runner.aria.formulate_hypothesis.call_args
+        self.assertIn("context", call.kwargs)
+        self.assertTrue(call.kwargs["context"].strip())
+
+    def test_start_experiment_records_hypothesis_provenance_metadata(self):
+        """Manual start_experiment should persist hypothesis provenance into notebook hypothesis entry metadata."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_start_hypothesis_metadata.db")
+        runner = ExperimentRunner(db_path)
+
+        runner._ensure_math_spaces = MagicMock()
+        runner._run_experiment_thread = MagicMock(return_value=None)
+        runner.aria.formulate_hypothesis = MagicMock(return_value=(
+            "metadata hypothesis",
+            {
+                "source": "llm_context",
+                "llm_used": True,
+                "fallback_used": False,
+                "used_context": True,
+                "review_status": "not_reviewed",
+                "confidence": 0.72,
+                "critique": "metric is measurable",
+            },
+        ))
+
+        config = RunConfig(n_programs=1, max_cost_dollars=5.0)
+        exp_id = runner.start_experiment(config=config, hypothesis=None)
+
+        nb = LabNotebook(db_path)
+        try:
+            entries = nb.get_entries(experiment_id=exp_id, entry_type="hypothesis", limit=5)
+            self.assertTrue(entries)
+            metadata = json.loads(entries[0].get("metadata_json") or "{}")
+            self.assertEqual(metadata.get("source"), "llm_context")
+            self.assertTrue(metadata.get("used_context"))
+            self.assertEqual(metadata.get("review_status"), "not_reviewed")
+            self.assertAlmostEqual(float(metadata.get("confidence")), 0.72, places=2)
+            self.assertIn("context_char_count", metadata)
+        finally:
+            nb.close()
 
     def test_runner_startup_recovers_stale_experiments(self):
         """Runner init should clean stale experiments left in running state."""
@@ -4109,36 +4170,35 @@ class TestFrontierOps(unittest.TestCase):
 
 
 class TestClusterDescriptions(unittest.TestCase):
-    """Test that experiment clusters include descriptions."""
+    """Test that experiment clusters include contrastive descriptions."""
 
-    def test_describe_cluster_productive(self):
-        """A high-s1 cluster should be described as productive."""
+    def test_describe_clusters_contrastive(self):
+        """Clusters should get different labels based on relative S1 ranking."""
         from research.scientist.analytics import ExperimentAnalytics
-        cluster = {
-            "size": 10,
-            "avg_s1_rate": 0.35,
-            "avg_best_novelty": 0.5,
-            "avg_best_loss_ratio": 0.7,
-            "avg_compile_fail_rate": 0.1,
-        }
-        desc = ExperimentAnalytics._describe_cluster(cluster)
-        self.assertIn("high S1 pass rate", desc)
-        self.assertIn("productive", desc)
-        self.assertIn("10 experiments", desc)
-
-    def test_describe_cluster_exploratory(self):
-        """A low-s1 cluster should be described as exploratory."""
-        from research.scientist.analytics import ExperimentAnalytics
-        cluster = {
-            "size": 5,
-            "avg_s1_rate": 0.02,
-            "avg_best_novelty": 0.2,
-            "avg_best_loss_ratio": 1.1,
-            "avg_compile_fail_rate": 0.3,
-        }
-        desc = ExperimentAnalytics._describe_cluster(cluster)
-        self.assertIn("low S1 pass rate", desc)
-        self.assertIn("exploratory", desc)
+        clusters = [
+            {
+                "size": 10,
+                "avg_s1_rate": 0.35,
+                "avg_best_novelty": 0.5,
+                "avg_best_loss_ratio": 0.7,
+                "avg_compile_fail_rate": 0.1,
+            },
+            {
+                "size": 5,
+                "avg_s1_rate": 0.02,
+                "avg_best_novelty": 0.2,
+                "avg_best_loss_ratio": 1.1,
+                "avg_compile_fail_rate": 0.3,
+            },
+        ]
+        ExperimentAnalytics._describe_clusters(clusters)
+        # Best cluster should be "most productive"
+        self.assertIn("high S1 pass rate", clusters[0]["description"])
+        self.assertIn("most productive", clusters[0]["description"])
+        self.assertIn("10 experiments", clusters[0]["description"])
+        # Worst cluster should be "least productive"
+        self.assertIn("low S1 pass rate", clusters[1]["description"])
+        self.assertIn("least productive", clusters[1]["description"])
 
 
 class TestSSEEventContract(unittest.TestCase):

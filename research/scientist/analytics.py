@@ -835,9 +835,8 @@ class ExperimentAnalytics:
 
         clusters.sort(key=lambda c: c["avg_s1_rate"], reverse=True)
 
-        # Generate plain-language description for each cluster
-        for c in clusters:
-            c["description"] = self._describe_cluster(c)
+        # Generate plain-language descriptions with relative ranking
+        self._describe_clusters(clusters)
 
         inter_centroid = []
         for i in range(len(centroids)):
@@ -892,54 +891,75 @@ class ExperimentAnalytics:
         }
 
     @staticmethod
-    def _describe_cluster(c: Dict) -> str:
-        """Generate a plain-language summary for a cluster."""
-        size = c.get("size", 0)
-        s1_pct = (c.get("avg_s1_rate", 0) or 0) * 100
-        novelty = c.get("avg_best_novelty", 0) or 0
-        loss_ratio = c.get("avg_best_loss_ratio", 0) or 0
-        compile_fail = (c.get("avg_compile_fail_rate", 0) or 0) * 100
+    def _describe_clusters(clusters: List[Dict]) -> None:
+        """Generate contrastive plain-language descriptions for clusters.
 
-        # Characterize S1 rate
-        if s1_pct >= 30:
-            s1_desc = f"high S1 pass rate ({s1_pct:.0f}%)"
-        elif s1_pct >= 10:
-            s1_desc = f"moderate S1 pass rate ({s1_pct:.0f}%)"
-        elif s1_pct > 0:
-            s1_desc = f"low S1 pass rate ({s1_pct:.0f}%)"
-        else:
-            s1_desc = "no S1 survivors"
+        Ranks clusters against each other so labels are mutually exclusive
+        (e.g., "the most productive", "moderate", "the least productive").
+        """
+        if not clusters:
+            return
 
-        # Characterize novelty
-        if novelty >= 0.7:
-            nov_desc = "high novelty"
-        elif novelty >= 0.3:
-            nov_desc = "moderate novelty"
-        else:
-            nov_desc = "low novelty"
-
-        # Characterize loss ratio
-        if loss_ratio < 0.8:
-            loss_desc = "strong loss improvement"
-        elif loss_ratio < 1.0:
-            loss_desc = "some loss improvement"
-        else:
-            loss_desc = "no loss improvement over baseline"
-
-        # Determine cluster character
-        if s1_pct >= 20 and loss_ratio < 0.9:
-            character = "the productive cluster"
-        elif s1_pct >= 10:
-            character = "a moderately productive cluster"
-        elif compile_fail >= 50:
-            character = "a high-failure cluster"
-        else:
-            character = "an exploratory cluster"
-
-        return (
-            f"{size} experiments with {s1_desc}, {nov_desc}, "
-            f"and {loss_desc} \u2014 {character}."
+        # Rank by S1 rate descending to assign relative labels
+        ranked = sorted(
+            enumerate(clusters),
+            key=lambda ic: (ic[1].get("avg_s1_rate", 0) or 0),
+            reverse=True,
         )
+
+        for rank_idx, (orig_idx, c) in enumerate(ranked):
+            size = c.get("size", 0)
+            s1_pct = (c.get("avg_s1_rate", 0) or 0) * 100
+            novelty = c.get("avg_best_novelty", 0) or 0
+            loss_ratio = c.get("avg_best_loss_ratio", 0) or 0
+            compile_fail = (c.get("avg_compile_fail_rate", 0) or 0) * 100
+            duration = c.get("avg_duration_seconds", 0) or 0
+
+            # S1 description
+            if s1_pct >= 30:
+                s1_desc = f"high S1 pass rate ({s1_pct:.0f}%)"
+            elif s1_pct >= 10:
+                s1_desc = f"moderate S1 pass rate ({s1_pct:.0f}%)"
+            elif s1_pct > 0:
+                s1_desc = f"low S1 pass rate ({s1_pct:.0f}%)"
+            else:
+                s1_desc = "no S1 survivors"
+
+            # Novelty description
+            if novelty >= 0.7:
+                nov_desc = "high novelty"
+            elif novelty >= 0.3:
+                nov_desc = "moderate novelty"
+            else:
+                nov_desc = "low novelty"
+
+            # Find distinguishing feature for this cluster
+            distinguisher = ""
+            if compile_fail >= 50:
+                distinguisher = f" High compile failure ({compile_fail:.0f}%) suggests grammar is exploring risky territory."
+            elif novelty >= 0.5:
+                distinguisher = f" High novelty ({novelty:.2f}) means these explore unfamiliar architecture space."
+            elif duration > 600:
+                distinguisher = f" Long average duration ({duration:.0f}s) indicates deeper investigation runs."
+
+            # Relative character label
+            n_clusters = len(clusters)
+            if n_clusters == 1:
+                character = "the only cluster"
+            elif rank_idx == 0:
+                character = "the most productive cluster"
+            elif rank_idx == n_clusters - 1:
+                if s1_pct == 0:
+                    character = "the failing cluster"
+                else:
+                    character = "the least productive cluster"
+            else:
+                character = "a mid-tier cluster"
+
+            clusters[orig_idx]["description"] = (
+                f"{size} experiments with {s1_desc}, {nov_desc}."
+                f" {character.capitalize()}.{distinguisher}"
+            )
 
     @staticmethod
     def _explain_routing_health(by_mode: List[Dict], total_programs: int,
@@ -1242,17 +1262,106 @@ class ExperimentAnalytics:
 
         return results
 
-    def compute_insights(self) -> List[str]:
+    def learning_trajectory(self) -> Dict:
+        """Compute learning trajectory: S1 rate trend with regression.
+
+        Returns:
+            {
+                "points": [{experiment_id, timestamp, s1_rate, n_programs}, ...],
+                "trend": "improving" | "plateaued" | "declining",
+                "slope": float,           # S1-rate change per experiment
+                "recent_s1_rate": float,   # avg of last 5
+                "overall_s1_rate": float,
+                "n_experiments": int,
+                "weight_adjustments": int, # count of grammar_weights_applied events
+            }
+        """
+        experiments = self.nb.get_recent_experiments(100)
+        # Reverse to chronological order
+        experiments = list(reversed(experiments))
+
+        points = []
+        for exp in experiments:
+            n_gen = exp.get("n_programs_generated") or 0
+            n_s1 = exp.get("n_stage1_passed") or 0
+            if n_gen == 0:
+                continue
+            points.append({
+                "experiment_id": exp.get("experiment_id", ""),
+                "timestamp": exp.get("timestamp", 0),
+                "s1_rate": n_s1 / n_gen,
+                "n_programs": n_gen,
+            })
+
+        if not points:
+            return {
+                "points": [],
+                "trend": "insufficient_data",
+                "slope": 0.0,
+                "recent_s1_rate": 0.0,
+                "overall_s1_rate": 0.0,
+                "n_experiments": 0,
+                "weight_adjustments": 0,
+            }
+
+        # Linear regression on S1 rate vs experiment index
+        n = len(points)
+        rates = [p["s1_rate"] for p in points]
+        mean_x = (n - 1) / 2.0
+        mean_y = sum(rates) / n
+        num = sum((i - mean_x) * (r - mean_y) for i, r in enumerate(rates))
+        den = sum((i - mean_x) ** 2 for i in range(n))
+        slope = num / den if den > 0 else 0.0
+
+        # Trend classification
+        # Use slope relative to mean to avoid noise at tiny scales
+        relative_slope = slope / max(mean_y, 0.01)
+        if n < 5:
+            trend = "insufficient_data"
+        elif relative_slope > 0.05:
+            trend = "improving"
+        elif relative_slope < -0.05:
+            trend = "declining"
+        else:
+            trend = "plateaued"
+
+        recent = rates[-5:] if len(rates) >= 5 else rates
+        recent_rate = sum(recent) / len(recent)
+
+        # Count grammar weight adjustments
+        try:
+            log = self.nb.get_learning_log(limit=200)
+            weight_adjustments = sum(
+                1 for entry in log
+                if entry.get("event_type") == "grammar_weights_applied"
+            )
+        except Exception:
+            weight_adjustments = 0
+
+        return {
+            "points": points,
+            "trend": trend,
+            "slope": round(slope, 6),
+            "recent_s1_rate": round(recent_rate, 4),
+            "overall_s1_rate": round(mean_y, 4),
+            "n_experiments": n,
+            "weight_adjustments": weight_adjustments,
+        }
+
+    def compute_insights(self) -> List[Dict]:
         """Generate data-driven insights from experiment history.
 
-        Replaces the 4 hardcoded rules with actual data analysis.
+        Returns structured insight dicts with varied category and confidence:
+        ``[{"content": str, "category": str, "confidence": float}, ...]``
+
+        Confidence is scaled by sample size and effect strength so that
+        the dashboard scoring formula produces differentiated scores.
         """
-        insights = []
+        insights: List[Dict] = []
 
         # 1. Op success rate insights
         op_rates = self.op_success_rates()
         if op_rates:
-            # Find best and worst ops
             rated_ops = [(op, s["s1_rate"], s["n_used"])
                          for op, s in op_rates.items() if s["n_used"] >= 5]
             if rated_ops:
@@ -1262,31 +1371,51 @@ class ExperimentAnalytics:
 
                 if best_ops[0][1] > 0:
                     op_names = ", ".join(f"{op}({rate:.0%})" for op, rate, _ in best_ops)
-                    insights.append(
-                        f"Top-performing ops (S1 rate): {op_names}. "
-                        f"These compose well into learnable architectures."
-                    )
+                    # Confidence scales with total usage of the best ops
+                    total_usage = sum(n for _, _, n in best_ops)
+                    conf = min(0.9, 0.5 + total_usage / 500)
+                    insights.append({
+                        "content": (
+                            f"Top-performing ops (S1 rate): {op_names}. "
+                            f"These compose well into learnable architectures."
+                        ),
+                        "category": "success_factor",
+                        "confidence": round(conf, 2),
+                    })
 
                 if worst_ops and worst_ops[-1][1] == 0 and worst_ops[-1][2] >= 10:
-                    op_names = ", ".join(op for op, _, _ in worst_ops if _ == 0)
-                    if op_names:
-                        insights.append(
-                            f"Consistently failing ops: {op_names}. "
-                            f"Consider reducing their grammar weight."
-                        )
+                    failing = [(op, n) for op, rate, n in worst_ops if rate == 0]
+                    if failing:
+                        op_names = ", ".join(op for op, _ in failing)
+                        total_usage = sum(n for _, n in failing)
+                        conf = min(0.85, 0.4 + total_usage / 300)
+                        insights.append({
+                            "content": (
+                                f"Consistently failing ops: {op_names}. "
+                                f"Consider reducing their grammar weight."
+                            ),
+                            "category": "failure_mode",
+                            "confidence": round(conf, 2),
+                        })
 
         # 2. Structural correlation insights
         correlations = self.structural_correlations()
         if correlations:
             for metric, effect in sorted(correlations.items(),
                                          key=lambda x: -abs(x[1])):
-                if abs(effect) > 0.5:
+                if abs(effect) > 0.3:
                     direction = "positively" if effect > 0 else "negatively"
                     name = metric.replace("graph_", "").replace("_", " ")
-                    insights.append(
-                        f"Graph {name} is {direction} correlated with "
-                        f"Stage 1 success (effect={effect:.2f})."
-                    )
+                    # Stronger effect → higher confidence
+                    conf = min(0.9, 0.3 + abs(effect) * 0.6)
+                    insights.append({
+                        "content": (
+                            f"Graph {name} is {direction} correlated with "
+                            f"Stage 1 success (effect={effect:.2f})."
+                        ),
+                        "category": "hypothesis",
+                        "confidence": round(conf, 2),
+                    })
                     break  # just the strongest
 
         # 3. Failure pattern insights
@@ -1294,21 +1423,32 @@ class ExperimentAnalytics:
         if failures:
             top_failure = max(failures.items(), key=lambda x: x[1]["total"])
             if top_failure[1]["total"] >= 10:
-                insights.append(
-                    f"Most common failure: {top_failure[0]} "
-                    f"({top_failure[1]['total']} occurrences). "
-                    f"Stages: {top_failure[1]['by_stage']}"
-                )
+                total_failures = top_failure[1]["total"]
+                conf = min(0.85, 0.45 + total_failures / 500)
+                insights.append({
+                    "content": (
+                        f"Most common failure: {top_failure[0]} "
+                        f"({total_failures} occurrences). "
+                        f"Stages: {top_failure[1]['by_stage']}"
+                    ),
+                    "category": "failure_mode",
+                    "confidence": round(conf, 2),
+                })
 
         # 4. Op combination insights
         combos = self.top_op_combinations(5)
         if combos and combos[0]["count"] >= 3:
             top = combos[0]
-            insights.append(
-                f"Winning combination: {' + '.join(top['ops'])} "
-                f"appears in {top['count']} survivors "
-                f"(avg novelty {top['avg_novelty']:.3f})."
-            )
+            conf = min(0.9, 0.5 + top["count"] / 200)
+            insights.append({
+                "content": (
+                    f"Winning combination: {' + '.join(top['ops'])} "
+                    f"appears in {top['count']} survivors "
+                    f"(avg novelty {top['avg_novelty']:.3f})."
+                ),
+                "category": "success_factor",
+                "confidence": round(conf, 2),
+            })
 
         # 5. Overall progress insight
         summary = self.nb.get_dashboard_summary()
@@ -1316,11 +1456,16 @@ class ExperimentAnalytics:
         survivors = summary.get("stage1_survivors", 0)
         if total > 0:
             rate = survivors / total
-            insights.append(
-                f"Overall survival rate: {rate:.1%} "
-                f"({survivors}/{total} programs). "
-                f"{'Grammar is productive.' if rate > 0.03 else 'Grammar needs tuning.'}"
-            )
+            conf = min(0.95, 0.4 + total / 1000)
+            insights.append({
+                "content": (
+                    f"Overall survival rate: {rate:.1%} "
+                    f"({survivors}/{total} programs). "
+                    f"{'Grammar is productive.' if rate > 0.03 else 'Grammar needs tuning.'}"
+                ),
+                "category": "pattern",
+                "confidence": round(conf, 2),
+            })
 
         return insights
 
@@ -1361,8 +1506,9 @@ class ExperimentAnalytics:
                     else:
                         node_iter = []
                     for n in node_iter:
-                        if isinstance(n, dict) and n.get("op"):
-                            ops.append(n["op"])
+                        op = n.get("op") or n.get("op_name") if isinstance(n, dict) else None
+                        if op and op not in ("input", "output"):
+                            ops.append(op)
             except (json.JSONDecodeError, TypeError):
                 pass
             p["ops"] = ops

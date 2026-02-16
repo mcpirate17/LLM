@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { scoreColor } from '../utils/format';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -89,11 +90,53 @@ function entryScore(entry) {
   return Math.round(Math.max(0, Math.min(100, score)));
 }
 
-function scoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
-  return 'var(--accent-red)';
+function entryScoreBreakdown(entry) {
+  const sLoss = entry.screening_loss_ratio != null
+    ? Math.max(0, 1 - (entry.screening_loss_ratio - 0.2) / 0.8)
+    : 0;
+  const novelty = entry.screening_novelty != null
+    ? Math.min(entry.screening_novelty, 1.0)
+    : 0;
+  const iLoss = entry.investigation_loss_ratio != null
+    ? Math.max(0, 1 - (entry.investigation_loss_ratio - 0.2) / 0.8)
+    : 0;
+  const robust = entry.investigation_robustness != null
+    ? Math.min(entry.investigation_robustness, 1.0)
+    : 0;
+  const vBase = entry.validation_baseline_ratio != null
+    ? Math.max(0, Math.min(1, 1.5 - entry.validation_baseline_ratio))
+    : 0;
+  const consistency = entry.validation_multi_seed_std != null
+    ? Math.max(0, 1 - entry.validation_multi_seed_std * 10)
+    : 0;
+  const tierBonus = (TIER_ORDER[entry.tier] || 0) / 4;
+  const tier = entry.tier || 'screening';
+
+  if (tier === 'breakthrough' || tier === 'validation') {
+    return {
+      sLoss: sLoss * 10,
+      novelty: novelty * 10,
+      iLoss: iLoss * 10,
+      robust: robust * 10,
+      vBase: vBase * 25,
+      consistency: consistency * 15,
+      tierBonus: tierBonus * 20,
+    };
+  }
+  if (tier === 'investigation') {
+    return {
+      sLoss: sLoss * 15,
+      novelty: novelty * 15,
+      iLoss: iLoss * 20,
+      robust: robust * 15,
+      tierBonus: tierBonus * 35,
+    };
+  }
+  return {
+    sLoss: sLoss * 35,
+    novelty: novelty * 25,
+    tierBonus: tierBonus * 40,
+  };
 }
 
 const COLUMNS = [
@@ -120,6 +163,7 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
   const [sortKey, setSortKey] = useState('_score');
   const [sortDesc, setSortDesc] = useState(true);
   const [actionError, setActionError] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   const fetchLeaderboard = useCallback(async () => {
     try {
@@ -129,6 +173,7 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);
+      setLastUpdated(new Date());
       setError(null);
     } catch (e) {
       setError('Failed to load leaderboard: ' + e.message);
@@ -243,6 +288,16 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
         Ranked candidates that survived screening, investigation, or validation. Higher-tier rows have stronger evidence
         that the architecture is robust, novel, and competitive with transformer baselines.
       </p>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Curated decision view: use this tab for promote/investigate/validate decisions. For broad raw survivor browsing,
+        use Programs (Raw).
+      </p>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+        Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Source: /api/leaderboard
+      </p>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+        Glossary: S.Loss = screening loss ratio, I.Loss = investigation loss ratio, V.Loss = validation loss ratio, V.Base {'<'} 1 means better than baseline.
+      </p>
 
       {/* Tier tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -355,7 +410,9 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
                 >
                   <td style={tdStyle}>{i + 1}</td>
                   <td style={{ ...tdStyle, fontWeight: 600, color: scoreColor(entry._score) }}>
-                    {entry._score}
+                    <span title={Object.entries(entryScoreBreakdown(entry)).map(([k, v]) => `${k} ${Number(v || 0).toFixed(1)}`).join(' | ')}>
+                      {entry._score}
+                    </span>
                   </td>
                   <td style={tdStyle}><TierBadge tier={entry.tier} /></td>
                   <td style={tdStyle}>
@@ -368,7 +425,10 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
                     </span>
                   </td>
                   <td style={tdStyle}>{entry.architecture_family || '--'}</td>
-                  <td style={{ ...tdStyle, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <td
+                    style={{ ...tdStyle, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={entry.architecture_desc || entry.result_id || 'not available'}
+                  >
                     {entry.architecture_desc || entry.result_id?.slice(0, 12)}
                   </td>
                   <td style={{ ...tdStyle, color: 'var(--accent-green)' }}>
