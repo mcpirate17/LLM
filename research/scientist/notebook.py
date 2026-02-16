@@ -1209,6 +1209,7 @@ class LabNotebook:
         val_lr: Optional[float] = None,
         val_baseline: Optional[float] = None,
         val_std: Optional[float] = None,
+        novelty_confidence: Optional[float] = None,
     ) -> float:
         """Compute normalized composite score across research phases.
 
@@ -1218,13 +1219,18 @@ class LabNotebook:
 
         Validation std uses hard threshold: std > 0.5 caps the
         validation score at 0.3 to strongly penalize instability (#50).
+
+        Novelty contribution is scaled by novelty_confidence so that
+        low-confidence scores (structural-only, failed fingerprint)
+        don't inflate rankings.
         """
         # Screening tier: [0, 1]
         screening_score = 0.0
         if screening_lr is not None:
             screening_score += 0.6 * max(0, 1 - screening_lr)
         if screening_nov is not None:
-            screening_score += 0.4 * screening_nov
+            conf = novelty_confidence if novelty_confidence is not None else 1.0
+            screening_score += 0.4 * screening_nov * conf
 
         # Investigation tier: [0, 1]
         inv_score = 0.0
@@ -1274,6 +1280,7 @@ class LabNotebook:
         tier: str = "screening",
         tags: Optional[str] = None,
         notes: Optional[str] = None,
+        novelty_confidence: Optional[float] = None,
     ) -> str:
         """Insert or update a leaderboard entry."""
         # Check if entry exists for this result_id
@@ -1290,6 +1297,7 @@ class LabNotebook:
             val_lr=validation_loss_ratio,
             val_baseline=validation_baseline_ratio,
             val_std=validation_multi_seed_std,
+            novelty_confidence=novelty_confidence,
         )
 
         if existing:
@@ -1398,6 +1406,15 @@ class LabNotebook:
         if row:
             d = dict(row)
             d.update(kwargs)
+            # Look up novelty_confidence from linked program_results
+            nov_conf = None
+            if d.get("result_id"):
+                pr = self.conn.execute(
+                    "SELECT novelty_confidence FROM program_results WHERE result_id = ?",
+                    (d["result_id"],),
+                ).fetchone()
+                if pr:
+                    nov_conf = pr["novelty_confidence"]
             composite = self.compute_composite_score(
                 screening_lr=d.get("screening_loss_ratio"),
                 screening_nov=d.get("screening_novelty"),
@@ -1406,6 +1423,7 @@ class LabNotebook:
                 val_lr=d.get("validation_loss_ratio"),
                 val_baseline=d.get("validation_baseline_ratio"),
                 val_std=d.get("validation_multi_seed_std"),
+                novelty_confidence=nov_conf,
             )
             sets.append("composite_score = ?")
             params.append(composite)

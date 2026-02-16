@@ -658,6 +658,97 @@ Next 2 min: available for another clustering step (e.g., robust transition densi
 Tests run/result: targeted clustering tests passed (`test_experiment_clusters_include_trajectory_features`, `test_experiment_clusters_include_failure_signature_features`, `test_experiment_clusters_model_selection_and_consensus`); full integration suite passed `126/126` via `python -m unittest research.tests.test_integration -v`.
 Risk/blocker: change-point detection is currently simple max-delta timing; still not full sequence-model/DTW clustering.
 
+### GitHub Copilot — sync 26
+Done: completed the robust-changepoint follow-up for #9 by adding `stage1_transition_density` (transition count density) and `change_point_confidence` (dominant step-change share of total outcome movement) and surfacing both in cluster summaries.
+Now doing: claims cleared and handoff.
+Next 2 min: available for deeper trajectory statistics (multi-change density/dispersion across windows) or pivot to #28/#43 CKA reference-model infrastructure.
+Tests run/result: targeted clustering tests passed (`test_experiment_clusters_include_trajectory_features`, `test_experiment_clusters_include_failure_signature_features`, `test_experiment_clusters_model_selection_and_consensus`); full integration suite passed `138/138` via `python -m unittest research.tests.test_integration -v`.
+Risk/blocker: confidence still uses lightweight engineered heuristics rather than a full probabilistic change-point model.
+
+### GitHub Copilot — sync 27
+Done: completed the change-dispersion follow-up for #9 by fixing transition density to count all stage1 state flips (not just first flip) and adding multi-window dynamics features: `windowed_change_dispersion` and `window_change_localization`.
+Now doing: claims cleared and handoff.
+Next 2 min: available for an optional final clustering polish (e.g., transition-gap entropy / jitter features) or pivot to #28/#43 CKA reference-model infrastructure.
+Tests run/result: targeted clustering tests passed (`test_experiment_clusters_include_trajectory_features`, `test_experiment_clusters_include_failure_signature_features`, `test_experiment_clusters_model_selection_and_consensus`); full integration suite passed `138/138` via `python -m unittest research.tests.test_integration -v`.
+Risk/blocker: clustering still relies on engineered summary features rather than explicit sequence-alignment methods.
+
+### GitHub Copilot — sync 28
+Done: completed the requested final clustering refinement by adding `transition_gap_entropy` (normalized entropy of stage-transition gap spacing) and exposing `avg_transition_gap_entropy` in cluster summaries.
+Now doing: claims cleared and handoff.
+Next 2 min: ready to pivot from #9 clustering to #28/#43 CKA reference-model infrastructure when requested.
+Tests run/result: targeted clustering tests passed (`test_experiment_clusters_include_trajectory_features`, `test_experiment_clusters_include_failure_signature_features`, `test_experiment_clusters_model_selection_and_consensus`); full integration suite passed `138/138` via `python -m unittest research.tests.test_integration -v`.
+Risk/blocker: transition-gap entropy is still a lightweight heuristic summary, not a full temporal probabilistic model.
+
+### GitHub Copilot — sync 29
+Done: created a shareable execution plan markdown for #28/#43 full fix (real CKA reference models) at `reports/plan_28_43_real_cka_references.md`, including phased milestones, artifact schema, runtime integration approach, test strategy, and acceptance criteria.
+Now doing: claims cleared and handoff.
+Next 2 min: ready to start implementation of Phase A (artifact contract + loader + tests) from the plan.
+Tests run/result: no code-path behavior change in this step (planning artifact only).
+Risk/blocker: implementation remains significant infra work (offline reference training artifacts required) but plan is execution-ready.
+
+### GitHub Copilot — sync 30
+Done: started #28/#43 Phase A implementation with new CLI tooling `tools/cka_reference_manifest.py` to scaffold and validate CKA reference `manifest.json` artifacts against required contract fields (`artifact_version`, `created_at`, `code_version`, `python_torch_versions`, `reference_families`, `probe_protocol_hash`, `activation_schema`, `quality_flags`).
+Now doing: keeping plan stewardship active while unblocking runtime integration with a stable manifest contract and validation entrypoint.
+Next 2 min: available to add optional wiring/docs for artifact directory conventions once Claude runtime integration pass lands.
+Tests run/result: `python -m py_compile tools/cka_reference_manifest.py` + smoke test (`--out` then `--validate --strict`) passed.
+Risk/blocker: this establishes contract tooling only; runtime loader/fingerprint consumption remains in claimed files.
+
+### GitHub Copilot — sync 31
+Done: expanded `reports/plan_28_43_real_cka_references.md` with an explicit artifact runbook (directory layout, scaffold/validate commands, pre-integration checklist, and runtime env alignment) to make the new manifest tooling immediately actionable for Phase A/B handoff.
+Now doing: keeping #28/#43 plan stewardship active while runtime integration/testing continues in Claude-claimed files.
+Next 2 min: available for additional doc-only alignment or to pick another unclaimed implementation task.
+Tests run/result: documentation/coordination update only (no runtime behavior changes).
+Risk/blocker: runtime adoption still depends on loader/fingerprint wiring in `eval/cka_references.py` and `eval/fingerprint.py`.
+
+### GitHub Copilot — sync 32
+Done: added `tools/probe_protocol_hash.py`, a deterministic canonical-JSON hashing utility to generate `probe_protocol_hash` values for CKA artifact manifests, and updated the #28/#43 runbook with a concrete command using this tool.
+Now doing: plan stewardship + unclaimed support tooling while runtime CKA switchover remains in Claude-claimed files.
+Next 2 min: available to add a small sample `probe_protocol.json` template under artifacts docs if desired.
+Tests run/result: `python -m py_compile tools/probe_protocol_hash.py` passed; key-order permutation smoke test produced identical digests (`deterministic-hash-ok`).
+Risk/blocker: utility establishes reproducible hash generation, but runtime manifest consumption logic remains external to this file.
+
+### GitHub Copilot — sync 33
+Done: added `tools/verify_probe_protocol_hash.py` to check `manifest.json` `probe_protocol_hash` against canonicalized `probe_protocol.json`, with optional `--update-manifest` auto-repair; also updated the #28/#43 runbook with verify/update commands.
+Now doing: continuing plan stewardship with support tooling complete for hash generation + consistency checks.
+Next 2 min: available to add a minimal example `probe_protocol.json` template or pivot to another unclaimed reliability task.
+Tests run/result: `python -m py_compile tools/verify_probe_protocol_hash.py` passed; mismatch path returned exit `1`, update path repaired manifest and final verify returned exit `0`.
+Risk/blocker: runtime enforcement of this checker in CI is not yet wired; currently operator-invoked tooling.
+
+### GitHub Copilot — sync 34
+Done: added a starter artifact template at `artifacts/cka_references/v1/probe_protocol.json` and expanded the #28/#43 runbook with a one-command integrity sequence (compute hash + verify manifest consistency + strict manifest validation).
+Now doing: continuing plan stewardship while runtime CKA path is already complete in Claude-owned files.
+Next 2 min: available to add a small CI-friendly script wrapper for the one-command integrity check.
+Tests run/result: `python -m py_compile` passed for all three support tools; `python tools/probe_protocol_hash.py --spec-file artifacts/cka_references/v1/probe_protocol.json --print-canonical` succeeded and produced deterministic digest output.
+Risk/blocker: one-command sequence assumes `manifest.json` already exists; scaffold step is still required for first-time pack creation.
+
+### GitHub Copilot — sync 35
+Done: added `tools/cka_artifact_integrity.py`, a wrapper that runs scaffold-if-missing, probe hash generation, manifest hash sync, consistency verification, and manifest validation in one command; runbook updated with recommended wrapper invocation.
+Now doing: maintaining #28/#43 plan stewardship with practical operator tooling in place.
+Next 2 min: available to add CI task wiring for this wrapper if requested.
+Tests run/result: `python -m py_compile tools/cka_artifact_integrity.py` passed; end-to-end smoke run on `/tmp/cka_pack_test` completed successfully with final `Manifest is valid.`.
+Risk/blocker: wrapper depends on subprocess calls to existing tool scripts; paths assume execution from repository root.
+
+### GitHub Copilot — sync 36
+Done: hardened `tools/cka_artifact_integrity.py` to resolve helper script paths via repo-root (default derived from file location), support `--repo-root`, and surface subprocess stdout/stderr on failure; wrapper now runs correctly even when invoked outside repo cwd.
+Now doing: continuing #28/#43 planning stewardship with operator tooling stabilized.
+Next 2 min: available to wire this integrity flow into a reusable task/automation entry.
+Tests run/result: portability smoke test from `/tmp` passed using `python /home/tim/Projects/LLM/research/tools/cka_artifact_integrity.py --artifact-dir /tmp/cka_pack_test3 --scaffold-if-missing --strict`.
+Risk/blocker: wrapper still assumes sibling tools exist under `<repo-root>/tools`.
+
+### GitHub Copilot — sync 37
+Done: wired the integrity wrapper into VS Code via a reusable task (`CKA: Artifact Integrity Check`) in `.vscode/tasks.json` and executed it successfully, which also generated `artifacts/cka_references/v1/manifest.json` and passed strict validation.
+Now doing: continuing #28/#43 plan stewardship with click-to-run integrity tooling in place.
+Next 2 min: available to add a second task variant for custom version/code-version inputs if needed.
+Tests run/result: task run output confirmed scaffold + hash sync + verify + strict manifest validation all passed.
+Risk/blocker: task currently uses fixed defaults (`version=v1`, `code-version=local`), so custom release stamping still requires CLI override.
+
+### GitHub Copilot — sync 38
+Done: added a release-stamp VS Code task variant (`CKA: Artifact Integrity Check (Release Stamp)`) and corrected it to use a dedicated `artifacts/cka_references/v1_release` directory with probe-template bootstrap before integrity execution; final run succeeded with strict validation.
+Now doing: continuing #28/#43 stewardship with both local and release task paths available.
+Next 2 min: available to add a short README snippet for task usage and expected outputs.
+Tests run/result: initial release task run surfaced schema mismatch in existing `v1` manifest (expected, useful signal); corrected task run generated `v1_release/manifest.json` and completed with `Manifest is valid.`.
+Risk/blocker: release task assumes `artifacts/cka_references/v1/probe_protocol.json` exists as bootstrap source.
+
 ## Frontier LLM Gap Scan — Phase-1 Routing Checklist (Execution-Ready)
 
 ### Glaring misses confirmed in current codebase

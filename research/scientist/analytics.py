@@ -384,6 +384,9 @@ class ExperimentAnalytics:
                 "primary_change_point_timing": 0.0,
                 "stage1_transition_density": 0.0,
                 "change_point_confidence": 0.0,
+                "windowed_change_dispersion": 0.0,
+                "window_change_localization": 0.0,
+                "transition_gap_entropy": 0.0,
             }
             for exp_id in exp_ids
         }
@@ -439,17 +442,37 @@ class ExperimentAnalytics:
                 normalizer = max(len(outcome_proxy) - 1, 1)
                 peak_timing = peak_idx / normalizer
 
-                first_transition_idx = None
-                transitions = 0
+                transition_positions: List[int] = []
                 for idx in range(1, len(stage1_values)):
                     if stage1_values[idx] != stage1_values[idx - 1]:
-                        transitions += 1
-                        first_transition_idx = idx
-                        break
+                        transition_positions.append(idx)
+
+                first_transition_idx = transition_positions[0] if transition_positions else None
                 stage1_transition_timing = (
                     (first_transition_idx / normalizer) if first_transition_idx is not None else 0.0
                 )
-                stage1_transition_density = transitions / normalizer if normalizer > 0 else 0.0
+                stage1_transition_density = (
+                    len(transition_positions) / normalizer if normalizer > 0 else 0.0
+                )
+
+                if len(transition_positions) >= 2:
+                    transition_gaps = [
+                        transition_positions[i] - transition_positions[i - 1]
+                        for i in range(1, len(transition_positions))
+                    ]
+                    total_gap = float(sum(transition_gaps))
+                    if total_gap > 0:
+                        gap_entropy = 0.0
+                        for gap in transition_gaps:
+                            p = gap / total_gap
+                            if p > 0:
+                                gap_entropy -= p * math.log(p)
+                        max_entropy = math.log(len(transition_gaps)) if len(transition_gaps) > 1 else 0.0
+                        transition_gap_entropy = (gap_entropy / max_entropy) if max_entropy > 0 else 0.0
+                    else:
+                        transition_gap_entropy = 0.0
+                else:
+                    transition_gap_entropy = 0.0
 
                 if len(outcome_proxy) > 1:
                     deltas = [
@@ -464,6 +487,35 @@ class ExperimentAnalytics:
                 else:
                     primary_change_point_timing = 0.0
                     change_point_confidence = 0.0
+
+                if len(outcome_proxy) > 2:
+                    deltas = [
+                        abs(outcome_proxy[i] - outcome_proxy[i - 1])
+                        for i in range(1, len(outcome_proxy))
+                    ]
+                    n_deltas = len(deltas)
+                    seg = max(1, n_deltas // 3)
+                    window_slices = [
+                        deltas[:seg],
+                        deltas[seg:2 * seg],
+                        deltas[2 * seg:],
+                    ]
+                    window_means = [
+                        (sum(chunk) / len(chunk)) if chunk else 0.0
+                        for chunk in window_slices
+                    ]
+                    mean_change = sum(window_means) / len(window_means)
+                    variance = sum((w - mean_change) ** 2 for w in window_means) / len(window_means)
+                    windowed_change_dispersion = math.sqrt(max(variance, 0.0))
+                    total_window_change = sum(window_means)
+                    window_change_localization = (
+                        (max(window_means) / total_window_change)
+                        if total_window_change > 1e-9
+                        else 0.0
+                    )
+                else:
+                    windowed_change_dispersion = 0.0
+                    window_change_localization = 0.0
 
                 early_window = max(1, len(outcome_proxy) // 3)
                 early_baseline = sum(outcome_proxy[:early_window]) / early_window
@@ -489,6 +541,9 @@ class ExperimentAnalytics:
                     "primary_change_point_timing": primary_change_point_timing,
                     "stage1_transition_density": stage1_transition_density,
                     "change_point_confidence": change_point_confidence,
+                    "windowed_change_dispersion": windowed_change_dispersion,
+                    "window_change_localization": window_change_localization,
+                    "transition_gap_entropy": transition_gap_entropy,
                 }
 
         for e in experiments:
@@ -503,6 +558,9 @@ class ExperimentAnalytics:
             e["primary_change_point_timing"] = float(traj.get("primary_change_point_timing", 0.0))
             e["stage1_transition_density"] = float(traj.get("stage1_transition_density", 0.0))
             e["change_point_confidence"] = float(traj.get("change_point_confidence", 0.0))
+            e["windowed_change_dispersion"] = float(traj.get("windowed_change_dispersion", 0.0))
+            e["window_change_localization"] = float(traj.get("window_change_localization", 0.0))
+            e["transition_gap_entropy"] = float(traj.get("transition_gap_entropy", 0.0))
 
         feature_keys = [
             "s1_rate",
@@ -523,6 +581,9 @@ class ExperimentAnalytics:
             "primary_change_point_timing",
             "stage1_transition_density",
             "change_point_confidence",
+            "windowed_change_dispersion",
+            "window_change_localization",
+            "transition_gap_entropy",
         ]
         mins = {k: min(e[k] for e in experiments) for k in feature_keys}
         maxs = {k: max(e[k] for e in experiments) for k in feature_keys}
@@ -556,6 +617,9 @@ class ExperimentAnalytics:
                 _norm(e["primary_change_point_timing"], "primary_change_point_timing"),
                 _norm(e["stage1_transition_density"], "stage1_transition_density"),
                 _norm(e["change_point_confidence"], "change_point_confidence"),
+                _norm(e["windowed_change_dispersion"], "windowed_change_dispersion"),
+                _norm(e["window_change_localization"], "window_change_localization"),
+                _norm(e["transition_gap_entropy"], "transition_gap_entropy"),
             ]
             points.append((e, vec))
 
@@ -763,6 +827,9 @@ class ExperimentAnalytics:
                 "avg_primary_change_point_timing": round(sum(m["primary_change_point_timing"] for m in member_exps) / len(member_exps), 4),
                 "avg_stage1_transition_density": round(sum(m["stage1_transition_density"] for m in member_exps) / len(member_exps), 4),
                 "avg_change_point_confidence": round(sum(m["change_point_confidence"] for m in member_exps) / len(member_exps), 4),
+                "avg_windowed_change_dispersion": round(sum(m["windowed_change_dispersion"] for m in member_exps) / len(member_exps), 4),
+                "avg_window_change_localization": round(sum(m["window_change_localization"] for m in member_exps) / len(member_exps), 4),
+                "avg_transition_gap_entropy": round(sum(m["transition_gap_entropy"] for m in member_exps) / len(member_exps), 4),
                 "experiment_ids": [m["experiment_id"] for m in member_exps[:10]],
             })
 
@@ -805,6 +872,9 @@ class ExperimentAnalytics:
                 "primary_change_point_timing",
                 "stage1_transition_density",
                 "change_point_confidence",
+                "windowed_change_dispersion",
+                "window_change_localization",
+                "transition_gap_entropy",
             ],
             "stability_score": round(max(0.0, min(1.0, stability)), 4),
             "model_selection": {

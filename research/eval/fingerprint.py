@@ -52,6 +52,10 @@ class BehavioralFingerprint:
     # Overall novelty estimate
     novelty_score: float = 0.0
 
+    # CKA provenance
+    cka_source: str = "none"  # "artifact", "heuristic_fallback", "none"
+    cka_artifact_version: Optional[str] = None
+
     # Quality tracking: how many of the 4 sub-analyses succeeded
     analyses_succeeded: int = 0  # 0–4
     quality: str = "none"  # "full" (4/4), "partial" (1–3), "none" (0)
@@ -124,10 +128,18 @@ def compute_fingerprint(
             n_succeeded += 1
 
         # CKA similarity to reference architectures
-        cka = _compute_reference_cka(reps)
+        # Try artifact-backed CKA first, fall back to heuristic
+        from .cka_references import get_default_store
+        store = get_default_store()
+        ref_activations = store.get_references()
+        cka_meta = store.get_metadata()
+
+        cka = _compute_reference_cka(reps, ref_activations=ref_activations)
         fp.cka_vs_transformer = cka.get("transformer", 0.0)
         fp.cka_vs_ssm = cka.get("ssm", 0.0)
         fp.cka_vs_conv = cka.get("conv", 0.0)
+        fp.cka_source = cka_meta.get("cka_source", "none")
+        fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
         if cka.get("_succeeded"):
             n_succeeded += 1
 
@@ -341,19 +353,20 @@ def _analyze_sensitivity(
     return result
 
 
-def _compute_reference_cka(reps: Optional[torch.Tensor]) -> Dict[str, float]:
+def _compute_reference_cka(
+    reps: Optional[torch.Tensor],
+    ref_activations: Optional[Dict[str, torch.Tensor]] = None,
+) -> Dict[str, float]:
     """Compute CKA similarity to reference architecture behaviors.
 
-    Since we don't have actual reference models loaded, we use
-    heuristic patterns:
-    - Transformer: strong diagonal + slow decay (attention pattern)
-    - SSM: strong lower-triangular (recurrent pattern)
-    - Conv: banded diagonal (local pattern)
+    If ref_activations is provided (from artifact store), computes CKA
+    against real pre-trained reference representations. Otherwise falls
+    back to heuristic synthetic patterns.
 
-    CAVEAT: These are synthetic approximations, not empirical. Real models
-    have more complex similarity structure. CKA values here indicate
-    approximate architectural *style*, not functional equivalence.
-    Novelty scores derived from these should be treated as heuristic.
+    Args:
+        reps: Candidate model representations.
+        ref_activations: Optional dict mapping family name -> reference
+            activation tensor from artifact store.
     """
     result = {"transformer": 0.0, "ssm": 0.0, "conv": 0.0, "_succeeded": False}
 
@@ -371,22 +384,43 @@ def _compute_reference_cka(reps: Optional[torch.Tensor]) -> Dict[str, float]:
         sim = torch.mm(norm.reshape(-1, D), norm.reshape(-1, D).t())
         sim = sim[:S, :S]  # (S, S)
 
-        # Reference patterns
-        positions = torch.arange(S, device=sim.device).float()
-        dist = (positions.unsqueeze(0) - positions.unsqueeze(1)).abs()
+        if ref_activations is not None:
+            # Artifact-backed CKA: compute against real reference activations
+            for family in ("transformer", "ssm", "conv"):
+                ref_tensor = ref_activations.get(family)
+                if ref_tensor is None:
+                    continue
+                # Build reference self-similarity matrix, truncating/padding
+                # to match candidate sequence length
+                ref_flat = ref_tensor.float()
+                rS = ref_flat.shape[-2]
+                use_S = min(S, rS)
+                ref_norm = F.normalize(ref_flat[..., :use_S, :], dim=-1)
+                rD = ref_norm.shape[-1]
+                ref_sim = torch.mm(
+                    ref_norm.reshape(-1, rD), ref_norm.reshape(-1, rD).t()
+                )
+                ref_sim = ref_sim[:use_S, :use_S]
+                result[family] = _linear_cka(
+                    sim[:use_S, :use_S], ref_sim
+                )
+        else:
+            # Heuristic fallback: synthetic reference patterns
+            # CAVEAT: These are synthetic approximations, not empirical.
+            positions = torch.arange(S, device=sim.device).float()
+            dist = (positions.unsqueeze(0) - positions.unsqueeze(1)).abs()
 
-        # Transformer: soft attention-like (slow decay from diagonal)
-        ref_transformer = torch.exp(-dist / (S * 0.3))
-        # SSM: recurrent (lower triangular with exponential decay)
-        ref_ssm = torch.exp(-dist / (S * 0.15)) * (dist >= 0).float()
-        ref_ssm = ref_ssm.tril()
-        # Conv: local (sharp banded)
-        ref_conv = (dist <= 5).float()
+            # Transformer: soft attention-like (slow decay from diagonal)
+            ref_transformer = torch.exp(-dist / (S * 0.3))
+            # SSM: recurrent (lower triangular with exponential decay)
+            ref_ssm = torch.exp(-dist / (S * 0.15)) * (dist >= 0).float()
+            ref_ssm = ref_ssm.tril()
+            # Conv: local (sharp banded)
+            ref_conv = (dist <= 5).float()
 
-        # CKA = HSIC(X, Y) / sqrt(HSIC(X,X) * HSIC(Y,Y))
-        result["transformer"] = _linear_cka(sim, ref_transformer)
-        result["ssm"] = _linear_cka(sim, ref_ssm)
-        result["conv"] = _linear_cka(sim, ref_conv)
+            result["transformer"] = _linear_cka(sim, ref_transformer)
+            result["ssm"] = _linear_cka(sim, ref_ssm)
+            result["conv"] = _linear_cka(sim, ref_conv)
 
         result["_succeeded"] = True
 

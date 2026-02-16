@@ -1881,6 +1881,7 @@ class ExperimentRunner:
                     investigation_best_training=best_tp_json,
                     investigation_passed=robustness >= 0.5 and (best_lr or 1.0) < 0.5,
                     tier="investigation" if robustness >= 0.5 else "screening",
+                    novelty_confidence=source.get("novelty_confidence"),
                 )
 
                 # Record result
@@ -4102,6 +4103,7 @@ class ExperimentRunner:
                     investigation_best_training=best_tp_json,
                     investigation_passed=robustness >= 0.5 and (best_lr or 1.0) < 0.5,
                     tier="investigation" if robustness >= 0.5 else "screening",
+                    novelty_confidence=source.get("novelty_confidence"),
                 )
 
                 # Record result
@@ -4798,6 +4800,7 @@ class ExperimentRunner:
                         screening_novelty=p.get("novelty_score"),
                         screening_passed=True,
                         tier="screening",
+                        novelty_confidence=p.get("novelty_confidence"),
                     )
 
             self._pending_investigation = {
