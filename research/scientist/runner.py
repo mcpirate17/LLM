@@ -83,12 +83,16 @@ class RunConfig:
     stage1_lr: float = 3e-4
     stage1_batch_size: int = 4
     # Training data source
-    data_mode: str = "random"  # "random" | "corpus"
+    data_mode: str = "random"  # "random" | "corpus" | "hydra"
     corpus_path: str = ""      # TXT or JSONL path for corpus mode
     corpus_format: str = "auto"  # "auto" | "txt" | "jsonl"
     corpus_text_key: str = "text"  # JSONL key when format is jsonl
     tokenizer_mode: str = "byte"  # "byte" | "whitespace"
     corpus_max_chars: int = 200000
+    # HYDRA data loader settings (data_mode="hydra")
+    hydra_data_dir: str = "/home/tim/Projects/LLM/HYDRA/data"
+    hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name
+    hydra_project_root: str = "/home/tim/Projects/LLM/HYDRA"
     # Synthesis grammar
     max_depth: int = 10
     max_ops: int = 16
@@ -136,6 +140,7 @@ class RunConfig:
     # Investigation phase
     investigation_steps: int = 2500
     investigation_batch_size: int = 4
+    investigation_max_loss_ratio_multiplier: float = 8.0
     # Validation phase
     validation_steps: int = 10000
     validation_batch_size: int = 8
@@ -218,6 +223,22 @@ class ExperimentRunner:
         "moe_topk": 0.8,
     }
 
+    @staticmethod
+    def _investigation_loss_multiplier(
+        screening_loss_ratio: Optional[float],
+        best_loss_ratio: Optional[float],
+    ) -> Optional[float]:
+        """Best-investigation vs screening loss-ratio multiplier.
+
+        Returns None when either value is unavailable or screening ratio is
+        near zero (to avoid unstable division).
+        """
+        if screening_loss_ratio is None or best_loss_ratio is None:
+            return None
+        if screening_loss_ratio <= 1e-8:
+            return None
+        return best_loss_ratio / screening_loss_ratio
+
     def __init__(self, notebook_path: str = "research/lab_notebook.db"):
         self.notebook_path = notebook_path
         self.aria = get_aria()
@@ -236,6 +257,9 @@ class ExperimentRunner:
         self._corpus_batcher: Optional[CorpusTokenBatcher] = None
         self._corpus_signature: Optional[Tuple[str, str, str, str, int, int]] = None
         self._corpus_warned_unavailable: bool = False
+        self._hydra_loader = None
+        self._hydra_iter = None
+        self._hydra_signature: Optional[str] = None
 
         self._recover_stale_experiments_on_startup()
 
@@ -314,6 +338,65 @@ class ExperimentRunner:
             self._corpus_warned_unavailable = True
         return batcher
 
+    def _get_hydra_batch(
+        self, config: RunConfig, batch_size: int, seq_len: int, dev: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Get a batch from HYDRA's universal data loader.
+
+        Lazily initializes the loader. Returns None on failure (caller
+        falls back to random tokens).
+        """
+        sig = f"{config.hydra_data_dir}|{config.hydra_dataset}|{batch_size}|{seq_len}"
+        if self._hydra_loader is None or self._hydra_signature != sig:
+            try:
+                import sys
+                hydra_root = config.hydra_project_root
+                if hydra_root not in sys.path:
+                    sys.path.insert(0, hydra_root)
+                from hydra.data import create_universal_loader
+
+                self._hydra_loader = create_universal_loader(
+                    dataset=config.hydra_dataset,
+                    data_dir=config.hydra_data_dir,
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                    vocab_size=int(config.vocab_size),
+                    device="cpu",  # we move to dev below
+                    num_workers=0,  # keep it simple for subprocess safety
+                    seed=42,
+                )
+                self._hydra_iter = iter(self._hydra_loader)
+                self._hydra_signature = sig
+                logger.info("HYDRA data loader initialized: dataset=%s, dir=%s",
+                            config.hydra_dataset, config.hydra_data_dir)
+            except Exception as e:
+                logger.warning("Failed to initialize HYDRA data loader: %s", e)
+                self._hydra_loader = None
+                self._hydra_iter = None
+                return None
+
+        # Get next batch from iterator
+        try:
+            batch = next(self._hydra_iter)
+        except StopIteration:
+            # Reset iterator
+            self._hydra_iter = iter(self._hydra_loader)
+            try:
+                batch = next(self._hydra_iter)
+            except StopIteration:
+                return None
+
+        input_ids = batch.get("input_ids")
+        if input_ids is None:
+            return None
+
+        # Project token IDs into model's vocab range if needed
+        vocab = int(config.vocab_size)
+        if input_ids.max().item() >= vocab:
+            input_ids = input_ids % vocab
+
+        return input_ids.to(dev)
+
     def _sample_training_input_ids(
         self,
         config: RunConfig,
@@ -323,10 +406,17 @@ class ExperimentRunner:
         seed: int,
     ) -> torch.Tensor:
         """Sample input IDs from configured data source with deterministic seed."""
+        mode = str(config.data_mode or "random").strip().lower()
         generator = torch.Generator(device=dev)
         generator.manual_seed(int(seed))
 
-        if str(config.data_mode or "random").strip().lower() == "corpus":
+        if mode == "hydra":
+            batch = self._get_hydra_batch(config, batch_size, seq_len, dev)
+            if batch is not None:
+                return batch
+            # Fall through to random on failure
+
+        if mode == "corpus":
             batcher = self._get_corpus_batcher(config)
             if batcher is not None:
                 batch = batcher.sample_batch(
@@ -345,6 +435,22 @@ class ExperimentRunner:
             device=dev,
             generator=generator,
         )
+
+    def _make_baseline_data_fn(self, config: RunConfig):
+        """Build a data_fn for baseline training when using real data.
+
+        Returns (data_fn, data_tag) tuple. data_fn is None for random mode
+        (baseline uses its own random tokens). data_tag is a cache key suffix.
+        """
+        mode = str(config.data_mode or "random").strip().lower()
+        if mode == "hydra":
+            def data_fn(batch_size, seq_len, dev):
+                batch = self._get_hydra_batch(config, batch_size, seq_len, dev)
+                if batch is not None:
+                    return batch
+                return torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev)
+            return data_fn, "hydra"
+        return None, "random"
 
     @property
     def progress(self) -> LiveProgress:
@@ -1841,6 +1947,12 @@ class ExperimentRunner:
                     default=None,
                 )
                 best_lr = best_tp["loss_ratio"] if best_tp else None
+                screening_lr = source.get("loss_ratio")
+                lr_multiplier = self._investigation_loss_multiplier(screening_lr, best_lr)
+                brittle_risk = (
+                    lr_multiplier is not None
+                    and lr_multiplier > float(config.investigation_max_loss_ratio_multiplier)
+                )
 
                 if n_passed > 0:
                     results["stage1_passed"] += 1
@@ -1851,6 +1963,9 @@ class ExperimentRunner:
                     "result_id": source_result_id,
                     "robustness": robustness,
                     "best_loss_ratio": best_lr,
+                    "screening_loss_ratio": screening_lr,
+                    "loss_ratio_multiplier": lr_multiplier,
+                    "brittle_risk": brittle_risk,
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
                     "best_training_program": best_tp.get("training_program") if best_tp else None,
@@ -1869,6 +1984,12 @@ class ExperimentRunner:
                             best_tp_json = json.dumps(tp.to_dict())
                             break
 
+                investigation_passed = (
+                    robustness >= 0.5
+                    and (best_lr or 1.0) < 0.5
+                    and not brittle_risk
+                )
+
                 nb.upsert_leaderboard(
                     result_id=source_result_id,
                     model_source=model_source,
@@ -1879,8 +2000,8 @@ class ExperimentRunner:
                     investigation_loss_ratio=best_lr,
                     investigation_robustness=robustness,
                     investigation_best_training=best_tp_json,
-                    investigation_passed=robustness >= 0.5 and (best_lr or 1.0) < 0.5,
-                    tier="investigation" if robustness >= 0.5 else "screening",
+                    investigation_passed=investigation_passed,
+                    tier="investigation" if investigation_passed else "screening",
                     novelty_confidence=source.get("novelty_confidence"),
                 )
 
@@ -2171,6 +2292,7 @@ class ExperimentRunner:
                             baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
                             baseline_recipe = self._resolve_baseline_recipe(
                                 best_seed, default_lr=config.stage1_lr)
+                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
                             val_baseline_ratio = baseline.compare(
                                 best_seed["final_loss"],
                                 d_model=config.model_dim,
@@ -2185,6 +2307,8 @@ class ExperimentRunner:
                                 weight_decay=baseline_recipe["weight_decay"],
                                 momentum=baseline_recipe["momentum"],
                                 betas=baseline_recipe["betas"],
+                                data_fn=bl_data_fn,
+                                data_tag=bl_data_tag,
                             )
                         except Exception:
                             pass
@@ -2682,6 +2806,8 @@ class ExperimentRunner:
                     program_metrics["fp_cka_vs_transformer"] = fp.cka_vs_transformer
                     program_metrics["fp_cka_vs_ssm"] = fp.cka_vs_ssm
                     program_metrics["fp_cka_vs_conv"] = fp.cka_vs_conv
+                    program_metrics["cka_source"] = fp.cka_source
+                    program_metrics["cka_artifact_version"] = fp.cka_artifact_version
                 except Exception:
                     pass
 
@@ -2732,6 +2858,7 @@ class ExperimentRunner:
                             baseline_steps = int(s1_result.get("n_train_steps") or config.stage1_steps)
                             baseline_recipe = self._resolve_baseline_recipe(
                                 s1_result, default_lr=config.stage1_lr)
+                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
                             baseline_ratio = baseline.compare(
                                 final_loss,
                                 d_model=config.model_dim,
@@ -2746,6 +2873,8 @@ class ExperimentRunner:
                                 weight_decay=baseline_recipe["weight_decay"],
                                 momentum=baseline_recipe["momentum"],
                                 betas=baseline_recipe["betas"],
+                                data_fn=bl_data_fn,
+                                data_tag=bl_data_tag,
                             )
                             program_metrics["baseline_loss_ratio"] = baseline_ratio
                         except Exception:
@@ -4063,6 +4192,12 @@ class ExperimentRunner:
                     default=None,
                 )
                 best_lr = best_tp["loss_ratio"] if best_tp else None
+                screening_lr = source.get("loss_ratio")
+                lr_multiplier = self._investigation_loss_multiplier(screening_lr, best_lr)
+                brittle_risk = (
+                    lr_multiplier is not None
+                    and lr_multiplier > float(config.investigation_max_loss_ratio_multiplier)
+                )
 
                 if n_passed > 0:
                     results["stage1_passed"] += 1
@@ -4073,6 +4208,9 @@ class ExperimentRunner:
                     "result_id": source_result_id,
                     "robustness": robustness,
                     "best_loss_ratio": best_lr,
+                    "screening_loss_ratio": screening_lr,
+                    "loss_ratio_multiplier": lr_multiplier,
+                    "brittle_risk": brittle_risk,
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
                     "best_training_program": best_tp.get("training_program") if best_tp else None,
@@ -4091,6 +4229,12 @@ class ExperimentRunner:
                             best_tp_json = json.dumps(tp.to_dict())
                             break
 
+                investigation_passed = (
+                    robustness >= 0.5
+                    and (best_lr or 1.0) < 0.5
+                    and not brittle_risk
+                )
+
                 nb.upsert_leaderboard(
                     result_id=source_result_id,
                     model_source=model_source,
@@ -4101,8 +4245,8 @@ class ExperimentRunner:
                     investigation_loss_ratio=best_lr,
                     investigation_robustness=robustness,
                     investigation_best_training=best_tp_json,
-                    investigation_passed=robustness >= 0.5 and (best_lr or 1.0) < 0.5,
-                    tier="investigation" if robustness >= 0.5 else "screening",
+                    investigation_passed=investigation_passed,
+                    tier="investigation" if investigation_passed else "screening",
                     novelty_confidence=source.get("novelty_confidence"),
                 )
 
@@ -4445,6 +4589,7 @@ class ExperimentRunner:
                             baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
                             baseline_recipe = self._resolve_baseline_recipe(
                                 best_seed, default_lr=config.stage1_lr)
+                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
                             val_baseline_ratio = baseline.compare(
                                 best_seed["final_loss"],
                                 d_model=config.model_dim,
@@ -4459,6 +4604,8 @@ class ExperimentRunner:
                                 weight_decay=baseline_recipe["weight_decay"],
                                 momentum=baseline_recipe["momentum"],
                                 betas=baseline_recipe["betas"],
+                                data_fn=bl_data_fn,
+                                data_tag=bl_data_tag,
                             )
                         except Exception:
                             pass
@@ -4840,6 +4987,11 @@ class ExperimentRunner:
                 if r.get("robustness", 0) >= config.auto_validate_min_robustness
                 and (r.get("best_loss_ratio") or 1.0) < 0.6
                 and (r.get("baseline_loss_ratio") or r.get("best_loss_ratio", 1.0)) < 0.98
+                and not r.get("brittle_risk", False)
+                and (
+                    r.get("loss_ratio_multiplier") is None
+                    or r.get("loss_ratio_multiplier") <= config.investigation_max_loss_ratio_multiplier
+                )
             ]
 
             if not strong:
@@ -5583,6 +5735,7 @@ class ExperimentRunner:
                             baseline_steps = int(s1_result.get("n_train_steps") or config.scale_up_steps)
                             baseline_recipe = self._resolve_baseline_recipe(
                                 s1_result, default_lr=config.stage1_lr)
+                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
                             baseline_ratio = baseline.compare(
                                 final_loss,
                                 d_model=config.model_dim,
@@ -5597,6 +5750,8 @@ class ExperimentRunner:
                                 weight_decay=baseline_recipe["weight_decay"],
                                 momentum=baseline_recipe["momentum"],
                                 betas=baseline_recipe["betas"],
+                                data_fn=bl_data_fn,
+                                data_tag=bl_data_tag,
                             )
                             program_metrics["baseline_loss_ratio"] = baseline_ratio
                         except Exception:

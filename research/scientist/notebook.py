@@ -393,6 +393,9 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "routing_expert_utilization_json": "TEXT",
     # Novelty calibration
     "novelty_confidence": "REAL",
+    # CKA provenance
+    "cka_source": "TEXT",
+    "cka_artifact_version": "TEXT",
 }
 
 

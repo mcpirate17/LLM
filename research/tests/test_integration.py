@@ -1057,6 +1057,98 @@ class TestNoveltyCalibration(unittest.TestCase):
             self.assertGreater(scores[eid_high], scores[eid_low])
 
 
+class TestBaselineDataFn(unittest.TestCase):
+    """Tests for baseline training with custom data functions."""
+
+    @unittest.skipUnless(HAS_TORCH, "torch not available")
+    def test_baseline_with_data_fn(self):
+        """Baseline trains using provided data_fn instead of random tokens."""
+        from research.eval.baseline import TransformerBaseline
+        import torch
+
+        call_count = [0]
+        def fake_data(batch_size, seq_len, dev):
+            call_count[0] += 1
+            return torch.randint(0, 1024, (batch_size, seq_len), device=dev)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bl = TransformerBaseline(cache_path=os.path.join(tmpdir, "bl.db"))
+            loss = bl.get_baseline_loss(
+                d_model=64, seq_len=32, n_steps=5, vocab_size=1024,
+                batch_size=2, device="cpu", data_fn=fake_data, data_tag="test",
+            )
+            self.assertTrue(0 < loss < 20)
+            self.assertGreater(call_count[0], 0, "data_fn should have been called")
+
+    @unittest.skipUnless(HAS_TORCH, "torch not available")
+    def test_baseline_compare_with_data_fn(self):
+        """compare() passes data_fn through to training."""
+        from research.eval.baseline import TransformerBaseline
+        import torch
+
+        def fake_data(batch_size, seq_len, dev):
+            return torch.randint(0, 1024, (batch_size, seq_len), device=dev)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bl = TransformerBaseline(cache_path=os.path.join(tmpdir, "bl.db"))
+            ratio = bl.compare(
+                program_loss=5.0,
+                d_model=64, seq_len=32, n_steps=5, vocab_size=1024,
+                batch_size=2, device="cpu", data_fn=fake_data, data_tag="test",
+            )
+            self.assertIsInstance(ratio, float)
+            self.assertGreater(ratio, 0)
+
+    @unittest.skipUnless(HAS_TORCH, "torch not available")
+    def test_data_tag_separates_cache(self):
+        """Different data_tags produce separate cache entries."""
+        from research.eval.baseline import TransformerBaseline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bl = TransformerBaseline(cache_path=os.path.join(tmpdir, "bl.db"))
+            key_random = bl._config_key(64, 32, 5, 1024, data_tag="random")
+            key_hydra = bl._config_key(64, 32, 5, 1024, data_tag="hydra")
+            self.assertNotEqual(key_random, key_hydra)
+
+    @unittest.skipUnless(HAS_TORCH, "torch not available")
+    def test_hydra_batch_fallback_to_random(self):
+        """_get_hydra_batch returns None when HYDRA loader fails to init."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+        import torch
+
+        config = RunConfig(data_mode="hydra", hydra_project_root="/nonexistent")
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        runner._hydra_loader = None
+        runner._hydra_iter = None
+        runner._hydra_signature = ""
+        # Mock the import to raise immediately rather than risk hanging
+        with patch.dict("sys.modules", {"hydra.data": None}):
+            result = runner._get_hydra_batch(config, 2, 32, torch.device("cpu"))
+        self.assertIsNone(result, "Should return None when HYDRA unavailable")
+
+    @unittest.skipUnless(HAS_TORCH, "torch not available")
+    def test_make_baseline_data_fn_random_mode(self):
+        """_make_baseline_data_fn returns (None, 'random') for random mode."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        config = RunConfig(data_mode="random")
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        data_fn, data_tag = runner._make_baseline_data_fn(config)
+        self.assertIsNone(data_fn)
+        self.assertEqual(data_tag, "random")
+
+    @unittest.skipUnless(HAS_TORCH, "torch not available")
+    def test_make_baseline_data_fn_hydra_mode(self):
+        """_make_baseline_data_fn returns a callable for hydra mode."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        config = RunConfig(data_mode="hydra")
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        data_fn, data_tag = runner._make_baseline_data_fn(config)
+        self.assertIsNotNone(data_fn)
+        self.assertEqual(data_tag, "hydra")
+
+
 class TestCkaReferenceArtifacts(unittest.TestCase):
     """Tests for CKA reference artifact loader/validator/cache (#28/#43 Phase A)."""
 
@@ -2036,6 +2128,43 @@ class TestAutoEscalation(unittest.TestCase):
         self.assertIsNotNone(pending,
                              "Validation should be queued after robust investigation")
         self.assertEqual(len(pending["result_ids"]), 1)  # only r1 qualifies
+        nb.close()
+
+    def test_auto_escalate_excludes_brittle_candidates(self):
+        """Brittle investigation outcomes should not auto-queue for validation."""
+        nb = LabNotebook(self.db_path)
+
+        results = {
+            "investigation_results": [
+                {
+                    "result_id": "stable",
+                    "robustness": 0.8,
+                    "best_loss_ratio": 0.35,
+                    "loss_ratio_multiplier": 2.0,
+                    "brittle_risk": False,
+                },
+                {
+                    "result_id": "brittle_flag",
+                    "robustness": 0.85,
+                    "best_loss_ratio": 0.3,
+                    "loss_ratio_multiplier": 20.0,
+                    "brittle_risk": True,
+                },
+                {
+                    "result_id": "brittle_multiplier",
+                    "robustness": 0.9,
+                    "best_loss_ratio": 0.25,
+                    "loss_ratio_multiplier": self.config.investigation_max_loss_ratio_multiplier + 0.1,
+                    "brittle_risk": False,
+                },
+            ]
+        }
+
+        self.runner._auto_escalate(results, self.config, nb, phase="investigation")
+
+        pending = getattr(self.runner, "_pending_validation", None)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["result_ids"], ["stable"])
         nb.close()
 
     def test_leaderboard_populated_during_escalation(self):

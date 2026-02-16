@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Testing
+.pytest_cache/
+
+# IDE
+.vscode/settings.json
+
+# Node / Dashboard
+dashboard/node_modules/
+dashboard/build/
+dashboard/package-lock.json
+
+# Runtime artifacts
+*.db
+*.db.bak
+*.log
+checkpoints/
+
+# OS
+.DS_Store
