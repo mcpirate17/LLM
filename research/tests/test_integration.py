@@ -3195,5 +3195,132 @@ class TestPipelineEndToEnd(unittest.TestCase):
         self.assertGreater(len(op_success), 0)
 
 
+@unittest.skipUnless(HAS_TORCH, "torch required")
+class TestDiagnosticTasks(unittest.TestCase):
+    """Tests for the synthetic diagnostic task evaluation suite."""
+
+    @classmethod
+    def setUpClass(cls):
+        from research.eval.diagnostic_tasks import (
+            generate_copy_task,
+            generate_induction_task,
+            generate_periodic_task,
+            generate_selective_copy_task,
+            run_diagnostic_suite,
+            DiagnosticSuiteResult,
+            DiagnosticTaskResult,
+            DIAG_BATCH_SIZE,
+            DIAG_SEQ_LEN,
+            DIAG_SEP_TOKEN,
+            DIAG_MARK_TOKEN,
+            DIAGNOSTIC_TASKS,
+        )
+        cls.generate_copy_task = staticmethod(generate_copy_task)
+        cls.generate_induction_task = staticmethod(generate_induction_task)
+        cls.generate_periodic_task = staticmethod(generate_periodic_task)
+        cls.generate_selective_copy_task = staticmethod(generate_selective_copy_task)
+        cls.run_diagnostic_suite = staticmethod(run_diagnostic_suite)
+        cls.DiagnosticSuiteResult = DiagnosticSuiteResult
+        cls.DiagnosticTaskResult = DiagnosticTaskResult
+        cls.DIAG_BATCH_SIZE = DIAG_BATCH_SIZE
+        cls.DIAG_SEQ_LEN = DIAG_SEQ_LEN
+        cls.DIAG_SEP_TOKEN = DIAG_SEP_TOKEN
+        cls.DIAG_MARK_TOKEN = DIAG_MARK_TOKEN
+        cls.DIAGNOSTIC_TASKS = DIAGNOSTIC_TASKS
+
+    def _check_generator_shapes(self, gen_fn):
+        """Helper: verify generator returns correct shapes and types."""
+        rng = torch.Generator()
+        rng.manual_seed(42)
+        ids, mask, targets = gen_fn(
+            batch_size=self.DIAG_BATCH_SIZE,
+            seq_len=self.DIAG_SEQ_LEN,
+            device="cpu",
+            rng=rng,
+        )
+        self.assertEqual(ids.shape, (self.DIAG_BATCH_SIZE, self.DIAG_SEQ_LEN))
+        self.assertEqual(mask.shape, (self.DIAG_BATCH_SIZE, self.DIAG_SEQ_LEN - 1))
+        self.assertEqual(targets.shape, (self.DIAG_BATCH_SIZE, self.DIAG_SEQ_LEN - 1))
+        self.assertEqual(ids.dtype, torch.long)
+        self.assertTrue(mask.dtype == torch.bool)
+        # At least some critical positions exist
+        self.assertGreater(mask.sum().item(), 0)
+        # Targets match shifted input
+        self.assertTrue(torch.equal(targets, ids[:, 1:]))
+        return ids, mask, targets
+
+    def test_copy_generator_shapes(self):
+        self._check_generator_shapes(self.generate_copy_task)
+
+    def test_induction_generator_shapes(self):
+        self._check_generator_shapes(self.generate_induction_task)
+
+    def test_periodic_generator_shapes(self):
+        self._check_generator_shapes(self.generate_periodic_task)
+
+    def test_selective_copy_generator_shapes(self):
+        self._check_generator_shapes(self.generate_selective_copy_task)
+
+    def test_copy_task_has_separator(self):
+        """Copy task should contain SEP token in every sequence."""
+        rng = torch.Generator()
+        rng.manual_seed(123)
+        ids, _, _ = self.generate_copy_task(batch_size=4, seq_len=64, rng=rng)
+        for b in range(4):
+            self.assertIn(self.DIAG_SEP_TOKEN, ids[b].tolist())
+
+    def test_periodic_task_deterministic(self):
+        """Periodic task: after first period, all positions are deterministic."""
+        rng = torch.Generator()
+        rng.manual_seed(99)
+        ids, mask, targets = self.generate_periodic_task(
+            batch_size=2, seq_len=32, rng=rng,
+        )
+        # Verify periodicity: for each batch, tokens repeat
+        for b in range(2):
+            seq = ids[b].tolist()
+            # Find period by checking smallest repeat
+            for p in range(3, 7):
+                if all(seq[i] == seq[i % p] for i in range(p, len(seq))):
+                    break
+            else:
+                self.fail("No periodic pattern found")
+
+    def test_suite_result_serialization(self):
+        """DiagnosticSuiteResult.to_dict() produces valid JSON-serializable dict."""
+        result = self.DiagnosticSuiteResult(
+            tasks=[
+                self.DiagnosticTaskResult("copy", accuracy=0.8, loss=1.2, steps_trained=100),
+                self.DiagnosticTaskResult("periodic", accuracy=0.9, loss=0.5, steps_trained=100),
+            ],
+            diagnostic_score=0.85,
+            total_time_ms=1234.0,
+        )
+        d = result.to_dict()
+        import json
+        serialized = json.dumps(d)
+        loaded = json.loads(serialized)
+        self.assertEqual(len(loaded["tasks"]), 2)
+        self.assertAlmostEqual(loaded["diagnostic_score"], 0.85)
+        self.assertEqual(loaded["tasks"][0]["task_name"], "copy")
+
+    def test_notebook_migration_has_diagnostic_columns(self):
+        """Notebook migration map includes diagnostic_tasks_json and diagnostic_score."""
+        nb = None
+        try:
+            tmpdir = tempfile.mkdtemp()
+            db_path = os.path.join(tmpdir, "test_diag_migration.db")
+            from research.scientist.notebook import LabNotebook
+            nb = LabNotebook(db_path)
+            cols = [row[1] for row in nb.conn.execute(
+                "PRAGMA table_info(program_results)"
+            ).fetchall()]
+            self.assertIn("diagnostic_tasks_json", cols)
+            self.assertIn("diagnostic_score", cols)
+        finally:
+            if nb:
+                nb.close()
+
+
 if __name__ == "__main__":
     unittest.main()

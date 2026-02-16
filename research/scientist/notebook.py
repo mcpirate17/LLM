@@ -396,6 +396,9 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     # CKA provenance
     "cka_source": "TEXT",
     "cka_artifact_version": "TEXT",
+    # Diagnostic tasks
+    "diagnostic_tasks_json": "TEXT",
+    "diagnostic_score": "REAL",
 }
 
 

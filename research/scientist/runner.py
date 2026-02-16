@@ -36,6 +36,7 @@ from ..eval.metrics import novelty_score
 from ..eval.flops import estimate_flops
 from ..eval.baseline import TransformerBaseline
 from ..eval.fingerprint import compute_fingerprint
+from ..eval.diagnostic_tasks import run_diagnostic_suite
 from ..training.loss_synthesis import synthesize_loss
 from ..training.optimizer_synthesis import synthesize_optimizer
 from ..training.training_program import synthesize_training_program
@@ -2901,6 +2902,15 @@ class ExperimentRunner:
                 except Exception:
                     pass
 
+            # Diagnostic tasks — test specific architectural capabilities
+            if s1_passed and model is not None:
+                try:
+                    diag = run_diagnostic_suite(model, device=dev_str)
+                    program_metrics["diagnostic_tasks_json"] = json.dumps(diag.to_dict())
+                    program_metrics["diagnostic_score"] = diag.diagnostic_score
+                except Exception:
+                    pass
+
             nov = novelty_score(graph, fingerprint=fp)
             n_score = nov.overall_novelty
 
@@ -5758,6 +5768,15 @@ class ExperimentRunner:
                             pass
 
                 program_metrics["stage_at_death"] = "survived" if s1_passed else "stage1"
+
+                # Diagnostic tasks for S1 survivors
+                if s1_passed and model is not None:
+                    try:
+                        diag = run_diagnostic_suite(model, device=dev_str)
+                        program_metrics["diagnostic_tasks_json"] = json.dumps(diag.to_dict())
+                        program_metrics["diagnostic_score"] = diag.diagnostic_score
+                    except Exception:
+                        pass
 
                 # Novelty — compute behavioral fingerprint for S1 survivors
                 fp = None
