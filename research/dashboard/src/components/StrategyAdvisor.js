@@ -38,31 +38,15 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
 
   for (const entry of entries) {
     const tier = normalizeTier(entry);
-    if (tier) {
-      tierSummary[tier] += 1;
-      if (tier === 'breakthrough') {
-        breakthroughCandidates.push(entry);
-      } else if (tier === 'validation' && entry.validation_passed) {
-        validationPassed.push(entry);
-      } else if (tier === 'investigation' && entry.investigation_passed) {
-        investigationPassed.push(entry);
-      } else if (tier === 'screening') {
-        screeningSurvivors.push(entry);
-      }
-      continue;
-    }
-
-    if (entry.validation_passed && entry.composite_score >= 0.8) {
-      tierSummary.breakthrough += 1;
+    const effectiveTier = tier || 'screening';
+    tierSummary[effectiveTier] += 1;
+    if (effectiveTier === 'breakthrough') {
       breakthroughCandidates.push(entry);
-    } else if (entry.validation_passed) {
-      tierSummary.validation += 1;
+    } else if (effectiveTier === 'validation' && entry.validation_passed) {
       validationPassed.push(entry);
-    } else if (entry.investigation_passed) {
-      tierSummary.investigation += 1;
+    } else if (effectiveTier === 'investigation' && entry.investigation_passed) {
       investigationPassed.push(entry);
     } else {
-      tierSummary.screening += 1;
       screeningSurvivors.push(entry);
     }
   }
@@ -247,7 +231,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, isRunning }) {
               className="strategy-apply-btn"
               onClick={() => onApplyStrategy && onApplyStrategy(strategy)}
             >
-              {isPublishAction ? 'Go to Leaderboard' : 'Use This Strategy'}
+              {isPublishAction ? 'Review in Leaderboard' : 'Apply recommended action'}
             </button>
           )}
         </div>
