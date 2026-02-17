@@ -2357,6 +2357,42 @@ class TestAPI(unittest.TestCase):
             self.assertIn("status", summary)
             self.assertIn("timestamp", summary)
 
+    def test_api_aria_cycle_control_pause_resume(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.pause_aria_cycle = MagicMock(return_value={"phase": "paused", "cycle_paused": True})
+        fake_runner.resume_aria_cycle = MagicMock(return_value={"phase": "planning", "cycle_paused": False})
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r_pause = self.client.post("/api/aria/cycle-control", json={"action": "pause"})
+            r_resume = self.client.post("/api/aria/cycle-control", json={"action": "resume"})
+
+        self.assertEqual(r_pause.status_code, 200)
+        self.assertEqual(r_resume.status_code, 200)
+        self.assertTrue(r_pause.get_json().get("ok"))
+        self.assertTrue(r_resume.get_json().get("ok"))
+        fake_runner.pause_aria_cycle.assert_called_once()
+        fake_runner.resume_aria_cycle.assert_called_once()
+
+    def test_api_aria_cycle_control_start(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_continuous = MagicMock(return_value="continuous")
+        fake_runner.get_aria_cycle_status = MagicMock(return_value={"phase": "planning", "continuous_active": True})
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/aria/cycle-control", json={"action": "start", "config": {"n_programs": 3}})
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(data.get("action"), "start")
+        self.assertEqual(data.get("experiment_id"), "continuous")
+        fake_runner.start_continuous.assert_called_once()
+
     def test_api_aria_chat(self):
         r = self.client.post(
             "/api/aria/chat",
@@ -3866,6 +3902,7 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/aria/chat/message",
             "/api/aria/chat/compact",
             "/api/aria/cycle-status",
+            "/api/aria/cycle-control",
         }
 
         for filepath in self.component_files:
