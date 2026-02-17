@@ -52,7 +52,7 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   }
 
   const totalExperiments = dashboard?.summary?.total_experiments || 0;
-  const totalPrograms = dashboard?.summary?.total_programs || 0;
+  const totalPrograms = dashboard?.summary?.total_programs_evaluated ?? dashboard?.summary?.total_programs ?? 0;
   const stage1Survivors = dashboard?.summary?.stage1_survivors || 0;
   const survivalRate = totalPrograms > 0 ? stage1Survivors / totalPrograms : 0;
 
@@ -168,9 +168,11 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   };
 }
 
-function StrategyAdvisor({ dashboardData, onApplyStrategy, isRunning }) {
+function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, isRunning }) {
   const [leaderboard, setLeaderboard] = useState(null);
   const [mathCoverage, setMathCoverage] = useState(null);
+  const [aiRec, setAiRec] = useState(null);
+  const [aiLoading, setAiLoading] = useState(true);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -193,11 +195,28 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, isRunning }) {
     setLoading(false);
   }, []);
 
+  const fetchAiRec = useCallback(async () => {
+    setAiLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/aria/recommendation`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && !data.error && data.reasoning) {
+          setAiRec(data);
+        }
+      }
+    } catch {
+      // AI unavailable — fall back to deterministic
+    }
+    setAiLoading(false);
+  }, []);
+
   useEffect(() => {
     fetchData();
+    fetchAiRec();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, fetchAiRec]);
 
   if (loading && !leaderboard) {
     return (
@@ -213,12 +232,68 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, isRunning }) {
   const isPublishAction = strategy.action === null;
   const ts = strategy.tierSummary;
 
+  // Merge AI recommendation with deterministic strategy
+  const hasAi = aiRec && aiRec.reasoning;
+  const displayRationale = hasAi ? aiRec.reasoning : strategy.rationale;
+
+  // Build final config: deterministic mode + AI config overrides
+  const buildStartConfig = () => {
+    if (!strategy.action) return null;
+    const base = {
+      mode: strategy.action.suggestedMode || 'continuous',
+      model_source: strategy.action.configOverrides?.model_source || 'mixed',
+      source: 'strategy_advisor',
+      ...strategy.action.configOverrides,
+    };
+    // Layer AI-suggested config on top
+    if (hasAi && aiRec.config && typeof aiRec.config === 'object') {
+      Object.assign(base, aiRec.config);
+    }
+    return base;
+  };
+
+  // Summarize key params for display
+  const suggestedParams = hasAi && aiRec.config ? aiRec.config : null;
+  const paramSummary = suggestedParams
+    ? Object.entries(suggestedParams)
+        .filter(([k]) => k !== 'mode' && k !== 'source')
+        .slice(0, 4)
+        .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${typeof v === 'number' ? v.toFixed?.(2) ?? v : v}`)
+    : [];
+
+  const handleStartClick = () => {
+    const config = buildStartConfig();
+    if (config && onStart) {
+      onStart(config);
+    }
+  };
+
   return (
     <div className="card strategy-advisor" style={{ gridColumn: '1 / -1', marginBottom: 0 }}>
       <div className="strategy-content">
         <div className="strategy-header">
           <div className="strategy-title">{strategy.title}</div>
-          <div className="strategy-rationale">{strategy.rationale}</div>
+          <div className="strategy-rationale">{displayRationale}</div>
+          {hasAi && aiRec.confidence != null && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              AI confidence: {(aiRec.confidence * 100).toFixed(0)}%
+            </div>
+          )}
+          {paramSummary.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+              {paramSummary.map((p, i) => (
+                <span key={i} style={{
+                  fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                  background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
+                }}>{p}</span>
+              ))}
+            </div>
+          )}
+          {!hasAi && !aiLoading && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontStyle: 'italic' }}>
+              Rule-based recommendation (AI not available)
+            </div>
+          )}
         </div>
 
         <div className="strategy-actions">
@@ -226,12 +301,20 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, isRunning }) {
             <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
               Experiment running — strategy will update when complete.
             </div>
-          ) : (
+          ) : isPublishAction ? (
             <button
               className="strategy-apply-btn"
               onClick={() => onApplyStrategy && onApplyStrategy(strategy)}
             >
-              {isPublishAction ? 'Review in Leaderboard' : 'Apply recommended action'}
+              Review in Leaderboard
+            </button>
+          ) : (
+            <button
+              className="strategy-apply-btn"
+              onClick={handleStartClick}
+              style={{ background: 'var(--accent-green)', color: '#000', fontWeight: 600 }}
+            >
+              Start Experiment
             </button>
           )}
         </div>

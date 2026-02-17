@@ -3606,6 +3606,7 @@ class ExperimentRunner:
                 "grammar_weights": analytics.compute_grammar_weights(),
                 "default_weights": analytics.get_current_grammar_weights(),
                 "learning_log": nb.get_learning_log(limit=10),
+                "insights": nb.get_insights(limit=20),
             }
         except Exception:
             return {}

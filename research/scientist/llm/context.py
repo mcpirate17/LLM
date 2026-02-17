@@ -261,6 +261,17 @@ def build_rich_context(
                              f"{entry.get('description', '')[:80]}")
             sections.append("\n".join(lines))
 
+        # Active insights
+        insights = analytics_data.get("insights", [])
+        if insights:
+            lines = ["Active Insights:"]
+            for ins in insights[:10]:
+                cat = ins.get("category", "general")
+                content = ins.get("content", "")[:120]
+                conf = ins.get("confidence", 0)
+                lines.append(f"  [{cat}] (conf={conf:.1f}) {content}")
+            sections.append("\n".join(lines))
+
     # Past hypothesis outcomes
     if past_hypotheses:
         lines = ["Past Hypothesis Outcomes:"]

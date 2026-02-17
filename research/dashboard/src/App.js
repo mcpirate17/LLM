@@ -46,9 +46,9 @@ function normalizeQueue(items) {
 function App() {
   const TAB_LABELS = {
     overview: 'Overview',
-    experiments: 'Experiments',
-    programs: 'Programs (Raw)',
-    leaderboard: 'Leaderboard (Curated)',
+    experiments: 'Runs',
+    programs: 'Candidates (All)',
+    leaderboard: 'Decisions (Curated)',
     campaigns: 'Campaigns',
     knowledge: 'Knowledge',
     trends: 'Trends',
@@ -62,6 +62,7 @@ function App() {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [overviewActivityTab, setOverviewActivityTab] = useState('recent');
   const [displayMode, setDisplayMode] = useState(() => {
     try {
       const stored = window.localStorage.getItem(DISPLAY_MODE_KEY);
@@ -141,6 +142,12 @@ function App() {
     const interval = setInterval(fetchDashboard, refreshInterval);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchDashboard, refreshInterval]);
+
+  useEffect(() => {
+    if (data?.is_running && overviewActivityTab !== 'live') {
+      setOverviewActivityTab('live');
+    }
+  }, [data?.is_running, overviewActivityTab]);
 
   const fetchTabFreshData = useCallback(async (tab) => {
     const endpoints = {
@@ -483,16 +490,10 @@ function App() {
             <StrategyAdvisor
               dashboardData={data}
               isRunning={data?.is_running}
+              onStart={handleStartExperiment}
               onApplyStrategy={(strategy) => {
                 if (strategy.action === null) {
                   setActiveTab('leaderboard');
-                } else {
-                  setControlPanelPrefill({
-                    source: 'strategy_advisor',
-                    suggestedMode: strategy.action.suggestedMode,
-                    configOverrides: strategy.action.configOverrides || {},
-                    requestedAt: Date.now(),
-                  });
                 }
               }}
             />
@@ -500,33 +501,63 @@ function App() {
             {/* Left column: Aria + Control Panel */}
             <div className="overview-left">
               <AriaStatus aria={data?.aria} isRunning={data?.is_running} progress={data?.progress} />
-              <ControlPanel
-                isRunning={data?.is_running}
-                progress={data?.progress}
-                onStart={handleStartExperiment}
-                onStop={handleStopExperiment}
-                onRefresh={fetchDashboard}
-                autoRecommendation={data?.last_recommendation}
-                prefillRequest={controlPanelPrefill}
-                onPrefillApplied={() => setControlPanelPrefill(null)}
-                displayMode={displayMode}
-              />
+              <details className="card" style={{ marginTop: 12, marginBottom: 0 }} open={Boolean(data?.is_running) || displayMode === 'expert'}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600, color: 'var(--text-primary)', padding: 4 }}>
+                  Experiment setup (advanced)
+                </summary>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6, marginBottom: 6 }}>
+                  Fine-tune run mode, training, and validation settings.
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <ControlPanel
+                    isRunning={data?.is_running}
+                    progress={data?.progress}
+                    onStart={handleStartExperiment}
+                    onStop={handleStopExperiment}
+                    onRefresh={fetchDashboard}
+                    autoRecommendation={data?.last_recommendation}
+                    prefillRequest={controlPanelPrefill}
+                    onPrefillApplied={() => setControlPanelPrefill(null)}
+                    displayMode={displayMode}
+                  />
+                </div>
+              </details>
             </div>
 
-            {/* Right column: Summary + Live Feed or Chart */}
+            {/* Right column: Summary + Activity */}
             <div className="overview-right">
               <SummaryCards summary={data?.summary} />
-              {data?.is_running ? (
-                <LiveFeed apiBase={API_BASE} />
-              ) : (
-                <MetricsChart experiments={data?.recent_experiments} />
-              )}
+              <div className="card" style={{ marginBottom: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>Activity</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="refresh-btn" onClick={() => setOverviewActivityTab('live')} style={{ opacity: overviewActivityTab === 'live' ? 1 : 0.75 }}>
+                      Live updates
+                    </button>
+                    <button className="refresh-btn" onClick={() => setOverviewActivityTab('recent')} style={{ opacity: overviewActivityTab === 'recent' ? 1 : 0.75 }}>
+                      Recent trends
+                    </button>
+                  </div>
+                </div>
+
+                {overviewActivityTab === 'live' ? (
+                  data?.is_running ? (
+                    <LiveFeed apiBase={API_BASE} />
+                  ) : (
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', padding: '8px 4px 12px' }}>
+                      No active run right now. Switch to Recent to review latest experiment trends.
+                    </div>
+                  )
+                ) : (
+                  <MetricsChart experiments={data?.recent_experiments} />
+                )}
+              </div>
             </div>
 
             {/* Bottom row */}
             <div className="overview-bottom">
               <TopPrograms
-                programs={data?.top_programs?.slice(0, 5)}
+                programs={data?.top_programs?.slice(0, 3)}
                 totalCount={data?.top_programs?.length || 0}
                 compact
                 onSelectProgram={handleSelectProgram}
