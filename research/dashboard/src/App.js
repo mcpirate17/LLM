@@ -18,9 +18,30 @@ import HelpPanel from './components/HelpPanel';
 import Leaderboard from './components/Leaderboard';
 import CampaignView from './components/CampaignView';
 import KnowledgeBase from './components/KnowledgeBase';
+import StrategyAdvisor from './components/StrategyAdvisor';
 import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
+const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
+const DISPLAY_MODE_KEY = 'aria_display_mode_v1';
+
+function normalizeQueue(items) {
+  if (!Array.isArray(items)) return [];
+  const seen = new Set();
+  const normalized = [];
+  for (const item of items) {
+    const resultId = item?.resultId;
+    if (!resultId || seen.has(resultId)) continue;
+    seen.add(resultId);
+    normalized.push({
+      resultId,
+      fingerprint: item?.fingerprint || null,
+      source: item?.source || 'unknown',
+      architectureFamily: item?.architectureFamily || null,
+    });
+  }
+  return normalized;
+}
 
 function App() {
   const TAB_LABELS = {
@@ -41,6 +62,14 @@ function App() {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [displayMode, setDisplayMode] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(DISPLAY_MODE_KEY);
+      return stored === 'expert' ? 'expert' : 'novice';
+    } catch {
+      return 'novice';
+    }
+  });
   const [tabData, setTabData] = useState({
     experiments: null,
     programs: null,
@@ -60,6 +89,33 @@ function App() {
 
   // Action error state (replaces alert())
   const [actionError, setActionError] = useState(null);
+
+  // Cross-view navigation state
+  const [leaderboardHighlight, setLeaderboardHighlight] = useState(null);
+  const [selectedCampaignId, setSelectedCampaignId] = useState(null);
+  const [controlPanelPrefill, setControlPanelPrefill] = useState(null);
+  const [investigationQueue, setInvestigationQueue] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(INVESTIGATION_QUEUE_KEY);
+      return normalizeQueue(stored ? JSON.parse(stored) : []);
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(INVESTIGATION_QUEUE_KEY, JSON.stringify(investigationQueue));
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [investigationQueue]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DISPLAY_MODE_KEY, displayMode);
+    } catch {}
+  }, [displayMode]);
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -118,6 +174,25 @@ function App() {
       fetchTabFreshData('insights');
     }
   }, [activeTab, fetchTabFreshData]);
+
+  // Compute per-tab delta indicators from latest vs previous experiment
+  const tabDeltas = useMemo(() => {
+    const d = data?.deltas;
+    if (!d) return {};
+    const deltas = {};
+    if (d.programs !== 0) deltas.experiments = d.programs > 0 ? `+${d.programs}` : `${d.programs}`;
+    if (d.stage1 !== 0) deltas.programs = d.stage1 > 0 ? `+${d.stage1} S1` : `${d.stage1} S1`;
+    if (d.stage1 !== 0) deltas.leaderboard = deltas.programs;
+    if (d.best_loss != null && d.best_loss !== 0) {
+      const sign = d.best_loss < 0 ? '' : '+';
+      deltas.trends = `${sign}${d.best_loss.toFixed(3)} loss`;
+    }
+    if (d.best_novelty != null && d.best_novelty !== 0) {
+      const sign = d.best_novelty > 0 ? '+' : '';
+      deltas.report = `${sign}${d.best_novelty.toFixed(3)} nov`;
+    }
+    return deltas;
+  }, [data?.deltas]);
 
   const handleStartExperiment = async (config) => {
     try {
@@ -211,6 +286,64 @@ function App() {
     fetchDashboard();
   };
 
+  const handleQueueAdd = useCallback((candidate) => {
+    const resultId = candidate?.resultId;
+    if (!resultId) return;
+    setInvestigationQueue(prev => normalizeQueue([
+      ...prev,
+      {
+        resultId,
+        fingerprint: candidate?.fingerprint || null,
+        source: candidate?.source || 'unknown',
+        architectureFamily: candidate?.architectureFamily || null,
+      },
+    ]));
+  }, []);
+
+  const handleQueueRemove = useCallback((resultId) => {
+    setInvestigationQueue(prev => prev.filter(item => item.resultId !== resultId));
+  }, []);
+
+  const handleQueueClear = useCallback(() => {
+    setInvestigationQueue([]);
+  }, []);
+
+  const handleQueueInvestigate = useCallback(() => {
+    if (!investigationQueue.length) return;
+    handleInvestigate(investigationQueue.map(item => item.resultId));
+  }, [investigationQueue]);
+
+  const handleQueueValidate = useCallback(() => {
+    if (!investigationQueue.length) return;
+    handleValidate(investigationQueue.map(item => item.resultId));
+  }, [investigationQueue]);
+
+  const handleViewInLeaderboard = (resultId) => {
+    setLeaderboardHighlight(resultId);
+    setActiveTab('leaderboard');
+  };
+
+  const handleSelectCampaign = (campaignId) => {
+    setSelectedCampaignId(campaignId);
+    setActiveTab('campaigns');
+  };
+
+  const handleHypothesisHandoff = useCallback((handoff) => {
+    const suggestedMode = ['single', 'investigation', 'validation'].includes(handoff?.suggestedMode)
+      ? handoff.suggestedMode
+      : 'single';
+    setControlPanelPrefill({
+      source: handoff?.source || 'campaign',
+      campaignId: handoff?.campaignId || null,
+      campaignTitle: handoff?.campaignTitle || null,
+      objective: handoff?.objective || null,
+      hypothesis: handoff?.hypothesis || null,
+      suggestedMode,
+      requestedAt: Date.now(),
+    });
+    setActiveTab('overview');
+  }, []);
+
   const ariaMood = data?.aria?.mood || 'curious';
   const compactInsights = useMemo(() => {
     const insights = Array.isArray(data?.insights) ? data.insights : [];
@@ -243,6 +376,25 @@ function App() {
           )}
         </div>
         <div className="header-right">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 8 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Mode</span>
+            <button
+              className="refresh-btn"
+              style={{ fontSize: 11, padding: '3px 8px' }}
+              onClick={() => setDisplayMode('novice')}
+              aria-pressed={displayMode === 'novice'}
+            >
+              Novice
+            </button>
+            <button
+              className="refresh-btn"
+              style={{ fontSize: 11, padding: '3px 8px' }}
+              onClick={() => setDisplayMode('expert')}
+              aria-pressed={displayMode === 'expert'}
+            >
+              Expert
+            </button>
+          </div>
           <label className="auto-refresh">
             <input
               type="checkbox"
@@ -280,6 +432,15 @@ function App() {
                 }}
               >
                 {TAB_LABELS[tab] || (tab.charAt(0).toUpperCase() + tab.slice(1))}
+                {tabDeltas[tab] && (
+                  <span style={{
+                    marginLeft: 4, fontSize: 9, fontWeight: 600, padding: '1px 4px',
+                    borderRadius: 3, background: 'rgba(63, 185, 80, 0.15)',
+                    color: 'var(--accent-green)', whiteSpace: 'nowrap',
+                  }}>
+                    {tabDeltas[tab]}
+                  </span>
+                )}
               </button>
             ))}
           </React.Fragment>
@@ -302,15 +463,39 @@ function App() {
           </div>
         )}
 
-        {activeTab === 'overview' && (
-          <div className="overview-grid">
-            <div className="card" style={{ gridColumn: '1 / -1', marginBottom: 0 }}>
-              <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                This AI scientist is focused on one job: searching for novel neural network layer designs that learn
-                more efficiently than standard transformers. It does not tune training recipes or datasets — it
-                generates and evaluates architecture candidates.
+        {investigationQueue.length > 0 && (
+          <div className="card" style={{ marginBottom: 12, padding: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                Investigation Queue: {investigationQueue.length} candidate{investigationQueue.length === 1 ? '' : 's'} pinned for batch review.
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="refresh-btn" onClick={handleQueueInvestigate}>Investigate Queue</button>
+                <button className="refresh-btn" onClick={handleQueueValidate}>Validate Queue</button>
+                <button className="refresh-btn" onClick={handleQueueClear}>Clear Queue</button>
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'overview' && (
+          <div className="overview-grid">
+            <StrategyAdvisor
+              dashboardData={data}
+              isRunning={data?.is_running}
+              onApplyStrategy={(strategy) => {
+                if (strategy.action === null) {
+                  setActiveTab('leaderboard');
+                } else {
+                  setControlPanelPrefill({
+                    source: 'strategy_advisor',
+                    suggestedMode: strategy.action.suggestedMode,
+                    configOverrides: strategy.action.configOverrides || {},
+                    requestedAt: Date.now(),
+                  });
+                }
+              }}
+            />
 
             {/* Left column: Aria + Control Panel */}
             <div className="overview-left">
@@ -322,6 +507,9 @@ function App() {
                 onStop={handleStopExperiment}
                 onRefresh={fetchDashboard}
                 autoRecommendation={data?.last_recommendation}
+                prefillRequest={controlPanelPrefill}
+                onPrefillApplied={() => setControlPanelPrefill(null)}
+                displayMode={displayMode}
               />
             </div>
 
@@ -380,6 +568,9 @@ function App() {
             <TopPrograms
               programs={tabData.programs || data?.top_programs}
               onSelectProgram={handleSelectProgram}
+              onQueueAdd={handleQueueAdd}
+              onQueueRemove={handleQueueRemove}
+              queuedResultIds={investigationQueue.map(item => item.resultId)}
             />
           </>
         )}
@@ -389,12 +580,20 @@ function App() {
             onSelectProgram={handleSelectProgram}
             onInvestigate={handleInvestigate}
             onValidate={handleValidate}
+            highlightResultId={leaderboardHighlight}
+            onHighlightClear={() => setLeaderboardHighlight(null)}
+            onQueueAdd={handleQueueAdd}
+            onQueueRemove={handleQueueRemove}
+            queuedResultIds={investigationQueue.map(item => item.resultId)}
           />
         )}
 
         {activeTab === 'campaigns' && (
           <CampaignView
             onSelectExperiment={handleSelectExperiment}
+            selectedCampaignId={selectedCampaignId}
+            onCampaignIdClear={() => setSelectedCampaignId(null)}
+            onHypothesisHandoff={handleHypothesisHandoff}
           />
         )}
 
@@ -441,6 +640,10 @@ function App() {
             onSelectExperiment={handleSelectExperiment}
             onInvestigate={handleInvestigate}
             onValidate={handleValidate}
+            onQueueAdd={handleQueueAdd}
+            onQueueRemove={handleQueueRemove}
+            queuedResultIds={investigationQueue.map(item => item.resultId)}
+            onHypothesisHandoff={handleHypothesisHandoff}
           />
         )}
 
@@ -455,6 +658,9 @@ function App() {
           resultId={selectedProgram}
           onClose={() => setSelectedProgram(null)}
           onActionComplete={handleActionComplete}
+          onSelectExperiment={handleSelectExperiment}
+          onViewInLeaderboard={handleViewInLeaderboard}
+          onSelectCampaign={handleSelectCampaign}
         />
       )}
 

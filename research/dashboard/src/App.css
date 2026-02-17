@@ -343,6 +343,11 @@ body {
   50% { opacity: 0.3; }
 }
 
+@keyframes leaderboard-pulse {
+  0%, 100% { background-color: rgba(88, 166, 255, 0.08); }
+  50% { background-color: rgba(88, 166, 255, 0.25); }
+}
+
 .progress-bar-container {
   position: relative;
   height: 24px;
@@ -668,6 +673,79 @@ body {
   border-radius: 3px;
   font-family: monospace;
   font-size: 12px;
+}
+
+/* ── Strategy Advisor ── */
+.strategy-advisor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.strategy-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.strategy-header { flex: 1; }
+.strategy-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.strategy-rationale {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.strategy-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.strategy-apply-btn {
+  padding: 8px 16px;
+  background: var(--accent-blue);
+  border: none;
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.strategy-apply-btn:hover { opacity: 0.85; }
+
+.strategy-pipeline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.pipeline-arrow {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.pipeline-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-tertiary);
+}
+.pipeline-count {
+  font-size: 16px;
+  font-weight: 700;
+}
+.pipeline-label {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 /* ── Responsive ── */

@@ -37,7 +37,7 @@ const DEFAULT_CONFIG = {
   auto_report: true,
   auto_report_every_n: 5,
   // Model source
-  model_source: 'graph_synthesis',
+  model_source: 'mixed',
   morph_ratio: 0.5,
   // Training programs
   use_synthesized_training: false,
@@ -58,11 +58,129 @@ const DEFAULT_CONFIG = {
   validation_n_seeds: 3,
 };
 
-function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRecommendation }) {
+const CRITIQUE_VERDICT_STYLES = {
+  proceed: { color: 'var(--accent-green)', label: 'Proceed', icon: '\u2714' },
+  caution: { color: 'var(--accent-yellow)', label: 'Caution', icon: '\u26A0' },
+  revise: { color: 'var(--accent-red)', label: 'Revise', icon: '\u2718' },
+};
+
+const CRITIQUE_GATE_STYLES = {
+  pass: { color: 'var(--accent-green)', bg: 'rgba(63, 185, 80, 0.18)', label: 'Pass' },
+  warn: { color: 'var(--accent-yellow)', bg: 'rgba(210, 153, 34, 0.18)', label: 'Warn' },
+  fail: { color: 'var(--accent-red)', bg: 'rgba(248, 81, 73, 0.18)', label: 'Fail' },
+};
+
+function HypothesisCritique({ critique }) {
+  const style = CRITIQUE_VERDICT_STYLES[critique.verdict] || CRITIQUE_VERDICT_STYLES.caution;
+  const gate = typeof critique.gate === 'string' ? critique.gate : (critique.verdict === 'proceed' ? 'pass' : critique.verdict === 'revise' ? 'fail' : 'warn');
+  const gateStyle = CRITIQUE_GATE_STYLES[gate] || CRITIQUE_GATE_STYLES.warn;
+  const checks = Array.isArray(critique.checks) ? critique.checks : [];
+  const hasConcerns = critique.concerns && critique.concerns.length > 0;
+  const hasSuggestions = critique.suggestions && critique.suggestions.length > 0;
+
+  return (
+    <div style={{
+      marginBottom: 10,
+      padding: '8px 10px',
+      borderRadius: 6,
+      border: `1px solid ${style.color}`,
+      background: `${style.color}11`,
+      fontSize: 12,
+      lineHeight: 1.5,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: hasConcerns || hasSuggestions ? 6 : 0 }}>
+        <span style={{ fontSize: 14 }}>{style.icon}</span>
+        <strong style={{ color: style.color }}>Hypothesis Review: {style.label}</strong>
+        <span style={{
+          marginLeft: 8,
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: 0.3,
+          textTransform: 'uppercase',
+          color: gateStyle.color,
+          background: gateStyle.bg,
+          border: `1px solid ${gateStyle.color}`,
+          borderRadius: 4,
+          padding: '1px 6px',
+        }}>
+          Gate: {gateStyle.label}
+        </span>
+        {critique.confidence != null && (
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+            confidence {(critique.confidence * 100).toFixed(0)}%
+          </span>
+        )}
+      </div>
+      {checks.length > 0 && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 6,
+          marginBottom: hasConcerns || hasSuggestions ? 6 : 0,
+          paddingLeft: 20,
+        }}>
+          {checks.map((check, idx) => {
+            const checkStyle = CRITIQUE_GATE_STYLES[check?.status] || CRITIQUE_GATE_STYLES.warn;
+            const label = check?.label || check?.key || `Check ${idx + 1}`;
+            return (
+              <span
+                key={`${label}-${idx}`}
+                style={{
+                  fontSize: 10,
+                  color: checkStyle.color,
+                  background: checkStyle.bg,
+                  border: `1px solid ${checkStyle.color}`,
+                  borderRadius: 4,
+                  padding: '1px 6px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <strong>{checkStyle.label}</strong>
+                <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {hasConcerns && (
+        <div style={{ marginBottom: hasSuggestions ? 4 : 0 }}>
+          {critique.concerns.map((c, i) => (
+            <div key={i} style={{ color: 'var(--text-secondary)', paddingLeft: 20 }}>
+              &bull; {c}
+            </div>
+          ))}
+        </div>
+      )}
+      {hasSuggestions && (
+        <div>
+          {critique.suggestions.map((s, i) => (
+            <div key={i} style={{ color: 'var(--text-muted)', paddingLeft: 20, fontStyle: 'italic' }}>
+              &rarr; {s}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ControlPanel({
+  isRunning,
+  progress,
+  onStart,
+  onStop,
+  onRefresh,
+  autoRecommendation,
+  prefillRequest,
+  onPrefillApplied,
+  displayMode = 'novice',
+}) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [hypothesis, setHypothesis] = useState('');
   const [mode, setMode] = useState('single');
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(displayMode === 'expert');
   const [systemStatus, setSystemStatus] = useState(null);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
@@ -81,6 +199,7 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
   const [scaleUpSteps, setScaleUpSteps] = useState(5000);
   const [scaleUpBatchSize, setScaleUpBatchSize] = useState(8);
   const [scaleUpSeqLen, setScaleUpSeqLen] = useState(512);
+  const [prefillSummary, setPrefillSummary] = useState(null);
 
   // Auto-populate recommendation from completed experiment
   useEffect(() => {
@@ -88,6 +207,10 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
       setRecommendation(autoRecommendation);
     }
   }, [autoRecommendation, isRunning]);
+
+  useEffect(() => {
+    setShowAdvanced(displayMode === 'expert');
+  }, [displayMode]);
 
   // Fetch system status and LLM config on mount
   useEffect(() => {
@@ -105,6 +228,41 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
   const [investIds, setInvestIds] = useState('');
   const [investUseTop, setInvestUseTop] = useState(true);
   const [investTopN, setInvestTopN] = useState(5);
+
+  useEffect(() => {
+    if (!prefillRequest || !prefillRequest.requestedAt) return;
+    const validModes = ['single', 'continuous', 'evolve', 'novelty', 'scale_up', 'investigation', 'validation'];
+    const suggestedMode = validModes.includes(prefillRequest.suggestedMode)
+      ? prefillRequest.suggestedMode
+      : 'single';
+    setMode(suggestedMode);
+
+    const objectiveText = typeof prefillRequest.objective === 'string' ? prefillRequest.objective.trim() : '';
+    const hypothesisText = typeof prefillRequest.hypothesis === 'string' ? prefillRequest.hypothesis.trim() : '';
+    const mergedHypothesis = [
+      objectiveText ? `Objective: ${objectiveText}` : '',
+      hypothesisText ? `Hypothesis: ${hypothesisText}` : '',
+    ].filter(Boolean).join(' | ');
+    if (mergedHypothesis) {
+      setHypothesis(mergedHypothesis);
+    }
+    if (suggestedMode === 'investigation' || suggestedMode === 'validation') {
+      setInvestUseTop(true);
+    }
+
+    if (prefillRequest.configOverrides && typeof prefillRequest.configOverrides === 'object') {
+      setConfig(prev => ({ ...prev, ...prefillRequest.configOverrides }));
+    }
+
+    setPrefillSummary({
+      mode: suggestedMode,
+      source: prefillRequest.source || 'campaign',
+      campaignTitle: prefillRequest.campaignTitle || null,
+      objective: objectiveText || null,
+      hypothesis: hypothesisText || null,
+    });
+    if (onPrefillApplied) onPrefillApplied();
+  }, [prefillRequest, onPrefillApplied]);
 
   const handleStart = () => {
     setActionError('');
@@ -342,6 +500,38 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
           fontSize: 12,
         }}>
           {actionError}
+        </div>
+      )}
+
+      {prefillSummary && !isRunning && (
+        <div style={{
+          marginBottom: 12,
+          padding: '8px 10px',
+          borderRadius: 6,
+          border: '1px solid var(--accent-blue)',
+          background: 'rgba(88, 166, 255, 0.12)',
+          color: 'var(--text-secondary)',
+          fontSize: 12,
+          lineHeight: 1.5,
+        }}>
+          <div>
+            Prefill applied from {prefillSummary.source.replace('_', ' ')}
+            {prefillSummary.campaignTitle ? ` (${prefillSummary.campaignTitle})` : ''}
+            : mode set to <strong>{prefillSummary.mode}</strong>.
+          </div>
+          {prefillSummary.objective && (
+            <div><strong>Objective:</strong> {prefillSummary.objective}</div>
+          )}
+          {prefillSummary.hypothesis && (
+            <div><strong>Hypothesis:</strong> {prefillSummary.hypothesis}</div>
+          )}
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 10, padding: '2px 8px', marginTop: 6 }}
+            onClick={() => setPrefillSummary(null)}
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -1125,6 +1315,11 @@ function ControlPanel({ isRunning, progress, onStart, onStop, onRefresh, autoRec
             </span>
             <span className="progress-id">{progress?.experiment_id?.slice(0, 8)}</span>
           </div>
+
+          {/* Hypothesis critique */}
+          {progress?.hypothesis_critique && (
+            <HypothesisCritique critique={progress.hypothesis_critique} />
+          )}
 
           {/* Progress bar */}
           <div className="progress-bar-container">
