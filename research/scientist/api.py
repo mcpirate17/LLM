@@ -14,7 +14,7 @@ import os
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -78,6 +78,25 @@ def _normalize_entry(entry: dict) -> dict:
 
 def _normalize_entries(entries: list) -> list:
     return [_normalize_entry(entry) for entry in entries]
+
+
+def _entry_to_live_feed_event(entry: dict) -> Optional[dict]:
+    """Convert a persisted notebook live-feed entry into UI event shape."""
+    normalized = _normalize_entry(entry)
+    metadata = normalized.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return None
+
+    live_type = metadata.get("live_feed_type")
+    payload = metadata.get("payload")
+    if not live_type or not isinstance(payload, dict):
+        return None
+
+    event = {"type": live_type, **payload}
+    ts = normalized.get("timestamp")
+    if isinstance(ts, (int, float)):
+        event["ts"] = int(ts * 1000)
+    return event
 
 
 def _normalize_hypothesis(hypothesis: dict) -> dict:
@@ -287,6 +306,238 @@ def _annotate_qkv_usage(programs: list, analytics) -> None:
         program["reproducibility_packet"] = analytics.reproducibility_packet_status(program)
 
 
+def _normalize_result_ids(raw_ids: Any) -> List[str]:
+    if not isinstance(raw_ids, list):
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for value in raw_ids:
+        if value is None:
+            continue
+        result_id = str(value).strip()
+        if not result_id or result_id in seen:
+            continue
+        seen.add(result_id)
+        normalized.append(result_id)
+    return normalized
+
+
+def _build_start_mode_eligibility(
+    nb: LabNotebook,
+    mode: str,
+    result_ids: List[str],
+) -> Dict[str, Any]:
+    """Validate candidate progression eligibility for start modes.
+
+    Returns a structured payload containing per-candidate reasons.
+    """
+    payload: Dict[str, Any] = {
+        "mode": mode,
+        "requested_result_ids": list(result_ids),
+        "eligible_result_ids": [],
+        "ineligible": [],
+        "all_eligible": False,
+    }
+    if not result_ids:
+        return payload
+
+    placeholders = ",".join("?" for _ in result_ids)
+    leaderboard_rows = nb.conn.execute(
+        f"""
+        SELECT result_id, tier, investigation_passed, validation_passed,
+               investigation_loss_ratio, validation_loss_ratio
+        FROM leaderboard
+        WHERE result_id IN ({placeholders})
+        """,
+        tuple(result_ids),
+    ).fetchall()
+    program_rows = nb.conn.execute(
+        f"""
+        SELECT result_id, stage1_passed
+        FROM program_results
+        WHERE result_id IN ({placeholders})
+        """,
+        tuple(result_ids),
+    ).fetchall()
+
+    leaderboard_by_id = {row["result_id"]: dict(row) for row in leaderboard_rows}
+    program_by_id = {row["result_id"]: dict(row) for row in program_rows}
+
+    for result_id in result_ids:
+        lb = leaderboard_by_id.get(result_id)
+        program = program_by_id.get(result_id)
+
+        if lb is None:
+            if program is None:
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "result_not_found",
+                    "detail": "Result ID was not found in program results.",
+                })
+            elif not bool(program.get("stage1_passed")):
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "not_stage1_survivor",
+                    "detail": "Result exists but is not a Stage-1 survivor.",
+                })
+            else:
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "not_in_leaderboard",
+                    "detail": "Result exists but has no leaderboard progression record.",
+                })
+            continue
+
+        tier = str(lb.get("tier") or "").lower()
+
+        if mode == "investigation":
+            if tier != "screening":
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "not_screening_tier",
+                    "detail": f"Current tier is '{tier or 'unknown'}'; only screening tier can be investigated.",
+                    "tier": tier or None,
+                })
+                continue
+            if lb.get("investigation_loss_ratio") is not None:
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "already_investigated_unchanged",
+                    "detail": "Candidate already has investigation evidence; provide a changed-condition trigger before re-investigating.",
+                    "tier": tier,
+                })
+                continue
+            payload["eligible_result_ids"].append(result_id)
+            continue
+
+        if mode == "validation":
+            if tier != "investigation":
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "not_investigation_tier",
+                    "detail": f"Current tier is '{tier or 'unknown'}'; validation requires investigation tier.",
+                    "tier": tier or None,
+                })
+                continue
+            if not bool(lb.get("investigation_passed")):
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "not_investigation_passed",
+                    "detail": "Investigation evidence did not pass robustness gate.",
+                    "tier": tier,
+                })
+                continue
+            if bool(lb.get("validation_passed")) or lb.get("validation_loss_ratio") is not None:
+                payload["ineligible"].append({
+                    "result_id": result_id,
+                    "reason": "already_validated",
+                    "detail": "Candidate already has validation evidence.",
+                    "tier": tier,
+                })
+                continue
+            payload["eligible_result_ids"].append(result_id)
+            continue
+
+        payload["ineligible"].append({
+            "result_id": result_id,
+            "reason": "unsupported_mode",
+            "detail": f"Eligibility checks are not implemented for mode '{mode}'.",
+        })
+
+    payload["all_eligible"] = len(payload["ineligible"]) == 0 and len(payload["eligible_result_ids"]) > 0
+    payload["summary"] = {
+        "requested": len(result_ids),
+        "eligible": len(payload["eligible_result_ids"]),
+        "ineligible": len(payload["ineligible"]),
+    }
+    return payload
+
+
+def _build_report_action_eligibility(
+    nb: LabNotebook,
+    result_ids: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Build per-result report action eligibility aligned with start guardrails."""
+    normalized_ids = _normalize_result_ids(result_ids)
+    if not normalized_ids:
+        return {}
+
+    inv = _build_start_mode_eligibility(nb, "investigation", normalized_ids)
+    val = _build_start_mode_eligibility(nb, "validation", normalized_ids)
+
+    inv_eligible = set(inv.get("eligible_result_ids") or [])
+    val_eligible = set(val.get("eligible_result_ids") or [])
+    inv_reason = {
+        row.get("result_id"): row.get("reason")
+        for row in (inv.get("ineligible") or [])
+        if row.get("result_id")
+    }
+    val_reason = {
+        row.get("result_id"): row.get("reason")
+        for row in (val.get("ineligible") or [])
+        if row.get("result_id")
+    }
+
+    eligibility_by_id: Dict[str, Dict[str, Any]] = {}
+    for result_id in normalized_ids:
+        investigation_eligible = result_id in inv_eligible
+        validation_eligible = result_id in val_eligible
+        queue_eligible = investigation_eligible or validation_eligible
+        queue_reason = None
+        if not queue_eligible:
+            queue_reason = inv_reason.get(result_id) or val_reason.get(result_id) or "not_progression_eligible"
+
+        eligibility_by_id[result_id] = {
+            "investigationEligible": investigation_eligible,
+            "validationEligible": validation_eligible,
+            "queueEligible": queue_eligible,
+            "queueReason": queue_reason,
+            "investigationReason": inv_reason.get(result_id),
+            "validationReason": val_reason.get(result_id),
+        }
+
+    return eligibility_by_id
+
+
+def _llm_config_path(notebook_path: str) -> Path:
+    """Path for persisted LLM configuration, next to the notebook DB."""
+    return Path(notebook_path).parent / "llm_config.json"
+
+
+def _load_persisted_llm_config(notebook_path: str):
+    """Auto-load LLM config from disk if present."""
+    config_path = _llm_config_path(notebook_path)
+    if not config_path.exists():
+        return
+    try:
+        import json as _json
+        data = _json.loads(config_path.read_text())
+        backend = str(data.get("backend", "")).strip()
+        if not backend:
+            return
+        aria = get_aria()
+        aria.configure_llm(
+            backend_name=backend,
+            api_key=str(data.get("api_key", "")).strip(),
+            model=str(data.get("model", "")).strip(),
+            host=str(data.get("host", "")).strip(),
+        )
+        logger.info(f"Loaded persisted LLM config: {backend}")
+    except Exception as e:
+        logger.warning(f"Failed to load persisted LLM config: {e}")
+
+
+def _save_llm_config(notebook_path: str, config: Dict):
+    """Persist LLM config to disk so it survives restarts."""
+    config_path = _llm_config_path(notebook_path)
+    try:
+        import json as _json
+        config_path.write_text(_json.dumps(config, indent=2))
+        logger.info(f"Saved LLM config to {config_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save LLM config: {e}")
+
+
 def create_app(
     notebook_path: str = "research/lab_notebook.db",
     static_folder: Optional[str] = None,
@@ -298,6 +549,9 @@ def create_app(
 
     app = Flask(__name__, static_folder=static_folder, static_url_path="")
     CORS(app)
+
+    # Auto-load persisted LLM config
+    _load_persisted_llm_config(notebook_path)
 
     # ── Global error handlers ──
 
@@ -515,6 +769,91 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/trends/context")
+    def api_trends_context():
+        """Trend data plus adaptation-event deltas for inline linkage UI."""
+        nb = LabNotebook(notebook_path)
+
+        def _event_delta_payload(trends: List[Dict[str, Any]], event: Dict[str, Any]) -> Dict[str, Any]:
+            timestamp = float(event.get("timestamp") or 0.0)
+            previous = [row for row in trends if float(row.get("timestamp") or 0.0) < timestamp]
+            following = [row for row in trends if float(row.get("timestamp") or 0.0) >= timestamp]
+
+            before = previous[-3:]
+            after = following[:3]
+
+            before_ids = [str(row.get("experiment_id")) for row in before if row.get("experiment_id")]
+            after_ids = [str(row.get("experiment_id")) for row in after if row.get("experiment_id")]
+
+            def _avg(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
+                values = [float(row[key]) for row in rows if row.get(key) is not None]
+                if not values:
+                    return None
+                return sum(values) / len(values)
+
+            before_adj_s1 = _avg(before, "adjusted_s1_pass_rate")
+            after_adj_s1 = _avg(after, "adjusted_s1_pass_rate")
+            before_novelty = _avg(before, "best_novelty_score")
+            after_novelty = _avg(after, "best_novelty_score")
+            before_loss = _avg(before, "best_loss_ratio")
+            after_loss = _avg(after, "best_loss_ratio")
+
+            return {
+                "timestamp": timestamp,
+                "event_type": event.get("event_type"),
+                "description": event.get("description") or "Grammar weights adjusted",
+                "before_window": {
+                    "n_experiments": len(before),
+                    "experiment_ids": before_ids,
+                    "adjusted_s1_rate": before_adj_s1,
+                    "best_novelty": before_novelty,
+                    "best_loss_ratio": before_loss,
+                },
+                "after_window": {
+                    "n_experiments": len(after),
+                    "experiment_ids": after_ids,
+                    "adjusted_s1_rate": after_adj_s1,
+                    "best_novelty": after_novelty,
+                    "best_loss_ratio": after_loss,
+                },
+                "delta": {
+                    "adjusted_s1_rate": (
+                        after_adj_s1 - before_adj_s1
+                        if after_adj_s1 is not None and before_adj_s1 is not None
+                        else None
+                    ),
+                    "best_novelty": (
+                        after_novelty - before_novelty
+                        if after_novelty is not None and before_novelty is not None
+                        else None
+                    ),
+                    "best_loss_ratio": (
+                        after_loss - before_loss
+                        if after_loss is not None and before_loss is not None
+                        else None
+                    ),
+                },
+            }
+
+        try:
+            trends = nb.get_experiment_trends()
+            learning_log = nb.get_learning_log(limit=300)
+            adaptation_events = [
+                _event_delta_payload(trends, event)
+                for event in learning_log
+                if event.get("event_type") == "grammar_weights_applied"
+            ]
+            return jsonify({
+                "trends": trends,
+                "adaptation_events": adaptation_events,
+                "generated_at": time.time(),
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/trends/context: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/programs")
     def api_programs():
         """List top programs."""
@@ -561,6 +900,30 @@ def create_app(
             return jsonify(_normalize_entries(entries))
         except Exception as e:
             logger.error(f"Error in /api/entries: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/live-feed")
+    def api_live_feed():
+        """List persisted live-feed events for replay in the dashboard."""
+        exp_id = request.args.get("experiment_id")
+        n = request.args.get("n", 100, type=int)
+        nb = LabNotebook(notebook_path)
+        try:
+            entries = nb.get_entries(
+                experiment_id=exp_id,
+                entry_type="live_feed",
+                limit=n,
+            )
+            events = []
+            for entry in reversed(entries):
+                evt = _entry_to_live_feed_event(entry)
+                if evt is not None:
+                    events.append(evt)
+            return jsonify(events)
+        except Exception as e:
+            logger.error(f"Error in /api/live-feed: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -644,6 +1007,16 @@ def create_app(
             except Exception:
                 pass
 
+            # Include learning trajectory trend in summary
+            try:
+                trajectory = analytics.learning_trajectory()
+                if trajectory and trajectory.get("trend") != "insufficient_data":
+                    summary["learning_trend"] = trajectory.get("trend")
+                    summary["learning_slope"] = trajectory.get("slope")
+                    summary["recent_s1_rate"] = trajectory.get("recent_s1_rate")
+            except Exception:
+                pass
+
             # Include latest auto-recommendation if experiment just completed
             last_rec = runner.last_recommendation
             if last_rec:
@@ -669,10 +1042,12 @@ def create_app(
 
             data = {
                 "summary": nb.get_dashboard_summary(),
-                "top_programs": nb.get_top_programs(20, sort_by="loss_ratio"),
+                "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(20, sort_by="loss_ratio"),
+                "top_programs_expanded": nb.get_top_programs(80, sort_by="loss_ratio"),
                 "recent_experiments": nb.get_recent_experiments(100),
                 "op_success_rates": analytics.op_success_rates(),
                 "math_family_coverage": analytics.math_family_coverage(),
+                "mathspace_operator_impact": analytics.mathspace_operator_impact(),
                 "routing_mode_comparison": analytics.routing_mode_comparison(),
                 "gating_behavior_diagnostics": analytics.gating_behavior_diagnostics(),
                 "structural_correlations": analytics.structural_correlations(),
@@ -685,14 +1060,76 @@ def create_app(
                     "default": analytics.get_current_grammar_weights(),
                     "control_comparison": analytics.control_experiment_comparison(),
                     "holdout_validation": analytics.holdout_validation(),
+                    "learning_diagnostics": analytics.grammar_weight_learning_diagnostics(),
                 },
                 "learning_log": nb.get_learning_log(limit=50),
                 "insights": nb.get_insights(),
             }
+            learning_diagnostics = data["grammar_weights"].get("learning_diagnostics") or {}
+            data["architecture_rerun_telemetry"] = {
+                "unique_fingerprint_count": int(learning_diagnostics.get("unique_fingerprints") or 0),
+                "total_result_rows": int(learning_diagnostics.get("total_rows") or 0),
+                "repeat_result_rows": int(learning_diagnostics.get("repeat_rows") or 0),
+                "rerun_ratio": float(learning_diagnostics.get("rerun_ratio") or 0.0),
+                "top_fingerprint_concentration": float(learning_diagnostics.get("top_fingerprint_concentration") or 0.0),
+                "weighting_mode": str(learning_diagnostics.get("mode") or "unknown"),
+            }
+            data["action_eligibility"] = _build_report_action_eligibility(
+                nb,
+                [
+                    row.get("result_id")
+                    for row in [*(data["top_programs"] or []), *(data["top_programs_expanded"] or [])]
+                    if row.get("result_id")
+                ],
+            )
             _annotate_qkv_usage(data["top_programs"], analytics)
+            _annotate_qkv_usage(data["top_programs_expanded"], analytics)
+
+            expanded_by_fingerprint: Dict[str, List[Dict[str, Any]]] = {}
+            for row in data["top_programs_expanded"]:
+                fp = row.get("graph_fingerprint")
+                if not fp:
+                    continue
+                expanded_by_fingerprint.setdefault(fp, []).append(row)
+
+            grouped_rank_by_fingerprint = {
+                row.get("graph_fingerprint"): index
+                for index, row in enumerate(data["top_programs"], start=1)
+                if row.get("graph_fingerprint")
+            }
+            for fp, rows in expanded_by_fingerprint.items():
+                repeat_count = len(rows)
+                grouped_rank = grouped_rank_by_fingerprint.get(fp)
+                for repeat_index, row in enumerate(rows, start=1):
+                    row["group_repeat_count"] = repeat_count
+                    row["group_repeat_index"] = repeat_index
+                    row["grouped_fingerprint_rank"] = grouped_rank
+
             data["cross_run_stability"] = _compute_cross_run_stability(
                 nb, data["top_programs"]
             )
+            stability_by_result = {
+                candidate.get("result_id"): candidate
+                for candidate in data["cross_run_stability"].get("candidates", [])
+                if candidate.get("result_id")
+            }
+            stability_by_fingerprint = {
+                candidate.get("graph_fingerprint"): candidate
+                for candidate in data["cross_run_stability"].get("candidates", [])
+                if candidate.get("graph_fingerprint")
+            }
+
+            fallback_stability = {
+                "trend": "unknown",
+                "seen_runs": 0,
+                "latest_rank": None,
+                "previous_rank": None,
+                "rank_delta": None,
+            }
+            for program in [*(data["top_programs"] or []), *(data["top_programs_expanded"] or [])]:
+                by_result = stability_by_result.get(program.get("result_id"))
+                by_fingerprint = stability_by_fingerprint.get(program.get("graph_fingerprint"))
+                program["cross_run_stability"] = by_result or by_fingerprint or fallback_stability
 
             # Generate narrative (optional, non-blocking)
             try:
@@ -752,11 +1189,21 @@ def create_app(
             control_comparison = analytics.control_experiment_comparison()
             holdout = analytics.holdout_validation()
             explanation = aria.explain_grammar_weights(defaults, learned)
+            diagnostics = analytics.grammar_weight_learning_diagnostics()
             return jsonify({
                 "default": defaults,
                 "learned": learned,
                 "control_comparison": control_comparison,
                 "holdout_validation": holdout,
+                "learning_diagnostics": diagnostics,
+                "architecture_rerun_telemetry": {
+                    "unique_fingerprint_count": int(diagnostics.get("unique_fingerprints") or 0),
+                    "total_result_rows": int(diagnostics.get("total_rows") or 0),
+                    "repeat_result_rows": int(diagnostics.get("repeat_rows") or 0),
+                    "rerun_ratio": float(diagnostics.get("rerun_ratio") or 0.0),
+                    "top_fingerprint_concentration": float(diagnostics.get("top_fingerprint_concentration") or 0.0),
+                    "weighting_mode": str(diagnostics.get("mode") or "unknown"),
+                },
                 "explanation": explanation,
             })
         except Exception as e:
@@ -869,6 +1316,31 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/analytics/mathspace-impact")
+    def api_mathspace_impact():
+        """Impact of math-space operators/families on S1/validation/novelty."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            payload = analytics.mathspace_operator_impact() or {}
+            payload.setdefault("available", False)
+            payload.setdefault("totals", {
+                "n_programs_with_graph": 0,
+                "n_programs_with_mathspace": 0,
+                "n_mathspace_ops_observed": 0,
+            })
+            payload.setdefault("by_operator", [])
+            payload.setdefault("by_family", [])
+            payload.setdefault("top_trustworthy_operators", [])
+            payload.setdefault("explanation", "Math-space impact data is unavailable.")
+            return jsonify(payload)
+        except Exception as e:
+            logger.error(f"Error in mathspace-impact: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/analytics/compression-coverage")
     def api_compression_coverage():
         """Coverage of compression techniques across tested and surviving programs."""
@@ -907,6 +1379,24 @@ def create_app(
             return jsonify(analytics.learning_trajectory())
         except Exception as e:
             logger.error(f"Error in learning-trajectory: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/control-comparison")
+    def api_control_comparison():
+        """Compare control (default weights) vs learned-weight experiments."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            result = analytics.control_experiment_comparison()
+            if result is None:
+                return jsonify({"status": "insufficient_data",
+                                "message": "Need at least 2 control and 2 learned experiments"})
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Error in control-comparison: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -1269,6 +1759,8 @@ def create_app(
 
         config = RunConfig.from_dict(body) if body else RunConfig()
 
+        eligibility: Optional[Dict[str, Any]] = None
+
         try:
             if mode == "continuous":
                 config.continuous = True
@@ -1278,17 +1770,37 @@ def create_app(
             elif mode == "novelty":
                 exp_id = runner.start_novelty_search(config, hypothesis=hypothesis)
             elif mode == "investigation":
-                result_ids = body.get("result_ids", [])
+                result_ids = _normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
                     return jsonify({"error": "result_ids required for investigation mode"}), 400
+                nb = LabNotebook(notebook_path)
+                try:
+                    eligibility = _build_start_mode_eligibility(nb, "investigation", result_ids)
+                finally:
+                    nb.close()
+                if not eligibility.get("all_eligible"):
+                    return jsonify({
+                        "error": "Ineligible result_ids for investigation mode",
+                        "eligibility": eligibility,
+                    }), 409
                 exp_id = runner.start_investigation(result_ids, config, hypothesis=hypothesis)
             elif mode == "validation":
-                result_ids = body.get("result_ids", [])
+                result_ids = _normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
                     return jsonify({"error": "result_ids required for validation mode"}), 400
+                nb = LabNotebook(notebook_path)
+                try:
+                    eligibility = _build_start_mode_eligibility(nb, "validation", result_ids)
+                finally:
+                    nb.close()
+                if not eligibility.get("all_eligible"):
+                    return jsonify({
+                        "error": "Ineligible result_ids for validation mode",
+                        "eligibility": eligibility,
+                    }), 409
                 exp_id = runner.start_validation(result_ids, config, hypothesis=hypothesis)
             elif mode == "scale_up":
-                result_ids = body.get("result_ids", [])
+                result_ids = _normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
                     return jsonify({"error": "result_ids required for scale_up mode"}), 400
                 config.scale_up = True
@@ -1308,7 +1820,10 @@ def create_app(
                     if isinstance(runner.progress.hypothesis_critique, dict)
                     else None
                 ),
+                "eligibility": eligibility,
             })
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             logger.error(f"Error starting experiment: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
@@ -1325,6 +1840,30 @@ def create_app(
             "status": "stopping",
             "aria_message": runner.progress.aria_message,
         })
+
+    @app.route("/api/experiments/<experiment_id>/cancel", methods=["POST"])
+    def api_cancel_experiment(experiment_id):
+        """Cancel a stuck/running experiment by marking it as failed."""
+        nb = LabNotebook(notebook_path)
+        try:
+            cancelled = nb.cancel_experiment(experiment_id)
+            if not cancelled:
+                return jsonify({
+                    "error": "Experiment not found or not in running state",
+                }), 404
+            return jsonify({"status": "cancelled", "experiment_id": experiment_id})
+        finally:
+            nb.close()
+
+    @app.route("/api/experiments/cleanup-stale", methods=["POST"])
+    def api_cleanup_stale():
+        """Clean up stale running experiments that are no longer active."""
+        nb = LabNotebook(notebook_path)
+        try:
+            count = nb.cleanup_stale_experiments()
+            return jsonify({"cleaned": count})
+        finally:
+            nb.close()
 
     @app.route("/api/progress")
     def api_progress():
@@ -1374,30 +1913,503 @@ def create_app(
 
     @app.route("/api/llm/config", methods=["POST"])
     def api_llm_configure():
-        """Configure the LLM backend at runtime."""
+        """Configure the LLM backend at runtime and persist to disk."""
         aria = get_aria()
         body = request.get_json(silent=True) or {}
 
-        backend_name = body.get("backend", "")
+        backend_name = str(body.get("backend", "")).strip()
         if not backend_name:
             return jsonify({"error": "backend is required (anthropic, openai, ollama)"}), 400
 
+        api_key = str(body.get("api_key", "")).strip()
+        model = str(body.get("model", "")).strip()
+        host = str(body.get("host", "")).strip()
+
         success = aria.configure_llm(
             backend_name=backend_name,
-            api_key=body.get("api_key", ""),
-            model=body.get("model", ""),
-            host=body.get("host", ""),
+            api_key=api_key,
+            model=model,
+            host=host,
         )
 
         if success:
-            return jsonify({
+            # Quick health check: try a minimal LLM call to verify the key works
+            health_ok = True
+            health_error = None
+            llm = aria._get_llm()
+            if llm:
+                try:
+                    test_resp = llm.generate(
+                        "Respond with exactly: OK",
+                        max_tokens=10, temperature=0,
+                    )
+                    if not (test_resp and test_resp.text):
+                        health_ok = False
+                        health_error = "LLM returned empty response"
+                except Exception as e:
+                    health_ok = False
+                    health_error = f"{type(e).__name__}: {str(e)[:150]}"
+                    logger.warning(f"LLM health check failed: {health_error}")
+
+            # Persist config so it survives server restarts
+            _save_llm_config(notebook_path, {
+                "backend": backend_name,
+                "api_key": api_key,
+                "model": model,
+                "host": host,
+            })
+
+            # Clear any cached deterministic briefing so AI takes over
+            if hasattr(aria, "_briefing_cache"):
+                aria._briefing_cache = None
+
+            result = {
                 "status": "configured",
                 "config": aria.get_llm_config(),
-            })
+            }
+            if not health_ok:
+                result["status"] = "configured_with_warning"
+                result["warning"] = health_error
+            return jsonify(result)
         else:
             return jsonify({"error": "Failed to configure LLM backend"}), 500
 
+    # ── Strategy Briefing endpoint ──
+
+    def _normalize_briefing_mode(mode: Optional[str]) -> Optional[str]:
+        if not mode:
+            return None
+        normalized = str(mode).strip().lower()
+        aliases = {
+            "evolution": "evolve",
+            "evolve": "evolve",
+            "novelty_search": "novelty",
+            "novelty": "novelty",
+            "investigate": "investigation",
+            "investigation": "investigation",
+            "validate": "validation",
+            "validation": "validation",
+            "scale-up": "scale_up",
+            "scale_up": "scale_up",
+            "continuous": "continuous",
+            "single": "single",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _briefing_action_from_mode(mode: Optional[str]) -> Optional[str]:
+        if not mode:
+            return None
+        actions = {
+            "investigation": "investigate",
+            "validation": "validate",
+            "continuous": "continuous",
+            "novelty": "novelty_search",
+            "evolve": "evolve",
+            "scale_up": "scale_up",
+        }
+        return actions.get(mode)
+
+    def _briefing_action_label(mode: Optional[str], hypothesis: Optional[str] = None) -> str:
+        """Human-readable label for an LLM-suggested action."""
+        labels = {
+            "continuous": "Run Continuous Research",
+            "evolve": "Run Evolution Search",
+            "novelty": "Run Novelty Search",
+            "investigation": "Investigate Candidates",
+            "validation": "Run Validation",
+            "scale_up": "Scale Up Training",
+        }
+        return labels.get(mode, f"Run {mode or 'experiment'}")
+
+    @app.route("/api/strategy/briefing")
+    def api_strategy_briefing():
+        """Data-driven strategy briefing for the overview page.
+
+        Tries LLM-powered briefing first (via Aria), falls back to
+        deterministic rules.  Always returns a valid response.
+        """
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            summary = nb.get_dashboard_summary()
+            recent = nb.get_recent_experiments(10)
+            trajectory = analytics.learning_trajectory() or {}
+
+            # Optional: highlight a just-completed experiment
+            just_completed_id = request.args.get("just_completed")
+            just_completed_exp = None
+            if just_completed_id:
+                for e in recent:
+                    if (e.get("experiment_id") or "").startswith(just_completed_id):
+                        just_completed_exp = e
+                        break
+                # Clear briefing cache so LLM sees the new context
+                aria_inst = get_aria()
+                if hasattr(aria_inst, "_briefing_cache"):
+                    aria_inst._briefing_cache = None
+
+            # --- Pipeline counts ---
+            leaderboard_rows = nb.conn.execute(
+                "SELECT tier, COUNT(*) as cnt FROM leaderboard GROUP BY tier"
+            ).fetchall()
+            tiers = {r["tier"]: r["cnt"] for r in leaderboard_rows}
+            screening = tiers.get("screening", 0)
+            investigation = tiers.get("investigation", 0)
+            validation = tiers.get("validation", 0)
+            breakthrough = tiers.get("breakthrough", 0)
+
+            # --- Recent outcomes ---
+            completed = [e for e in recent if e.get("status") == "completed"]
+            recent_s1_rates = []
+            for e in completed[:5]:
+                gen = e.get("n_programs_generated") or 0
+                passed = e.get("n_stage1_passed") or 0
+                if gen > 0:
+                    recent_s1_rates.append(passed / gen)
+
+            avg_recent_s1 = (
+                sum(recent_s1_rates) / len(recent_s1_rates)
+                if recent_s1_rates
+                else None
+            )
+
+            # --- Learning trend ---
+            trend = trajectory.get("trend", "insufficient_data")
+            slope = trajectory.get("slope")
+
+            # --- Common data block (used by both LLM and deterministic) ---
+            total_exp = summary.get("total_experiments", 0)
+            total_progs = summary.get("total_programs_evaluated", 0)
+            s1_survivors = summary.get("stage1_survivors", 0)
+
+            pipeline_data = {
+                "screening": screening,
+                "investigation": investigation,
+                "validation": validation,
+                "breakthrough": breakthrough,
+            }
+            data_block = {
+                "total_experiments": total_exp,
+                "total_programs": total_progs,
+                "s1_survivors": s1_survivors,
+                "avg_recent_s1_rate": avg_recent_s1,
+                "learning_trend": trend,
+                "learning_slope": slope,
+                "pipeline": pipeline_data,
+            }
+
+            recent_window = recent[:10]
+            recent_cancelled = 0
+            recent_failed = 0
+            for exp in recent_window:
+                status = str(exp.get("status") or "").strip().lower()
+                if status in {"cancelled", "canceled"}:
+                    recent_cancelled += 1
+                elif status == "failed":
+                    recent_failed += 1
+
+            recent_completed_window = completed[:5]
+            recent_zero_s1_runs = 0
+            for exp in recent_completed_window:
+                gen = exp.get("n_programs_generated") or 0
+                passed = exp.get("n_stage1_passed") or 0
+                if gen > 0 and passed == 0:
+                    recent_zero_s1_runs += 1
+
+            recommendation_evidence = {
+                "learning_trend": trend,
+                "learning_slope": slope,
+                "avg_recent_s1_rate": avg_recent_s1,
+                "recent_completed_runs": len(recent_completed_window),
+                "recent_zero_s1_runs": recent_zero_s1_runs,
+                "recent_cancelled_runs": recent_cancelled,
+                "recent_failed_runs": recent_failed,
+                "pipeline": pipeline_data,
+            }
+
+            # --- Try LLM-powered briefing first ---
+            aria = get_aria()
+            fallback_reason: Optional[str] = None
+            llm = aria._get_llm()
+            llm_reachable = False
+            if llm is None:
+                fallback_reason = "llm_not_configured"
+            else:
+                try:
+                    llm_reachable = bool(llm.is_available()) if hasattr(llm, "is_available") else True
+                except Exception:
+                    llm_reachable = False
+                if not llm_reachable:
+                    fallback_reason = "llm_unreachable"
+            try:
+                from .llm.context import build_briefing_context
+
+                # Gather extra context for LLM
+                try:
+                    active_campaigns = nb.get_active_campaigns()
+                    campaign = active_campaigns[0] if active_campaigns else None
+                except Exception:
+                    campaign = None
+
+                try:
+                    dw = analytics.get_current_grammar_weights() or {}
+                except Exception:
+                    dw = {}
+
+                try:
+                    gw = analytics.compute_grammar_weights() or {}
+                except Exception:
+                    gw = {}
+
+                try:
+                    top_programs = nb.conn.execute(
+                        "SELECT graph_fingerprint, loss_ratio, novelty_score, tier "
+                        "FROM leaderboard ORDER BY composite_score DESC LIMIT 3"
+                    ).fetchall()
+                    top_progs = [dict(r) for r in top_programs] if top_programs else None
+                except Exception:
+                    top_progs = None
+
+                try:
+                    briefing_context = build_briefing_context(
+                        recent_experiments=recent,
+                        pipeline_tiers=tiers,
+                        learning_trajectory=trajectory,
+                        campaign=campaign,
+                        grammar_weights=gw,
+                        default_weights=dw,
+                        top_programs=top_progs,
+                        just_completed=just_completed_exp,
+                    )
+                except Exception:
+                    briefing_context = {
+                        "pipeline": pipeline_data,
+                        "learning": {
+                            "trend": trend,
+                            "slope": slope,
+                            "avg_recent_s1_rate": avg_recent_s1,
+                        },
+                        "recent_experiments": recent[:5],
+                        "campaign": campaign,
+                    }
+
+                ai_briefing = aria.generate_briefing(context=briefing_context)
+                if ai_briefing and ai_briefing.get("briefing_text"):
+                    suggested = ai_briefing.get("suggested_action") or {}
+                    normalized_mode = _normalize_briefing_mode(suggested.get("mode"))
+                    action_key = _briefing_action_from_mode(normalized_mode)
+                    suggested_config = dict(suggested.get("config") or {})
+                    hypothesis = suggested.get("hypothesis")
+                    if normalized_mode:
+                        suggested_config["mode"] = normalized_mode
+                    if hypothesis:
+                        suggested_config["hypothesis"] = hypothesis
+                    return jsonify({
+                        "briefing": ai_briefing["briefing_text"],
+                        "action": action_key or normalized_mode or "continuous",
+                        "action_label": _briefing_action_label(
+                            normalized_mode, hypothesis),
+                        "action_rationale": suggested.get("reasoning", ""),
+                        "ai_powered": True,
+                        "confidence": ai_briefing.get("confidence", 0.5),
+                        "suggested_config": suggested_config or None,
+                        "evidence": recommendation_evidence,
+                        "data": data_block,
+                    })
+                if fallback_reason is None:
+                    fallback_reason = "llm_empty_response"
+            except Exception as e:
+                logger.warning(f"LLM briefing unavailable, using deterministic: {e}")
+                err_msg = str(e)[:120]
+                fallback_reason = f"llm_error:{type(e).__name__}: {err_msg}"
+
+            # --- Deterministic fallback: build briefing sentences ---
+            sentences = []
+            if total_exp > 0:
+                sentences.append(
+                    f"Across {total_exp} experiments, {total_progs:,} architectures "
+                    f"have been evaluated with {s1_survivors} stage-1 survivors "
+                    f"({s1_survivors / max(total_progs, 1) * 100:.1f}% overall pass rate)."
+                )
+
+            # 2. Recent performance
+            if avg_recent_s1 is not None:
+                n_recent = len(recent_s1_rates)
+                sentences.append(
+                    f"The last {n_recent} completed experiment{'s' if n_recent != 1 else ''} "
+                    f"averaged a {avg_recent_s1 * 100:.1f}% S1 pass rate."
+                )
+
+            # 3. Learning trajectory
+            if trend == "improving" and slope is not None:
+                sentences.append(
+                    f"The system is learning — S1 rate is improving at "
+                    f"+{abs(slope) * 100:.2f} percentage points per experiment."
+                )
+            elif trend == "declining" and slope is not None:
+                sentences.append(
+                    f"S1 rate is declining ({slope * 100:.2f} pp/experiment). "
+                    f"Consider switching search strategy or trying evolution mode."
+                )
+            elif trend == "plateaued":
+                sentences.append(
+                    "S1 rate has plateaued — a novelty search or evolution run "
+                    "could help escape the current local optimum."
+                )
+
+            # 4. Pipeline state
+            pipeline_parts = []
+            if screening > 0:
+                pipeline_parts.append(f"{screening} at screening")
+            if investigation > 0:
+                pipeline_parts.append(f"{investigation} under investigation")
+            if validation > 0:
+                pipeline_parts.append(f"{validation} in validation")
+            if breakthrough > 0:
+                pipeline_parts.append(
+                    f"{breakthrough} breakthrough{'s' if breakthrough != 1 else ''}"
+                )
+            if pipeline_parts:
+                sentences.append(
+                    f"Candidate pipeline: {', '.join(pipeline_parts)}."
+                )
+
+            # 5. Last experiment outcome
+            if completed:
+                last = completed[0]
+                last_s1 = last.get("n_stage1_passed") or 0
+                last_gen = last.get("n_programs_generated") or 0
+                last_loss = last.get("best_loss_ratio")
+                last_id = last.get("experiment_id", "")[:8]
+                parts = [
+                    f"Last experiment ({last_id}): "
+                    f"{last_s1}/{last_gen} passed S1"
+                ]
+                if last_loss is not None:
+                    parts.append(f"best loss {last_loss:.4f}")
+                aria_sum = last.get("aria_summary")
+                if aria_sum:
+                    parts.append(f"— {aria_sum}")
+                sentences.append(". ".join(parts) + ".")
+
+            briefing = " ".join(sentences)
+
+            # --- Determine recommended action ---
+            action = None
+            action_label = None
+            action_rationale = None
+
+            if breakthrough > 0:
+                action = "export_breakthrough"
+                action_label = "Export Breakthrough Report"
+                action_rationale = (
+                    f"{breakthrough} candidate{'s have' if breakthrough != 1 else ' has'} "
+                    f"reached breakthrough tier — ready for publication review."
+                )
+            elif validation > 0 and screening == 0 and investigation == 0:
+                action = "monitor_validation"
+                action_label = "Review Validation Progress"
+                action_rationale = (
+                    f"{validation} candidate{'s are' if validation != 1 else ' is'} "
+                    f"in validation. Monitor results before starting new experiments."
+                )
+            elif screening > 0:
+                inv_failed = nb.conn.execute(
+                    "SELECT COUNT(*) FROM leaderboard "
+                    "WHERE tier = 'investigation' AND investigation_passed = 0"
+                ).fetchone()[0]
+                action = "investigate"
+                action_label = (
+                    f"Investigate {screening} Screening "
+                    f"Survivor{'s' if screening != 1 else ''}"
+                )
+                rationale_parts = [
+                    f"{screening} candidate{'s' if screening != 1 else ''} passed "
+                    f"screening and "
+                    f"{'are' if screening != 1 else 'is'} awaiting deeper investigation"
+                ]
+                if inv_failed > 0:
+                    rationale_parts.append(
+                        f"({inv_failed} prior investigation"
+                        f"{'s' if inv_failed != 1 else ''} "
+                        f"failed — fresh candidates may outperform)"
+                    )
+                if avg_recent_s1 is not None:
+                    rationale_parts.append(
+                        f"with recent {avg_recent_s1 * 100:.0f}% hit rate"
+                    )
+                action_rationale = ", ".join(rationale_parts) + "."
+            elif total_exp == 0:
+                action = "start_first"
+                action_label = "Run First Experiment"
+                action_rationale = (
+                    "No experiments yet. Start a mixed continuous run to begin "
+                    "exploring the architecture space."
+                )
+            elif trend == "declining" or (
+                len(recent_s1_rates) >= 3
+                and all(r == 0 for r in recent_s1_rates[:3])
+            ):
+                action = "novelty_search"
+                action_label = "Try Evolution / Novelty Search"
+                action_rationale = (
+                    "Recent experiments are underperforming. An evolution or "
+                    "novelty-driven search can escape the current local minimum."
+                )
+            else:
+                action = "continuous"
+                action_label = "Continue Research"
+                action_rationale = (
+                    "The pipeline is active and the system is "
+                    + ("learning" if trend == "improving" else "exploring")
+                    + ". Continue generating and evaluating new architectures."
+                )
+
+            # Build deterministic suggested_config from action
+            det_mode_map = {
+                "investigate": "investigation",
+                "continuous": "continuous",
+                "start_first": "continuous",
+                "novelty_search": "novelty",
+                "export_breakthrough": None,
+                "monitor_validation": None,
+            }
+            det_mode = det_mode_map.get(action, "continuous")
+            det_config = (
+                {"mode": det_mode, "model_source": "mixed"}
+                if det_mode
+                else None
+            )
+
+            return jsonify({
+                "briefing": briefing,
+                "action": action,
+                "action_label": action_label,
+                "action_rationale": action_rationale,
+                "ai_powered": False,
+                "fallback_reason": fallback_reason,
+                "suggested_config": det_config,
+                "evidence": recommendation_evidence,
+                "data": data_block,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/strategy/briefing: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     # ── Aria Intelligence endpoints ──
+
+    @app.route("/api/aria/cycle-status")
+    def api_aria_cycle_status():
+        """Get Aria continuous-cycle status (planning/running/analyzing)."""
+        runner = _get_runner(notebook_path)
+        try:
+            return jsonify(runner.get_aria_cycle_status())
+        except Exception as e:
+            logger.error(f"Error in /api/aria/cycle-status: {e}")
+            return jsonify({"error": str(e)}), 500
 
     @app.route("/api/aria/recommendation")
     def api_aria_recommendation():
@@ -1454,6 +2466,333 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/aria/chat", methods=["POST"])
+    def api_aria_chat():
+        """Interactive Aria chat response grounded in current research context."""
+        runner = _get_runner(notebook_path)
+        nb = LabNotebook(notebook_path)
+        aria = get_aria()
+
+        def _normalize_chat_sections(text: str) -> str:
+            raw = (text or "").strip()
+            if not raw:
+                return ""
+            if (
+                "Evidence:" in raw
+                and "Recommendation:" in raw
+                and "Next Action:" in raw
+            ):
+                return raw
+            return (
+                "Evidence:\n"
+                f"- {raw}\n\n"
+                "Recommendation:\n"
+                "- Continue with the strongest data-supported direction from recent runs.\n\n"
+                "Next Action:\n"
+                "- Launch the suggested experiment and review post-run briefing for iteration."
+            )
+
+        try:
+            body = request.get_json(silent=True) or {}
+            question = str(body.get("message") or "").strip()
+            history_raw = body.get("history") or []
+            session_id = str(body.get("session_id") or "").strip()
+            fallback_reason: Optional[str] = None
+
+            if not question:
+                return jsonify({"error": "message is required"}), 400
+
+            # Persist user message to DB if session_id provided
+            if session_id:
+                try:
+                    nb.save_chat_message(
+                        session_id=session_id, role="user", text=question,
+                        label="You",
+                    )
+                except Exception:
+                    pass  # Non-fatal — don't block chat on persistence failure
+
+            # Build history lines: prefer DB history when session_id given
+            history_lines: List[str] = []
+            if session_id:
+                try:
+                    db_messages = nb.get_chat_history(session_id, limit=12)
+                    for msg in db_messages:
+                        role = str(msg.get("role") or "user").strip().lower()
+                        text = str(msg.get("text") or "").strip()
+                        if not text:
+                            continue
+                        label = "ARIA" if role in {"aria", "assistant"} else role.upper()
+                        history_lines.append(f"{label}: {text}")
+                except Exception:
+                    pass  # Fall through to request-body history
+            if not history_lines and isinstance(history_raw, list):
+                for entry in history_raw[-8:]:
+                    if not isinstance(entry, dict):
+                        continue
+                    role = str(entry.get("role") or "user").strip().lower()
+                    if role not in {"user", "aria", "assistant", "system"}:
+                        role = "user"
+                    text = str(entry.get("text") or "").strip()
+                    if not text:
+                        continue
+                    label = "ARIA" if role in {"aria", "assistant"} else role.upper()
+                    history_lines.append(f"{label}: {text}")
+
+            try:
+                analytics_data = runner._gather_analytics_data(nb)
+            except Exception:
+                analytics_data = {}
+
+            try:
+                history = nb.get_recent_experiments(10)
+            except Exception:
+                history = []
+
+            try:
+                past_hypotheses = runner._get_past_hypotheses(nb)
+            except Exception:
+                past_hypotheses = []
+
+            try:
+                from .llm.context import build_rich_context
+                context = build_rich_context(
+                    results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
+                             "stage1_passed": 0, "novel_count": 0},
+                    analytics_data=analytics_data,
+                    history=history,
+                    past_hypotheses=past_hypotheses,
+                )
+            except Exception:
+                context = (
+                    "Context fallback:\n"
+                    f"- Recent experiments: {len(history)}\n"
+                    f"- Analytics keys: {len(analytics_data) if isinstance(analytics_data, dict) else 0}\n"
+                    f"- Past hypotheses: {len(past_hypotheses) if isinstance(past_hypotheses, list) else 0}"
+                )
+
+            llm = aria._get_llm()
+            if llm:
+                try:
+                    if hasattr(llm, "is_available") and not llm.is_available():
+                        fallback_reason = "llm_unreachable"
+                except Exception:
+                    fallback_reason = "llm_unreachable"
+                try:
+                    from .llm.prompts import SYSTEM_PROMPT, CHAT_PROMPT
+                    prompt = CHAT_PROMPT.format(
+                        context=context,
+                        history="\n".join(history_lines) if history_lines else "(none)",
+                        question=question,
+                    )
+                    resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=768)
+                    aria._track_cost(resp)
+                    text = (resp.text or "").strip()
+                    if text:
+                        reply_text = _normalize_chat_sections(text)
+                        if session_id:
+                            try:
+                                nb.save_chat_message(
+                                    session_id=session_id, role="aria",
+                                    text=reply_text, label="Aria",
+                                )
+                            except Exception:
+                                pass
+                        return jsonify({
+                            "reply": reply_text,
+                            "ai_powered": True,
+                            "used_context": True,
+                            "fallback_reason": None,
+                        })
+                    fallback_reason = fallback_reason or "llm_empty_response"
+                except Exception as e:
+                    logger.warning(f"Aria chat LLM failed, using fallback: {e}")
+                    err_msg = str(e)[:120]
+                    fallback_reason = f"llm_error:{type(e).__name__}: {err_msg}"
+            else:
+                fallback_reason = "llm_not_configured"
+
+            strategy = aria.plan_strategy(context) or ""
+            suggestion = aria.suggest_experiment(context) or {}
+            evidence_lines = [
+                "- LLM chat backend is unavailable; using deterministic analysis.",
+            ]
+            if strategy:
+                evidence_lines.append(f"- Current strategy signal: {strategy}")
+            reasoning = suggestion.get("reasoning") if isinstance(suggestion, dict) else None
+            recommendation_lines = []
+            if reasoning:
+                recommendation_lines.append(f"- {reasoning}")
+            else:
+                recommendation_lines.append("- Use the current Strategy Advisor recommendation to stay aligned with latest metrics.")
+            next_action = "- Run one suggested experiment, then ask again to refresh with new evidence."
+
+            fallback_reply = (
+                "Evidence:\n"
+                + "\n".join(evidence_lines)
+                + "\n\nRecommendation:\n"
+                + "\n".join(recommendation_lines)
+                + "\n\nNext Action:\n"
+                + next_action
+            )
+            if session_id:
+                try:
+                    nb.save_chat_message(
+                        session_id=session_id, role="aria",
+                        text=fallback_reply,
+                        label=f"Aria (fallback: {fallback_reason})",
+                    )
+                except Exception:
+                    pass
+            return jsonify({
+                "reply": fallback_reply,
+                "ai_powered": False,
+                "used_context": True,
+                "fallback_reason": fallback_reason,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/aria/chat: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/aria/chat/history")
+    def api_aria_chat_history():
+        """Load chat history from the database."""
+        nb = LabNotebook(notebook_path)
+        try:
+            session_id = request.args.get("session_id", "default")
+            limit = min(int(request.args.get("limit", 50)), 200)
+            messages = nb.get_chat_history(session_id, limit=limit)
+            return jsonify({"messages": messages, "session_id": session_id})
+        except Exception as e:
+            logger.error(f"Error in /api/aria/chat/history: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/aria/chat/message", methods=["POST"])
+    def api_aria_chat_message():
+        """Save a single chat message to the database."""
+        nb = LabNotebook(notebook_path)
+        try:
+            body = request.get_json(silent=True) or {}
+            session_id = body.get("session_id", "default")
+            role = body.get("role", "user")
+            text = body.get("text", "")
+            label = body.get("label")
+            message_id = body.get("message_id")
+            metadata = body.get("metadata")
+            if not text:
+                return jsonify({"error": "text is required"}), 400
+            mid = nb.save_chat_message(
+                session_id=session_id, role=role, text=text,
+                label=label, message_id=message_id, metadata=metadata,
+            )
+            return jsonify({"message_id": mid, "saved": True})
+        except Exception as e:
+            logger.error(f"Error in /api/aria/chat/message: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    def _estimate_tokens(text: str) -> int:
+        """Rough token count: ~4 chars per token."""
+        return len(text or "") // 4
+
+    @app.route("/api/aria/chat/compact", methods=["POST"])
+    def api_aria_chat_compact():
+        """Compact older chat messages into a summary when token budget exceeded."""
+        nb = LabNotebook(notebook_path)
+        aria = get_aria()
+        try:
+            body = request.get_json(silent=True) or {}
+            session_id = body.get("session_id", "default")
+            token_budget = int(body.get("token_budget", 4000))
+
+            messages = nb.get_chat_history(session_id, limit=200)
+            if not messages:
+                return jsonify({"compacted": False, "reason": "no messages"})
+
+            # Calculate tokens for active messages
+            total_tokens = sum(_estimate_tokens(m.get("text", "")) for m in messages)
+            if total_tokens <= token_budget:
+                return jsonify({"compacted": False, "reason": "within budget",
+                                "total_tokens": total_tokens})
+
+            # Find oldest messages that exceed the budget
+            # Keep recent messages within budget, compact the rest
+            keep_tokens = 0
+            keep_from = len(messages)
+            for i in range(len(messages) - 1, -1, -1):
+                msg_tokens = _estimate_tokens(messages[i].get("text", ""))
+                if keep_tokens + msg_tokens > token_budget * 0.7:  # Keep 70% budget for recent
+                    keep_from = i + 1
+                    break
+                keep_tokens += msg_tokens
+
+            to_compact = messages[:keep_from]
+            if not to_compact:
+                return jsonify({"compacted": False, "reason": "nothing to compact"})
+
+            # Build text for summarization
+            compact_text = "\n".join(
+                f"{m.get('role', 'unknown').upper()}: {m.get('text', '')}"
+                for m in to_compact
+            )
+
+            # Try LLM summarization, fall back to first-sentence extraction
+            summary_text = None
+            llm = aria._get_llm()
+            if llm:
+                try:
+                    from .llm.prompts import SYSTEM_PROMPT, CHAT_COMPACTION_PROMPT
+                    prompt = CHAT_COMPACTION_PROMPT.format(messages=compact_text[:3000])
+                    resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=300)
+                    aria._track_cost(resp)
+                    summary_text = (resp.text or "").strip()
+                except Exception as e:
+                    logger.warning(f"Chat compaction LLM failed: {e}")
+
+            if not summary_text:
+                # Fallback: extract first sentence from each message
+                lines = []
+                for m in to_compact:
+                    text = (m.get("text") or "").strip()
+                    first_sentence = text.split(".")[0].strip()
+                    if first_sentence and len(first_sentence) > 10:
+                        role = m.get("role", "?").upper()
+                        lines.append(f"- [{role}] {first_sentence}.")
+                    if len(lines) >= 5:
+                        break
+                summary_text = "\n".join(lines) if lines else "Previous conversation summarized."
+
+            # Save summary message
+            import uuid as _uuid
+            summary_id = f"summary-{_uuid.uuid4().hex[:8]}"
+            compact_ids = [m["message_id"] for m in to_compact if m.get("message_id")]
+
+            nb.save_chat_message(
+                session_id=session_id, role="system",
+                text=summary_text, label="Summary",
+                message_id=summary_id,
+                metadata={"compaction": True, "summarized_count": len(compact_ids)},
+            )
+            nb.mark_messages_compacted(compact_ids, summary_id)
+
+            return jsonify({
+                "compacted": True,
+                "messages_compacted": len(compact_ids),
+                "summary_id": summary_id,
+                "summary_tokens": _estimate_tokens(summary_text),
+                "original_tokens": total_tokens,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/aria/chat/compact: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/system/status")
     def api_system_status():
         """Report system status: CUDA, LLM, database, runner state."""
@@ -1479,8 +2818,15 @@ def create_app(
 
             # LLM backend
             llm = aria._get_llm()
+            llm_reachable = False
+            if llm is not None:
+                try:
+                    llm_reachable = bool(llm.is_available()) if hasattr(llm, "is_available") else True
+                except Exception:
+                    llm_reachable = False
             llm_info = {
-                "available": llm is not None,
+                "available": llm_reachable,
+                "configured": llm is not None,
                 "backend": llm.name if llm else None,
             }
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import subprocess
@@ -324,6 +325,21 @@ CREATE INDEX IF NOT EXISTS idx_decisions_campaign ON decisions(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_type ON decisions(decision_type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_base(status);
+
+CREATE TABLE IF NOT EXISTS aria_chat (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    role TEXT NOT NULL,          -- 'user', 'aria', 'system'
+    text TEXT NOT NULL,
+    label TEXT,
+    compacted INTEGER DEFAULT 0,
+    summary_of TEXT,             -- JSON list of message_ids this summarizes
+    metadata_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_aria_chat_session ON aria_chat(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_aria_chat_compacted ON aria_chat(session_id, compacted);
 """
 
 # Columns added in the schema expansion — used for migration
@@ -514,6 +530,20 @@ class LabNotebook:
         if "metadata_json" not in hyp_cols:
             self.conn.execute(
                 "ALTER TABLE hypotheses ADD COLUMN metadata_json TEXT"
+            )
+
+        # Migrate campaigns: add completion_reason and successor_campaign_id
+        camp_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(campaigns)").fetchall()
+        }
+        if "completion_reason" not in camp_cols:
+            self.conn.execute(
+                "ALTER TABLE campaigns ADD COLUMN completion_reason TEXT"
+            )
+        if "successor_campaign_id" not in camp_cols:
+            self.conn.execute(
+                "ALTER TABLE campaigns ADD COLUMN successor_campaign_id TEXT"
             )
 
     @classmethod
@@ -771,6 +801,27 @@ class LabNotebook:
             (time.time(), f"FAILED: {error}", experiment_id),
         )
         self.conn.commit()
+
+    def cancel_experiment(self, experiment_id: str) -> bool:
+        """Cancel a running experiment by marking it as failed.
+
+        Returns True if the experiment was cancelled, False if not found or
+        not in a cancellable state.
+        """
+        row = self.conn.execute(
+            "SELECT status FROM experiments WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+        if not row or row["status"] != "running":
+            return False
+        self.conn.execute(
+            """UPDATE experiments SET status = 'failed', completed_at = ?,
+               aria_summary = 'Cancelled by user'
+               WHERE experiment_id = ?""",
+            (time.time(), experiment_id),
+        )
+        self.conn.commit()
+        return True
 
     # ── Entries ──
 
@@ -1077,9 +1128,11 @@ class LabNotebook:
     def get_recent_experiments(self, n: int = 20) -> List[Dict]:
         rows = self.conn.execute(
             """SELECT experiment_id, timestamp, experiment_type, status,
-                      hypothesis, n_programs_generated, n_stage1_passed,
+                      hypothesis, research_question,
+                      n_programs_generated, n_stage0_passed, n_stage05_passed,
+                      n_stage1_passed,
                       best_loss_ratio, best_novelty_score, aria_mood,
-                      duration_seconds
+                      aria_summary, duration_seconds
                FROM experiments ORDER BY timestamp DESC LIMIT ?""",
             (n,)
         ).fetchall()
@@ -1120,6 +1173,79 @@ class LabNotebook:
             (n,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_report_top_programs_grouped_by_fingerprint(
+        self,
+        n: int = 20,
+        sort_by: str = "loss_ratio",
+    ) -> List[Dict]:
+        """Get report ranking rows grouped by graph fingerprint.
+
+        Returns one representative survivor per fingerprint, enriched with
+        repeat-count and run-spread metadata across all stage1 survivors.
+        """
+        valid_sorts = {"novelty_score", "loss_ratio", "structural_novelty", "behavioral_novelty"}
+        if sort_by not in valid_sorts:
+            sort_by = "loss_ratio"
+
+        order = "DESC" if sort_by == "novelty_score" else "ASC"
+        if sort_by in ("structural_novelty", "behavioral_novelty"):
+            order = "DESC"
+
+        # Pull enough candidates to fill n unique fingerprints.
+        rows = self.conn.execute(
+            f"""SELECT * FROM program_results
+                WHERE stage1_passed = 1
+                ORDER BY {sort_by} {order} NULLS LAST, timestamp DESC
+                LIMIT ?""",
+            (max(n * 12, 200),),
+        ).fetchall()
+
+        spread_rows = self.conn.execute(
+            """SELECT
+                   graph_fingerprint,
+                   COUNT(*) AS repeat_count,
+                   COUNT(DISTINCT experiment_id) AS repeat_experiment_span,
+                   MIN(timestamp) AS repeat_first_seen_ts,
+                   MAX(timestamp) AS repeat_last_seen_ts,
+                   MIN(loss_ratio) AS repeat_loss_min,
+                   MAX(loss_ratio) AS repeat_loss_max,
+                   AVG(loss_ratio) AS repeat_loss_mean,
+                   MIN(novelty_score) AS repeat_novelty_min,
+                   MAX(novelty_score) AS repeat_novelty_max
+               FROM program_results
+               WHERE stage1_passed = 1
+                 AND graph_fingerprint IS NOT NULL
+                 AND TRIM(graph_fingerprint) != ''
+               GROUP BY graph_fingerprint"""
+        ).fetchall()
+        spread_by_fp = {row["graph_fingerprint"]: dict(row) for row in spread_rows}
+
+        grouped: List[Dict] = []
+        seen_fingerprints = set()
+        for row in rows:
+            record = dict(row)
+            fingerprint = record.get("graph_fingerprint")
+            if not fingerprint or fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
+
+            spread = spread_by_fp.get(fingerprint, {})
+            record["repeat_count"] = int(spread.get("repeat_count") or 1)
+            record["repeat_experiment_span"] = int(spread.get("repeat_experiment_span") or 1)
+            record["repeat_first_seen_ts"] = spread.get("repeat_first_seen_ts")
+            record["repeat_last_seen_ts"] = spread.get("repeat_last_seen_ts")
+            record["repeat_loss_min"] = spread.get("repeat_loss_min")
+            record["repeat_loss_max"] = spread.get("repeat_loss_max")
+            record["repeat_loss_mean"] = spread.get("repeat_loss_mean")
+            record["repeat_novelty_min"] = spread.get("repeat_novelty_min")
+            record["repeat_novelty_max"] = spread.get("repeat_novelty_max")
+            grouped.append(record)
+
+            if len(grouped) >= n:
+                break
+
+        return grouped
 
     def get_metrics(self, metric_name: str,
                     experiment_id: Optional[str] = None,
@@ -1225,8 +1351,33 @@ class LabNotebook:
 
     def get_experiment_trends(self, limit: int = 50) -> List[Dict]:
         """Get cross-experiment trend data for charts."""
+
+        def _mode_factor(mode: Optional[str]) -> float:
+            normalized = str(mode or "").strip().lower()
+            if normalized in {"investigation", "validation", "single"}:
+                return 0.55
+            if normalized in {"continuous", "evolution", "synthesis", "morphological", "training"}:
+                return 1.0
+            return 0.8
+
+        def _resolve_mode(row: Dict) -> str:
+            config_mode = None
+            raw_config = row.get("config_json")
+            if isinstance(raw_config, str) and raw_config.strip():
+                try:
+                    parsed = json.loads(raw_config)
+                    if isinstance(parsed, dict):
+                        config_mode = (
+                            parsed.get("mode")
+                            or parsed.get("run_mode")
+                            or parsed.get("experiment_mode")
+                        )
+                except (json.JSONDecodeError, TypeError):
+                    config_mode = None
+            return str(config_mode or row.get("experiment_type") or "unknown")
+
         rows = self.conn.execute(
-            """SELECT experiment_id, timestamp, n_programs_generated,
+            """SELECT experiment_id, timestamp, experiment_type, config_json, n_programs_generated,
                       n_stage0_passed, n_stage05_passed, n_stage1_passed,
                       best_loss_ratio, best_novelty_score, duration_seconds
                FROM experiments
@@ -1236,11 +1387,66 @@ class LabNotebook:
             (limit,),
         ).fetchall()
         trends = []
+        total_programs = 0
+        total_stage1 = 0
         for r in rows:
             d = dict(r)
-            total = d.get("n_programs_generated") or 1
-            d["s1_pass_rate"] = (d.get("n_stage1_passed") or 0) / total
+            n_programs = max(int(d.get("n_programs_generated") or 0), 0)
+            n_stage1 = max(int(d.get("n_stage1_passed") or 0), 0)
+            total = max(n_programs, 1)
+            raw_s1_rate = n_stage1 / total
+
+            trend_mode = _resolve_mode(d)
+            mode_factor = _mode_factor(trend_mode)
+            effective_n = max(1.0, n_programs * mode_factor)
+            trend_weight = min(1.0, effective_n / 20.0)
+
+            d["s1_pass_rate"] = raw_s1_rate
+            d["trend_mode"] = trend_mode
+            d["_effective_n"] = effective_n
+            d["_trend_weight"] = trend_weight
+
+            total_programs += n_programs
+            total_stage1 += n_stage1
             trends.append(d)
+
+        if not trends:
+            return trends
+
+        overall_rate = total_stage1 / max(total_programs, 1)
+        prior_strength = 12.0
+
+        for d in trends:
+            raw_rate = d.get("s1_pass_rate") or 0.0
+            effective_n = d.get("_effective_n") or 1.0
+            trend_weight = d.get("_trend_weight") or 0.0
+
+            shrinkage = effective_n / (effective_n + prior_strength)
+            adjusted_rate = overall_rate + shrinkage * (raw_rate - overall_rate)
+
+            variance = max(adjusted_rate * (1.0 - adjusted_rate), 0.0)
+            stderr = math.sqrt(variance / max(effective_n, 1.0))
+            halfwidth = 1.96 * stderr
+            lower = max(0.0, adjusted_rate - halfwidth)
+            upper = min(1.0, adjusted_rate + halfwidth)
+
+            if effective_n >= 20:
+                confidence = "high"
+            elif effective_n >= 8:
+                confidence = "medium"
+            else:
+                confidence = "low"
+
+            d["adjusted_s1_pass_rate"] = round(adjusted_rate, 6)
+            d["s1_confidence_lower"] = round(lower, 6)
+            d["s1_confidence_upper"] = round(upper, 6)
+            d["s1_confidence_halfwidth"] = round(halfwidth, 6)
+            d["trend_weight"] = round(trend_weight, 4)
+            d["trend_confidence"] = confidence
+
+            d.pop("_effective_n", None)
+            d.pop("_trend_weight", None)
+
         return trends
 
     def get_dashboard_summary(self) -> Dict:
@@ -1527,6 +1733,17 @@ class LabNotebook:
         ).fetchall()
         return {r[0] for r in rows if r[0]}
 
+    def get_tiers_for_result_ids(self, result_ids: List[str]) -> Dict[str, str]:
+        """Return {result_id: tier} for given result IDs that have leaderboard entries."""
+        if not result_ids:
+            return {}
+        placeholders = ",".join("?" for _ in result_ids)
+        rows = self.conn.execute(
+            f"SELECT result_id, tier FROM leaderboard WHERE result_id IN ({placeholders})",
+            result_ids,
+        ).fetchall()
+        return {r["result_id"]: r["tier"] for r in rows}
+
     @staticmethod
     def _classify_architecture_family(
         graph_json: Optional[str],
@@ -1682,7 +1899,8 @@ class LabNotebook:
     def update_campaign(self, campaign_id: str, **kwargs) -> None:
         """Update campaign fields."""
         allowed = {"title", "objective", "success_criteria", "status",
-                    "findings_summary", "completed_at"}
+                    "findings_summary", "completed_at",
+                    "completion_reason", "successor_campaign_id"}
         sets = []
         params: List[Any] = []
         for k, v in kwargs.items():
@@ -1741,6 +1959,57 @@ class LabNotebook:
             (campaign_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def evaluate_campaign_criteria(self, campaign_id: str) -> Dict:
+        """Evaluate campaign success criteria against measured data.
+
+        Returns {
+            all_met: bool,        # True if every parseable criterion passes
+            n_criteria: int,
+            n_passing: int,
+            n_at_risk: int,
+            n_not_yet: int,
+            stale: bool,          # True if 10+ experiments with no progress
+            tracker: List[Dict],  # per-criterion status from analytics
+        }
+        """
+        from .analytics import ExperimentAnalytics
+
+        campaign = self.get_campaign(campaign_id)
+        if not campaign:
+            return {"all_met": False, "n_criteria": 0, "n_passing": 0,
+                    "n_at_risk": 0, "n_not_yet": 0, "stale": False,
+                    "tracker": []}
+
+        experiments = self.get_campaign_experiments(campaign_id)
+        hypotheses = self.get_campaign_hypotheses(campaign_id)
+        decisions = self.get_campaign_decisions(campaign_id)
+
+        analytics = ExperimentAnalytics(self)
+        tracker = analytics.campaign_success_criteria_tracker(
+            campaign, experiments, hypotheses, decisions,
+        )
+
+        n_passing = sum(1 for t in tracker if t.get("status") == "pass")
+        n_at_risk = sum(1 for t in tracker if t.get("status") == "at_risk")
+        n_not_yet = sum(1 for t in tracker if t.get("status") == "not_yet")
+        n_criteria = len(tracker)
+
+        # All parseable criteria must pass (ignore unknown/not_yet-only)
+        all_met = n_criteria > 0 and n_passing == n_criteria
+
+        # Stale: 10+ experiments but zero criteria passing
+        stale = len(experiments) >= 10 and n_passing == 0 and n_at_risk > 0
+
+        return {
+            "all_met": all_met,
+            "n_criteria": n_criteria,
+            "n_passing": n_passing,
+            "n_at_risk": n_at_risk,
+            "n_not_yet": n_not_yet,
+            "stale": stale,
+            "tracker": tracker,
+        }
 
     # ── Hypotheses ──
 
@@ -2010,3 +2279,67 @@ class LabNotebook:
         except Exception as e:
             logger.warning(f"Failed to save report markdown: {e}")
             return None
+
+    # ── Aria Chat Persistence ──────────────────────────────────────
+
+    def save_chat_message(
+        self,
+        session_id: str,
+        role: str,
+        text: str,
+        label: Optional[str] = None,
+        message_id: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+    ) -> str:
+        """Persist a single chat message and return its message_id."""
+        mid = message_id or str(uuid.uuid4())
+        self.conn.execute(
+            """INSERT OR REPLACE INTO aria_chat
+               (message_id, session_id, timestamp, role, text, label, metadata_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (mid, session_id, time.time(), role, text, label,
+             json.dumps(metadata) if metadata else None),
+        )
+        self.conn.commit()
+        return mid
+
+    def get_chat_history(
+        self,
+        session_id: str,
+        limit: int = 50,
+        include_compacted: bool = False,
+    ) -> List[Dict]:
+        """Return chat messages for a session, newest last."""
+        if include_compacted:
+            rows = self.conn.execute(
+                """SELECT * FROM aria_chat
+                   WHERE session_id = ?
+                   ORDER BY timestamp ASC LIMIT ?""",
+                (session_id, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT * FROM aria_chat
+                   WHERE session_id = ? AND compacted = 0
+                   ORDER BY timestamp ASC LIMIT ?""",
+                (session_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_messages_compacted(
+        self, message_ids: List[str], summary_message_id: str
+    ) -> None:
+        """Mark messages as compacted (replaced by a summary)."""
+        if not message_ids:
+            return
+        placeholders = ",".join("?" for _ in message_ids)
+        self.conn.execute(
+            f"UPDATE aria_chat SET compacted = 1 WHERE message_id IN ({placeholders})",
+            message_ids,
+        )
+        # Update the summary message to reference what it summarizes
+        self.conn.execute(
+            "UPDATE aria_chat SET summary_of = ? WHERE message_id = ?",
+            (json.dumps(message_ids), summary_message_id),
+        )
+        self.conn.commit()

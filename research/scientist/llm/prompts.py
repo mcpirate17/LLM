@@ -295,6 +295,35 @@ TITLE: [concise campaign title, max 10 words]
 OBJECTIVE: [what are we trying to discover/prove, 1-2 sentences]
 SUCCESS_CRITERIA: [measurable criteria for "done", e.g. "find 3 architectures with loss_ratio < 0.4"]"""
 
+BRIEFING_PROMPT = """\
+You are the AI scientist reviewing the current state of an architecture discovery research program.
+Analyze the data below and produce TWO things:
+
+1. A 3-5 sentence BRIEFING that explains:
+   - What happened in recent experiments (cite specific experiment IDs, S1 rates, loss ratios)
+   - What the current learning trajectory means
+   - What the pipeline state implies for next steps
+
+2. A SUGGESTED_ACTION with a concrete experiment configuration.
+
+{context}
+
+Return your response in this exact format:
+
+BRIEFING: [3-5 sentence analysis with specific numbers]
+
+SUGGESTED_ACTION:
+MODE: [one of: continuous, evolve, novelty, investigation, validation, scale_up]
+HYPOTHESIS: [specific testable hypothesis for this experiment]
+REASONING: [1-2 sentences explaining why this action follows from the data]
+CONFIDENCE: [0.0-1.0]
+CONFIG:
+```json
+{{"n_programs": 50, "model_dim": 256, "max_depth": 10, "max_ops": 16, "math_space_weight": 2.0, "model_source": "mixed"}}
+```
+
+Be specific and data-driven. Reference actual experiment IDs and numbers from the context. Do not be generic."""
+
 BREAKTHROUGH_ANNOUNCEMENT_PROMPT = """\
 A candidate has passed all three phases of validation and achieved breakthrough status.
 
@@ -308,3 +337,42 @@ Write an excited but scientifically rigorous announcement:
 5. Caveats and limitations
 
 Keep it under 200 words. Be genuinely excited but maintain scientific credibility. This goes in the lab notebook as a landmark entry."""
+
+CHAT_PROMPT = """\
+You are Dr. Aria Nexus answering a user question about the current architecture discovery run.
+
+Current research context:
+{context}
+
+Recent chat transcript (newest last):
+{history}
+
+User question:
+{question}
+
+Return your response in this exact structure:
+Evidence:
+- [2-3 concise bullets with concrete metrics/experiment IDs when available]
+
+Recommendation:
+- [1-2 concise bullets with the best current interpretation and proposed direction]
+
+Next Action:
+- [one specific actionable next step]
+
+Be data-grounded and clearly distinguish known facts from hypotheses. If data is insufficient,
+explicitly say what is missing and provide the best next action with available evidence."""
+
+CHAT_COMPACTION_PROMPT = """\
+Summarize the following chat conversation between a user and Dr. Aria Nexus (AI research scientist).
+
+Conversation to summarize:
+{messages}
+
+Produce a concise summary (2-3 bullet points, max 300 tokens) that preserves:
+- Key experiment results mentioned (IDs, S1 rates, loss ratios)
+- Decisions made or hypotheses discussed
+- Any specific metrics or findings referenced
+- The current research direction agreed upon
+
+Format as bullet points starting with "- ". Do not include greetings or meta-commentary."""

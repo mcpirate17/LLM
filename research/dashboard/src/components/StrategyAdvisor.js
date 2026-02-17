@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -8,6 +8,47 @@ const TIER_COLORS = {
   validation: 'var(--accent-purple)',
   breakthrough: 'var(--accent-green)',
 };
+
+/**
+ * Map briefing action types to experiment start configs.
+ */
+const ACTION_CONFIGS = {
+  investigate: { suggestedMode: 'investigation', source: 'strategy_advisor', configOverrides: {} },
+  continuous: { suggestedMode: 'continuous', source: 'mixed', configOverrides: { model_source: 'mixed' } },
+  start_first: { suggestedMode: 'continuous', source: 'mixed', configOverrides: { model_source: 'mixed' } },
+  novelty_search: { suggestedMode: 'novelty', source: 'mixed', configOverrides: { model_source: 'mixed' } },
+  novelty: { suggestedMode: 'novelty', source: 'mixed', configOverrides: { model_source: 'mixed' } },
+  scale_up: { suggestedMode: 'scale_up', source: 'strategy_advisor', configOverrides: {} },
+  validate: { suggestedMode: 'validation', source: 'strategy_advisor', configOverrides: {} },
+  validation: { suggestedMode: 'validation', source: 'strategy_advisor', configOverrides: {} },
+  evolve: { suggestedMode: 'evolve', source: 'mixed', configOverrides: { model_source: 'mixed' } },
+  investigation: { suggestedMode: 'investigation', source: 'strategy_advisor', configOverrides: {} },
+};
+
+function normalizeSuggestedMode(mode) {
+  if (!mode) return null;
+  const normalized = String(mode).trim().toLowerCase();
+  const aliases = {
+    evolution: 'evolve',
+    novelty_search: 'novelty',
+    investigate: 'investigation',
+    validate: 'validation',
+    'scale-up': 'scale_up',
+  };
+  return aliases[normalized] || normalized;
+}
+
+function fallbackReasonLabel(reason) {
+  if (!reason) return 'unknown';
+  if (reason === 'llm_not_configured') return 'LLM not configured';
+  if (reason === 'llm_unreachable') return 'LLM configured but unreachable';
+  if (reason === 'llm_empty_response') return 'LLM returned no briefing text';
+  if (String(reason).startsWith('llm_error:')) {
+    const detail = String(reason).slice('llm_error:'.length).trim();
+    return `LLM error: ${detail || 'unknown'}`;
+  }
+  return String(reason);
+}
 
 /**
  * Pure deterministic strategy computation.
@@ -26,6 +67,7 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   const breakthroughCandidates = [];
   const validationPassed = [];
   const investigationPassed = [];
+  const investigationFailed = [];
   const screeningSurvivors = [];
 
   const normalizeTier = (entry) => {
@@ -46,7 +88,9 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
       validationPassed.push(entry);
     } else if (effectiveTier === 'investigation' && entry.investigation_passed) {
       investigationPassed.push(entry);
-    } else {
+    } else if (effectiveTier === 'investigation' && !entry.investigation_passed) {
+      investigationFailed.push(entry);
+    } else if (effectiveTier === 'screening') {
       screeningSurvivors.push(entry);
     }
   }
@@ -67,7 +111,7 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   const families = Array.isArray(mathCoverage) ? mathCoverage : [];
   const undertestedFamilies = families.filter(f => (f.tested_share || 0) < 0.05);
 
-  // Priority rules (1-9)
+  // Priority rules (1-10)
 
   // 1. No experiments yet
   if (totalExperiments === 0) {
@@ -113,21 +157,32 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
     };
   }
 
-  // 5. Screening survivors exist, none investigated
-  if (screeningSurvivors.length > 0 && tierSummary.investigation === 0 && tierSummary.validation === 0) {
+  // 5. Screening survivors awaiting investigation
+  if (screeningSurvivors.length > 0) {
     return {
       id: 5,
       title: `Investigate ${screeningSurvivors.length} Screening Survivor${screeningSurvivors.length > 1 ? 's' : ''}`,
-      rationale: `${screeningSurvivors.length} candidate${screeningSurvivors.length > 1 ? 's' : ''} passed initial screening but none have been investigated yet. Run deeper investigation with extended training and multiple training programs.`,
+      rationale: `${screeningSurvivors.length} candidate${screeningSurvivors.length > 1 ? 's' : ''} passed screening and ${screeningSurvivors.length > 1 ? 'are' : 'is'} awaiting investigation.${investigationFailed.length > 0 ? ` (${investigationFailed.length} prior investigation${investigationFailed.length > 1 ? 's' : ''} failed — new candidates may perform better.)` : ''} Run deeper investigation with extended training and multiple training programs.`,
       action: { suggestedMode: 'investigation', source: 'strategy_advisor', configOverrides: {} },
       tierSummary,
     };
   }
 
-  // 6. Low survival rate after significant experiments
-  if (totalExperiments > 10 && survivalRate < 0.01) {
+  // 6. All investigations failed
+  if (investigationFailed.length > 0 && screeningSurvivors.length === 0 && investigationPassed.length === 0) {
     return {
       id: 6,
+      title: 'Find New Candidates (All Investigations Failed)',
+      rationale: `${investigationFailed.length} candidate${investigationFailed.length > 1 ? 's were' : ' was'} investigated but ${investigationFailed.length > 1 ? 'none' : 'it did not'} pass${investigationFailed.length === 1 ? '' : 'ed'}. Run more screening experiments to discover new candidates worth investigating.`,
+      action: { suggestedMode: 'continuous', source: 'mixed', configOverrides: { model_source: 'mixed' } },
+      tierSummary,
+    };
+  }
+
+  // 7. Low survival rate
+  if (totalExperiments > 10 && survivalRate < 0.01) {
+    return {
+      id: 7,
       title: 'Try Evolution/Novelty Search',
       rationale: `Survival rate is only ${(survivalRate * 100).toFixed(1)}% across ${totalExperiments} experiments. Population-based search can breed better candidates by combining successful traits.`,
       action: { suggestedMode: 'evolve', source: 'mixed', configOverrides: { model_source: 'mixed' } },
@@ -135,11 +190,11 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
     };
   }
 
-  // 7. Under-tested math families
+  // 8. Under-tested math families
   if (undertestedFamilies.length > 0) {
     const familyNames = undertestedFamilies.slice(0, 3).map(f => f.family || f.name).join(', ');
     return {
-      id: 7,
+      id: 8,
       title: 'Expand Math Space Coverage',
       rationale: `${undertestedFamilies.length} math ${undertestedFamilies.length === 1 ? 'family is' : 'families are'} under-explored (<5% tested): ${familyNames}. Increase math space weight to diversify architecture search.`,
       action: { suggestedMode: 'continuous', source: 'mixed', configOverrides: { model_source: 'mixed', math_space_weight: 4.0 } },
@@ -147,10 +202,10 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
     };
   }
 
-  // 8. Last 3 experiments had zero survivors
+  // 9. Last 3 experiments had zero survivors
   if (lastThreeZeroSurvivors) {
     return {
-      id: 8,
+      id: 9,
       title: 'Novelty Search to Escape Local Minimum',
       rationale: 'The last 3 experiments produced zero survivors each. Novelty search can escape the current search region by rewarding architectural diversity over raw fitness.',
       action: { suggestedMode: 'novelty', source: 'mixed', configOverrides: { model_source: 'mixed' } },
@@ -158,9 +213,9 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
     };
   }
 
-  // 9. Default
+  // 10. Default
   return {
-    id: 9,
+    id: 10,
     title: 'Continue Mixed Continuous Research',
     rationale: 'The pipeline is healthy. Continue exploring the architecture space with mixed-source continuous research to find new candidates.',
     action: { suggestedMode: 'continuous', source: 'mixed', configOverrides: { model_source: 'mixed' } },
@@ -168,18 +223,30 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   };
 }
 
-function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, isRunning }) {
+function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRunning, autonomousMode, onStartAutonomous, onStopAutonomous, onStrategyChange, onNavigateEvidence }) {
   const [leaderboard, setLeaderboard] = useState(null);
   const [mathCoverage, setMathCoverage] = useState(null);
-  const [aiRec, setAiRec] = useState(null);
-  const [aiLoading, setAiLoading] = useState(true);
+  const [learningTrend, setLearningTrend] = useState(null);
+  const [briefing, setBriefing] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
+  const [startingAutonomous, setStartingAutonomous] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [showLimits, setShowLimits] = useState(false);
+  const [autoMaxExperiments, setAutoMaxExperiments] = useState(20);
+  const [autoMaxMinutes, setAutoMaxMinutes] = useState(60);
+  const eventSourceRef = useRef(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (justCompletedId) => {
     try {
-      const [lbRes, mcRes] = await Promise.all([
+      const briefingUrl = justCompletedId
+        ? `${API_BASE}/api/strategy/briefing?just_completed=${encodeURIComponent(justCompletedId)}`
+        : `${API_BASE}/api/strategy/briefing`;
+      const [lbRes, mcRes, ltRes, brRes] = await Promise.all([
         fetch(`${API_BASE}/api/leaderboard?sort=composite_score&limit=100`),
         fetch(`${API_BASE}/api/analytics/math-family-coverage`),
+        fetch(`${API_BASE}/api/analytics/learning-trajectory`),
+        fetch(briefingUrl),
       ]);
       if (lbRes.ok) {
         const lbData = await lbRes.json();
@@ -189,34 +256,67 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, isRunning })
         const mcData = await mcRes.json();
         setMathCoverage(Array.isArray(mcData) ? mcData : mcData.families || []);
       }
+      if (ltRes.ok) {
+        const ltData = await ltRes.json();
+        setLearningTrend(ltData);
+      }
+      if (brRes.ok) {
+        const brData = await brRes.json();
+        if (brData && !brData.error) {
+          setBriefing(brData);
+        }
+      }
     } catch {
       // Silently fail — strategy will use available data
     }
     setLoading(false);
+    setAnalyzing(false);
   }, []);
 
-  const fetchAiRec = useCallback(async () => {
-    setAiLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/aria/recommendation`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data && !data.error && data.reasoning) {
-          setAiRec(data);
-        }
-      }
-    } catch {
-      // AI unavailable — fall back to deterministic
-    }
-    setAiLoading(false);
-  }, []);
+  // SSE listener: auto-refresh when experiment completes
+  useEffect(() => {
+    const es = new EventSource(`${API_BASE}/api/events`);
+    eventSourceRef.current = es;
+    es.addEventListener('experiment_completed', (event) => {
+      setAnalyzing(true);
+      let expId = null;
+      try {
+        const data = JSON.parse(event.data || '{}');
+        expId = data.experiment_id || null;
+      } catch { /* ignore parse errors */ }
+      // Small delay to let backend finalize
+      setTimeout(() => fetchData(expId), 2000);
+    });
+    es.onerror = () => {
+      // SSE connection lost — don't crash, just reconnect will happen automatically
+    };
+    return () => es.close();
+  }, [fetchData]);
+
+  // Re-fetch briefing when LLM is configured (dispatched by ControlPanel)
+  useEffect(() => {
+    const handler = () => {
+      setAnalyzing(true);
+      setTimeout(() => fetchData(), 500);
+    };
+    window.addEventListener('llm-configured', handler);
+    return () => window.removeEventListener('llm-configured', handler);
+  }, [fetchData]);
 
   useEffect(() => {
     fetchData();
-    fetchAiRec();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
-  }, [fetchData, fetchAiRec]);
+  }, [fetchData]);
+
+  const strategy = computeStrategy(dashboardData, leaderboard, mathCoverage);
+  const ts = strategy.tierSummary;
+
+  useEffect(() => {
+    if (onStrategyChange) {
+      onStrategyChange(strategy);
+    }
+  }, [onStrategyChange, strategy]);
 
   if (loading && !leaderboard) {
     return (
@@ -228,55 +328,224 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, isRunning })
     );
   }
 
-  const strategy = computeStrategy(dashboardData, leaderboard, mathCoverage);
-  const isPublishAction = strategy.action === null;
-  const ts = strategy.tierSummary;
+  // --- Determine display content ---
+  const hasBriefing = briefing && briefing.briefing;
+  const isAiPowered = briefing?.ai_powered === true;
+  const suggestedConfig = briefing?.suggested_config;
 
-  // Merge AI recommendation with deterministic strategy
-  const hasAi = aiRec && aiRec.reasoning;
-  const displayRationale = hasAi ? aiRec.reasoning : strategy.rationale;
+  // Action button config: prefer suggested_config from briefing, fall back to strategy
+  const briefingAction = briefing?.action;
+  const normalizedSuggestedMode = normalizeSuggestedMode(suggestedConfig?.mode || briefingAction);
+  const actionConfig = suggestedConfig
+    ? {
+        suggestedMode: normalizedSuggestedMode || 'continuous',
+        configOverrides: {
+          ...suggestedConfig,
+          mode: normalizedSuggestedMode || 'continuous',
+        },
+      }
+    : (briefingAction && ACTION_CONFIGS[briefingAction]
+        ? ACTION_CONFIGS[briefingAction]
+        : strategy.action);
+  const isNavigateAction = !actionConfig || briefingAction === 'export_breakthrough' || briefingAction === 'monitor_validation';
 
-  // Build final config: deterministic mode + AI config overrides
+  // Action button label
+  const actionLabel = briefing?.action_label || strategy.title;
+
+  // Build final config for experiment start
   const buildStartConfig = () => {
-    if (!strategy.action) return null;
-    const base = {
-      mode: strategy.action.suggestedMode || 'continuous',
-      model_source: strategy.action.configOverrides?.model_source || 'mixed',
-      source: 'strategy_advisor',
-      ...strategy.action.configOverrides,
-    };
-    // Layer AI-suggested config on top
-    if (hasAi && aiRec.config && typeof aiRec.config === 'object') {
-      Object.assign(base, aiRec.config);
+    if (!actionConfig) return null;
+    if (suggestedConfig) {
+      // Use AI-suggested config directly
+      return {
+        mode: normalizedSuggestedMode || 'continuous',
+        model_source: suggestedConfig.model_source || 'mixed',
+        source: 'aria_briefing',
+        hypothesis: suggestedConfig.hypothesis || undefined,
+        n_programs: suggestedConfig.n_programs,
+        model_dim: suggestedConfig.model_dim,
+        max_depth: suggestedConfig.max_depth,
+        max_ops: suggestedConfig.max_ops,
+        math_space_weight: suggestedConfig.math_space_weight,
+      };
     }
-    return base;
+    return {
+      mode: actionConfig.suggestedMode || 'continuous',
+      model_source: actionConfig.configOverrides?.model_source || 'mixed',
+      source: 'strategy_advisor',
+      ...actionConfig.configOverrides,
+    };
   };
 
   // Summarize key params for display
-  const suggestedParams = hasAi && aiRec.config ? aiRec.config : null;
-  const paramSummary = suggestedParams
-    ? Object.entries(suggestedParams)
-        .filter(([k]) => k !== 'mode' && k !== 'source')
-        .slice(0, 4)
-        .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${typeof v === 'number' ? v.toFixed?.(2) ?? v : v}`)
+  const paramEntries = suggestedConfig
+    ? Object.entries(suggestedConfig).filter(([k, v]) =>
+        k !== 'mode' && k !== 'model_source' && k !== 'hypothesis' && v != null)
     : [];
+  const paramSummary = paramEntries.slice(0, 5).map(([k, v]) =>
+    `${k.replace(/_/g, ' ')}: ${typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : v}`
+  );
 
-  const handleStartClick = () => {
+  const handleStartClick = async () => {
     const config = buildStartConfig();
-    if (config && onStart) {
-      onStart(config);
+    if (!config || !onStart) return;
+    setStarting(true);
+    try {
+      await onStart(config);
+    } finally {
+      setStarting(false);
     }
   };
 
+  const handleStartAutonomous = async () => {
+    if (!onStartAutonomous) return;
+    setStartingAutonomous(true);
+    try {
+      await onStartAutonomous({
+        mode: 'continuous',
+        model_source: 'mixed',
+        source: 'autonomous_mode',
+        max_experiments: autoMaxExperiments,
+        max_time_minutes: autoMaxMinutes,
+      });
+    } finally {
+      setStartingAutonomous(false);
+    }
+  };
+
+  const handleNavigateClick = () => {
+    if (onApplyStrategy) {
+      onApplyStrategy({
+        action: briefingAction || strategy.action || null,
+        actionLabel,
+        source: briefingAction ? 'briefing' : 'strategy',
+        strategy,
+      });
+    }
+  };
+
+  // Navigate-action label for breakthrough/validation
+  const navigateLabel = briefingAction === 'export_breakthrough'
+    ? 'Export Breakthrough Report'
+    : briefingAction === 'monitor_validation'
+      ? 'Review Validation Progress'
+      : 'Review in Leaderboard';
+
+  const executeLabel = 'Execute Recommended Action';
+  const evidence = briefing?.evidence || null;
+  const evidenceItems = [];
+  if (evidence) {
+    if (typeof evidence.learning_trend === 'string' && evidence.learning_trend) {
+      evidenceItems.push({ label: `Trend: ${evidence.learning_trend}`, tab: 'learning' });
+    }
+    if (typeof evidence.avg_recent_s1_rate === 'number') {
+      evidenceItems.push({ label: `Recent S1: ${(evidence.avg_recent_s1_rate * 100).toFixed(1)}%`, tab: 'trends' });
+    }
+    if (typeof evidence.recent_zero_s1_runs === 'number' && typeof evidence.recent_completed_runs === 'number') {
+      evidenceItems.push({
+        label: `Zero-S1 runs: ${evidence.recent_zero_s1_runs}/${evidence.recent_completed_runs}`,
+        tab: 'trends',
+      });
+    }
+    if (typeof evidence.recent_cancelled_runs === 'number' && evidence.recent_cancelled_runs > 0) {
+      evidenceItems.push({ label: `Cancelled runs: ${evidence.recent_cancelled_runs}`, tab: 'experiments' });
+    }
+    if (evidence.pipeline && typeof evidence.pipeline === 'object') {
+      const p = evidence.pipeline;
+      evidenceItems.push({
+        label: `Pipeline: S${p.screening || 0} / I${p.investigation || 0} / V${p.validation || 0} / B${p.breakthrough || 0}`,
+        tab: 'leaderboard',
+      });
+    }
+  }
+
   return (
     <div className="card strategy-advisor" style={{ gridColumn: '1 / -1', marginBottom: 0 }}>
+      {/* Aria's Analysis — the main briefing */}
+      <div style={{
+        padding: '12px 14px',
+        marginBottom: 12,
+        background: 'var(--bg-tertiary)',
+        borderRadius: 6,
+        borderLeft: `3px solid ${isAiPowered ? 'var(--accent-purple)' : 'var(--accent-blue)'}`,
+        fontSize: 13,
+        lineHeight: 1.6,
+        color: 'var(--text-secondary)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+            letterSpacing: 0.5,
+            color: isAiPowered ? 'var(--accent-purple)' : 'var(--accent-blue)',
+          }}>
+            Aria's Analysis
+          </span>
+          <span style={{
+            fontSize: 9, fontWeight: 600,
+            color: isAiPowered ? 'var(--accent-purple)' : 'var(--text-muted)',
+            background: isAiPowered
+              ? 'rgba(137, 87, 229, 0.12)'
+              : 'rgba(128, 128, 128, 0.12)',
+            border: `1px solid ${isAiPowered ? 'var(--accent-purple)' : 'var(--text-muted)'}`,
+            borderRadius: 4,
+            padding: '1px 5px',
+          }}>
+            {isAiPowered ? 'AI-Powered' : 'Rule-Based'}
+          </span>
+          {hasBriefing && briefing.data?.learning_trend && briefing.data.learning_trend !== 'insufficient_data' && (
+            <TrendChip trend={briefing.data.learning_trend} slope={briefing.data.learning_slope} />
+          )}
+        </div>
+        {analyzing ? (
+          <div style={{ color: 'var(--accent-purple)', fontStyle: 'italic' }}>
+            Aria is analyzing the latest results...
+          </div>
+        ) : hasBriefing ? (
+          briefing.briefing
+        ) : (
+          <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
+            No briefing data available. Run an experiment to get started.
+          </span>
+        )}
+      </div>
+
+      {/* Suggested experiment + action button */}
       <div className="strategy-content">
         <div className="strategy-header">
-          <div className="strategy-title">{strategy.title}</div>
-          <div className="strategy-rationale">{displayRationale}</div>
-          {hasAi && aiRec.confidence != null && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              AI confidence: {(aiRec.confidence * 100).toFixed(0)}%
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
+            <span style={{
+              fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+              letterSpacing: 0.3,
+              color: 'var(--accent-green)',
+              background: 'rgba(63, 185, 80, 0.16)',
+              border: '1px solid var(--accent-green)',
+              borderRadius: 4,
+              padding: '1px 6px',
+            }}>
+              Recommended Action
+            </span>
+            {briefing?.confidence != null && isAiPowered && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Confidence: {(briefing.confidence * 100).toFixed(0)}%
+              </span>
+            )}
+          </div>
+          <div className="strategy-title">{actionLabel}</div>
+          <div className="strategy-rationale">
+            {briefing?.action_rationale || strategy.rationale}
+          </div>
+          {/* Show hypothesis if AI suggested one */}
+          {suggestedConfig?.hypothesis && (
+            <div style={{
+              marginTop: 6, padding: '6px 10px',
+              background: 'var(--bg-primary)',
+              borderRadius: 4,
+              fontSize: 12,
+              color: 'var(--text-secondary)',
+              fontStyle: 'italic',
+              borderLeft: '2px solid var(--accent-purple)',
+            }}>
+              {suggestedConfig.hypothesis}
             </div>
           )}
           {paramSummary.length > 0 && (
@@ -289,36 +558,175 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, isRunning })
               ))}
             </div>
           )}
-          {!hasAi && !aiLoading && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontStyle: 'italic' }}>
-              Rule-based recommendation (AI not available)
-            </div>
-          )}
         </div>
 
         <div className="strategy-actions">
-          {isRunning ? (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-              Experiment running — strategy will update when complete.
+          {isRunning && autonomousMode ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 12, color: 'var(--accent-purple)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span className="pulse-dot" style={{ background: 'var(--accent-purple)' }}></span>
+                Autonomous mode active — Aria is running experiments automatically.
+              </div>
+              <button
+                className="strategy-apply-btn"
+                onClick={onStopAutonomous}
+                style={{
+                  background: 'var(--accent-red, #e74c3c)', color: '#fff', fontWeight: 600,
+                  fontSize: 13, padding: '6px 16px',
+                }}
+              >
+                Stop Autonomous Mode
+              </button>
             </div>
-          ) : isPublishAction ? (
-            <button
-              className="strategy-apply-btn"
-              onClick={() => onApplyStrategy && onApplyStrategy(strategy)}
-            >
-              Review in Leaderboard
-            </button>
+          ) : isRunning ? (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+              Experiment running — Aria will analyze results when complete.
+            </div>
+          ) : isNavigateAction ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+              <button
+                className="strategy-apply-btn"
+                onClick={handleNavigateClick}
+                style={{ background: 'var(--accent-green)', color: '#000', fontWeight: 600 }}
+              >
+                {executeLabel}
+              </button>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Action: {navigateLabel}
+              </div>
+            </div>
           ) : (
-            <button
-              className="strategy-apply-btn"
-              onClick={handleStartClick}
-              style={{ background: 'var(--accent-green)', color: '#000', fontWeight: 600 }}
-            >
-              Start Experiment
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="strategy-apply-btn"
+                  onClick={handleStartClick}
+                  disabled={starting}
+                  style={{
+                    background: 'var(--accent-green)', color: '#000', fontWeight: 600,
+                    opacity: starting ? 0.7 : 1,
+                    fontSize: 14,
+                    padding: '8px 20px',
+                  }}
+                >
+                  {starting ? 'Executing...' : executeLabel}
+                </button>
+                <button
+                  className="strategy-apply-btn"
+                  onClick={handleStartAutonomous}
+                  disabled={startingAutonomous}
+                  style={{
+                    background: 'var(--accent-purple)', color: '#fff', fontWeight: 600,
+                    opacity: startingAutonomous ? 0.7 : 1,
+                    fontSize: 13,
+                    padding: '8px 16px',
+                  }}
+                >
+                  {startingAutonomous ? 'Starting...' : 'Start Autonomous Mode'}
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Action: {actionLabel}
+              </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowLimits(v => !v)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    fontSize: 11, color: 'var(--text-muted)', padding: 0,
+                    textDecoration: 'underline',
+                  }}
+                >
+                  {showLimits ? 'Hide limits' : 'Autonomous limits...'}
+                </button>
+                {showLimits && (
+                  <div style={{ display: 'flex', gap: 12, marginTop: 6, alignItems: 'center' }}>
+                    <label style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      Max experiments:
+                      <input
+                        type="number" min={1} max={100} value={autoMaxExperiments}
+                        onChange={e => setAutoMaxExperiments(Math.max(1, Math.min(100, parseInt(e.target.value) || 20)))}
+                        style={{
+                          width: 48, marginLeft: 4, background: 'var(--bg-primary)',
+                          border: '1px solid var(--border-color)', borderRadius: 4,
+                          color: 'var(--text-primary)', fontSize: 11, padding: '2px 4px',
+                        }}
+                      />
+                    </label>
+                    <label style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      Max minutes:
+                      <input
+                        type="number" min={5} max={480} value={autoMaxMinutes}
+                        onChange={e => setAutoMaxMinutes(Math.max(5, Math.min(480, parseInt(e.target.value) || 60)))}
+                        style={{
+                          width: 48, marginLeft: 4, background: 'var(--bg-primary)',
+                          border: '1px solid var(--border-color)', borderRadius: 4,
+                          color: 'var(--text-primary)', fontSize: 11, padding: '2px 4px',
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
+
+      {evidenceItems.length > 0 && (
+        <div style={{
+          marginTop: 8,
+          padding: '8px 10px',
+          borderRadius: 6,
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border-color)',
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4 }}>
+            Why this was chosen
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {evidenceItems.slice(0, 5).map((item, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => {
+                  if (onNavigateEvidence && item.tab) {
+                    onNavigateEvidence(item.tab);
+                  }
+                }}
+                style={{
+                fontSize: 11,
+                padding: '2px 6px',
+                borderRadius: 4,
+                background: 'var(--bg-primary)',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-color)',
+                cursor: onNavigateEvidence && item.tab ? 'pointer' : 'default',
+              }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!isAiPowered && (
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span>Aria is in rule-based fallback mode ({fallbackReasonLabel(briefing?.fallback_reason)}).</span>
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 10, padding: '2px 8px' }}
+            onClick={() => {
+              const details = document.querySelector('.overview-left details');
+              if (details) { details.open = true; details.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+            }}
+          >
+            Configure LLM
+          </button>
+        </div>
+      )}
 
       <div className="strategy-pipeline">
         <PipelineBadge label="Screening" count={ts.screening} color={TIER_COLORS.screening} />
@@ -328,12 +736,55 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, isRunning })
         <PipelineBadge label="Validation" count={ts.validation} color={TIER_COLORS.validation} />
         <span className="pipeline-arrow">&rarr;</span>
         <PipelineBadge label="Breakthrough" count={ts.breakthrough} color={TIER_COLORS.breakthrough} />
+        {learningTrend && learningTrend.trend && learningTrend.trend !== 'insufficient_data' && (
+          <span className="pipeline-arrow" style={{ marginLeft: 'auto' }} />
+        )}
+        {learningTrend && learningTrend.trend && learningTrend.trend !== 'insufficient_data' && (
+          <LearningTrendBadge trend={learningTrend} />
+        )}
       </div>
     </div>
   );
 }
 
 export default StrategyAdvisor;
+
+function TrendChip({ trend, slope }) {
+  const color = trend === 'improving' ? 'var(--accent-green)'
+    : trend === 'declining' ? 'var(--accent-red, #e74c3c)'
+    : 'var(--accent-yellow)';
+  const arrow = trend === 'improving' ? '\u2191' : trend === 'declining' ? '\u2193' : '\u2192';
+  const label = trend === 'improving' ? 'Learning' : trend === 'declining' ? 'Declining' : 'Plateaued';
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 600, color,
+      background: `color-mix(in srgb, ${color} 12%, transparent)`,
+      borderRadius: 4, padding: '1px 5px',
+    }}>
+      {arrow} {label}
+      {slope != null && ` (${slope > 0 ? '+' : ''}${(slope * 100).toFixed(2)}%/exp)`}
+    </span>
+  );
+}
+
+function LearningTrendBadge({ trend }) {
+  const t = trend.trend;
+  const color = t === 'improving' ? 'var(--accent-green)'
+    : t === 'declining' ? 'var(--accent-red, #e74c3c)'
+    : 'var(--accent-yellow)';
+  const arrow = t === 'improving' ? '\u2191' : t === 'declining' ? '\u2193' : '\u2192';
+  const label = t === 'improving' ? 'Improving' : t === 'declining' ? 'Declining' : 'Plateaued';
+  const slopeStr = trend.slope != null ? `${trend.slope > 0 ? '+' : ''}${(trend.slope * 100).toFixed(2)}%/exp` : '';
+  const s1Str = trend.recent_s1_rate != null ? `${(trend.recent_s1_rate * 100).toFixed(1)}% recent S1` : '';
+  return (
+    <div className="pipeline-badge" style={{ borderColor: color, minWidth: 90 }}>
+      <span style={{ color, fontWeight: 700, fontSize: 13 }}>{arrow} {label}</span>
+      <span className="pipeline-label">
+        {slopeStr}{slopeStr && s1Str ? ' | ' : ''}{s1Str}
+      </span>
+    </div>
+  );
+}
 
 function PipelineBadge({ label, count, color }) {
   return (
