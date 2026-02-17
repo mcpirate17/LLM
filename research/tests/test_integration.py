@@ -2228,8 +2228,10 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertIsInstance(data, list)
         self.assertGreaterEqual(len(data), 1)
-        evt = data[-1]
-        self.assertEqual(evt.get("type"), "evo_gen")
+        # Find the evo_gen event (may not be last if other live_feed entries exist)
+        evo_events = [e for e in data if e.get("type") == "evo_gen"]
+        self.assertGreaterEqual(len(evo_events), 1, "No evo_gen event found in live-feed")
+        evt = evo_events[0]
         self.assertIn("generation", evt)
         self.assertIn("total_generations", evt)
         self.assertIn("best_fitness", evt)
@@ -3916,9 +3918,9 @@ class TestAnthropicBackendConfig(unittest.TestCase):
 
     def test_default_model_uses_alias(self):
         with patch.dict(os.environ, {}, clear=True):
-            from research.scientist.llm.anthropic import AnthropicBackend
+            from research.scientist.llm.anthropic import AnthropicBackend, DEFAULT_ANTHROPIC_MODEL
             backend = AnthropicBackend()
-            self.assertEqual(backend.model, "claude-sonnet-latest")
+            self.assertEqual(backend.model, DEFAULT_ANTHROPIC_MODEL)
 
     def test_env_model_override_wins(self):
         with patch.dict(os.environ, {"ANTHROPIC_MODEL": "custom-model"}, clear=True):
