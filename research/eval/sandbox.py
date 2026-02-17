@@ -124,6 +124,21 @@ def safe_eval(
             result.error_type = "shape_mismatch"
             return result
 
+        B_out, S_out, V_out = logits.shape
+        if B_out != batch_size or S_out != seq_len:
+            result.error = (
+                f"Logits shape mismatch: got ({B_out}, {S_out}, {V_out}), "
+                f"expected ({batch_size}, {seq_len}, *)"
+            )
+            result.error_type = "shape_mismatch"
+            return result
+        if V_out != vocab_size:
+            result.error = (
+                f"Logits vocab dim mismatch: got {V_out}, expected {vocab_size}"
+            )
+            result.error_type = "shape_mismatch"
+            return result
+
         # Check output health
         result.has_nan_output = bool(torch.isnan(logits).any())
         result.has_inf_output = bool(torch.isinf(logits).any())

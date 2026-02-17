@@ -120,6 +120,266 @@ def _normalize_hypothesis(hypothesis: dict) -> dict:
     return normalized
 
 
+def _compute_compression_opportunities(coverage: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Derive actionable compression opportunities from coverage aggregates."""
+    coverage = coverage or {}
+    totals = coverage.get("totals") or {}
+    techniques = coverage.get("techniques") or []
+
+    n_tested = int(totals.get("n_tested") or 0)
+    n_survived = int(totals.get("n_survived") or 0)
+    n_compressed_tested = int(totals.get("n_compressed_tested") or 0)
+    n_compressed_survived = int(totals.get("n_compressed_survived") or 0)
+
+    compressed_test_share = (
+        n_compressed_tested / n_tested if n_tested > 0 else 0.0
+    )
+    compressed_survival_rate = (
+        n_compressed_survived / n_compressed_tested
+        if n_compressed_tested > 0
+        else 0.0
+    )
+    overall_survival_rate = n_survived / n_tested if n_tested > 0 else 0.0
+
+    dense_bucket = next(
+        (t for t in techniques if str(t.get("technique") or "").lower() in {"dense", "dense_matrix", "standard_float"}),
+        None,
+    )
+    dense_survival_rate = float(dense_bucket.get("survival_rate") or 0.0) if dense_bucket else 0.0
+
+    ranked = sorted(
+        techniques,
+        key=lambda item: (
+            float(item.get("survival_rate") or 0.0),
+            float(item.get("avg_quality_retention") or 0.0),
+            float(item.get("n_tested") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    recommendations: List[Dict[str, Any]] = []
+    if compressed_test_share < 0.2:
+        recommendations.append({
+            "title": "Expand compression exploration",
+            "rationale": (
+                f"Only {compressed_test_share * 100:.1f}% of tested programs use "
+                "compressed parameterization. Increase compactness-focused synthesis runs."
+            ),
+            "suggested_config": {
+                "mode": "synthesis",
+                "model_source": "mixed",
+                "morph_ratio": 0.85,
+                "max_depth": 5,
+                "max_ops": 8,
+                "math_space_weight": 1.8,
+                "residual_prob": 0.85,
+                "n_programs": 80,
+            },
+        })
+
+    if n_compressed_tested > 0 and compressed_survival_rate < max(dense_survival_rate, overall_survival_rate):
+        recommendations.append({
+            "title": "Stabilize compressed candidates",
+            "rationale": (
+                "Compressed candidates survive less often than the current baseline. "
+                "Favor gradient-safe compact architectures before increasing novelty pressure."
+            ),
+            "suggested_config": {
+                "mode": "synthesis",
+                "max_depth": 4,
+                "max_ops": 7,
+                "residual_prob": 0.9,
+                "math_space_weight": 1.5,
+                "n_programs": 70,
+            },
+        })
+
+    if ranked:
+        top = ranked[0]
+        recommendations.append({
+            "title": f"Scale proven compact technique: {top.get('technique')}",
+            "rationale": (
+                f"Technique '{top.get('technique')}' currently has the strongest "
+                f"survival/quality profile ({float(top.get('survival_rate') or 0.0) * 100:.1f}% survival)."
+            ),
+            "suggested_config": {
+                "mode": "continuous",
+                "model_source": "mixed",
+                "morph_ratio": 0.8,
+                "n_programs": 100,
+            },
+        })
+
+    return {
+        "summary": {
+            "n_tested": n_tested,
+            "n_survived": n_survived,
+            "n_compressed_tested": n_compressed_tested,
+            "n_compressed_survived": n_compressed_survived,
+            "compressed_test_share": round(compressed_test_share, 4),
+            "compressed_survival_rate": round(compressed_survival_rate, 4),
+            "overall_survival_rate": round(overall_survival_rate, 4),
+            "dense_survival_rate": round(dense_survival_rate, 4),
+        },
+        "top_techniques": ranked[:5],
+        "recommendations": recommendations,
+    }
+
+
+def _compute_sparse_evidence(nb: LabNotebook) -> Dict[str, Any]:
+    """Aggregate sparse execution telemetry for briefing/evidence payloads."""
+    try:
+        summary_row = nb.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS n_sparse_programs,
+                AVG(sparse_density_mean) AS avg_density_mean,
+                AVG(sparse_density_last) AS avg_density_last,
+                AVG(sparse_nm_compliance) AS avg_nm_compliance,
+                SUM(COALESCE(sparse_fallback_calls, 0)) AS total_fallback_calls,
+                SUM(COALESCE(sparse_kernel_fallback_calls, 0)) AS total_kernel_fallback_calls,
+                AVG(sparse_active_params_estimate) AS avg_active_params_estimate
+            FROM program_results
+            WHERE sparse_density_mean IS NOT NULL
+            """
+        ).fetchone()
+    except Exception:
+        return {
+            "n_sparse_programs": 0,
+            "top_sparse_ops": [],
+        }
+
+    n_sparse_programs = int(summary_row["n_sparse_programs"] or 0)
+    if n_sparse_programs <= 0:
+        return {
+            "n_sparse_programs": 0,
+            "top_sparse_ops": [],
+        }
+
+    recent_rows = nb.conn.execute(
+        """
+        SELECT sparse_density_mean
+        FROM program_results
+        WHERE sparse_density_mean IS NOT NULL
+        ORDER BY timestamp DESC
+        LIMIT 30
+        """
+    ).fetchall()
+    recent_densities = [
+        float(r["sparse_density_mean"])
+        for r in recent_rows
+        if r["sparse_density_mean"] is not None
+    ]
+
+    op_aggregates: Dict[str, Dict[str, float]] = {}
+    telemetry_rows = nb.conn.execute(
+        """
+        SELECT sparse_telemetry_json
+        FROM program_results
+        WHERE sparse_telemetry_json IS NOT NULL
+          AND sparse_telemetry_json != ''
+        ORDER BY timestamp DESC
+        LIMIT 200
+        """
+    ).fetchall()
+    for row in telemetry_rows:
+        payload = row["sparse_telemetry_json"]
+        if not payload:
+            continue
+        try:
+            entries = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            op_name = str(item.get("op_name") or "").strip()
+            if not op_name:
+                continue
+            stats = op_aggregates.setdefault(op_name, {
+                "calls": 0.0,
+                "fallback_calls": 0.0,
+                "density_sum": 0.0,
+            })
+            calls = float(item.get("calls") or 0.0)
+            stats["calls"] += calls
+            stats["fallback_calls"] += float(item.get("fallback_calls") or 0.0)
+            stats["density_sum"] += calls * float(item.get("last_density") or 1.0)
+
+    top_sparse_ops = []
+    for op_name, stats in op_aggregates.items():
+        calls = stats["calls"]
+        if calls <= 0:
+            continue
+        top_sparse_ops.append({
+            "op_name": op_name,
+            "calls": int(calls),
+            "fallback_calls": int(stats["fallback_calls"]),
+            "avg_density": max(0.0, min(1.0, stats["density_sum"] / calls)),
+        })
+    top_sparse_ops.sort(key=lambda item: (item["calls"], -item["fallback_calls"]), reverse=True)
+
+    avg_density_mean = float(summary_row["avg_density_mean"] or 0.0)
+    avg_nm_compliance = summary_row["avg_nm_compliance"]
+    total_fallback_calls = int(summary_row["total_fallback_calls"] or 0)
+    total_kernel_fallback_calls = int(summary_row["total_kernel_fallback_calls"] or 0)
+    kernel_fallback_rate = (
+        total_kernel_fallback_calls / total_fallback_calls
+        if total_fallback_calls > 0
+        else 0.0
+    )
+
+    return {
+        "n_sparse_programs": n_sparse_programs,
+        "avg_density_mean": round(avg_density_mean, 4),
+        "avg_density_last": round(float(summary_row["avg_density_last"] or avg_density_mean), 4),
+        "avg_nm_compliance": round(float(avg_nm_compliance), 4) if avg_nm_compliance is not None else None,
+        "total_fallback_calls": total_fallback_calls,
+        "total_kernel_fallback_calls": total_kernel_fallback_calls,
+        "kernel_fallback_rate": round(kernel_fallback_rate, 4),
+        "avg_active_params_estimate": int(float(summary_row["avg_active_params_estimate"] or 0.0)),
+        "recent_density": [round(d, 4) for d in recent_densities[:10]],
+        "top_sparse_ops": top_sparse_ops[:5],
+    }
+
+
+def _normalize_start_mode(mode: Any) -> str:
+    raw = str(mode or "single").strip().lower()
+    aliases = {
+        "synthesis": "single",
+        "evolution": "evolve",
+        "novelty_search": "novelty",
+        "compact": "compact_synthesis",
+    }
+    return aliases.get(raw, raw)
+
+
+def _apply_compact_synthesis_bias(config: RunConfig) -> Dict[str, Any]:
+    """Apply conservative compactness defaults and report changed fields."""
+    changes: Dict[str, Any] = {}
+
+    def _set_if_diff(field_name: str, new_value: Any) -> None:
+        old_value = getattr(config, field_name)
+        if old_value == new_value:
+            return
+        setattr(config, field_name, new_value)
+        changes[field_name] = {"from": old_value, "to": new_value}
+
+    _set_if_diff("model_source", "mixed")
+    _set_if_diff("morph_ratio", max(float(config.morph_ratio), 0.75))
+    _set_if_diff("n_layers", max(1, min(int(config.n_layers), 3)))
+    _set_if_diff("model_dim", max(16, min(int(config.model_dim), 192)))
+    _set_if_diff("max_depth", max(2, min(int(config.max_depth), 6)))
+    _set_if_diff("max_ops", max(4, min(int(config.max_ops), 10)))
+    _set_if_diff("residual_prob", max(float(config.residual_prob), 0.8))
+    _set_if_diff("math_space_weight", min(float(config.math_space_weight), 1.8))
+    _set_if_diff("n_programs", max(1, min(int(config.n_programs), 80)))
+
+    return changes
+
+
 def _normalize_hypotheses(hypotheses: list) -> list:
     return [_normalize_hypothesis(hypothesis) for hypothesis in hypotheses]
 
@@ -508,6 +768,75 @@ def _normalize_result_ids(raw_ids: Any) -> List[str]:
         seen.add(result_id)
         normalized.append(result_id)
     return normalized
+
+
+def _resolve_scale_up_result_ids(
+    nb: LabNotebook,
+    result_ids: List[str],
+    graph_fingerprints: List[str],
+) -> Dict[str, Any]:
+    """Resolve explicit result IDs and/or fingerprint prefixes for scale-up."""
+    merged_result_ids: List[str] = []
+    seen: set[str] = set()
+    for result_id in result_ids:
+        if result_id in seen:
+            continue
+        seen.add(result_id)
+        merged_result_ids.append(result_id)
+
+    resolved: List[Dict[str, Any]] = []
+    unresolved: List[str] = []
+
+    for fingerprint in graph_fingerprints:
+        rows = nb.conn.execute(
+            """
+            SELECT result_id, graph_fingerprint, experiment_id, stage1_passed,
+                   loss_ratio, timestamp
+            FROM program_results
+            WHERE graph_fingerprint LIKE ?
+            ORDER BY stage1_passed DESC,
+                     (loss_ratio IS NULL) ASC,
+                     loss_ratio ASC,
+                     timestamp DESC
+            LIMIT 5
+            """,
+            (f"{fingerprint}%",),
+        ).fetchall()
+
+        if not rows:
+            unresolved.append(fingerprint)
+            continue
+
+        chosen = dict(rows[0])
+        chosen_result_id = str(chosen.get("result_id") or "")
+        if chosen_result_id and chosen_result_id not in seen:
+            seen.add(chosen_result_id)
+            merged_result_ids.append(chosen_result_id)
+
+        candidates = [
+            {
+                "result_id": row["result_id"],
+                "graph_fingerprint": row["graph_fingerprint"],
+                "experiment_id": row["experiment_id"],
+                "stage1_passed": bool(row["stage1_passed"]),
+                "loss_ratio": row["loss_ratio"],
+            }
+            for row in rows
+        ]
+        resolved.append({
+            "requested_fingerprint": fingerprint,
+            "selected_result_id": chosen.get("result_id"),
+            "selected_graph_fingerprint": chosen.get("graph_fingerprint"),
+            "selected_experiment_id": chosen.get("experiment_id"),
+            "candidate_count": len(rows),
+            "candidates": candidates,
+        })
+
+    return {
+        "result_ids": merged_result_ids,
+        "resolved_fingerprints": resolved,
+        "unresolved_fingerprints": unresolved,
+    }
 
 
 def _build_start_mode_eligibility(
@@ -1543,6 +1872,21 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/analytics/compression-opportunities")
+    def api_compression_opportunities():
+        """Ranked compactness opportunities with actionable next-run suggestions."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            coverage = analytics.compression_coverage() or {}
+            return jsonify(_compute_compression_opportunities(coverage))
+        except Exception as e:
+            logger.error(f"Error in compression-opportunities: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/analytics/negative-results")
     def api_negative_results():
         """Aggregated negative results: failed ops, error types, anti-patterns."""
@@ -1942,12 +2286,24 @@ def create_app(
             return jsonify({"error": "An experiment is already running"}), 409
 
         body = request.get_json(silent=True) or {}
+        auto_harden = bool(body.pop("auto_harden", True))
         hypothesis = body.pop("hypothesis", None)
-        mode = body.pop("mode", "single")  # "single", "continuous", "evolve", "novelty"
+        mode = _normalize_start_mode(body.pop("mode", "single"))
 
         config = RunConfig.from_dict(body) if body else RunConfig()
+        compact_changes: Dict[str, Any] = {}
+        if mode == "compact_synthesis":
+            compact_changes = _apply_compact_synthesis_bias(config)
+            mode = "single"
+
+        config, prescreen = runner.prescreen_run_config(
+            config,
+            mode=mode,
+            auto_harden=auto_harden,
+        )
 
         eligibility: Optional[Dict[str, Any]] = None
+        scale_up_resolution: Optional[Dict[str, Any]] = None
 
         try:
             if mode == "continuous":
@@ -1989,8 +2345,24 @@ def create_app(
                 exp_id = runner.start_validation(result_ids, config, hypothesis=hypothesis)
             elif mode == "scale_up":
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
+                graph_fingerprints = _normalize_result_ids(
+                    body.get("graph_fingerprints", body.get("fingerprints", [])),
+                )
+                nb = LabNotebook(notebook_path)
+                try:
+                    scale_up_resolution = _resolve_scale_up_result_ids(
+                        nb,
+                        result_ids=result_ids,
+                        graph_fingerprints=graph_fingerprints,
+                    )
+                finally:
+                    nb.close()
+                result_ids = scale_up_resolution.get("result_ids", [])
                 if not result_ids:
-                    return jsonify({"error": "result_ids required for scale_up mode"}), 400
+                    return jsonify({
+                        "error": "result_ids or graph_fingerprints required for scale_up mode",
+                        "scale_up_resolution": scale_up_resolution,
+                    }), 400
                 config.scale_up = True
                 config.scale_up_result_ids = ",".join(result_ids)
                 exp_id = runner.start_scale_up(result_ids, config, hypothesis=hypothesis)
@@ -2001,6 +2373,9 @@ def create_app(
                 "experiment_id": exp_id,
                 "status": "started",
                 "config": config.to_dict(),
+                "prescreen": prescreen,
+                "compact_synthesis_bias": compact_changes,
+                "scale_up_resolution": scale_up_resolution,
                 "aria_message": runner.progress.aria_message,
                 "hypothesis_critique": runner.progress.hypothesis_critique,
                 "hypothesis_review_gate": (
@@ -2280,6 +2655,10 @@ def create_app(
             summary = nb.get_dashboard_summary()
             recent = nb.get_recent_experiments(10)
             trajectory = analytics.learning_trajectory() or {}
+            compression_coverage = analytics.compression_coverage() or {}
+            compression_opportunities = _compute_compression_opportunities(compression_coverage)
+            primitive_effectiveness = analytics.compression_primitive_effectiveness() or {}
+            sparse_evidence = _compute_sparse_evidence(nb)
 
             # Optional: highlight a just-completed experiment
             just_completed_id = request.args.get("just_completed")
@@ -2334,6 +2713,7 @@ def create_app(
                 "validation": validation,
                 "breakthrough": breakthrough,
             }
+            compression_summary = (compression_opportunities.get("summary") or {})
             data_block = {
                 "total_experiments": total_exp,
                 "total_programs": total_progs,
@@ -2342,6 +2722,9 @@ def create_app(
                 "learning_trend": trend,
                 "learning_slope": slope,
                 "pipeline": pipeline_data,
+                "compression": compression_summary,
+                "compression_primitives": primitive_effectiveness.get("primitives", []),
+                "sparse": sparse_evidence,
             }
 
             recent_window = recent[:10]
@@ -2371,6 +2754,9 @@ def create_app(
                 "recent_cancelled_runs": recent_cancelled,
                 "recent_failed_runs": recent_failed,
                 "pipeline": pipeline_data,
+                "compression": compression_summary,
+                "compression_primitives": primitive_effectiveness.get("primitives", []),
+                "sparse": sparse_evidence,
             }
 
             # --- Try LLM-powered briefing first ---
@@ -2461,6 +2847,7 @@ def create_app(
                         "suggested_config": suggested_config or None,
                         "evidence": recommendation_evidence,
                         "data": data_block,
+                        "compression_opportunities": compression_opportunities,
                     })
                 if fallback_reason is None:
                     fallback_reason = "llm_empty_response"
@@ -2520,6 +2907,27 @@ def create_app(
                     f"Candidate pipeline: {', '.join(pipeline_parts)}."
                 )
 
+            compressed_share = float(compression_summary.get("compressed_test_share") or 0.0)
+            compressed_survival = float(compression_summary.get("compressed_survival_rate") or 0.0)
+            if compression_summary:
+                sentences.append(
+                    "Compression coverage: "
+                    f"{compressed_share * 100:.1f}% of tested candidates use compact techniques; "
+                    f"compressed survival is {compressed_survival * 100:.1f}%."
+                )
+
+            sparse_n = int(sparse_evidence.get("n_sparse_programs") or 0)
+            if sparse_n > 0:
+                sparse_density = float(sparse_evidence.get("avg_density_mean") or 0.0)
+                sparse_nm = sparse_evidence.get("avg_nm_compliance")
+                sparse_fragment = (
+                    f"Sparse telemetry: {sparse_n} runs with mean density {sparse_density * 100:.1f}%"
+                )
+                if sparse_nm is not None:
+                    sparse_fragment += f", N:M compliance {float(sparse_nm) * 100:.1f}%"
+                sparse_fragment += "."
+                sentences.append(sparse_fragment)
+
             # 5. Last experiment outcome
             if completed:
                 last = completed[0]
@@ -2538,6 +2946,51 @@ def create_app(
                     parts.append(f"— {aria_sum}")
                 sentences.append(". ".join(parts) + ".")
 
+            # 6. Data-driven diversity analysis
+            try:
+                # Op category distribution from learning log
+                op_rows = nb.conn.execute(
+                    "SELECT op_name, s1_passes, total_uses FROM op_success_rates "
+                    "WHERE total_uses >= 5 ORDER BY "
+                    "CAST(s1_passes AS REAL) / CAST(total_uses AS REAL) DESC LIMIT 3"
+                ).fetchall()
+                if op_rows:
+                    top_ops = [f"{r['op_name']} ({r['s1_passes']}/{r['total_uses']})"
+                               for r in op_rows]
+                    sentences.append(
+                        f"Top-performing operators: {', '.join(top_ops)}."
+                    )
+
+                # Failure mode analysis
+                failure_rows = nb.conn.execute(
+                    "SELECT stage_at_death, COUNT(*) as cnt FROM program_results "
+                    "WHERE stage1_passed = 0 AND stage_at_death IS NOT NULL "
+                    "GROUP BY stage_at_death ORDER BY cnt DESC LIMIT 2"
+                ).fetchall()
+                if failure_rows:
+                    failure_parts = [f"{r['stage_at_death']} ({r['cnt']})"
+                                     for r in failure_rows]
+                    sentences.append(
+                        f"Dominant failure stages: {', '.join(failure_parts)}."
+                    )
+
+                # Architecture diversity check
+                unique_fps = nb.conn.execute(
+                    "SELECT COUNT(DISTINCT SUBSTR(graph_fingerprint, 1, 8)) "
+                    "FROM leaderboard"
+                ).fetchone()[0]
+                total_leaderboard = screening + investigation + validation + breakthrough
+                if unique_fps is not None and total_leaderboard > 0:
+                    diversity_ratio = unique_fps / total_leaderboard
+                    if diversity_ratio < 0.5:
+                        sentences.append(
+                            f"Warning: only {unique_fps} unique architecture "
+                            f"families in {total_leaderboard} "
+                            f"leaderboard entries — search may be converging."
+                        )
+            except Exception:
+                pass  # Analytics are optional enhancements
+
             briefing = " ".join(sentences)
 
             # --- Determine recommended action ---
@@ -2551,6 +3004,13 @@ def create_app(
                 action_rationale = (
                     f"{breakthrough} candidate{'s have' if breakthrough != 1 else ' has'} "
                     f"reached breakthrough tier — ready for publication review."
+                )
+            elif compressed_share < 0.2 and total_exp >= 3:
+                action = "compact_synthesis"
+                action_label = "Run Compactness-Focused Synthesis"
+                action_rationale = (
+                    "Compression techniques are underexplored in this campaign. "
+                    "Run a compactness-focused synthesis batch to improve model efficiency coverage."
                 )
             elif validation > 0 and screening == 0 and investigation == 0:
                 action = "monitor_validation"
@@ -2617,15 +3077,28 @@ def create_app(
                 "continuous": "continuous",
                 "start_first": "continuous",
                 "novelty_search": "novelty",
+                "compact_synthesis": "synthesis",
                 "export_breakthrough": None,
                 "monitor_validation": None,
             }
             det_mode = det_mode_map.get(action, "continuous")
-            det_config = (
-                {"mode": det_mode, "model_source": "mixed"}
-                if det_mode
-                else None
-            )
+            if action == "compact_synthesis":
+                det_config = {
+                    "mode": "synthesis",
+                    "model_source": "mixed",
+                    "morph_ratio": 0.85,
+                    "max_depth": 5,
+                    "max_ops": 8,
+                    "math_space_weight": 1.8,
+                    "residual_prob": 0.85,
+                    "n_programs": 80,
+                }
+            else:
+                det_config = (
+                    {"mode": det_mode, "model_source": "mixed"}
+                    if det_mode
+                    else None
+                )
 
             return jsonify({
                 "briefing": briefing,
@@ -2637,6 +3110,7 @@ def create_app(
                 "suggested_config": det_config,
                 "evidence": recommendation_evidence,
                 "data": data_block,
+                "compression_opportunities": compression_opportunities,
             })
         except Exception as e:
             logger.error(f"Error in /api/strategy/briefing: {e}")
@@ -2756,18 +3230,27 @@ def create_app(
             if runner.is_running:
                 return jsonify({"error": "An experiment is already running"}), 409
 
+            auto_harden = bool(body.get("auto_harden", True))
             config_payload = body.get("config") if isinstance(body.get("config"), dict) else body
             config_payload = dict(config_payload or {})
             config_payload.pop("action", None)
+            config_payload.pop("auto_harden", None)
             config_payload["continuous"] = True
 
             try:
                 config = RunConfig.from_dict(config_payload)
+                config, prescreen = runner.prescreen_run_config(
+                    config,
+                    mode="continuous",
+                    auto_harden=auto_harden,
+                )
                 exp_id = runner.start_continuous(config)
                 return jsonify({
                     "ok": True,
                     "action": "start",
                     "experiment_id": exp_id,
+                    "config": config.to_dict(),
+                    "prescreen": prescreen,
                     "cycle": runner.get_aria_cycle_status(),
                 })
             except ValueError as e:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from ..synthesis.primitives import (
     PrimitiveOp, OpCategory, register_external_primitive,
 )
-from . import hyperbolic, tropical, padic, clifford
+from . import hyperbolic, tropical, padic, clifford, compression, spiking
 
 
 def register_all_mathspaces():
@@ -254,6 +254,108 @@ def register_all_mathspaces():
         description="Multi-resolution p-adic expansion with per-scale transform + residual",
     )
     op = _with_execute(op, padic.execute_padic_residual)
+    register_external_primitive(op)
+
+    # ── Weight Compression ──
+    op = PrimitiveOp(
+        name="low_rank_proj",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D//2",
+        description="Low-rank factored linear (rank=D/4)",
+    )
+    op = _with_execute(op, compression.execute_low_rank_proj)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="grouped_linear",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D//4",
+        description="Block-diagonal linear (4 groups)",
+    )
+    op = _with_execute(op, compression.execute_grouped_linear)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="bottleneck_proj",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D//2",
+        description="Squeeze-expand bottleneck (D→D/4→D)",
+    )
+    op = _with_execute(op, compression.execute_bottleneck_proj)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="shared_basis_proj",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*16",
+        description="Shared-basis projection (8 basis vectors)",
+    )
+    op = _with_execute(op, compression.execute_shared_basis_proj)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="tied_proj",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D//4",
+        description="Tied down/up projection (shared transposed weights, rank=D/4)",
+    )
+    op = _with_execute(op, compression.execute_tied_proj)
+    register_external_primitive(op)
+
+    # ── Spiking / Event-Driven ──
+    op = PrimitiveOp(
+        name="lif_neuron",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Leaky Integrate-and-Fire neuron with surrogate gradient",
+    )
+    op = _with_execute(op, spiking.execute_lif)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="spike_rate_code",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Continuous-to-spike-to-continuous rate coding with STE",
+    )
+    op = _with_execute(op, spiking.execute_spike_rate_code)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="stdp_attention",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="STDP-inspired causal attention with temporal decay kernel",
+    )
+    op = _with_execute(op, spiking.execute_stdp_attention)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="sparse_threshold",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Adaptive median-based threshold gate (~50% sparsity)",
+    )
+    op = _with_execute(op, spiking.execute_sparse_threshold)
     register_external_primitive(op)
 
 

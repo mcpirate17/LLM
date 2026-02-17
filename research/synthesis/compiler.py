@@ -19,6 +19,74 @@ from .primitives import get_primitive, PrimitiveOp, OpCategory
 from .graph import ComputationGraph, OpNode, ShapeInfo
 
 
+def _record_sparse_telemetry(module: nn.Module, op_name: str, density: float,
+                             fallback_reason: Optional[str] = None) -> None:
+    telemetry = getattr(module, "sparse_telemetry", {})
+    stats = telemetry.get(op_name, {
+        "calls": 0,
+        "fallback_calls": 0,
+        "density_sum": 0.0,
+        "last_density": 1.0,
+        "last_fallback_reason": None,
+    })
+    stats["calls"] += 1
+    stats["density_sum"] += float(density)
+    stats["last_density"] = float(density)
+    if fallback_reason is not None:
+        stats["fallback_calls"] += 1
+        stats["last_fallback_reason"] = fallback_reason
+    telemetry[op_name] = stats
+    setattr(module, "sparse_telemetry", telemetry)
+
+
+def _build_nm_mask(weight: torch.Tensor, n: int, m: int) -> torch.Tensor:
+    if n <= 0 or m <= 0 or n > m:
+        return torch.ones_like(weight)
+    rows, cols = weight.shape
+    n_chunks = cols // m
+    if n_chunks <= 0:
+        return torch.ones_like(weight)
+
+    usable = n_chunks * m
+    core = weight[:, :usable].abs().reshape(rows, n_chunks, m)
+    keep_idx = core.topk(k=n, dim=-1).indices
+    mask_core = torch.zeros_like(core)
+    mask_core.scatter_(-1, keep_idx, 1.0)
+    mask = torch.ones_like(weight)
+    mask[:, :usable] = mask_core.reshape(rows, usable)
+    return mask
+
+
+def _build_block_sparse_mask(weight: torch.Tensor, block_size: int,
+                             block_density: float) -> torch.Tensor:
+    block_size = max(1, int(block_size))
+    block_density = float(max(0.05, min(1.0, block_density)))
+
+    rows, cols = weight.shape
+    row_blocks = rows // block_size
+    col_blocks = cols // block_size
+    if row_blocks <= 0 or col_blocks <= 0:
+        return torch.ones_like(weight)
+
+    usable_rows = row_blocks * block_size
+    usable_cols = col_blocks * block_size
+    core = weight[:usable_rows, :usable_cols]
+    blocks = core.view(row_blocks, block_size, col_blocks, block_size).permute(0, 2, 1, 3)
+    scores = blocks.abs().mean(dim=(2, 3))
+
+    keep_per_row = max(1, int(round(col_blocks * block_density)))
+    keep_idx = scores.topk(k=keep_per_row, dim=1).indices
+
+    block_mask = torch.zeros_like(scores)
+    block_mask.scatter_(1, keep_idx, 1.0)
+    block_mask = block_mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, block_size, block_size)
+    block_mask = block_mask.permute(0, 2, 1, 3).reshape(usable_rows, usable_cols)
+
+    mask = torch.ones_like(weight)
+    mask[:usable_rows, :usable_cols] = block_mask
+    return mask
+
+
 class CompiledOp(nn.Module):
     """A single compiled primitive operation."""
 
@@ -59,6 +127,19 @@ class CompiledOp(nn.Module):
         elif op.name == "topk_gate":
             # Gate projection: D -> 2
             self.gate_proj = nn.Parameter(torch.randn(2, D_in) * (1.0 / math.sqrt(D_in)))
+        elif op.name == "nm_sparse_linear":
+            self.weight = nn.Parameter(torch.randn(D_out, D_in) * (1.0 / math.sqrt(D_in)))
+            self.sparsity_n = int(config.get("n", 2))
+            self.sparsity_m = int(config.get("m", 4))
+        elif op.name == "block_sparse_linear":
+            self.weight = nn.Parameter(torch.randn(D_out, D_in) * (1.0 / math.sqrt(D_in)))
+            self.block_size = max(1, int(config.get("block_size", 16)))
+            self.block_density = float(max(0.05, min(1.0, config.get("block_density", 0.25))))
+        elif op.name == "semi_structured_2_4_linear":
+            self.weight = nn.Parameter(torch.randn(D_out, D_in) * (1.0 / math.sqrt(D_in)))
+            self.sparsity_n = 2
+            self.sparsity_m = 4
+            self.sparse_kernel_ready = bool(D_in % 4 == 0 and D_out % 4 == 0)
         elif op.name == "basis_expansion":
             # 4 frequency-scale vectors for sin/cos basis expansion
             self.weight = nn.Parameter(torch.randn(4, D_in) * 0.5)
@@ -67,6 +148,26 @@ class CompiledOp(nn.Module):
         elif op.name == "fixed_point_iter":
             # (D+1, D): first D rows are W, last row is bias
             self.weight = nn.Parameter(torch.randn(D_in + 1, D_in) * (1.0 / math.sqrt(D_in)))
+        elif op.name == "low_rank_proj":
+            rank = max(D_in // 4, 1)
+            self.U = nn.Parameter(torch.randn(D_in, rank) * (1.0 / math.sqrt(D_in)))
+            self.V = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(rank)))
+        elif op.name == "grouped_linear":
+            g = 4
+            group_dim = max(D_in // g, 1)
+            self.weight = nn.Parameter(torch.randn(g, group_dim, group_dim) * (1.0 / math.sqrt(group_dim)))
+            self.n_groups = g
+        elif op.name == "bottleneck_proj":
+            rank = max(D_in // 4, 1)
+            self.down = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(D_in)))
+            self.up = nn.Parameter(torch.randn(D_in, rank) * (1.0 / math.sqrt(rank)))
+        elif op.name == "shared_basis_proj":
+            k = 8
+            self.basis = nn.Parameter(torch.randn(k, D_in) * (1.0 / math.sqrt(D_in)))
+            self.mixing = nn.Parameter(torch.randn(D_in, k) * (1.0 / math.sqrt(k)))
+        elif op.name == "tied_proj":
+            rank = max(D_in // 4, 1)
+            self.tied_weight = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(D_in)))
         else:
             # Math space ops or custom — check for custom init
             if hasattr(op, 'init_params'):
@@ -265,6 +366,41 @@ def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...
         if D > 2 * half:
             return torch.cat([out1, out2, x[..., 2*half:]], dim=-1)
         return torch.cat([out1, out2], dim=-1)
+    elif op_name == "nm_sparse_linear":
+        if not hasattr(module, 'weight'):
+            return x
+        n = int(getattr(module, "sparsity_n", config.get("n", 2)))
+        m = int(getattr(module, "sparsity_m", config.get("m", 4)))
+        if m <= 0 or n <= 0 or n > m or (module.weight.shape[1] % m != 0):
+            _record_sparse_telemetry(module, op_name, density=1.0,
+                                     fallback_reason="invalid_nm_configuration")
+            return F.linear(x, module.weight)
+        mask = _build_nm_mask(module.weight, n=n, m=m)
+        density = float(mask.mean().item())
+        _record_sparse_telemetry(module, op_name, density=density)
+        return F.linear(x, module.weight * mask)
+    elif op_name == "block_sparse_linear":
+        if not hasattr(module, 'weight'):
+            return x
+        block_size = int(getattr(module, "block_size", config.get("block_size", 16)))
+        block_density = float(getattr(module, "block_density", config.get("block_density", 0.25)))
+        mask = _build_block_sparse_mask(module.weight, block_size=block_size,
+                                        block_density=block_density)
+        density = float(mask.mean().item())
+        _record_sparse_telemetry(module, op_name, density=density)
+        return F.linear(x, module.weight * mask)
+    elif op_name == "semi_structured_2_4_linear":
+        if not hasattr(module, 'weight'):
+            return x
+        kernel_ready = bool(getattr(module, "sparse_kernel_ready", False))
+        if not kernel_ready or not x.is_cuda:
+            _record_sparse_telemetry(module, op_name, density=1.0,
+                                     fallback_reason="kernel_unavailable")
+            return F.linear(x, module.weight)
+        mask = _build_nm_mask(module.weight, n=2, m=4)
+        density = float(mask.mean().item())
+        _record_sparse_telemetry(module, op_name, density=density)
+        return F.linear(x, module.weight * mask)
 
     # ── Sequence Ops ──
     elif op_name == "softmax_last":

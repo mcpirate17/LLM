@@ -281,6 +281,18 @@ _register(PrimitiveOp("conv1d_seq", OpCategory.PARAMETERIZED, 1, "identity",
 _register(PrimitiveOp("topk_gate", OpCategory.PARAMETERIZED, 1, "identity",
                        has_params=True, param_formula="D*2",
                        description="Sparse gating: project to 2 gate scores, weight feature halves"))
+_register(PrimitiveOp("nm_sparse_linear", OpCategory.PARAMETERIZED, 1, "linear",
+                       has_params=True, param_formula="D*D//2",
+                       description="N:M structured sparse linear projection (2:4 default)",
+                       config_keys=("n", "m", "out_dim")))
+_register(PrimitiveOp("block_sparse_linear", OpCategory.PARAMETERIZED, 1, "linear",
+                       has_params=True, param_formula="D*D//4",
+                       description="Block-sparse linear projection with configurable block density",
+                       config_keys=("block_size", "block_density", "out_dim")))
+_register(PrimitiveOp("semi_structured_2_4_linear", OpCategory.PARAMETERIZED, 1, "linear",
+                       has_params=True, param_formula="D*D//2",
+                       description="Semi-structured 2:4 sparse linear projection with compatibility gating",
+                       config_keys=("out_dim",)))
 
 # ── Sequence Operations ───────────────────────────────────────────────
 

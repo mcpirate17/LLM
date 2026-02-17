@@ -319,14 +319,28 @@ def _derive_mutation_grammar(
     base: GrammarConfig,
     rng: random.Random,
 ) -> GrammarConfig:
-    """Create a lightly perturbed grammar centered on a parent graph."""
+    """Create a lightly perturbed grammar centered on a parent graph.
+
+    Caps max_depth and max_ops to hard limits to prevent unbounded growth
+    across generations which causes Python recursion depth exceeded errors.
+    """
+    # Hard caps to prevent recursion depth overflow across generations
+    HARD_MAX_DEPTH = 12
+    HARD_MAX_OPS = 20
+
     parent_depth = max(1, graph.depth())
     parent_ops = max(1, graph.n_ops())
     parent_cat = _category_histogram(graph)
 
     min_depth = max(2, min(base.min_depth, parent_depth))
-    max_depth = max(min_depth + 1, min(max(base.max_depth, parent_depth + 2), parent_depth + 4))
-    max_ops = max(parent_ops + 2, min(max(base.max_ops, parent_ops + 4), parent_ops + 8))
+    max_depth = min(
+        HARD_MAX_DEPTH,
+        max(min_depth + 1, min(max(base.max_depth, parent_depth + 2), parent_depth + 4)),
+    )
+    max_ops = min(
+        HARD_MAX_OPS,
+        max(parent_ops + 2, min(max(base.max_ops, parent_ops + 4), parent_ops + 8)),
+    )
 
     category_weights = dict(base.category_weights)
     for cat_name in category_weights:
@@ -359,7 +373,13 @@ def _derive_crossover_grammar(
     base: GrammarConfig,
     rng: random.Random,
 ) -> GrammarConfig:
-    """Create a blended grammar from two parents."""
+    """Create a blended grammar from two parents.
+
+    Caps max_depth and max_ops to hard limits to prevent unbounded growth.
+    """
+    HARD_MAX_DEPTH = 12
+    HARD_MAX_OPS = 20
+
     d1, d2 = max(1, g1.depth()), max(1, g2.depth())
     o1, o2 = max(1, g1.n_ops()), max(1, g2.n_ops())
 
@@ -367,8 +387,14 @@ def _derive_crossover_grammar(
     target_ops = max(3, int(round((o1 + o2) / 2 + rng.choice([-2, -1, 0, 1, 2]))))
 
     min_depth = max(2, min(base.min_depth, target_depth))
-    max_depth = max(min_depth + 1, min(max(base.max_depth, target_depth + 2), target_depth + 4))
-    max_ops = max(target_ops + 2, min(max(base.max_ops, target_ops + 4), target_ops + 10))
+    max_depth = min(
+        HARD_MAX_DEPTH,
+        max(min_depth + 1, min(max(base.max_depth, target_depth + 2), target_depth + 4)),
+    )
+    max_ops = min(
+        HARD_MAX_OPS,
+        max(target_ops + 2, min(max(base.max_ops, target_ops + 4), target_ops + 10)),
+    )
 
     cat1 = _category_histogram(g1)
     cat2 = _category_histogram(g2)

@@ -59,6 +59,21 @@ class ExperimentAnalytics:
         "polynomial": 0.6,
         "residual_quantized": 0.3,
         "compressed_attention": 0.7,
+        "bottleneck": 0.55,
+        "grouped_linear": 0.3,
+        "tied_proj": 0.3,
+    }
+
+    # Map graph op names to compression mechanism labels
+    _OP_TO_COMPRESSION: Dict[str, str] = {
+        "low_rank_proj": "low_rank",
+        "grouped_linear": "grouped_linear",
+        "bottleneck_proj": "bottleneck",
+        "shared_basis_proj": "shared_basis",
+        "tied_proj": "tied_proj",
+        "nm_sparse_linear": "structured_sparse",
+        "block_sparse_linear": "structured_sparse",
+        "semi_structured_2_4_linear": "structured_sparse",
     }
 
     @staticmethod
@@ -162,6 +177,16 @@ class ExperimentAnalytics:
 
         return "qkv_free"
 
+    def _detect_compression_ops(self, program: Dict) -> List[str]:
+        """Detect compression primitives used in a program's graph."""
+        graph_json = program.get("graph_json")
+        if not isinstance(graph_json, str) or not graph_json:
+            return []
+        ops = self._extract_ops_fast(graph_json)
+        if ops is None:
+            ops = self._extract_ops_fallback(graph_json) or []
+        return [op for op in ops if op in self._OP_TO_COMPRESSION]
+
     def canonical_compression_metrics(self, program: Dict) -> Dict:
         """Compute canonical compression metrics for API payloads."""
         choices = self._extract_arch_choices(program.get("arch_spec_json"))
@@ -173,8 +198,15 @@ class ExperimentAnalytics:
                 if choices.get("token_mixing") == "compressed_attention"
                 else None
             )
-            or "dense"
         )
+        # If arch_spec didn't indicate compression, check actual graph ops
+        compression_ops = self._detect_compression_ops(program)
+        if not mechanism or mechanism == "dense":
+            if compression_ops:
+                # Use the first compression op's mechanism label
+                mechanism = self._OP_TO_COMPRESSION.get(compression_ops[0], "dense")
+            else:
+                mechanism = mechanism or "dense"
         factor = self._COMPRESSION_FACTORS.get(mechanism, 1.0)
 
         raw_params = self._as_float(
@@ -237,7 +269,84 @@ class ExperimentAnalytics:
             "estimated_memory_mb": compressed_memory_mb,
             "dense_estimated_memory_mb": dense_memory_mb,
             "quality_retention_score": quality_retention,
+            "compression_ops": compression_ops,
         }
+
+    def compression_primitive_effectiveness(self) -> Dict:
+        """Compute per-primitive compression effectiveness from experiment history.
+
+        Returns success rates and parameter efficiency for each compression
+        primitive observed in program graphs.
+        """
+        rows = self.nb.conn.execute("""
+            SELECT graph_json, stage1_passed, loss_ratio, param_count,
+                   graph_n_params_estimate
+            FROM program_results
+            WHERE graph_json IS NOT NULL
+        """).fetchall()
+
+        per_op: Dict[str, Dict] = {}
+        for row in rows:
+            record = dict(row)
+            ops = self._detect_compression_ops(record)
+            if not ops:
+                continue
+            passed = bool(record.get("stage1_passed"))
+            loss = self._as_float(record.get("loss_ratio"))
+            params = self._as_float(
+                record.get("param_count")
+                if record.get("param_count") is not None
+                else record.get("graph_n_params_estimate")
+            )
+            for op_name in ops:
+                bucket = per_op.setdefault(op_name, {
+                    "op_name": op_name,
+                    "mechanism": self._OP_TO_COMPRESSION.get(op_name, "unknown"),
+                    "n_tested": 0,
+                    "n_survived": 0,
+                    "sum_loss": 0.0,
+                    "n_loss": 0,
+                    "best_loss": None,
+                    "sum_params": 0.0,
+                    "n_params": 0,
+                })
+                bucket["n_tested"] += 1
+                if passed:
+                    bucket["n_survived"] += 1
+                if loss is not None:
+                    bucket["sum_loss"] += loss
+                    bucket["n_loss"] += 1
+                    if bucket["best_loss"] is None or loss < bucket["best_loss"]:
+                        bucket["best_loss"] = loss
+                if params is not None:
+                    bucket["sum_params"] += params
+                    bucket["n_params"] += 1
+
+        primitives = []
+        for op_name, bucket in sorted(
+            per_op.items(), key=lambda kv: kv[1]["n_tested"], reverse=True
+        ):
+            n = bucket["n_tested"]
+            primitives.append({
+                "op_name": op_name,
+                "mechanism": bucket["mechanism"],
+                "n_tested": n,
+                "n_survived": bucket["n_survived"],
+                "survival_rate": round(bucket["n_survived"] / n, 4) if n > 0 else 0.0,
+                "avg_loss_ratio": (
+                    round(bucket["sum_loss"] / bucket["n_loss"], 4)
+                    if bucket["n_loss"] > 0 else None
+                ),
+                "best_loss_ratio": (
+                    round(bucket["best_loss"], 4)
+                    if bucket["best_loss"] is not None else None
+                ),
+                "avg_param_count": (
+                    int(bucket["sum_params"] / bucket["n_params"])
+                    if bucket["n_params"] > 0 else None
+                ),
+            })
+        return {"primitives": primitives, "n_programs_with_compression": sum(1 for _ in primitives)}
 
     def compression_coverage(self) -> Dict:
         """Summarize compression-technique coverage across tested and surviving programs."""
@@ -2864,6 +2973,259 @@ class ExperimentAnalytics:
                 frontier.append(p)
 
         return frontier
+
+    def moe_activation_telemetry(self) -> Dict:
+        """Aggregate MoE expert utilization and routing quality from experiment history.
+
+        Analyzes programs with routing telemetry to compute:
+        - Per-expert utilization distribution
+        - Load balance score (entropy-based)
+        - Routing quality correlation with loss
+        - Capacity overflow trends
+        """
+        rows = self.nb.conn.execute("""
+            SELECT routing_mode, routing_tokens_total, routing_tokens_processed,
+                   routing_tokens_skipped, routing_drop_rate,
+                   routing_utilization_entropy, routing_capacity_overflow_count,
+                   routing_confidence_mean, routing_confidence_std,
+                   routing_expert_utilization_json,
+                   loss_ratio, stage1_passed, graph_json
+            FROM program_results
+            WHERE routing_mode IS NOT NULL
+        """).fetchall()
+
+        if not rows:
+            return {"n_programs": 0, "experts": [], "summary": {}}
+
+        n_programs = len(rows)
+        sum_entropy = 0.0
+        n_entropy = 0
+        sum_drop_rate = 0.0
+        n_drop = 0
+        sum_overflow = 0
+        n_overflow = 0
+        sum_confidence = 0.0
+        n_confidence = 0
+        n_survived = 0
+        sum_loss = 0.0
+        n_loss = 0
+        best_loss = None
+
+        # Per-expert aggregation
+        expert_totals: Dict[int, Dict] = {}
+
+        for row in rows:
+            record = dict(row)
+
+            if record.get("stage1_passed"):
+                n_survived += 1
+
+            loss = self._as_float(record.get("loss_ratio"))
+            if loss is not None:
+                sum_loss += loss
+                n_loss += 1
+                if best_loss is None or loss < best_loss:
+                    best_loss = loss
+
+            entropy = self._as_float(record.get("routing_utilization_entropy"))
+            if entropy is not None:
+                sum_entropy += entropy
+                n_entropy += 1
+
+            drop_rate = self._as_float(record.get("routing_drop_rate"))
+            if drop_rate is not None:
+                sum_drop_rate += drop_rate
+                n_drop += 1
+
+            overflow = record.get("routing_capacity_overflow_count")
+            if overflow is not None:
+                sum_overflow += int(overflow)
+                n_overflow += 1
+
+            conf = self._as_float(record.get("routing_confidence_mean"))
+            if conf is not None:
+                sum_confidence += conf
+                n_confidence += 1
+
+            # Parse per-expert utilization
+            util_json = record.get("routing_expert_utilization_json")
+            if util_json:
+                try:
+                    utilizations = json.loads(util_json)
+                    if isinstance(utilizations, list):
+                        for eidx, util_val in enumerate(utilizations):
+                            bucket = expert_totals.setdefault(eidx, {
+                                "expert_id": eidx,
+                                "sum_utilization": 0.0,
+                                "n_samples": 0,
+                                "max_utilization": 0.0,
+                                "min_utilization": 1.0,
+                            })
+                            u = float(util_val)
+                            bucket["sum_utilization"] += u
+                            bucket["n_samples"] += 1
+                            bucket["max_utilization"] = max(bucket["max_utilization"], u)
+                            bucket["min_utilization"] = min(bucket["min_utilization"], u)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Build per-expert summary
+        experts = []
+        for eidx in sorted(expert_totals.keys()):
+            b = expert_totals[eidx]
+            n = b["n_samples"]
+            avg = b["sum_utilization"] / n if n > 0 else 0.0
+            experts.append({
+                "expert_id": eidx,
+                "avg_utilization": round(avg, 4),
+                "max_utilization": round(b["max_utilization"], 4),
+                "min_utilization": round(b["min_utilization"], 4),
+                "n_samples": n,
+            })
+
+        # Compute load balance score from average utilizations
+        # Perfect balance = all experts have equal utilization
+        # Score = 1 - coefficient of variation (capped at 1.0)
+        load_balance_score = None
+        if experts:
+            utils = [e["avg_utilization"] for e in experts]
+            mean_u = sum(utils) / len(utils) if utils else 0
+            if mean_u > 0 and len(utils) > 1:
+                var = sum((u - mean_u) ** 2 for u in utils) / len(utils)
+                cv = (var ** 0.5) / mean_u
+                load_balance_score = round(max(0.0, min(1.0, 1.0 - cv)), 4)
+
+        summary = {
+            "n_programs": n_programs,
+            "n_survived": n_survived,
+            "survival_rate": round(n_survived / n_programs, 4) if n_programs > 0 else 0.0,
+            "avg_loss_ratio": round(sum_loss / n_loss, 4) if n_loss > 0 else None,
+            "best_loss_ratio": round(best_loss, 4) if best_loss is not None else None,
+            "avg_utilization_entropy": round(sum_entropy / n_entropy, 4) if n_entropy > 0 else None,
+            "avg_drop_rate": round(sum_drop_rate / n_drop, 4) if n_drop > 0 else None,
+            "avg_capacity_overflow": round(sum_overflow / n_overflow, 2) if n_overflow > 0 else None,
+            "avg_routing_confidence": round(sum_confidence / n_confidence, 4) if n_confidence > 0 else None,
+            "load_balance_score": load_balance_score,
+            "n_experts_observed": len(experts),
+        }
+
+        return {
+            "n_programs": n_programs,
+            "experts": experts,
+            "summary": summary,
+        }
+
+    def sparse_quant_codesign_summary(self) -> Dict:
+        """Aggregate quality-retention-per-byte across programs with sparse+quant data.
+
+        Looks for programs that have both sparsity metrics (sparse_density_*)
+        and pruning quality retention data, then estimates combined
+        sparse+quant efficiency potential.
+
+        Returns summary with per-program and aggregate statistics.
+        """
+        rows = self.nb.conn.execute(
+            "SELECT result_id, graph_json, stage1_passed, final_loss, "
+            "sparse_density_mean, sparse_density_last, "
+            "pruning_method, pruning_target_sparsity, pruning_actual_sparsity, "
+            "pruning_quality_retention, pruning_dense_eval_loss, "
+            "pruning_pruned_eval_loss, pruning_n_params_total "
+            "FROM program_results "
+            "WHERE (sparse_density_mean IS NOT NULL OR pruning_method IS NOT NULL)"
+        ).fetchall()
+        if not rows:
+            return {"n_programs": 0, "programs": [], "summary": {}}
+
+        programs = []
+        sum_retention = 0.0
+        sum_compression = 0.0
+        n_with_retention = 0
+        best_qpb = None  # quality-per-byte
+        best_qpb_id = None
+
+        for row in rows:
+            pid = row[0]
+            graph_json = row[1]
+            survived = row[2]
+            best_loss = row[3]
+            density_mean = row[4]
+            density_last = row[5]
+            prune_method = row[6]
+            prune_target = row[7]
+            prune_actual = row[8]
+            prune_retention = row[9]
+            dense_loss = row[10]
+            pruned_loss = row[11]
+            n_params = row[12]
+
+            # Detect compression ops in graph
+            record = {"graph_json": graph_json or ""}
+            compression_ops = self._detect_compression_ops(record)
+
+            # Estimate effective density
+            effective_density = density_last or density_mean or 1.0
+            if prune_actual is not None and prune_actual > 0:
+                effective_density = min(effective_density, 1.0 - prune_actual)
+
+            # Estimate bytes per param under INT8 quant + sparsity
+            bytes_sparse_quant_int8 = effective_density * 1.0  # 8-bit = 1 byte
+            bytes_sparse_quant_int4 = effective_density * 0.5  # 4-bit = 0.5 byte
+            bytes_original = 4.0  # float32
+
+            compression_int8 = bytes_original / max(bytes_sparse_quant_int8, 0.01)
+            compression_int4 = bytes_original / max(bytes_sparse_quant_int4, 0.01)
+
+            # Quality retention
+            retention = None
+            if prune_retention is not None:
+                retention = float(prune_retention)
+            elif dense_loss is not None and pruned_loss is not None and pruned_loss > 0:
+                retention = float(dense_loss) / float(pruned_loss)
+
+            # Quality-per-byte (higher = better)
+            qpb_int8 = None
+            if retention is not None:
+                qpb_int8 = retention * compression_int8
+                sum_retention += retention
+                sum_compression += compression_int8
+                n_with_retention += 1
+                if best_qpb is None or qpb_int8 > best_qpb:
+                    best_qpb = qpb_int8
+                    best_qpb_id = pid
+
+            entry = {
+                "program_id": pid,
+                "survived": bool(survived),
+                "best_loss": round(float(best_loss), 6) if best_loss else None,
+                "effective_density": round(float(effective_density), 4),
+                "compression_ops": compression_ops,
+                "pruning_method": prune_method,
+                "quality_retention": round(retention, 4) if retention else None,
+                "compression_ratio_int8": round(compression_int8, 2),
+                "compression_ratio_int4": round(compression_int4, 2),
+                "quality_per_byte_int8": round(qpb_int8, 4) if qpb_int8 else None,
+                "n_params": n_params,
+            }
+            programs.append(entry)
+
+        summary = {
+            "n_programs": len(programs),
+            "n_with_retention": n_with_retention,
+            "avg_quality_retention": (
+                round(sum_retention / n_with_retention, 4) if n_with_retention > 0 else None
+            ),
+            "avg_compression_ratio_int8": (
+                round(sum_compression / n_with_retention, 2) if n_with_retention > 0 else None
+            ),
+            "best_quality_per_byte": round(best_qpb, 4) if best_qpb else None,
+            "best_qpb_program_id": best_qpb_id,
+        }
+
+        return {
+            "n_programs": len(programs),
+            "programs": programs,
+            "summary": summary,
+        }
 
     def get_current_grammar_weights(self) -> Dict[str, float]:
         """Get the default grammar weights for comparison."""

@@ -111,8 +111,14 @@ def _build_subgraph(
 ) -> int:
     """Recursively build a subgraph. Returns the output node ID."""
 
+    # Safety guard: hard cap at depth 15 regardless of config to prevent
+    # Python stack overflow from unbounded grammar parameter growth.
+    _HARD_DEPTH_LIMIT = 15
+
     # Base case: stop if we've hit limits
-    if current_depth >= config.max_depth or n_ops_so_far >= config.max_ops:
+    if (current_depth >= config.max_depth
+            or current_depth >= _HARD_DEPTH_LIMIT
+            or n_ops_so_far >= config.max_ops):
         return available_nodes[-1]  # return most recent node
 
     # Decide what to do

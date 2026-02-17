@@ -72,7 +72,23 @@ def _estimate_op_flops(op_name: str, seq_len: int, d_model: int,
         return S * D * D
 
     elif cat == OpCategory.PARAMETERIZED:
-        if "linear" in op_name:
+        if op_name == "nm_sparse_linear":
+            out_dim = config.get("out_dim", D)
+            n = max(1, int(config.get("n", 2)))
+            m = max(n, int(config.get("m", 4)))
+            density = min(1.0, float(n) / float(max(m, 1)))
+            return int(2 * S * D * out_dim * density)
+        elif op_name == "semi_structured_2_4_linear":
+            out_dim = config.get("out_dim", D)
+            density = 0.5
+            if D % 4 != 0 or out_dim % 4 != 0:
+                density = 1.0
+            return int(2 * S * D * out_dim * density)
+        elif op_name == "block_sparse_linear":
+            out_dim = config.get("out_dim", D)
+            density = float(max(0.05, min(1.0, config.get("block_density", 0.25))))
+            return int(2 * S * D * out_dim * density)
+        elif "linear" in op_name:
             # Linear projection: 2*S*D_in*D_out
             # Use actual out_dim from config if available
             out_dim = config.get("out_dim", D)
@@ -120,6 +136,17 @@ def _estimate_op_flops(op_name: str, seq_len: int, d_model: int,
         return S * D
 
     elif cat == OpCategory.MATH_SPACE:
+        # Weight compression primitives — actual compute cost
+        if op_name == "low_rank_proj":
+            return 2 * S * D * (D // 4)  # two matmuls through rank bottleneck
+        elif op_name == "grouped_linear":
+            return S * D * (D // 4)  # D²/4 multiply-adds
+        elif op_name == "bottleneck_proj":
+            return 2 * S * D * (D // 4)  # down + up projections
+        elif op_name == "shared_basis_proj":
+            return S * 16 * D  # mixing (D*8) + basis (8*D)
+        elif op_name == "tied_proj":
+            return 2 * S * D * (D // 4)  # same compute as bottleneck, shared weights
         # Exotic ops tend to be more expensive
         # Tropical/hyperbolic/clifford: ~2-5x elementwise
         return 3 * S * D

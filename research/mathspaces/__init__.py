@@ -5,7 +5,7 @@ Non-Euclidean geometries and alternative algebraic structures
 that can be used as building blocks in synthesized computation graphs.
 """
 
-from . import clifford, hyperbolic, padic, tropical
+from . import clifford, compression, hyperbolic, padic, spiking, tropical
 from .registry import register_all_mathspaces
 
 __all__ = [
@@ -14,4 +14,6 @@ __all__ = [
 	"tropical",
 	"padic",
 	"clifford",
+	"compression",
+	"spiking",
 ]

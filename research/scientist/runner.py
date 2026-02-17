@@ -16,6 +16,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import copy
 import queue
 import re
 import threading
@@ -38,6 +39,7 @@ from ..eval.flops import estimate_flops
 from ..eval.baseline import TransformerBaseline
 from ..eval.fingerprint import compute_fingerprint
 from ..eval.diagnostic_tasks import run_diagnostic_suite
+from ..eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
 from ..training.loss_synthesis import synthesize_loss
 from ..training.optimizer_synthesis import synthesize_optimizer
 from ..training.training_program import synthesize_training_program
@@ -127,6 +129,12 @@ class RunConfig:
     scale_up_steps: int = 5000      # 10x default 500
     scale_up_batch_size: int = 8    # 2x default 4
     scale_up_seq_len: int = 512     # 2x default 256
+    # One-shot pruning baseline
+    one_shot_pruning_baseline: bool = False
+    one_shot_pruning_method: str = "wanda"  # wanda | sparsegpt
+    one_shot_pruning_sparsity: float = 0.5
+    one_shot_pruning_eval_batches: int = 4
+    one_shot_pruning_batch_size: int = 2
     # Automation
     auto_scale_up: bool = True         # auto-trigger scale-up when criteria met
     auto_scale_up_min_survivors: int = 3  # min S1 survivors to trigger
@@ -245,6 +253,257 @@ class ExperimentRunner:
         if screening_loss_ratio <= 1e-8:
             return None
         return best_loss_ratio / screening_loss_ratio
+
+    def prescreen_run_config(
+        self,
+        config: RunConfig,
+        mode: str = "single",
+        auto_harden: bool = True,
+    ) -> Tuple[RunConfig, Dict[str, Any]]:
+        """Pre-screen launch config and optionally apply safe hardening.
+
+        Returns a potentially hardened config plus a prescreen report payload
+        suitable for API responses.
+        """
+        mode_norm = str(mode or "single").strip().lower()
+        screened = RunConfig.from_dict(config.to_dict())
+        issues: List[Dict[str, Any]] = []
+        adjustments: List[Dict[str, Any]] = []
+        risk_score = 0
+
+        def _record_issue(
+            key: str,
+            severity: str,
+            reason: str,
+            old_value: Any,
+            suggested_value: Any,
+            risk_points: int,
+            adjusted: bool,
+        ) -> None:
+            nonlocal risk_score
+            risk_score += max(0, int(risk_points))
+            issues.append({
+                "key": key,
+                "severity": severity,
+                "reason": reason,
+                "value": old_value,
+                "suggested_value": suggested_value,
+                "risk_points": int(risk_points),
+                "adjusted": adjusted,
+            })
+            if adjusted:
+                adjustments.append({
+                    "key": key,
+                    "from": old_value,
+                    "to": suggested_value,
+                    "reason": reason,
+                })
+
+        def _harden_min_int(field_name: str, minimum: int,
+                            severity: str, reason: str, points: int) -> None:
+            old = int(getattr(screened, field_name))
+            if old >= minimum:
+                return
+            if auto_harden:
+                setattr(screened, field_name, minimum)
+            _record_issue(
+                key=field_name,
+                severity=severity,
+                reason=reason,
+                old_value=old,
+                suggested_value=minimum,
+                risk_points=points,
+                adjusted=auto_harden,
+            )
+
+        _harden_min_int(
+            "n_programs", 1, "high",
+            "n_programs must be >= 1 to run any evaluation.",
+            30,
+        )
+        _harden_min_int(
+            "stage1_steps", 1, "high",
+            "stage1_steps must be >= 1 to avoid zero-step training failures.",
+            30,
+        )
+        _harden_min_int(
+            "n_layers", 1, "medium",
+            "n_layers must be >= 1 for valid model construction.",
+            20,
+        )
+        _harden_min_int(
+            "model_dim", 16, "medium",
+            "Very small model_dim is brittle and can trigger invalid shapes.",
+            15,
+        )
+        _harden_min_int(
+            "max_seq_len", 16, "medium",
+            "Very small max_seq_len can destabilize evaluation and diagnostics.",
+            15,
+        )
+
+        data_mode = str(screened.data_mode or "random").strip().lower()
+        if data_mode == "corpus" and not (screened.corpus_path or "").strip():
+            if auto_harden:
+                old_mode = screened.data_mode
+                screened.data_mode = "random"
+                _record_issue(
+                    key="data_mode",
+                    severity="high",
+                    reason="corpus data_mode requires corpus_path; falling back to random data.",
+                    old_value=old_mode,
+                    suggested_value="random",
+                    risk_points=30,
+                    adjusted=True,
+                )
+            else:
+                _record_issue(
+                    key="data_mode",
+                    severity="high",
+                    reason="corpus data_mode requires corpus_path.",
+                    old_value=screened.data_mode,
+                    suggested_value="random",
+                    risk_points=30,
+                    adjusted=False,
+                )
+
+        if str(screened.device).strip().lower() == "cuda" and not torch.cuda.is_available():
+            if auto_harden:
+                screened.device = "cpu"
+            _record_issue(
+                key="device",
+                severity="high",
+                reason="CUDA was requested but is not available on this host.",
+                old_value="cuda",
+                suggested_value="cpu",
+                risk_points=35,
+                adjusted=auto_harden,
+            )
+
+        if mode_norm in {"continuous", "evolve", "novelty"}:
+            _harden_min_int(
+                "max_depth", 2, "medium",
+                "max_depth must be >= 2 to produce meaningful architectures.",
+                10,
+            )
+            _harden_min_int(
+                "max_ops", 4, "medium",
+                "max_ops must be >= 4 for search-space viability.",
+                10,
+            )
+
+        if mode_norm in {"evolve", "novelty"}:
+            if screened.max_depth > 12:
+                old = screened.max_depth
+                if auto_harden:
+                    screened.max_depth = 12
+                _record_issue(
+                    key="max_depth",
+                    severity="medium",
+                    reason="Capping depth at 12 reduces recursion-overflow risk in search loops.",
+                    old_value=old,
+                    suggested_value=12,
+                    risk_points=12,
+                    adjusted=auto_harden,
+                )
+            if screened.max_ops > 20:
+                old = screened.max_ops
+                if auto_harden:
+                    screened.max_ops = 20
+                _record_issue(
+                    key="max_ops",
+                    severity="medium",
+                    reason="Capping max_ops at 20 reduces recursive expansion risk.",
+                    old_value=old,
+                    suggested_value=20,
+                    risk_points=12,
+                    adjusted=auto_harden,
+                )
+            _harden_min_int(
+                "n_generations", 1, "high",
+                "n_generations must be >= 1 for evolution/novelty search.",
+                20,
+            )
+
+        if mode_norm == "continuous":
+            _harden_min_int(
+                "max_experiments", 1, "medium",
+                "max_experiments must be >= 1 in continuous mode.",
+                10,
+            )
+
+        # ── Compression / sparse op safeguards ──
+        dim = int(getattr(screened, "model_dim", 64))
+        if dim % 4 != 0:
+            # grouped_linear (g=4), N:M sparse (m=4), semi_structured_2_4
+            # all need D divisible by 4 for clean operation
+            new_dim = ((dim + 3) // 4) * 4
+            if auto_harden:
+                screened.model_dim = new_dim
+            _record_issue(
+                key="model_dim",
+                severity="medium",
+                reason=(
+                    "model_dim not divisible by 4; compression ops "
+                    "(grouped_linear, N:M sparse) may produce uneven splits. "
+                    f"Rounding up {dim} -> {new_dim}."
+                ),
+                old_value=dim,
+                suggested_value=new_dim,
+                risk_points=8,
+                adjusted=auto_harden,
+            )
+
+        prune_target = float(getattr(screened, "one_shot_pruning_sparsity", 0.5))
+        if prune_target < 0.0 or prune_target > 0.95:
+            suggested = max(0.0, min(0.95, prune_target))
+            if auto_harden:
+                screened.one_shot_pruning_sparsity = suggested
+            _record_issue(
+                key="one_shot_pruning_sparsity",
+                severity="medium",
+                reason="one-shot pruning sparsity should be in [0.0, 0.95].",
+                old_value=prune_target,
+                suggested_value=suggested,
+                risk_points=8,
+                adjusted=auto_harden,
+            )
+
+        eval_batches = int(getattr(screened, "one_shot_pruning_eval_batches", 4))
+        if eval_batches < 1 or eval_batches > 32:
+            suggested = max(1, min(32, eval_batches))
+            if auto_harden:
+                screened.one_shot_pruning_eval_batches = suggested
+            _record_issue(
+                key="one_shot_pruning_eval_batches",
+                severity="low",
+                reason="one-shot pruning eval batch count should be in [1, 32].",
+                old_value=eval_batches,
+                suggested_value=suggested,
+                risk_points=4,
+                adjusted=auto_harden,
+            )
+
+        risk_score = min(risk_score, 100)
+        if risk_score >= 60:
+            risk_level = "high"
+        elif risk_score >= 25:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        report = {
+            "checked": True,
+            "mode": mode_norm,
+            "auto_hardened": bool(auto_harden),
+            "issues": issues,
+            "adjustments": adjustments,
+            "issue_count": len(issues),
+            "adjustment_count": len(adjustments),
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+        }
+        return screened, report
 
     def __init__(self, notebook_path: str = "research/lab_notebook.db"):
         self.notebook_path = notebook_path
@@ -698,6 +957,7 @@ class ExperimentRunner:
         selected_mode = mode_rec.get("mode", "synthesis")
         mode_reasoning = mode_rec.get("reasoning", "")
         mode_confidence = mode_rec.get("confidence", 0)
+        effective_max_time_minutes = self._effective_max_time_minutes(config)
 
         self._emit_event("mode_selected", {
             "mode": selected_mode,
@@ -709,9 +969,9 @@ class ExperimentRunner:
         limit_info = []
         if config.max_experiments > 0:
             limit_info.append(f"exp {n_experiments}/{config.max_experiments}")
-        if config.max_time_minutes > 0:
+        if effective_max_time_minutes > 0:
             elapsed_min = (time.time() - t_start) / 60
-            limit_info.append(f"{elapsed_min:.0f}/{config.max_time_minutes}min")
+            limit_info.append(f"{elapsed_min:.0f}/{effective_max_time_minutes}min")
         if config.max_cost_dollars > 0:
             limit_info.append(f"${self.aria.total_cost:.2f}/${config.max_cost_dollars:.2f}")
         limit_str = " | ".join(limit_info) if limit_info else f"exp {n_experiments}"
@@ -769,9 +1029,15 @@ class ExperimentRunner:
         except Exception as e:
             cycle_error = str(e)
             logger.warning(f"Continuous mode {selected_mode} failed: {e}")
+            failed_exp_id = self._fail_active_cycle_experiment(
+                nb,
+                cycle_error,
+                expected_mode=selected_mode,
+            )
             self._emit_event("experiment_failed", {
                 "experiment_number": n_experiments,
                 "mode": selected_mode,
+                "experiment_id": failed_exp_id,
                 "error": cycle_error,
             })
         finally:
@@ -1344,15 +1610,81 @@ class ExperimentRunner:
         """
         if n_experiments >= config.max_experiments:
             return f"Reached experiment limit ({config.max_experiments})"
-        if config.max_time_minutes > 0:
+        effective_max_time_minutes = self._effective_max_time_minutes(config)
+        if effective_max_time_minutes > 0:
             elapsed_min = (time.time() - t_start) / 60
-            if elapsed_min >= config.max_time_minutes:
-                return f"Time limit reached ({config.max_time_minutes} min)"
+            if elapsed_min >= effective_max_time_minutes:
+                return f"Time limit reached ({effective_max_time_minutes} min)"
         if config.max_cost_dollars > 0:
             cost = self.aria.total_cost
             if cost >= config.max_cost_dollars:
                 return f"Cost limit reached (${cost:.2f} / ${config.max_cost_dollars:.2f})"
         return None
+
+    def _effective_max_time_minutes(self, config: RunConfig) -> int:
+        """Resolve effective continuous-session time limit.
+
+        Local LLM backends (e.g., Ollama) are treated as unconstrained by wall-clock
+        timeout by default so autonomous research can continue without artificial cutoffs.
+        """
+        configured_limit = int(getattr(config, "max_time_minutes", 0) or 0)
+        if configured_limit <= 0:
+            return 0
+        if self._uses_local_llm_backend():
+            return 0
+        return configured_limit
+
+    def _uses_local_llm_backend(self) -> bool:
+        """Whether Aria is currently configured to use a local LLM backend."""
+        try:
+            llm_config = self.aria.get_llm_config()
+        except Exception as e:
+            logger.debug("Failed to inspect LLM backend for limit policy: %s", e)
+            return False
+        backend = str((llm_config or {}).get("backend") or "").strip().lower()
+        return backend in {"ollama", "local", "lmstudio", "llama.cpp", "llamacpp", "vllm"}
+
+    def _fail_active_cycle_experiment(
+        self,
+        nb: LabNotebook,
+        error: str,
+        expected_mode: Optional[str] = None,
+    ) -> Optional[str]:
+        """Fail the currently tracked cycle experiment to avoid stale `running` rows."""
+        active_exp_id = self.progress.experiment_id
+        if not active_exp_id:
+            return None
+
+        try:
+            row = nb.conn.execute(
+                "SELECT experiment_type, status FROM experiments WHERE experiment_id = ?",
+                (active_exp_id,),
+            ).fetchone()
+            if not row or row["status"] != "running":
+                return None
+            if expected_mode and row["experiment_type"] != expected_mode:
+                logger.debug(
+                    "Skip failing experiment %s: type mismatch (%s != %s)",
+                    active_exp_id,
+                    row["experiment_type"],
+                    expected_mode,
+                )
+                return None
+
+            nb.fail_experiment(active_exp_id, error)
+            with self._lock:
+                if self._progress.experiment_id == active_exp_id:
+                    self._progress.status = "failed"
+                    self._progress.error = error
+                    self._progress.aria_message = self.aria.react_to_failure(error)
+            return active_exp_id
+        except Exception as finalize_error:
+            logger.warning(
+                "Failed to mark active experiment %s as failed: %s",
+                active_exp_id,
+                finalize_error,
+            )
+            return None
 
     def _is_control_experiment(self, config: RunConfig, n_experiments: int) -> bool:
         """Whether this continuous synthesis run should be a control experiment."""
@@ -1869,12 +2201,41 @@ class ExperimentRunner:
                 and e["investigation_robustness"] >= 0.5
             ])
 
+            # Gather richer analytics for data-driven rule-based recommendation
+            recent_modes = [e.get("experiment_type", "synthesis") for e in recent]
+            recent_failures = [e for e in recent if e.get("status") == "failed"]
+            unique_fingerprints = set()
+            for e in leaderboard:
+                fp = e.get("graph_fingerprint") or ""
+                if fp:
+                    unique_fingerprints.add(fp[:8])
+
+            # Optimizer diversity: count distinct optimizers used
+            optimizer_counts = {}
+            try:
+                rows = nb.db.execute(
+                    "SELECT optimizer_name, COUNT(*) as cnt "
+                    "FROM program_results WHERE optimizer_name IS NOT NULL "
+                    "GROUP BY optimizer_name"
+                ).fetchall()
+                for row in rows:
+                    optimizer_counts[row[0]] = row[1]
+            except Exception:
+                pass  # Table/column may not exist yet
+
             fallback_data = {
                 "total_s1_survivors": total_s1,
                 "avg_novelty": avg_novelty,
                 "n_experiments_in_session": n_experiments,
                 "investigation_ready": investigation_ready,
                 "validation_ready": validation_ready,
+                "analytics_data": analytics_data,
+                "recent_modes": recent_modes,
+                "recent_failure_count": len(recent_failures),
+                "leaderboard_diversity": len(unique_fingerprints),
+                "leaderboard_size": len(leaderboard),
+                "optimizer_counts": optimizer_counts,
+                "optimizer_diversity": len(optimizer_counts),
             }
 
             rec = self.aria.recommend_next_mode(
@@ -2315,9 +2676,13 @@ class ExperimentRunner:
             "mode": "evolution",
         })
 
+        # Cap depth/ops for evolution to prevent recursion overflow
+        evo_max_depth = min(config.max_depth, 12)
+        evo_max_ops = min(config.max_ops, 20)
+
         grammar = GrammarConfig(
-            max_depth=config.max_depth,
-            max_ops=config.max_ops,
+            max_depth=evo_max_depth,
+            max_ops=evo_max_ops,
             model_dim=config.model_dim,
             residual_prob=config.residual_prob,
         )
@@ -2432,9 +2797,13 @@ class ExperimentRunner:
             "mode": "novelty",
         })
 
+        # Cap depth/ops for novelty search to prevent recursion overflow
+        ns_max_depth = min(config.max_depth, 12)
+        ns_max_ops = min(config.max_ops, 20)
+
         grammar = GrammarConfig(
-            max_depth=config.max_depth,
-            max_ops=config.max_ops,
+            max_depth=ns_max_depth,
+            max_ops=ns_max_ops,
             model_dim=config.model_dim,
             residual_prob=config.residual_prob,
         )
@@ -2448,21 +2817,26 @@ class ExperimentRunner:
         dev_str = config.device if torch.cuda.is_available() else "cpu"
 
         def fingerprint_fn(graph):
-            layer_graphs = [graph] * config.n_layers
-            model = compile_model(
-                layer_graphs,
-                vocab_size=config.vocab_size,
-                max_seq_len=config.max_seq_len,
-            )
-            fp = compute_fingerprint(
-                model,
-                seq_len=min(64, config.max_seq_len),
-                model_dim=config.model_dim,
-                vocab_size=config.vocab_size,
-                device=dev_str,
-            )
-            del model
-            return fp
+            """Compute behavioral fingerprint, falling back to None on failure."""
+            try:
+                layer_graphs = [graph] * config.n_layers
+                model = compile_model(
+                    layer_graphs,
+                    vocab_size=config.vocab_size,
+                    max_seq_len=config.max_seq_len,
+                )
+                fp = compute_fingerprint(
+                    model,
+                    seq_len=min(64, config.max_seq_len),
+                    model_dim=config.model_dim,
+                    vocab_size=config.vocab_size,
+                    device=dev_str,
+                )
+                del model
+                return fp
+            except Exception as e:
+                logger.debug("Fingerprint computation failed: %s", e)
+                return None
 
         ns_result = novelty_search(
             fitness_fn=fitness_fn,
@@ -3425,6 +3799,81 @@ class ExperimentRunner:
 
         return metrics
 
+    def _extract_sparse_metrics(self, model: Optional[nn.Module]) -> Dict:
+        """Extract sparse execution telemetry from compiled layer ops."""
+        if model is None or not hasattr(model, "layers"):
+            return {}
+
+        telemetry_rows: List[Dict[str, Any]] = []
+        total_calls = 0
+        total_fallback_calls = 0
+        kernel_fallback_calls = 0
+        density_sum = 0.0
+        density_last_values: List[float] = []
+        nm_compliant = 0
+        nm_total = 0
+        sparse_active_params_estimate = 0.0
+
+        for layer in getattr(model, "layers", []):
+            ops = getattr(layer, "ops", None)
+            if ops is None:
+                continue
+            for compiled_op in ops.values():
+                sparse_telemetry = getattr(compiled_op, "sparse_telemetry", None)
+                if not sparse_telemetry:
+                    continue
+                has_weight = hasattr(compiled_op, "weight")
+                weight_params = float(compiled_op.weight.numel()) if has_weight else 0.0
+                for op_name, stats in sparse_telemetry.items():
+                    calls = int(stats.get("calls", 0) or 0)
+                    fallback_calls = int(stats.get("fallback_calls", 0) or 0)
+                    density_sum_local = float(stats.get("density_sum", 0.0) or 0.0)
+                    last_density = float(stats.get("last_density", 1.0) or 1.0)
+                    fallback_reason = stats.get("last_fallback_reason")
+
+                    total_calls += calls
+                    total_fallback_calls += fallback_calls
+                    density_sum += density_sum_local
+                    density_last_values.append(last_density)
+                    if fallback_reason == "kernel_unavailable":
+                        kernel_fallback_calls += fallback_calls
+
+                    if op_name in ("nm_sparse_linear", "semi_structured_2_4_linear"):
+                        nm_total += 1
+                        if last_density <= 0.51:
+                            nm_compliant += 1
+
+                    if weight_params > 0.0:
+                        density_for_params = (density_sum_local / calls) if calls > 0 else last_density
+                        sparse_active_params_estimate += weight_params * density_for_params
+
+                    telemetry_rows.append({
+                        "op_name": op_name,
+                        "calls": calls,
+                        "fallback_calls": fallback_calls,
+                        "last_density": last_density,
+                        "last_fallback_reason": fallback_reason,
+                    })
+
+        if total_calls == 0:
+            return {}
+
+        density_mean = density_sum / max(total_calls, 1)
+        density_last = sum(density_last_values) / max(len(density_last_values), 1)
+        nm_compliance = (nm_compliant / nm_total) if nm_total > 0 else None
+
+        metrics: Dict[str, Any] = {
+            "sparse_density_mean": density_mean,
+            "sparse_density_last": density_last,
+            "sparse_fallback_calls": total_fallback_calls,
+            "sparse_kernel_fallback_calls": kernel_fallback_calls,
+            "sparse_active_params_estimate": int(max(0.0, sparse_active_params_estimate)),
+            "sparse_telemetry_json": json.dumps(telemetry_rows),
+        }
+        if nm_compliance is not None:
+            metrics["sparse_nm_compliance"] = nm_compliance
+        return metrics
+
     def _classify_stage_at_death(self, s0_passed: bool, s05_passed: bool,
                                   s1_passed: bool) -> str:
         """Classify which stage a program died at."""
@@ -3712,6 +4161,16 @@ class ExperimentRunner:
                 program_metrics["grad_norm_std"] = s1_result.get("grad_norm_std")
                 program_metrics["n_train_steps"] = s1_result.get("n_train_steps")
                 program_metrics["final_lr"] = s1_result.get("final_lr")
+                program_metrics["pruning_method"] = s1_result.get("pruning_method")
+                program_metrics["pruning_target_sparsity"] = s1_result.get("pruning_target_sparsity")
+                program_metrics["pruning_actual_sparsity"] = s1_result.get("pruning_actual_sparsity")
+                program_metrics["pruning_n_params_total"] = s1_result.get("pruning_n_params_total")
+                program_metrics["pruning_n_params_pruned"] = s1_result.get("pruning_n_params_pruned")
+                program_metrics["pruning_dense_eval_loss"] = s1_result.get("pruning_dense_eval_loss")
+                program_metrics["pruning_pruned_eval_loss"] = s1_result.get("pruning_pruned_eval_loss")
+                program_metrics["pruning_quality_retention"] = s1_result.get("pruning_quality_retention")
+                program_metrics["pruning_active_params_estimate"] = s1_result.get("pruning_active_params_estimate")
+                program_metrics["pruning_error"] = s1_result.get("pruning_error")
 
                 if s1_passed:
                     results["stage1_passed"] += 1
@@ -3748,6 +4207,7 @@ class ExperimentRunner:
                             pass
 
             # Determine stage at death
+            program_metrics.update(self._extract_sparse_metrics(model))
             program_metrics["stage_at_death"] = self._classify_stage_at_death(
                 s0_passed, s05_passed, s1_passed)
 
@@ -4035,6 +4495,54 @@ class ExperimentRunner:
 
         except Exception as e:
             result["error"] = str(e)
+
+        if result.get("final_loss") is not None and bool(getattr(config, "one_shot_pruning_baseline", False)):
+            try:
+                seq_len = min(128, int(config.max_seq_len))
+                eval_batches = max(1, int(getattr(config, "one_shot_pruning_eval_batches", 4)))
+                eval_batch_size = max(1, int(getattr(config, "one_shot_pruning_batch_size", 2)))
+
+                eval_inputs = [
+                    self._sample_training_input_ids(
+                        config=config,
+                        dev=dev,
+                        batch_size=eval_batch_size,
+                        seq_len=seq_len,
+                        seed=seed + 100_000 + i,
+                    )
+                    for i in range(eval_batches)
+                ]
+
+                dense_eval_loss = estimate_lm_ce_loss(model, eval_inputs, dev)
+
+                pruned_model = copy.deepcopy(model).to(dev)
+                prune_info = apply_one_shot_pruning(
+                    pruned_model,
+                    target_sparsity=float(getattr(config, "one_shot_pruning_sparsity", 0.5)),
+                    method=str(getattr(config, "one_shot_pruning_method", "wanda")),
+                )
+                pruned_eval_loss = estimate_lm_ce_loss(pruned_model, eval_inputs, dev)
+
+                quality_retention = None
+                if dense_eval_loss is not None and pruned_eval_loss is not None and pruned_eval_loss > 0:
+                    quality_retention = max(0.0, min(1.5, dense_eval_loss / pruned_eval_loss))
+
+                result["pruning_method"] = prune_info.method
+                result["pruning_target_sparsity"] = prune_info.target_sparsity
+                result["pruning_actual_sparsity"] = prune_info.actual_sparsity
+                result["pruning_n_params_total"] = prune_info.n_params_total
+                result["pruning_n_params_pruned"] = prune_info.n_params_pruned
+                result["pruning_dense_eval_loss"] = dense_eval_loss
+                result["pruning_pruned_eval_loss"] = pruned_eval_loss
+                result["pruning_quality_retention"] = quality_retention
+                if prune_info.n_params_total > 0:
+                    result["pruning_active_params_estimate"] = (
+                        prune_info.n_params_total - prune_info.n_params_pruned
+                    )
+
+                del pruned_model
+            except Exception as e:
+                result["pruning_error"] = str(e)
 
         return result
 
@@ -6215,8 +6723,8 @@ class ExperimentRunner:
 
             grammar = GrammarConfig(
                 model_dim=config.model_dim,
-                max_depth=config.max_depth,
-                max_ops=config.max_ops,
+                max_depth=min(config.max_depth, 12),
+                max_ops=min(config.max_ops, 20),
                 residual_prob=config.residual_prob,
             )
             grammar.category_weights["math_space"] = config.math_space_weight
@@ -6409,8 +6917,8 @@ class ExperimentRunner:
 
             grammar = GrammarConfig(
                 model_dim=config.model_dim,
-                max_depth=config.max_depth,
-                max_ops=config.max_ops,
+                max_depth=min(config.max_depth, 12),
+                max_ops=min(config.max_ops, 20),
                 residual_prob=config.residual_prob,
             )
             grammar.category_weights["math_space"] = config.math_space_weight
@@ -6430,21 +6938,25 @@ class ExperimentRunner:
             dev_str = config.device if torch.cuda.is_available() else "cpu"
 
             def fingerprint_fn(graph):
-                layer_graphs = [graph] * config.n_layers
-                model = compile_model(
-                    layer_graphs,
-                    vocab_size=config.vocab_size,
-                    max_seq_len=config.max_seq_len,
-                )
-                fp = compute_fingerprint(
-                    model,
-                    seq_len=min(64, config.max_seq_len),
-                    model_dim=config.model_dim,
-                    vocab_size=config.vocab_size,
-                    device=dev_str,
-                )
-                del model
-                return fp
+                try:
+                    layer_graphs = [graph] * config.n_layers
+                    model = compile_model(
+                        layer_graphs,
+                        vocab_size=config.vocab_size,
+                        max_seq_len=config.max_seq_len,
+                    )
+                    fp = compute_fingerprint(
+                        model,
+                        seq_len=min(64, config.max_seq_len),
+                        model_dim=config.model_dim,
+                        vocab_size=config.vocab_size,
+                        device=dev_str,
+                    )
+                    del model
+                    return fp
+                except Exception as e:
+                    logger.debug("Fingerprint computation failed: %s", e)
+                    return None
 
             def gen_callback(gen, population, archive):
                 if self._stop_event.is_set():
@@ -6775,10 +7287,9 @@ class ExperimentRunner:
                 )
 
                 program_metrics = self._extract_graph_metrics(graph)
-                program_metrics["source_result_id"] = source_result_id
-                program_metrics["scale_up_steps"] = config.scale_up_steps
-                program_metrics["scale_up_batch_size"] = config.scale_up_batch_size
-                program_metrics["scale_up_seq_len"] = config.scale_up_seq_len
+                # Store scale-up provenance in model_source (a valid column)
+                # rather than as separate columns that don't exist in schema
+                program_metrics["model_source"] = "graph_synthesis"
 
                 s1_passed = s1_result.get("passed", False)
                 loss_ratio = s1_result.get("loss_ratio")
@@ -6903,6 +7414,22 @@ class ExperimentRunner:
                 if dev.type == "cuda":
                     torch.cuda.empty_cache()
                 gc.collect()
+
+            # Guard: if no programs were processed at all, fail with clear reason
+            if results["stage0_passed"] == 0 and results["total"] > 0:
+                reason = (f"All {results['total']} source programs were skipped "
+                          f"(not found or failed to compile). "
+                          f"Result IDs: {', '.join(r[:12] for r in result_ids)}")
+                logger.warning("Scale-up produced no results: %s", reason)
+                nb.fail_experiment(exp_id, reason)
+                with self._lock:
+                    self._progress.status = "failed"
+                    self._progress.error = reason
+                    self._progress.aria_message = self.aria.react_to_failure(reason)
+                self._emit_event("experiment_failed", {
+                    "experiment_id": exp_id, "error": reason,
+                })
+                return
 
             # Complete experiment
             context = self._build_rich_context_for_experiment(

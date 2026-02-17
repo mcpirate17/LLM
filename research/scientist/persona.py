@@ -498,48 +498,92 @@ class Aria:
     def _rule_based_suggestion(self) -> Dict:
         """Rule-based experiment suggestion when LLM unavailable.
 
-        Rotates through diverse configurations to avoid running the same
-        experiment parameters every time.
+        Rotates through diverse configurations emphasizing different research
+        strategies: depth exploration, compact architectures, exotic math,
+        gradient-safe designs, and high-risk frontier pushing.
         """
         configs = [
             {
-                "reasoning": "Exploring deeper architectures for complex transformations.",
+                "reasoning": ("Exploring moderately deep architectures with balanced "
+                              "math space exposure for general-purpose discovery."),
                 "config": {
-                    "n_programs": 50, "model_dim": 256,
-                    "max_depth": 12, "max_ops": 20,
+                    "n_programs": 60, "model_dim": 256,
+                    "max_depth": 10, "max_ops": 16,
                     "math_space_weight": 2.0, "residual_prob": 0.7,
                 },
             },
             {
-                "reasoning": "Testing wider, shallower graphs for parallel feature exploration.",
+                "reasoning": ("Compact, parameter-efficient graphs: shallow depth, "
+                              "fewer ops, high residual prob to ensure gradient flow. "
+                              "Targeting lightweight architectures."),
+                "config": {
+                    "n_programs": 80, "model_dim": 256,
+                    "max_depth": 5, "max_ops": 8,
+                    "math_space_weight": 2.0, "residual_prob": 0.85,
+                },
+            },
+            {
+                "reasoning": ("Heavy exotic math exploration: boosted math space "
+                              "and frequency domain to push non-Euclidean frontiers. "
+                              "Hyperbolic, tropical, p-adic and Clifford ops emphasized."),
+                "config": {
+                    "n_programs": 50, "model_dim": 256,
+                    "max_depth": 8, "max_ops": 14,
+                    "math_space_weight": 4.0, "residual_prob": 0.6,
+                },
+            },
+            {
+                "reasoning": ("Gradient-safe exploration: very high residual "
+                              "probability with moderate depth. Targeting the "
+                              "zero_grad failure mode by ensuring robust gradient paths."),
+                "config": {
+                    "n_programs": 70, "model_dim": 256,
+                    "max_depth": 7, "max_ops": 12,
+                    "math_space_weight": 2.0, "residual_prob": 0.9,
+                },
+            },
+            {
+                "reasoning": ("Wide, shallow split-merge architectures for "
+                              "parallel feature processing (ensemble-like effects). "
+                              "Balanced math space weight."),
                 "config": {
                     "n_programs": 50, "model_dim": 256,
                     "max_depth": 6, "max_ops": 12,
-                    "math_space_weight": 1.5, "residual_prob": 0.6,
+                    "math_space_weight": 2.5, "residual_prob": 0.7,
+                    "split_prob": 0.5,
                 },
             },
             {
-                "reasoning": "Boosting math space weight for nonlinear diversity.",
+                "reasoning": ("High-risk frontier push: risky ops enabled, "
+                              "frequency domain detours, deep graphs. Expect higher "
+                              "failure rate but potential for breakthrough novelty."),
                 "config": {
                     "n_programs": 50, "model_dim": 256,
                     "max_depth": 10, "max_ops": 16,
-                    "math_space_weight": 3.0, "residual_prob": 0.5,
+                    "math_space_weight": 3.5, "residual_prob": 0.5,
+                    "risky_op_prob": 0.25,
+                    "freq_domain_prob": 0.2,
                 },
             },
             {
-                "reasoning": "Low residual probability to force non-trivial learned paths.",
+                "reasoning": ("Minimal-op architectures with emphasis on "
+                              "parameterized layers. Testing whether simple "
+                              "but well-tuned graphs outperform complex ones."),
+                "config": {
+                    "n_programs": 80, "model_dim": 256,
+                    "max_depth": 4, "max_ops": 6,
+                    "math_space_weight": 1.5, "residual_prob": 0.8,
+                },
+            },
+            {
+                "reasoning": ("Exploring alternative learning rules (Hebbian, "
+                              "forward-forward, perturbation) paired with exotic "
+                              "math space ops including spiking primitives."),
                 "config": {
                     "n_programs": 60, "model_dim": 256,
-                    "max_depth": 8, "max_ops": 14,
-                    "math_space_weight": 2.0, "residual_prob": 0.3,
-                },
-            },
-            {
-                "reasoning": "Minimal operations with high math space for compact architectures.",
-                "config": {
-                    "n_programs": 50, "model_dim": 256,
-                    "max_depth": 8, "max_ops": 10,
-                    "math_space_weight": 2.5, "residual_prob": 0.7,
+                    "max_depth": 7, "max_ops": 12,
+                    "math_space_weight": 3.0, "residual_prob": 0.7,
+                    "optimizer_preference": "alternative",
                 },
             },
         ]
@@ -547,7 +591,7 @@ class Aria:
         choice = configs[idx]
         return {
             "reasoning": choice["reasoning"],
-            "confidence": 0.3,
+            "confidence": 0.4,
             "config": choice["config"],
         }
 
@@ -1714,14 +1758,25 @@ class Aria:
         return result
 
     def _rule_based_mode_recommendation(self, data: Dict) -> Dict:
-        """Rule-based mode recommendation when LLM is unavailable."""
+        """Data-driven mode recommendation when LLM is unavailable.
+
+        Analyzes op success rates, failure patterns, math family coverage,
+        grammar weight trends, and architectural diversity to select the
+        next experiment mode and parameters.  Uses diverse templates that
+        rotate based on experiment number to avoid repetitive suggestions.
+        """
         total_s1 = data.get("total_s1_survivors", 0)
         avg_novelty = data.get("avg_novelty", 0)
         n_experiments = data.get("n_experiments_in_session", 0)
         investigation_ready = data.get("investigation_ready", 0)
         validation_ready = data.get("validation_ready", 0)
+        analytics = data.get("analytics_data") or {}
+        recent_modes = data.get("recent_modes") or []
+        recent_failure_count = data.get("recent_failure_count", 0)
+        leaderboard_diversity = data.get("leaderboard_diversity", 0)
+        leaderboard_size = data.get("leaderboard_size", 0)
 
-        # Validation candidates waiting -> validate
+        # --- Priority 1: Pipeline escalation (always takes precedence) ---
         if validation_ready > 0:
             return {
                 "mode": "validation",
@@ -1731,7 +1786,6 @@ class Aria:
                 "config": {},
             }
 
-        # Investigation candidates waiting -> investigate
         if investigation_ready >= 2:
             return {
                 "mode": "investigation",
@@ -1742,16 +1796,67 @@ class Aria:
                 "config": {},
             }
 
-        # No survivors yet -> keep screening
+        # --- Priority 2: Data-driven analysis to choose mode & config ---
+
+        # Analyze op success rates for targeted grammar adjustments
+        op_rates = analytics.get("op_success_rates") or []
+        failure_patterns = analytics.get("failure_patterns") or {}
+        grammar_weights = analytics.get("grammar_weights") or {}
+        default_weights = analytics.get("default_weights") or {}
+        negative_results = analytics.get("negative_results") or {}
+
+        # Find underexplored op categories
+        underexplored_cats = []
+        overexplored_cats = []
+        for cat, weight in (grammar_weights or {}).items():
+            default_w = (default_weights or {}).get(cat, 1.0)
+            if weight < default_w * 0.6:
+                underexplored_cats.append(cat)
+            elif weight > default_w * 2.0:
+                overexplored_cats.append(cat)
+
+        # Identify top failure mode
+        failure_types = failure_patterns.get("failure_types") or {}
+        top_failure = max(failure_types.items(), key=lambda x: x[1],
+                          default=("unknown", 0))
+
+        # Check recent mode diversity
+        recent_synthesis_count = sum(1 for m in recent_modes if m == "synthesis")
+        recent_evolution_count = sum(1 for m in recent_modes if m == "evolution")
+        mode_stuck = recent_synthesis_count >= 5  # 5+ synthesis in a row
+
+        # Find promising but underexplored ops
+        promising_ops = []
+        for op_data in (op_rates or [])[:20]:
+            op_name = op_data.get("op_name", "")
+            s1_rate = op_data.get("s1_pass_rate", 0)
+            n_uses = op_data.get("total_uses", 0)
+            if 0.3 <= s1_rate <= 0.7 and n_uses < 20:
+                promising_ops.append(op_name)
+
+        # Negative results — ops to avoid
+        failed_ops = negative_results.get("excluded_ops") or []
+
+        # --- Decision logic: diverse, data-driven strategies ---
+
+        # No survivors and many experiments — try different approach
         if total_s1 == 0:
             if n_experiments >= 10:
+                failure_hint = ""
+                if top_failure[1] > 0:
+                    failure_hint = (f" Top failure: {top_failure[0]} "
+                                    f"({top_failure[1]} cases).")
                 return {
                     "mode": "synthesis",
-                    "reasoning": ("No S1 survivors after multiple experiments. "
-                                  "Recommend pivoting hypothesis or pausing "
-                                  "this campaign before spending more budget."),
+                    "reasoning": ("No S1 survivors after multiple experiments."
+                                  f"{failure_hint} "
+                                  "Increasing residual_prob and reducing max_depth "
+                                  "to improve gradient flow. Consider pivoting "
+                                  "hypothesis or pausing campaign."),
                     "confidence": 0.8,
                     "config": {
+                        "residual_prob": 0.85,
+                        "max_depth": 6,
                         "pivot_recommended": True,
                         "stop_recommended": True,
                     },
@@ -1761,6 +1866,186 @@ class Aria:
                 "reasoning": "No S1 survivors yet. Continuing broad exploration.",
                 "confidence": 0.6,
                 "config": {},
+            }
+
+        # --- Rotate between diverse data-driven strategies ---
+        # Use experiment number to cycle through different analysis-driven modes
+        strategy_index = n_experiments % 9
+
+        if strategy_index == 0 and underexplored_cats:
+            # Strategy: Explore underrepresented op categories
+            boost_cat = self._rng.choice(underexplored_cats)
+            config_override = {}
+            if boost_cat == "math_space":
+                config_override["math_space_weight"] = 4.0
+            elif boost_cat == "frequency":
+                config_override["freq_domain_prob"] = 0.4
+            elif boost_cat == "functional":
+                config_override["math_space_weight"] = 3.0
+            return {
+                "mode": "synthesis",
+                "reasoning": (f"Data analysis: '{boost_cat}' category is underexplored "
+                              f"(weight {grammar_weights.get(boost_cat, 1.0):.2f} vs "
+                              f"default {default_weights.get(boost_cat, 1.0):.2f}). "
+                              f"Boosting to diversify architecture search space."),
+                "confidence": 0.65,
+                "config": config_override,
+            }
+
+        elif strategy_index == 1 and total_s1 >= 3:
+            # Strategy: Evolution to refine existing survivors
+            return {
+                "mode": "evolution",
+                "reasoning": (f"{total_s1} S1 survivors in recent experiments. "
+                              f"Leaderboard has {leaderboard_diversity} unique "
+                              f"architectures. Evolving to find variants "
+                              f"of successful patterns."),
+                "confidence": 0.65,
+                "config": {
+                    "n_generations": 15,
+                    "population_size": 30,
+                },
+            }
+
+        elif strategy_index == 2 and avg_novelty < 0.5:
+            # Strategy: Novelty search to escape local optima
+            return {
+                "mode": "novelty",
+                "reasoning": (f"Avg novelty is only {avg_novelty:.3f} — "
+                              f"architectures are converging. Novelty search "
+                              f"will push toward behaviorally diverse designs. "
+                              f"Leaderboard diversity: {leaderboard_diversity} "
+                              f"unique families out of {leaderboard_size} entries."),
+                "confidence": 0.65,
+                "config": {
+                    "n_generations": 10,
+                    "population_size": 30,
+                },
+            }
+
+        elif strategy_index == 3 and top_failure[1] > 5:
+            # Strategy: Target the dominant failure mode
+            config_override = {}
+            reasoning_extra = ""
+            if top_failure[0] == "zero_grad":
+                config_override = {"residual_prob": 0.9, "max_depth": 6}
+                reasoning_extra = ("Increasing residual connections and reducing "
+                                   "depth to ensure gradient flow.")
+            elif top_failure[0] in ("nan", "inf", "RuntimeError"):
+                config_override = {"risky_op_prob": 0.05, "max_ops": 10}
+                reasoning_extra = ("Reducing risky ops and graph complexity "
+                                   "to avoid numerical instability.")
+            else:
+                config_override = {"n_programs": 80}
+                reasoning_extra = "Broadening search to find stable regions."
+            return {
+                "mode": "synthesis",
+                "reasoning": (f"Failure analysis: {top_failure[0]} accounts for "
+                              f"{top_failure[1]} failures. {reasoning_extra}"),
+                "confidence": 0.6,
+                "config": config_override,
+            }
+
+        elif strategy_index == 4 and promising_ops:
+            # Strategy: Focus on promising but underexplored ops
+            highlighted = promising_ops[:3]
+            return {
+                "mode": "synthesis",
+                "reasoning": (f"Data analysis found underexplored ops with "
+                              f"promising S1 rates: {', '.join(highlighted)}. "
+                              f"Running targeted synthesis with boosted math_space_weight "
+                              f"to increase exposure to these operators."),
+                "confidence": 0.6,
+                "config": {
+                    "math_space_weight": 3.5,
+                    "n_programs": 60,
+                },
+            }
+
+        elif strategy_index == 5 and mode_stuck:
+            # Strategy: Break mode monotony
+            return {
+                "mode": "evolution",
+                "reasoning": (f"Last {recent_synthesis_count} experiments were all "
+                              f"synthesis. Switching to evolution to refine "
+                              f"existing survivors and break out of screening loop. "
+                              f"Recent failures: {recent_failure_count}/{len(recent_modes)}."),
+                "confidence": 0.6,
+                "config": {
+                    "n_generations": 10,
+                    "population_size": 30,
+                },
+            }
+
+        elif strategy_index == 6:
+            # Strategy: Compact architecture search
+            return {
+                "mode": "synthesis",
+                "reasoning": ("Exploring compact, parameter-efficient architectures. "
+                              "Lower depth and fewer ops to find lightweight "
+                              "designs that may generalize better. "
+                              f"{len(failed_ops)} ops excluded from negative results."),
+                "confidence": 0.55,
+                "config": {
+                    "max_depth": 5,
+                    "max_ops": 8,
+                    "math_space_weight": 2.5,
+                    "residual_prob": 0.8,
+                    "n_programs": 80,
+                },
+            }
+
+        elif strategy_index == 7:
+            # Strategy: High-risk exotic exploration
+            return {
+                "mode": "synthesis",
+                "reasoning": ("High-exploration run: boosting math space weight, "
+                              "risky ops, and frequency domain probability to "
+                              "discover genuinely exotic architectures outside "
+                              "the current comfort zone."),
+                "confidence": 0.5,
+                "config": {
+                    "math_space_weight": 4.0,
+                    "risky_op_prob": 0.3,
+                    "freq_domain_prob": 0.25,
+                    "max_depth": 10,
+                    "n_programs": 50,
+                },
+            }
+
+        elif strategy_index == 8:
+            # Strategy: Explore alternative learning rules
+            optimizer_counts = data.get("optimizer_counts") or {}
+            optimizer_diversity = data.get("optimizer_diversity", 0)
+            total_opt_runs = sum(optimizer_counts.values()) if optimizer_counts else 0
+            adamw_frac = (optimizer_counts.get("AdamW", 0) / total_opt_runs
+                          if total_opt_runs > 0 else 1.0)
+            alternative_rules = [k for k in optimizer_counts
+                                 if k not in ("AdamW", "Adam", "SGD")]
+            hint = ""
+            if adamw_frac > 0.7:
+                hint = (f"AdamW dominates ({adamw_frac:.0%} of runs). ")
+            elif not alternative_rules:
+                hint = "No alternative learning rules tried yet. "
+            else:
+                hint = (f"{len(alternative_rules)} alternative rules tried "
+                        f"({', '.join(alternative_rules[:3])}). ")
+            return {
+                "mode": "synthesis",
+                "reasoning": (f"{hint}Exploring alternative learning rules "
+                              "(Hebbian, forward-forward, perturbation, "
+                              "contrastive-local) paired with spiking/event-driven "
+                              "math space ops for a fundamentally different "
+                              "compute paradigm."),
+                "confidence": 0.55,
+                "config": {
+                    "n_programs": 60,
+                    "max_depth": 7,
+                    "max_ops": 12,
+                    "math_space_weight": 3.0,
+                    "residual_prob": 0.7,
+                    "optimizer_preference": "alternative",
+                },
             }
 
         # Survivors but low novelty -> novelty search
@@ -1784,19 +2069,12 @@ class Aria:
                 "config": {},
             }
 
-        # Periodic synthesis to avoid getting stuck (every 3rd experiment)
-        if n_experiments > 0 and n_experiments % 3 == 0:
-            return {
-                "mode": "synthesis",
-                "reasoning": "Periodic broad exploration to avoid local optima.",
-                "confidence": 0.5,
-                "config": {},
-            }
-
-        # Default: synthesis
+        # Default: synthesis with variety
         return {
             "mode": "synthesis",
-            "reasoning": "Continuing standard screening.",
+            "reasoning": ("Continuing exploration. "
+                          f"Leaderboard: {leaderboard_size} entries, "
+                          f"{leaderboard_diversity} unique architectures."),
             "confidence": 0.5,
             "config": {},
         }

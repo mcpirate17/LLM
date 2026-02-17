@@ -433,6 +433,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
 
   const executeLabel = 'Execute Recommended Action';
   const evidence = briefing?.evidence || null;
+  const sparseEvidence = evidence?.sparse || briefing?.data?.sparse || null;
   const evidenceItems = [];
   if (evidence) {
     if (typeof evidence.learning_trend === 'string' && evidence.learning_trend) {
@@ -456,6 +457,33 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
         label: `Pipeline: S${p.screening || 0} / I${p.investigation || 0} / V${p.validation || 0} / B${p.breakthrough || 0}`,
         tab: 'leaderboard',
       });
+    }
+    if (sparseEvidence && typeof sparseEvidence.n_sparse_programs === 'number' && sparseEvidence.n_sparse_programs > 0) {
+      evidenceItems.push({
+        label: `Sparse runs: ${sparseEvidence.n_sparse_programs}`,
+        tab: 'trends',
+      });
+      if (typeof sparseEvidence.avg_density_mean === 'number') {
+        evidenceItems.push({
+          label: `Sparse density: ${(sparseEvidence.avg_density_mean * 100).toFixed(1)}%`,
+          tab: 'trends',
+        });
+      }
+      if (typeof sparseEvidence.avg_nm_compliance === 'number') {
+        evidenceItems.push({
+          label: `N:M compliance: ${(sparseEvidence.avg_nm_compliance * 100).toFixed(1)}%`,
+          tab: 'trends',
+        });
+      }
+      if (Array.isArray(sparseEvidence.top_sparse_ops) && sparseEvidence.top_sparse_ops.length > 0) {
+        const topOp = sparseEvidence.top_sparse_ops[0];
+        if (topOp?.op_name) {
+          evidenceItems.push({
+            label: `Top sparse op: ${topOp.op_name}`,
+            tab: 'trends',
+          });
+        }
+      }
     }
   }
 

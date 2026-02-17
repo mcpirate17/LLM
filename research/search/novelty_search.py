@@ -158,6 +158,12 @@ def novelty_search(
 
         try:
             behavior = fingerprint_fn(graph)
+            # fingerprint_fn may return None on failure — fall back to structural novelty
+            if behavior is None:
+                from ..eval.metrics import novelty_score as struct_novelty
+                m = struct_novelty(graph)
+                return m.structural_novelty
+
             novelty = archive.novelty_of(behavior, k=config.k_nearest)
 
             # Add to archive if novel enough

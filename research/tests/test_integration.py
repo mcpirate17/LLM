@@ -2448,6 +2448,20 @@ class TestAPI(unittest.TestCase):
         fake_runner = MagicMock()
         fake_runner.is_running = False
         fake_runner.start_continuous = MagicMock(return_value="continuous")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="continuous", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
         fake_runner.get_aria_cycle_status = MagicMock(return_value={"phase": "planning", "continuous_active": True})
 
         with patch.object(api_mod, "_runner", fake_runner):
@@ -2458,6 +2472,8 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data.get("ok"))
         self.assertEqual(data.get("action"), "start")
         self.assertEqual(data.get("experiment_id"), "continuous")
+        self.assertIn("prescreen", data)
+        self.assertTrue(data["prescreen"].get("checked"))
         fake_runner.start_continuous.assert_called_once()
 
     def test_api_aria_chat(self):
@@ -2565,6 +2581,9 @@ class TestAPI(unittest.TestCase):
         self.assertIn("ai_powered", data)
         self.assertIn("suggested_config", data)
         self.assertIn("evidence", data)
+        self.assertIn("data", data)
+        self.assertIn("sparse", data.get("evidence", {}))
+        self.assertIn("sparse", data.get("data", {}))
 
     def test_api_strategy_briefing_normalizes_ai_mode_alias(self):
         ai_payload = {
@@ -2613,6 +2632,20 @@ class TestAPI(unittest.TestCase):
         fake_runner = MagicMock()
         fake_runner.is_running = False
         fake_runner.start_experiment = MagicMock(return_value="exp-preflight")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
         fake_runner.progress = MagicMock(
             aria_message="Preflight complete",
             hypothesis_critique={
@@ -2637,6 +2670,8 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertIn("hypothesis_critique", data)
         self.assertIn("hypothesis_review_gate", data)
+        self.assertIn("prescreen", data)
+        self.assertTrue(data["prescreen"].get("checked"))
         self.assertEqual(data["hypothesis_review_gate"], "warn")
         self.assertIsInstance(data["hypothesis_critique"], dict)
         self.assertIn("checks", data["hypothesis_critique"])
@@ -2759,6 +2794,20 @@ class TestAPI(unittest.TestCase):
         fake_runner = MagicMock()
         fake_runner.is_running = False
         fake_runner.start_validation = MagicMock(return_value="exp-val-eligible")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
         fake_runner.progress = MagicMock(
             aria_message="Validation started",
             hypothesis_critique=None,
@@ -2783,6 +2832,132 @@ class TestAPI(unittest.TestCase):
         r = self.client.post("/api/experiments/start",
                              json={"mode": "scale_up"})
         self.assertEqual(r.status_code, 400)
+
+    def test_api_start_scale_up_accepts_graph_fingerprint_prefix(self):
+        from research.scientist import api as api_mod
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "scale-up fingerprint source")
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="12f557d8b7f13339",
+            graph_json=json.dumps({"nodes": {}}),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.12,
+            novelty_score=0.8,
+        )
+        nb.complete_experiment(
+            exp_id,
+            {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1},
+        )
+        nb.close()
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_scale_up = MagicMock(return_value="exp-scale-up")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(
+            aria_message="Scale-up started",
+            hypothesis_critique=None,
+        )
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/experiments/start", json={
+                "mode": "scale_up",
+                "graph_fingerprints": ["12f557d8b7f1"],
+            })
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("scale_up_resolution", data)
+        resolution = data["scale_up_resolution"]
+        self.assertEqual(resolution["unresolved_fingerprints"], [])
+        self.assertEqual(len(resolution["resolved_fingerprints"]), 1)
+        self.assertEqual(
+            resolution["resolved_fingerprints"][0]["selected_result_id"],
+            result_id,
+        )
+
+        call_args, _ = fake_runner.start_scale_up.call_args
+        resolved_ids = call_args[0]
+        self.assertIn(result_id, resolved_ids)
+
+    def test_api_start_scale_up_reports_unresolved_fingerprint(self):
+        r = self.client.post("/api/experiments/start", json={
+            "mode": "scale_up",
+            "graph_fingerprints": ["missingfp123"],
+        })
+        self.assertEqual(r.status_code, 400)
+        data = r.get_json()
+        self.assertIn("scale_up_resolution", data)
+        self.assertIn("missingfp123", data["scale_up_resolution"]["unresolved_fingerprints"])
+
+    def test_api_start_compact_synthesis_alias_applies_bias(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_experiment = MagicMock(return_value="exp-compact")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(
+            aria_message="Compact synthesis started",
+            hypothesis_critique=None,
+        )
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/experiments/start", json={
+                "mode": "compact_synthesis",
+                "n_layers": 8,
+                "max_depth": 10,
+                "max_ops": 16,
+                "model_source": "graph_synthesis",
+                "n_programs": 150,
+            })
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("prescreen", data)
+        self.assertIn("compact_synthesis_bias", data)
+        self.assertGreaterEqual(len(data["compact_synthesis_bias"]), 1)
+        fake_runner.prescreen_run_config.assert_called_once()
+        _, kwargs = fake_runner.prescreen_run_config.call_args
+        self.assertEqual(kwargs.get("mode"), "single")
+
+        start_args, _ = fake_runner.start_experiment.call_args
+        launched_config = start_args[0]
+        self.assertEqual(launched_config.model_source, "mixed")
+        self.assertLessEqual(launched_config.n_layers, 3)
+        self.assertLessEqual(launched_config.max_depth, 6)
+        self.assertLessEqual(launched_config.max_ops, 10)
+        self.assertLessEqual(launched_config.n_programs, 80)
 
     def test_api_rerun_experiment(self):
         from research.scientist import api as api_mod
@@ -3689,12 +3864,13 @@ class TestPackageWiring(unittest.TestCase):
         with open(init_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        self.assertIn("from . import clifford, hyperbolic, padic, tropical", content)
+        self.assertIn("from . import clifford, compression, hyperbolic, padic, spiking, tropical", content)
         self.assertIn("from .registry import register_all_mathspaces", content)
         self.assertIn('"hyperbolic"', content)
         self.assertIn('"tropical"', content)
         self.assertIn('"padic"', content)
         self.assertIn('"clifford"', content)
+        self.assertIn('"spiking"', content)
 
     @unittest.skipUnless(HAS_TORCH, "requires torch")
     def test_mathspace_registry_includes_hyp_distance(self):
@@ -4806,6 +4982,102 @@ class TestInlinePhaseMethods(unittest.TestCase):
         self.assertGreaterEqual(len(seen_seeds), 3)
         self.assertEqual(seen_seeds[:3], [1234, 1235, 1236])
 
+    def test_cycle_failure_marks_active_experiment_failed(self):
+        """Cycle-level exceptions should finalize active experiment rows as failed."""
+        from research.scientist.runner import ExperimentRunner
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_cycle_failure_finalize.db")
+        runner = ExperimentRunner(db_path)
+        nb = LabNotebook(db_path)
+        try:
+            exp_id = nb.start_experiment(
+                experiment_type="evolution",
+                config={"n_programs": 2},
+                hypothesis="failure finalize test",
+            )
+            with runner._lock:
+                runner._progress.experiment_id = exp_id
+                runner._progress.status = "evolving"
+
+            failed_id = runner._fail_active_cycle_experiment(
+                nb,
+                "simulated cycle failure",
+                expected_mode="evolution",
+            )
+            self.assertEqual(failed_id, exp_id)
+
+            row = nb.conn.execute(
+                "SELECT status, aria_summary FROM experiments WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+            self.assertEqual(row["status"], "failed")
+            self.assertIn("FAILED", row["aria_summary"])
+            self.assertIn("simulated cycle failure", row["aria_summary"])
+            self.assertEqual(runner.progress.status, "failed")
+        finally:
+            nb.close()
+
+    def test_local_llm_backend_disables_continuous_time_limit(self):
+        """Continuous max_time should not stop sessions when backend is local."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_local_llm_time_limit.db")
+        runner = ExperimentRunner(db_path)
+        config = RunConfig(max_experiments=100, max_time_minutes=1, max_cost_dollars=0)
+        t_start = time.time() - (10 * 60)
+
+        runner.aria.get_llm_config = MagicMock(return_value={"backend": "ollama"})
+        self.assertIsNone(runner._check_continuous_limits(config, t_start, n_experiments=1))
+
+        runner.aria.get_llm_config = MagicMock(return_value={"backend": "anthropic"})
+        reason = runner._check_continuous_limits(config, t_start, n_experiments=1)
+        self.assertIsNotNone(reason)
+        self.assertIn("Time limit reached", reason)
+
+    def test_prescreen_run_config_hardens_invalid_basics(self):
+        """Prescreen should auto-harden obviously invalid baseline fields."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "prescreen_basics.db"))
+        config = RunConfig(
+            n_programs=0,
+            stage1_steps=0,
+            n_layers=0,
+            model_dim=8,
+            max_seq_len=8,
+            data_mode="corpus",
+            corpus_path="",
+        )
+
+        hardened, report = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+
+        self.assertEqual(hardened.n_programs, 1)
+        self.assertEqual(hardened.stage1_steps, 1)
+        self.assertEqual(hardened.n_layers, 1)
+        self.assertGreaterEqual(hardened.model_dim, 16)
+        self.assertGreaterEqual(hardened.max_seq_len, 16)
+        self.assertEqual(hardened.data_mode, "random")
+        self.assertTrue(report.get("checked"))
+        self.assertGreaterEqual(report.get("issue_count", 0), 1)
+        self.assertGreaterEqual(report.get("adjustment_count", 0), 1)
+
+    def test_prescreen_run_config_caps_evolution_depth_and_ops(self):
+        """Prescreen should cap high-risk evolution recursion settings."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "prescreen_evolve.db"))
+        config = RunConfig(max_depth=40, max_ops=80, n_generations=0)
+
+        hardened, report = runner.prescreen_run_config(config, mode="evolve", auto_harden=True)
+
+        self.assertEqual(hardened.max_depth, 12)
+        self.assertEqual(hardened.max_ops, 20)
+        self.assertEqual(hardened.n_generations, 1)
+        self.assertGreater(report.get("risk_score", 0), 0)
+        self.assertIn(report.get("risk_level"), {"medium", "high"})
+
     def test_corpus_mode_falls_back_to_random_when_missing_path(self):
         """Corpus mode should safely fall back to random token generation when corpus is unavailable."""
         import torch
@@ -5762,6 +6034,896 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
                      "clifford_attention", "padic_residual"]:
             self.assertTrue(math_ops[name].has_params,
                             f"{name} should have has_params=True")
+
+
+class TestAlternativeLearningRules(unittest.TestCase):
+    """Test that all alternative learning rule optimizers work correctly."""
+
+    def _make_simple_model(self):
+        """Create a simple model for optimizer testing."""
+        import torch.nn as nn
+        model = nn.Sequential(
+            nn.Linear(16, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+        )
+        return model
+
+    def _run_optimizer_steps(self, optimizer_name, n_steps=5):
+        """Run a few optimization steps and verify parameters change."""
+        import torch
+        from research.training.optimizer_synthesis import SynthesizedOptimizer
+
+        model = self._make_simple_model()
+        initial_params = {n: p.clone() for n, p in model.named_parameters()}
+
+        opt = SynthesizedOptimizer(
+            name=optimizer_name,
+            components=[optimizer_name],
+            lr=1e-3,
+            weight_decay=0.01,
+        ).create(model.parameters())
+
+        x = torch.randn(4, 16)
+        for _ in range(n_steps):
+            out = model(x)
+            loss = out.sum()
+            loss.backward()
+            opt.step()
+            opt.zero_grad()
+
+        # Verify parameters changed
+        changed = False
+        for name, p in model.named_parameters():
+            if not torch.allclose(p, initial_params[name], atol=1e-7):
+                changed = True
+                break
+        self.assertTrue(changed, f"{optimizer_name} did not update parameters")
+
+    def test_hebbian_optimizer(self):
+        self._run_optimizer_steps("hebbian")
+
+    def test_forward_forward_optimizer(self):
+        self._run_optimizer_steps("forward_forward")
+
+    def test_perturbation_optimizer(self):
+        self._run_optimizer_steps("perturbation")
+
+    def test_contrastive_local_optimizer(self):
+        self._run_optimizer_steps("contrastive_local")
+
+    def test_all_recipes_instantiate(self):
+        """Verify all OPTIMIZER_RECIPES can be instantiated."""
+        import torch
+        from research.training.optimizer_synthesis import OPTIMIZER_RECIPES, SynthesizedOptimizer
+
+        model = self._make_simple_model()
+        for name, components, desc in OPTIMIZER_RECIPES:
+            opt = SynthesizedOptimizer(
+                name=name, components=components, lr=1e-3, weight_decay=0.01,
+            ).create(model.parameters())
+            self.assertIsNotNone(opt, f"Failed to create optimizer: {name}")
+
+    def test_synthesize_optimizer_includes_new_recipes(self):
+        """Verify new recipes appear in random synthesis."""
+        from research.training.optimizer_synthesis import OPTIMIZER_RECIPES
+        recipe_names = [r[0] for r in OPTIMIZER_RECIPES]
+        for expected in ["hebbian", "forward_forward", "perturbation", "contrastive_local"]:
+            self.assertIn(expected, recipe_names,
+                          f"Missing recipe: {expected}")
+
+
+class TestScaleUpFix(unittest.TestCase):
+    """Test scale-up no longer passes invalid columns to record_program_result."""
+
+    def test_scale_up_metrics_no_invalid_columns(self):
+        """Verify _extract_graph_metrics doesn't produce non-schema keys."""
+        from research.scientist.runner import ExperimentRunner
+        from research.synthesis.grammar import generate_layer_graph
+
+        graph = generate_layer_graph(seed=42)
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        runner._math_spaces_registered = False
+        metrics = runner._extract_graph_metrics(graph)
+
+        # These keys must NOT appear (they caused the scale-up crash)
+        forbidden_keys = {"source_result_id", "scale_up_steps",
+                          "scale_up_batch_size", "scale_up_seq_len"}
+        for key in forbidden_keys:
+            self.assertNotIn(key, metrics,
+                             f"Forbidden key '{key}' found in graph metrics")
+
+
+class TestSandboxShapeValidation(unittest.TestCase):
+    """Tests for sandbox logits shape validation (#23)."""
+
+    @unittest.skipUnless(HAS_TORCH, "torch required")
+    def test_correct_shape_passes(self):
+        """Model with correct (B, S, V) output passes shape check."""
+        from research.eval.sandbox import safe_eval
+
+        class GoodModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = torch.nn.Embedding(1000, 64)
+                self.linear = torch.nn.Linear(64, 1000)
+
+            def forward(self, x):
+                return self.linear(self.embed(x))
+
+        result = safe_eval(GoodModel(), batch_size=2, seq_len=16,
+                           vocab_size=1000, device="cpu",
+                           run_stability_probe=False)
+        self.assertNotEqual(result.error_type, "shape_mismatch",
+                            f"Unexpected shape_mismatch: {result.error}")
+
+    @unittest.skipUnless(HAS_TORCH, "torch required")
+    def test_wrong_batch_dim_fails(self):
+        """Model that returns wrong batch dimension is caught."""
+        from research.eval.sandbox import safe_eval
+
+        class BadBatchModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = torch.nn.Embedding(1000, 64)
+                self.linear = torch.nn.Linear(64, 1000)
+
+            def forward(self, x):
+                out = self.linear(self.embed(x))
+                # Return only first sample — wrong batch dim
+                return out[:1]
+
+        result = safe_eval(BadBatchModel(), batch_size=2, seq_len=16,
+                           vocab_size=1000, device="cpu",
+                           run_stability_probe=False)
+        self.assertEqual(result.error_type, "shape_mismatch")
+        self.assertIn("(1, 16, 1000)", result.error)
+
+    @unittest.skipUnless(HAS_TORCH, "torch required")
+    def test_wrong_vocab_dim_fails(self):
+        """Model that returns wrong vocab dimension is caught."""
+        from research.eval.sandbox import safe_eval
+
+        class BadVocabModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = torch.nn.Embedding(1000, 64)
+                self.linear = torch.nn.Linear(64, 500)  # Wrong vocab dim
+
+            def forward(self, x):
+                return self.linear(self.embed(x))
+
+        result = safe_eval(BadVocabModel(), batch_size=2, seq_len=16,
+                           vocab_size=1000, device="cpu",
+                           run_stability_probe=False)
+        self.assertEqual(result.error_type, "shape_mismatch")
+        self.assertIn("vocab", result.error.lower())
+
+    @unittest.skipUnless(HAS_TORCH, "torch required")
+    def test_2d_output_fails(self):
+        """Model that returns 2D output (missing seq dim) is caught."""
+        from research.eval.sandbox import safe_eval
+
+        class FlatModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = torch.nn.Embedding(1000, 64)
+                self.linear = torch.nn.Linear(64, 1000)
+
+            def forward(self, x):
+                return self.linear(self.embed(x)).reshape(-1, 1000)
+
+        result = safe_eval(FlatModel(), batch_size=2, seq_len=16,
+                           vocab_size=1000, device="cpu",
+                           run_stability_probe=False)
+        self.assertEqual(result.error_type, "shape_mismatch")
+
+
+@unittest.skipUnless(HAS_TORCH, "torch required")
+class TestSpikingPrimitives(unittest.TestCase):
+    """Tests for spiking/event-driven math space primitives."""
+
+    def setUp(self):
+        self.B, self.S, self.D = 2, 16, 32
+        self.x = torch.randn(self.B, self.S, self.D, requires_grad=True)
+
+    def _run_op(self, fn):
+        return fn([self.x], {}, self.D)
+
+    # Shape preservation
+    def test_lif_shape(self):
+        from research.mathspaces.spiking import execute_lif
+        out = self._run_op(execute_lif)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    def test_spike_rate_code_shape(self):
+        from research.mathspaces.spiking import execute_spike_rate_code
+        out = self._run_op(execute_spike_rate_code)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    def test_stdp_attention_shape(self):
+        from research.mathspaces.spiking import execute_stdp_attention
+        out = self._run_op(execute_stdp_attention)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    def test_sparse_threshold_shape(self):
+        from research.mathspaces.spiking import execute_sparse_threshold
+        out = self._run_op(execute_sparse_threshold)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    # Gradient flow
+    def test_lif_gradient(self):
+        from research.mathspaces.spiking import execute_lif
+        out = self._run_op(execute_lif)
+        out.sum().backward()
+        self.assertIsNotNone(self.x.grad)
+        self.assertGreater(self.x.grad.abs().sum().item(), 0)
+
+    def test_spike_rate_code_gradient(self):
+        from research.mathspaces.spiking import execute_spike_rate_code
+        out = self._run_op(execute_spike_rate_code)
+        out.sum().backward()
+        self.assertIsNotNone(self.x.grad)
+        self.assertGreater(self.x.grad.abs().sum().item(), 0)
+
+    def test_sparse_threshold_gradient(self):
+        from research.mathspaces.spiking import execute_sparse_threshold
+        out = self._run_op(execute_sparse_threshold)
+        out.sum().backward()
+        self.assertIsNotNone(self.x.grad)
+        self.assertGreater(self.x.grad.abs().sum().item(), 0)
+
+    # LIF output bounded
+    def test_lif_output_bounded(self):
+        from research.mathspaces.spiking import execute_lif
+        out = self._run_op(execute_lif)
+        self.assertTrue((out >= 0).all())
+        self.assertTrue((out <= 1).all())
+
+    # STDP causality: changing future tokens should not affect past output
+    def test_stdp_causality(self):
+        from research.mathspaces.spiking import execute_stdp_attention
+        x_base = torch.randn(1, 8, 16)
+        x_mod = x_base.clone().detach()
+        x_mod[:, 6:, :] = torch.randn(1, 2, 16)  # Change last 2 tokens
+        out1 = execute_stdp_attention([x_base], {}, 16)
+        out2 = execute_stdp_attention([x_mod], {}, 16)
+        # First 6 positions (0-5) attend only to themselves and earlier,
+        # so they should be unaffected by changes at positions 6-7
+        torch.testing.assert_close(out1[:, :6, :], out2[:, :6, :])
+
+    # Sparse threshold promotes sparsity
+    def test_sparse_threshold_sparsity(self):
+        from research.mathspaces.spiking import execute_sparse_threshold
+        x = torch.randn(4, 32, 64)
+        out = execute_sparse_threshold([x], {}, 64)
+        # At least 20% near-zero (threshold targets ~50%)
+        near_zero = (out.abs() < 1e-6).float().mean().item()
+        self.assertGreater(near_zero, 0.2)
+
+    # Registry integration
+    def test_spiking_ops_registered(self):
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        for name in ["lif_neuron", "spike_rate_code", "stdp_attention",
+                      "sparse_threshold"]:
+            self.assertIn(name, PRIMITIVE_REGISTRY,
+                          f"Spiking op '{name}' not in PRIMITIVE_REGISTRY")
+
+    def test_spiking_ops_identity_shape_rule(self):
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        for name in ["lif_neuron", "spike_rate_code", "stdp_attention",
+                      "sparse_threshold"]:
+            op = PRIMITIVE_REGISTRY[name]
+            self.assertEqual(op.shape_rule, "identity")
+            self.assertFalse(op.has_params)
+
+    def test_stdp_attention_gradient(self):
+        from research.mathspaces.spiking import execute_stdp_attention
+        out = self._run_op(execute_stdp_attention)
+        out.sum().backward()
+        self.assertIsNotNone(self.x.grad)
+        self.assertGreater(self.x.grad.abs().sum().item(), 0)
+
+
+class TestPersonaOptimizerAwareness(unittest.TestCase):
+    """Tests for optimizer diversity awareness in persona."""
+
+    def test_strategy_index_8_produces_valid_recommendation(self):
+        """Strategy index 8 (alternative learning rules) returns valid rec."""
+        from research.scientist.persona import Aria
+        aria = Aria()
+        # n_experiments=8 -> strategy_index = 8 % 9 = 8
+        data = {
+            "total_s1_survivors": 5,
+            "avg_novelty": 0.4,
+            "n_experiments_in_session": 8,
+            "investigation_ready": 0,
+            "validation_ready": 0,
+            "analytics_data": {},
+            "recent_modes": ["synthesis"] * 5,
+            "recent_failure_count": 1,
+            "leaderboard_diversity": 3,
+            "leaderboard_size": 10,
+            "optimizer_counts": {"AdamW": 50},
+            "optimizer_diversity": 1,
+        }
+        rec = aria._rule_based_mode_recommendation(data)
+        self.assertEqual(rec["mode"], "synthesis")
+        self.assertIn("alternative", rec["reasoning"].lower())
+        self.assertEqual(rec["config"].get("optimizer_preference"), "alternative")
+
+    def test_suggestion_template_includes_alternative_rules(self):
+        """At least one suggestion config mentions alternative learning rules."""
+        from research.scientist.persona import Aria
+        aria = Aria()
+        found = False
+        # Rotate through all suggestion templates
+        for i in range(20):
+            aria.state.experiments_today = i
+            suggestion = aria._rule_based_suggestion()
+            if "optimizer_preference" in suggestion.get("config", {}):
+                found = True
+                self.assertIn("alternative", suggestion["reasoning"].lower())
+                break
+        self.assertTrue(found, "No suggestion template has optimizer_preference")
+
+
+@unittest.skipUnless(HAS_TORCH, "requires torch")
+class TestCompressionPrimitives(unittest.TestCase):
+    """Tests for weight compression math space primitives."""
+
+    def setUp(self):
+        self.B, self.S, self.D = 2, 16, 32
+        self.x = torch.randn(self.B, self.S, self.D)
+
+    # ── Shape preservation ──
+
+    def test_low_rank_proj_shape(self):
+        from research.mathspaces.compression import execute_low_rank_proj
+        import torch.nn as nn
+        module = nn.Module()
+        r = self.D // 4
+        module.U = nn.Parameter(torch.randn(self.D, r))
+        module.V = nn.Parameter(torch.randn(r, self.D))
+        out = execute_low_rank_proj(module, self.x)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    def test_grouped_linear_shape(self):
+        from research.mathspaces.compression import execute_grouped_linear
+        import torch.nn as nn
+        module = nn.Module()
+        g = 4
+        gd = self.D // g
+        module.weight = nn.Parameter(torch.randn(g, gd, gd))
+        module.n_groups = g
+        out = execute_grouped_linear(module, self.x)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    def test_bottleneck_proj_shape(self):
+        from research.mathspaces.compression import execute_bottleneck_proj
+        import torch.nn as nn
+        module = nn.Module()
+        r = self.D // 4
+        module.down = nn.Parameter(torch.randn(r, self.D))
+        module.up = nn.Parameter(torch.randn(self.D, r))
+        out = execute_bottleneck_proj(module, self.x)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    def test_shared_basis_proj_shape(self):
+        from research.mathspaces.compression import execute_shared_basis_proj
+        import torch.nn as nn
+        module = nn.Module()
+        k = 8
+        module.mixing = nn.Parameter(torch.randn(self.D, k))
+        module.basis = nn.Parameter(torch.randn(k, self.D))
+        out = execute_shared_basis_proj(module, self.x)
+        self.assertEqual(out.shape, (self.B, self.S, self.D))
+
+    # ── Gradient flow ──
+
+    def test_low_rank_proj_gradient(self):
+        from research.mathspaces.compression import execute_low_rank_proj
+        import torch.nn as nn
+        x = torch.randn(self.B, self.S, self.D, requires_grad=True)
+        module = nn.Module()
+        r = self.D // 4
+        module.U = nn.Parameter(torch.randn(self.D, r))
+        module.V = nn.Parameter(torch.randn(r, self.D))
+        out = execute_low_rank_proj(module, x)
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertGreater(x.grad.abs().sum().item(), 0)
+
+    def test_grouped_linear_gradient(self):
+        from research.mathspaces.compression import execute_grouped_linear
+        import torch.nn as nn
+        x = torch.randn(self.B, self.S, self.D, requires_grad=True)
+        module = nn.Module()
+        g = 4
+        gd = self.D // g
+        module.weight = nn.Parameter(torch.randn(g, gd, gd))
+        module.n_groups = g
+        out = execute_grouped_linear(module, x)
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertGreater(x.grad.abs().sum().item(), 0)
+
+    def test_bottleneck_proj_gradient(self):
+        from research.mathspaces.compression import execute_bottleneck_proj
+        import torch.nn as nn
+        x = torch.randn(self.B, self.S, self.D, requires_grad=True)
+        module = nn.Module()
+        r = self.D // 4
+        module.down = nn.Parameter(torch.randn(r, self.D))
+        module.up = nn.Parameter(torch.randn(self.D, r))
+        out = execute_bottleneck_proj(module, x)
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertGreater(x.grad.abs().sum().item(), 0)
+
+    def test_shared_basis_proj_gradient(self):
+        from research.mathspaces.compression import execute_shared_basis_proj
+        import torch.nn as nn
+        x = torch.randn(self.B, self.S, self.D, requires_grad=True)
+        module = nn.Module()
+        k = 8
+        module.mixing = nn.Parameter(torch.randn(self.D, k))
+        module.basis = nn.Parameter(torch.randn(k, self.D))
+        out = execute_shared_basis_proj(module, x)
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertGreater(x.grad.abs().sum().item(), 0)
+
+    # ── Registry integration ──
+
+    def test_compression_ops_registered(self):
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        for name in ["low_rank_proj", "grouped_linear", "bottleneck_proj",
+                      "shared_basis_proj"]:
+            self.assertIn(name, PRIMITIVE_REGISTRY,
+                          f"Compression op '{name}' not in PRIMITIVE_REGISTRY")
+            op = PRIMITIVE_REGISTRY[name]
+            self.assertTrue(op.has_params, f"'{name}' should have has_params=True")
+            self.assertEqual(op.shape_rule, "identity")
+
+    # ── Parameter count verification ──
+
+    def test_low_rank_proj_param_count(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 64
+        cop = CompiledOp("low_rank_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        n_params = sum(p.numel() for p in cop.parameters())
+        expected = 2 * D * (D // 4)  # D²/2
+        self.assertEqual(n_params, expected)
+        self.assertLess(n_params, D * D)
+
+    def test_grouped_linear_param_count(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 64
+        cop = CompiledOp("grouped_linear", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        n_params = sum(p.numel() for p in cop.parameters())
+        expected = 4 * (D // 4) ** 2  # D²/4
+        self.assertEqual(n_params, expected)
+        self.assertLess(n_params, D * D)
+
+    def test_bottleneck_proj_param_count(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 64
+        cop = CompiledOp("bottleneck_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        n_params = sum(p.numel() for p in cop.parameters())
+        expected = 2 * D * (D // 4)  # D²/2
+        self.assertEqual(n_params, expected)
+        self.assertLess(n_params, D * D)
+
+    def test_shared_basis_proj_param_count(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 64
+        cop = CompiledOp("shared_basis_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        n_params = sum(p.numel() for p in cop.parameters())
+        expected = 2 * 8 * D  # 16D
+        self.assertEqual(n_params, expected)
+        self.assertLess(n_params, D * D)
+
+    # ── Compiler integration (end-to-end forward) ──
+
+    def test_compiler_low_rank_forward(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 32
+        cop = CompiledOp("low_rank_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        x = torch.randn(2, 8, D)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+
+    def test_compiler_grouped_forward(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 32
+        cop = CompiledOp("grouped_linear", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        x = torch.randn(2, 8, D)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+
+    def test_compiler_bottleneck_forward(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 32
+        cop = CompiledOp("bottleneck_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        x = torch.randn(2, 8, D)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+
+    def test_compiler_shared_basis_forward(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        from research.mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
+        D = 32
+        cop = CompiledOp("shared_basis_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        x = torch.randn(2, 8, D)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+
+
+@unittest.skipUnless(HAS_TORCH, "requires torch")
+class TestSparsePrimitives(unittest.TestCase):
+    """Tests for sparse linear primitive families and sparse constraints."""
+
+    def test_sparse_primitives_registered(self):
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY
+        for name in ["nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear"]:
+            self.assertIn(name, PRIMITIVE_REGISTRY)
+            op = PRIMITIVE_REGISTRY[name]
+            self.assertTrue(op.has_params)
+
+    def test_compiler_nm_sparse_linear_shape_and_grad(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        D = 32
+        cop = CompiledOp("nm_sparse_linear", {"n": 2, "m": 4}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        x = torch.randn(2, 8, D, requires_grad=True)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertGreater(x.grad.abs().sum().item(), 0)
+
+    def test_compiler_block_sparse_linear_shape_and_grad(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        D = 64
+        cop = CompiledOp(
+            "block_sparse_linear",
+            {"block_size": 8, "block_density": 0.25},
+            ShapeInfo(dim=D),
+            ShapeInfo(dim=D),
+            D,
+        )
+        x = torch.randn(2, 8, D, requires_grad=True)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertGreater(x.grad.abs().sum().item(), 0)
+
+    def test_semi_structured_telemetry_records_kernel_fallback_on_cpu(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        D = 32
+        cop = CompiledOp("semi_structured_2_4_linear", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        x = torch.randn(2, 8, D)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+        telemetry = getattr(cop, "sparse_telemetry", {})
+        self.assertIn("semi_structured_2_4_linear", telemetry)
+        stats = telemetry["semi_structured_2_4_linear"]
+        self.assertGreaterEqual(stats.get("fallback_calls", 0), 1)
+
+    def test_nm_sparse_invalid_config_falls_back_dense(self):
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
+        D = 32
+        cop = CompiledOp("nm_sparse_linear", {"n": 5, "m": 4}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        x = torch.randn(2, 8, D)
+        out = cop(x)
+        self.assertEqual(out.shape, x.shape)
+        telemetry = getattr(cop, "sparse_telemetry", {})
+        stats = telemetry.get("nm_sparse_linear", {})
+        self.assertGreaterEqual(stats.get("fallback_calls", 0), 1)
+
+    def test_sparse_weight_storage_constraints(self):
+        from research.morphological_box import ArchSpec, is_valid_spec
+        base = {
+            "token_representation": "dense_float",
+            "weight_storage": "structured_sparse",
+            "token_mixing": "softmax_attention",
+            "channel_mixing": "swiglu_mlp",
+            "compute_routing": "uniform",
+            "topology": "sequential",
+            "normalization": "rmsnorm_pre",
+            "positional_encoding": "rope",
+        }
+        valid, reason = is_valid_spec(ArchSpec(choices=base, seed=1))
+        self.assertTrue(valid, reason)
+
+        bad_dense_net = dict(base)
+        bad_dense_net["topology"] = "dense_net"
+        valid, reason = is_valid_spec(ArchSpec(choices=bad_dense_net, seed=2))
+        self.assertFalse(valid)
+        self.assertIn("dense_net", reason)
+
+        bad_no_norm = dict(base)
+        bad_no_norm["weight_storage"] = "block_sparse"
+        bad_no_norm["normalization"] = "no_norm"
+        valid, reason = is_valid_spec(ArchSpec(choices=bad_no_norm, seed=3))
+        self.assertFalse(valid)
+        self.assertIn("block-sparse", reason)
+
+        bad_token = dict(base)
+        bad_token["weight_storage"] = "semi_structured_2_4"
+        bad_token["token_representation"] = "binary_hash"
+        valid, reason = is_valid_spec(ArchSpec(choices=bad_token, seed=4))
+        self.assertFalse(valid)
+        self.assertIn("dense_float", reason)
+
+
+@unittest.skipUnless(HAS_TORCH, "requires torch")
+class TestSparseTelemetryPersistence(unittest.TestCase):
+    """Sparse telemetry extraction and notebook persistence schema tests."""
+
+    def test_runner_sparse_telemetry_aggregation(self):
+        from research.scientist.runner import ExperimentRunner
+
+        class DummyOp(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.randn(16, 16))
+                self.sparse_telemetry = {
+                    "nm_sparse_linear": {
+                        "calls": 4,
+                        "fallback_calls": 1,
+                        "density_sum": 2.0,
+                        "last_density": 0.5,
+                        "last_fallback_reason": "invalid_nm_configuration",
+                    },
+                    "semi_structured_2_4_linear": {
+                        "calls": 2,
+                        "fallback_calls": 2,
+                        "density_sum": 2.0,
+                        "last_density": 1.0,
+                        "last_fallback_reason": "kernel_unavailable",
+                    },
+                }
+
+        class DummyLayer:
+            def __init__(self):
+                self.ops = {"1": DummyOp()}
+
+        class DummyModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [DummyLayer()]
+
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        metrics = runner._extract_sparse_metrics(DummyModel())
+        self.assertIn("sparse_density_mean", metrics)
+        self.assertIn("sparse_fallback_calls", metrics)
+        self.assertEqual(metrics["sparse_fallback_calls"], 3)
+        self.assertEqual(metrics["sparse_kernel_fallback_calls"], 2)
+        self.assertIn("sparse_telemetry_json", metrics)
+        self.assertGreater(len(json.loads(metrics["sparse_telemetry_json"])), 0)
+
+    def test_notebook_schema_has_sparse_telemetry_columns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "sparse_metrics.db")
+            nb = LabNotebook(db_path)
+            try:
+                cols = {
+                    row[1]
+                    for row in nb.conn.execute("PRAGMA table_info(program_results)").fetchall()
+                }
+                for col in [
+                    "sparse_density_mean",
+                    "sparse_density_last",
+                    "sparse_fallback_calls",
+                    "sparse_kernel_fallback_calls",
+                    "sparse_nm_compliance",
+                    "sparse_active_params_estimate",
+                    "sparse_telemetry_json",
+                    "pruning_method",
+                    "pruning_target_sparsity",
+                    "pruning_actual_sparsity",
+                    "pruning_n_params_total",
+                    "pruning_n_params_pruned",
+                    "pruning_dense_eval_loss",
+                    "pruning_pruned_eval_loss",
+                    "pruning_quality_retention",
+                    "pruning_active_params_estimate",
+                    "pruning_error",
+                ]:
+                    self.assertIn(col, cols)
+            finally:
+                nb.close()
+
+
+@unittest.skipUnless(HAS_TORCH, "requires torch")
+class TestOneShotPruningBaseline(unittest.TestCase):
+    def test_apply_one_shot_pruning_hits_target_range(self):
+        from research.eval.pruning import apply_one_shot_pruning
+
+        model = torch.nn.Sequential(
+            torch.nn.Linear(32, 64),
+            torch.nn.GELU(),
+            torch.nn.Linear(64, 32),
+        )
+        result = apply_one_shot_pruning(model, target_sparsity=0.5, method="wanda")
+        self.assertGreater(result.n_params_total, 0)
+        self.assertGreater(result.n_params_pruned, 0)
+        self.assertGreater(result.actual_sparsity, 0.35)
+        self.assertLess(result.actual_sparsity, 0.65)
+
+    def test_micro_train_emits_pruning_metrics_when_enabled(self):
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        class TinyLM(torch.nn.Module):
+            def __init__(self, vocab_size=64, dim=32):
+                super().__init__()
+                self.embed = torch.nn.Embedding(vocab_size, dim)
+                self.proj = torch.nn.Linear(dim, vocab_size, bias=False)
+
+            def forward(self, input_ids):
+                return self.proj(self.embed(input_ids))
+
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+
+        class _Stop:
+            def is_set(self):
+                return False
+
+        runner._stop_event = _Stop()
+
+        cfg = RunConfig(
+            vocab_size=64,
+            stage1_steps=3,
+            stage1_batch_size=2,
+            max_seq_len=32,
+            one_shot_pruning_baseline=True,
+            one_shot_pruning_sparsity=0.5,
+            one_shot_pruning_eval_batches=2,
+            one_shot_pruning_batch_size=2,
+        )
+        model = TinyLM(vocab_size=64, dim=32)
+        dev = torch.device("cpu")
+        out = runner._micro_train(model, cfg, dev, seed=123)
+        self.assertIn("pruning_method", out)
+        self.assertIn("pruning_actual_sparsity", out)
+        self.assertIn("pruning_quality_retention", out)
+        self.assertGreaterEqual(out.get("pruning_actual_sparsity", 0.0), 0.0)
+
+
+class TestQuantizationUtils(unittest.TestCase):
+    """Tests for fake-quantization and sparse+quant co-design utilities."""
+
+    def test_fake_quantize_tensor_int8(self):
+        import torch
+        from research.eval.quantization import fake_quantize_tensor
+
+        t = torch.randn(16, 16)
+        q = fake_quantize_tensor(t, bits=8)
+        self.assertEqual(q.shape, t.shape)
+        # Quantized values should be close but not identical
+        self.assertFalse(torch.equal(t, q))
+        # Error should be small for INT8
+        self.assertLess((t - q).abs().max().item(), t.abs().max().item() * 0.02)
+
+    def test_fake_quantize_tensor_int4(self):
+        import torch
+        from research.eval.quantization import fake_quantize_tensor
+
+        t = torch.randn(16, 16)
+        q4 = fake_quantize_tensor(t, bits=4)
+        q8 = fake_quantize_tensor(t, bits=8)
+        # INT4 should have larger quantization error than INT8
+        err4 = (t - q4).abs().mean().item()
+        err8 = (t - q8).abs().mean().item()
+        self.assertGreater(err4, err8)
+
+    def test_fake_quantize_tensor_fp16_passthrough(self):
+        import torch
+        from research.eval.quantization import fake_quantize_tensor
+
+        t = torch.randn(8, 8)
+        q = fake_quantize_tensor(t, bits=16)
+        self.assertTrue(torch.equal(t, q))
+
+    def test_fake_quantize_zero_tensor(self):
+        import torch
+        from research.eval.quantization import fake_quantize_tensor
+
+        t = torch.zeros(4, 4)
+        q = fake_quantize_tensor(t, bits=8)
+        self.assertTrue(torch.equal(t, q))
+
+    def test_apply_fake_quantization(self):
+        import torch
+        import torch.nn as nn
+        from research.eval.quantization import apply_fake_quantization
+
+        model = nn.Linear(32, 32)
+        original_weight = model.weight.data.clone()
+        result = apply_fake_quantization(model, bits=8)
+        self.assertEqual(result.bits, 8)
+        self.assertGreater(result.n_params_total, 0)
+        self.assertEqual(result.n_params_quantized, result.n_params_total)
+        # Weight should have changed
+        self.assertFalse(torch.equal(original_weight, model.weight.data))
+
+    def test_apply_fake_quantization_preserves_zeros(self):
+        """Fake quant should not revive pruned (zero) weights."""
+        import torch
+        import torch.nn as nn
+        from research.eval.quantization import apply_fake_quantization
+
+        model = nn.Linear(32, 32, bias=False)
+        # Prune half the weights
+        with torch.no_grad():
+            mask = torch.ones_like(model.weight)
+            mask[:16, :] = 0.0
+            model.weight.mul_(mask)
+        zeros_before = (model.weight.data == 0).sum().item()
+
+        result = apply_fake_quantization(model, bits=8)
+        # Zeros stay zero; quantization may also round small values to zero
+        zeros_after = (model.weight.data == 0).sum().item()
+        self.assertGreaterEqual(zeros_after, zeros_before)
+        self.assertGreater(result.actual_sparsity, 0.0)
+
+    def test_fake_quant_result_to_dict(self):
+        from research.eval.quantization import FakeQuantResult
+
+        r = FakeQuantResult(
+            bits=8, target_sparsity=0.5, actual_sparsity=0.5,
+            n_params_total=1000, n_params_quantized=1000,
+            bytes_per_param_original=4.0, bytes_per_param_effective=0.5,
+        )
+        d = r.to_dict()
+        self.assertIn("bits", d)
+        self.assertIn("bytes_per_param_effective", d)
+
+    def test_sparse_quant_codesign_summary_empty(self):
+        """Analytics method should return empty summary when no sparse/quant data."""
+        from research.scientist.analytics import ExperimentAnalytics
+        from research.scientist.notebook import LabNotebook
+
+        nb = LabNotebook(db_path=":memory:")
+        analytics = ExperimentAnalytics(nb)
+        result = analytics.sparse_quant_codesign_summary()
+        self.assertEqual(result["n_programs"], 0)
+        self.assertEqual(result["programs"], [])
 
 
 if __name__ == "__main__":

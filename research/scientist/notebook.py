@@ -163,6 +163,27 @@ CREATE TABLE IF NOT EXISTS program_results (
     flops_per_param REAL,
     flops_per_token REAL,
 
+    -- Sparse telemetry metrics
+    sparse_density_mean REAL,
+    sparse_density_last REAL,
+    sparse_fallback_calls INTEGER,
+    sparse_kernel_fallback_calls INTEGER,
+    sparse_nm_compliance REAL,
+    sparse_active_params_estimate INTEGER,
+    sparse_telemetry_json TEXT,
+
+    -- One-shot pruning baseline metrics
+    pruning_method TEXT,
+    pruning_target_sparsity REAL,
+    pruning_actual_sparsity REAL,
+    pruning_n_params_total INTEGER,
+    pruning_n_params_pruned INTEGER,
+    pruning_dense_eval_loss REAL,
+    pruning_pruned_eval_loss REAL,
+    pruning_quality_retention REAL,
+    pruning_active_params_estimate INTEGER,
+    pruning_error TEXT,
+
     -- Baseline comparison
     baseline_loss_ratio REAL
 );
@@ -396,6 +417,23 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "flops_forward": "INTEGER",
     "flops_per_param": "REAL",
     "flops_per_token": "REAL",
+    "sparse_density_mean": "REAL",
+    "sparse_density_last": "REAL",
+    "sparse_fallback_calls": "INTEGER",
+    "sparse_kernel_fallback_calls": "INTEGER",
+    "sparse_nm_compliance": "REAL",
+    "sparse_active_params_estimate": "INTEGER",
+    "sparse_telemetry_json": "TEXT",
+    "pruning_method": "TEXT",
+    "pruning_target_sparsity": "REAL",
+    "pruning_actual_sparsity": "REAL",
+    "pruning_n_params_total": "INTEGER",
+    "pruning_n_params_pruned": "INTEGER",
+    "pruning_dense_eval_loss": "REAL",
+    "pruning_pruned_eval_loss": "REAL",
+    "pruning_quality_retention": "REAL",
+    "pruning_active_params_estimate": "INTEGER",
+    "pruning_error": "TEXT",
     "baseline_loss_ratio": "REAL",
     # Routing telemetry (Track A)
     "routing_mode": "TEXT",

@@ -90,6 +90,10 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                    tags=("polynomial",)),
             Option("structured_sparse", "N:M structured sparsity",
                    tags=("sparse_weights",)),
+                 Option("semi_structured_2_4", "Semi-structured 2:4 sparse weights",
+                     tags=("sparse_weights", "nm_2_4", "hardware_sparse")),
+                 Option("block_sparse", "Block-sparse weights with fixed block size",
+                     tags=("sparse_weights", "block_sparse", "hardware_sparse")),
         ),
     ),
 
@@ -371,6 +375,20 @@ def _check_structural_constraints(spec: ArchSpec) -> Optional[str]:
     # Implicit fixed-point channels conflict with hard early exits
     if c["channel_mixing"] == "implicit_fixed_point" and c["compute_routing"] == "early_exit":
         return "implicit fixed-point channel solver + early exit: unstable stopping dynamics"
+
+    # Semi-structured 2:4 sparsity currently assumes dense_float activations
+    if c["weight_storage"] == "semi_structured_2_4":
+        if c["token_representation"] != "dense_float":
+            return "semi-structured 2:4 weights require dense_float token representation"
+
+    # Block-sparse storage pairs poorly with no_norm due to unstable sparse magnitudes
+    if c["weight_storage"] == "block_sparse" and c["normalization"] == "no_norm":
+        return "block-sparse weights + no_norm: unstable sparse activation scaling"
+
+    # Sparse weight storage should avoid the most parameter-heavy dense connectivity topology
+    if c["weight_storage"] in ("structured_sparse", "semi_structured_2_4", "block_sparse"):
+        if c["topology"] == "dense_net":
+            return "sparse weight storage + dense_net topology: incompatible parameter routing assumptions"
 
     return None
 
