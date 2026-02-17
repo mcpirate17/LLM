@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Checkpoints & model weights (keep artifacts/ tracked)
+checkpoints/
+*.pt
+!research/artifacts/**/*.pt
+
+# Environment & IDE
+.env
+.venv/
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+research/dashboard/build/
+
+# Separate projects (managed independently)
+AbstractMoE/
+HYDRA/
+LA3/
+personaplex/
