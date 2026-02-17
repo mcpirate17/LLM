@@ -1,7 +1,71 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
+import { programScore, programScoreBreakdown } from '../utils/scores';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+
+const TOP_PROGRAMS_SORT_KEY = 'aria_top_programs_sort_v1';
+
+const QKV_OPS = new Set(['local_window_attn', 'sliding_window_mask', 'multi_head_mix']);
+
+function qkvUsageDescriptor(program) {
+  const usage = program?.qkv_usage;
+  if (usage === 'qkv_free') {
+    return {
+      label: 'QKV-free',
+      detail: 'Uses non-attention token mixing only (e.g., SSM/conv/frequency/functional).',
+      tone: 'high',
+    };
+  }
+  if (usage === 'q_eq_k_eq_v') {
+    return {
+      label: 'Q=K=V',
+      detail: 'Attention-like path with shared projections (reduced attention parameterization).',
+      tone: 'medium',
+    };
+  }
+  if (usage === 'full_qkv') {
+    return {
+      label: 'Full QKV',
+      detail: 'Standard Q/K/V attention path is present.',
+      tone: 'medium',
+    };
+  }
+  const qkvFree = detectQkvFree(program);
+  if (qkvFree === true) {
+    return {
+      label: 'QKV-free*',
+      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
+      tone: 'high',
+    };
+  }
+  if (qkvFree === false) {
+    return {
+      label: 'Uses QKV*',
+      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
+      tone: 'medium',
+    };
+  }
+  return {
+    label: 'QKV unknown',
+    detail: 'Insufficient graph/payload info to classify QKV usage.',
+    tone: 'low',
+  };
+}
+
+/** Detect whether a program uses QKV-based attention from its graph_json. Returns true/false/null. */
+function detectQkvFree(program) {
+  const raw = program.graph_json || program._graph_json;
+  if (!raw) return null;
+  try {
+    const graph = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const nodes = graph.nodes || {};
+    const ops = Object.values(nodes).map(n => n.op_name || n.op).filter(Boolean);
+    return !ops.some(op => QKV_OPS.has(op));
+  } catch {
+    return null;
+  }
+}
 
 /** Rate a program: green (excellent), amber (promising), red (weak) */
 function programRating(p) {
@@ -18,60 +82,55 @@ function programRating(p) {
   return { color: 'var(--accent-orange, #f0883e)', label: 'Marginal', tip: 'Passed all stages but performance is weak', order: 0 };
 }
 
-/**
- * Compute a 0-100 score for a program.
- * Weights: loss ratio (35%), novelty (25%), baseline ratio (25%), throughput (15%)
- */
-function programScore(p) {
-  // Loss ratio: lower is better, 0.2 = perfect, 1.0 = bad
-  const lossScore = p.loss_ratio != null
-    ? Math.max(0, 1 - (p.loss_ratio - 0.2) / 0.8)
-    : 0;
-
-  // Novelty: 0-1
-  const noveltyScore = p.novelty_score != null
-    ? Math.min(p.novelty_score, 1.0)
-    : 0;
-
-  // Baseline ratio: < 1 means beats transformer
-  const baselineScore = p.baseline_loss_ratio != null
-    ? Math.max(0, Math.min(1, 1.5 - p.baseline_loss_ratio))
-    : 0;
-
-  // Throughput: normalize roughly (5000 tok/s = great)
-  const tpScore = p.throughput_tok_s != null
-    ? Math.min(p.throughput_tok_s / 5000, 1.0)
-    : 0;
-
-  const score = lossScore * 35 + noveltyScore * 25 + baselineScore * 25 + tpScore * 15;
-  return Math.round(Math.max(0, Math.min(100, score)));
-}
-
-function programScoreBreakdown(p) {
-  const lossScore = p.loss_ratio != null
-    ? Math.max(0, 1 - (p.loss_ratio - 0.2) / 0.8)
-    : 0;
-  const noveltyScore = p.novelty_score != null
-    ? Math.min(p.novelty_score, 1.0)
-    : 0;
-  const baselineScore = p.baseline_loss_ratio != null
-    ? Math.max(0, Math.min(1, 1.5 - p.baseline_loss_ratio))
-    : 0;
-  const tpScore = p.throughput_tok_s != null
-    ? Math.min(p.throughput_tok_s / 5000, 1.0)
-    : 0;
-
-  return {
-    loss: lossScore * 35,
-    novelty: noveltyScore * 25,
-    baseline: baselineScore * 25,
-    throughput: tpScore * 15,
-  };
-}
-
 function metricText(value, fallbackReason, formatter) {
   if (value == null) return fallbackReason;
   return formatter(value);
+}
+
+function reliabilityColor(level) {
+  if (level === 'high') return 'var(--accent-green)';
+  if (level === 'medium') return 'var(--accent-yellow)';
+  return 'var(--accent-red)';
+}
+
+function programMetricChips(program) {
+  const noveltyConfidence = program.novelty_confidence;
+  return [
+    {
+      label: 'Loss',
+      source: 'measured',
+      reliability: program.loss_ratio != null ? 'high' : 'low',
+    },
+    {
+      label: 'Novelty',
+      source: program.cka_source === 'artifact' ? 'artifact-backed' : 'heuristic',
+      reliability: noveltyConfidence != null
+        ? (noveltyConfidence >= 0.7 ? 'high' : noveltyConfidence >= 0.4 ? 'medium' : 'low')
+        : 'low',
+    },
+    {
+      label: 'Baseline',
+      source: program.baseline_loss_ratio != null ? 'baseline-run' : 'not-available',
+      reliability: program.baseline_loss_ratio != null ? 'medium' : 'low',
+    },
+  ];
+}
+
+function programQualityFlags(program) {
+  const flags = [];
+  if (program.cka_source === 'artifact') {
+    flags.push({ label: 'CKA artifact-backed', tone: 'high' });
+  } else {
+    flags.push({ label: 'CKA fallback heuristic', tone: 'low' });
+  }
+  if (program.baseline_loss_ratio != null) {
+    flags.push({ label: 'Baseline measured', tone: 'medium' });
+  } else {
+    flags.push({ label: 'Baseline unavailable', tone: 'low' });
+  }
+  const qkv = qkvUsageDescriptor(program);
+  flags.push({ label: qkv.label, tone: qkv.tone, detail: qkv.detail });
+  return flags;
 }
 
 const COLUMNS_FULL = [
@@ -95,10 +154,41 @@ const COLUMNS_COMPACT = [
   { key: 'param_count', label: 'Params' },
 ];
 
-function TopPrograms({ programs, compact, onSelectProgram, totalCount }) {
-  const [sortKey, setSortKey] = useState('score');
-  const [sortDesc, setSortDesc] = useState(true);
+function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAdd, onQueueRemove, queuedResultIds }) {
+  const [sortKey, setSortKey] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return 'score';
+      const stored = window.localStorage.getItem(TOP_PROGRAMS_SORT_KEY);
+      if (!stored) return 'score';
+      const parsed = JSON.parse(stored);
+      if (typeof parsed?.sortKey === 'string') return parsed.sortKey;
+      return 'score';
+    } catch {
+      return 'score';
+    }
+  });
+  const [sortDesc, setSortDesc] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return true;
+      const stored = window.localStorage.getItem(TOP_PROGRAMS_SORT_KEY);
+      if (!stored) return true;
+      const parsed = JSON.parse(stored);
+      return typeof parsed?.sortDesc === 'boolean' ? parsed.sortDesc : true;
+    } catch {
+      return true;
+    }
+  });
   const [copiedValue, copyText] = useCopyToClipboard();
+  const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
+
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return;
+      window.localStorage.setItem(TOP_PROGRAMS_SORT_KEY, JSON.stringify({ sortKey, sortDesc }));
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [sortKey, sortDesc]);
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -191,6 +281,9 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount }) {
           {sorted.map((p, i) => {
             const rating = p._rating;
             const score = p._score;
+            const chips = programMetricChips(p);
+            const qualityFlags = programQualityFlags(p);
+            const isQueued = !!p.result_id && queuedSet.has(p.result_id);
             return (
               <tr key={p.result_id || i}
                 style={{ cursor: onSelectProgram ? 'pointer' : 'default' }}
@@ -240,6 +333,28 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount }) {
                       {copiedValue === p.result_id ? 'Copied ID' : 'Copy ID'}
                     </button>
                   )}
+                  {p.result_id && (onQueueAdd || onQueueRemove) && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isQueued) {
+                          onQueueRemove && onQueueRemove(p.result_id);
+                          return;
+                        }
+                        onQueueAdd && onQueueAdd({
+                          resultId: p.result_id,
+                          fingerprint: p.graph_fingerprint,
+                          source: 'programs',
+                          architectureFamily: p.architecture_family,
+                        });
+                      }}
+                      aria-label={`${isQueued ? 'Remove' : 'Add'} ${p.result_id} ${isQueued ? 'from' : 'to'} investigation queue`}
+                    >
+                      {isQueued ? 'Queued' : 'Queue'}
+                    </button>
+                  )}
                 </td>
                 <td>
                   <span style={{ color: noveltyColor(p.novelty_score) }}>
@@ -250,6 +365,44 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount }) {
                 {!compact && <td>{p.behavioral_novelty?.toFixed(3) || '--'}</td>}
                 <td style={{ color: lossColor(p.loss_ratio) }}>
                   {metricText(p.loss_ratio, 'not computed', (v) => v.toFixed(4))}
+                  {!compact && (
+                    <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
+                      {chips.map(chip => (
+                        <span
+                          key={`${p.result_id || i}-${chip.label}`}
+                          title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 5px',
+                            borderRadius: 4,
+                            border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                            color: reliabilityColor(chip.reliability),
+                            background: `${reliabilityColor(chip.reliability)}22`,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {chip.label}: {chip.source}
+                        </span>
+                      ))}
+                      {qualityFlags.map(flag => (
+                        <span
+                          key={`${p.result_id || i}-${flag.label}`}
+                          title={flag.detail ? `${flag.label} — ${flag.detail}` : `Quality flag: ${flag.label}`}
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 5px',
+                            borderRadius: 4,
+                            border: `1px solid ${reliabilityColor(flag.tone)}55`,
+                            color: reliabilityColor(flag.tone),
+                            background: `${reliabilityColor(flag.tone)}15`,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {flag.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </td>
                 <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : 'not available'}</td>
                 {!compact && <td title={p.most_similar_to || 'not available'}>{p.most_similar_to || '--'}</td>}

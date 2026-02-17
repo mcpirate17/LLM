@@ -28,18 +28,41 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   const investigationPassed = [];
   const screeningSurvivors = [];
 
+  const normalizeTier = (entry) => {
+    const tier = typeof entry?.tier === 'string' ? entry.tier.toLowerCase() : '';
+    if (tier === 'screening' || tier === 'investigation' || tier === 'validation' || tier === 'breakthrough') {
+      return tier;
+    }
+    return null;
+  };
+
   for (const entry of entries) {
+    const tier = normalizeTier(entry);
+    if (tier) {
+      tierSummary[tier] += 1;
+      if (tier === 'breakthrough') {
+        breakthroughCandidates.push(entry);
+      } else if (tier === 'validation' && entry.validation_passed) {
+        validationPassed.push(entry);
+      } else if (tier === 'investigation' && entry.investigation_passed) {
+        investigationPassed.push(entry);
+      } else if (tier === 'screening') {
+        screeningSurvivors.push(entry);
+      }
+      continue;
+    }
+
     if (entry.validation_passed && entry.composite_score >= 0.8) {
-      tierSummary.breakthrough++;
+      tierSummary.breakthrough += 1;
       breakthroughCandidates.push(entry);
     } else if (entry.validation_passed) {
-      tierSummary.validation++;
+      tierSummary.validation += 1;
       validationPassed.push(entry);
     } else if (entry.investigation_passed) {
-      tierSummary.investigation++;
+      tierSummary.investigation += 1;
       investigationPassed.push(entry);
     } else {
-      tierSummary.screening++;
+      tierSummary.screening += 1;
       screeningSurvivors.push(entry);
     }
   }

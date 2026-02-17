@@ -1115,6 +1115,273 @@ class Aria:
             "at 10x scale with multi-seed evaluation."
         )
 
+    def critique_hypothesis(
+        self,
+        hypothesis: str,
+        context: str = "",
+    ) -> Dict:
+        """Preflight quality check on a hypothesis before experiment launch.
+
+        Returns dict with:
+            verdict: 'proceed' | 'revise' | 'caution'
+            gate: 'pass' | 'warn' | 'fail'
+            concerns: list of specific issues
+            suggestions: list of improvements
+            checks: criterion-level status list
+            confidence: float 0-1
+        """
+        if not hypothesis or not hypothesis.strip():
+            return self._normalize_preflight_critique("", {
+                "verdict": "revise",
+                "concerns": ["No hypothesis provided."],
+                "suggestions": ["Formulate a specific, testable prediction about which architectural patterns will succeed."],
+                "confidence": 0.0,
+            })
+
+        llm = self._get_llm()
+        if llm:
+            try:
+                from .llm.prompts import SYSTEM_PROMPT
+                prompt = (
+                    "Review this hypothesis before an architecture search experiment.\n\n"
+                    f"Hypothesis: {hypothesis}\n"
+                )
+                if context:
+                    prompt += f"\nExperimental context:\n{context}\n"
+                prompt += (
+                    "\nEvaluate the hypothesis on these criteria:\n"
+                    "1. Testability: Can the experiment confirm or refute it?\n"
+                    "2. Specificity: Does it name concrete ops, patterns, or metrics?\n"
+                    "3. Novelty: Does it repeat what's already known, or push new ground?\n"
+                    "4. Feasibility: Can the current grammar/pipeline test this?\n\n"
+                    "Respond in this exact format:\n"
+                    "VERDICT: proceed | revise | caution\n"
+                    "CONCERNS: bullet list (or 'none')\n"
+                    "SUGGESTIONS: bullet list (or 'none')\n"
+                    "CONFIDENCE: 0.0-1.0"
+                )
+                resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
+                self._track_cost(resp)
+                if resp.text.strip():
+                    parsed = self._parse_critique_response(resp.text.strip(), hypothesis)
+                    return self._normalize_preflight_critique(hypothesis, parsed)
+            except Exception as e:
+                logger.warning(f"LLM hypothesis critique failed: {e}")
+
+        return self._normalize_preflight_critique(
+            hypothesis,
+            self._rule_based_critique(hypothesis),
+        )
+
+    def _normalize_preflight_critique(self, hypothesis: str, critique: Dict) -> Dict:
+        """Normalize preflight critique schema for API/UI consumers."""
+        base = dict(critique or {})
+        verdict = str(base.get("verdict") or "caution").strip().lower()
+        if verdict not in {"proceed", "caution", "revise"}:
+            verdict = "caution"
+
+        gate_by_verdict = {
+            "proceed": "pass",
+            "caution": "warn",
+            "revise": "fail",
+        }
+        gate = str(base.get("gate") or gate_by_verdict.get(verdict, "warn")).strip().lower()
+        if gate not in {"pass", "warn", "fail"}:
+            gate = gate_by_verdict.get(verdict, "warn")
+
+        concerns = base.get("concerns")
+        if not isinstance(concerns, list):
+            concerns = [str(concerns)] if concerns else []
+
+        suggestions = base.get("suggestions")
+        if not isinstance(suggestions, list):
+            suggestions = [str(suggestions)] if suggestions else []
+
+        confidence = base.get("confidence")
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+
+        checks = base.get("checks")
+        if not isinstance(checks, list) or not checks:
+            checks = self._derive_preflight_checks(hypothesis, concerns)
+
+        return {
+            "verdict": verdict,
+            "gate": gate,
+            "concerns": concerns,
+            "suggestions": suggestions,
+            "checks": checks,
+            "confidence": confidence,
+        }
+
+    def _derive_preflight_checks(self, hypothesis: str, concerns: List[str]) -> List[Dict]:
+        """Derive pass/warn/fail statuses for preflight review criteria."""
+        h_lower = (hypothesis or "").lower()
+        concern_text = " ".join(c.lower() for c in concerns)
+
+        metric_words = [
+            "loss", "novelty", "rate", "ratio", "pass", "survive",
+            "accuracy", "faster", "slower", "better", "worse",
+            "increase", "decrease", "improve", "%",
+        ]
+        has_metric = any(w in h_lower for w in metric_words)
+
+        testability_words = [
+            "if", "then", "because", "compared", "versus", "vs",
+            "should", "will", "than", "predict",
+        ]
+        has_testability = has_metric and any(w in h_lower for w in testability_words)
+
+        fallback_words = [
+            "fallback", "backup", "otherwise", "if not", "if this fails",
+            "ablation", "control", "next step", "alternative",
+        ]
+        has_fallback = any(w in h_lower for w in fallback_words)
+
+        confound_signal = any(
+            token in concern_text
+            for token in ["vague", "specific", "architectural", "measurable", "confound"]
+        )
+
+        def _status(pass_cond: bool, warn_cond: bool = False) -> str:
+            if pass_cond:
+                return "pass"
+            if warn_cond:
+                return "warn"
+            return "fail"
+
+        return [
+            {
+                "key": "testability",
+                "label": "Testability",
+                "status": _status(has_testability, has_metric),
+            },
+            {
+                "key": "measurable_metric",
+                "label": "Measurable Metric",
+                "status": _status(has_metric),
+            },
+            {
+                "key": "confound_risk",
+                "label": "Confound Risk",
+                "status": _status(not confound_signal and has_metric, has_metric),
+            },
+            {
+                "key": "fallback_plan",
+                "label": "Fallback Plan",
+                "status": _status(has_fallback, not has_fallback),
+            },
+        ]
+
+    def _parse_critique_response(self, text: str, hypothesis: str) -> Dict:
+        """Parse LLM critique response into structured dict."""
+        verdict = "caution"
+        concerns = []
+        suggestions = []
+        confidence = 0.5
+
+        for line in text.split("\n"):
+            line_stripped = line.strip()
+            lower = line_stripped.lower()
+            if lower.startswith("verdict:"):
+                v = lower.split(":", 1)[1].strip()
+                if "proceed" in v:
+                    verdict = "proceed"
+                elif "revise" in v:
+                    verdict = "revise"
+                else:
+                    verdict = "caution"
+            elif lower.startswith("confidence:"):
+                try:
+                    confidence = float(lower.split(":", 1)[1].strip())
+                    confidence = max(0.0, min(1.0, confidence))
+                except ValueError:
+                    pass
+            elif lower.startswith("concerns:"):
+                rest = line_stripped.split(":", 1)[1].strip()
+                if rest.lower() != "none":
+                    concerns.append(rest)
+            elif lower.startswith("suggestions:"):
+                rest = line_stripped.split(":", 1)[1].strip()
+                if rest.lower() != "none":
+                    suggestions.append(rest)
+            elif line_stripped.startswith("- ") or line_stripped.startswith("* "):
+                item = line_stripped[2:].strip()
+                if item:
+                    if suggestions or (not concerns):
+                        suggestions.append(item)
+                    else:
+                        concerns.append(item)
+
+        return {
+            "verdict": verdict,
+            "concerns": concerns,
+            "suggestions": suggestions,
+            "confidence": confidence,
+        }
+
+    def _rule_based_critique(self, hypothesis: str) -> Dict:
+        """Rule-based hypothesis critique when LLM is unavailable."""
+        concerns = []
+        suggestions = []
+        h_lower = hypothesis.lower()
+
+        # Check specificity
+        vague_phrases = ["try something", "explore", "test if", "see what happens",
+                         "might work", "could be"]
+        if any(p in h_lower for p in vague_phrases):
+            concerns.append("Hypothesis is vague — lacks specific testable prediction.")
+            suggestions.append("Name specific ops, patterns, or metric thresholds.")
+
+        # Check length (too short = probably not specific enough)
+        if len(hypothesis.strip()) < 30:
+            concerns.append("Hypothesis is very short — may lack necessary detail.")
+            suggestions.append("Include what you expect to happen and why.")
+
+        # Check for measurable outcome
+        metric_words = ["loss", "novelty", "rate", "ratio", "pass", "survive",
+                        "accuracy", "faster", "slower", "better", "worse",
+                        "increase", "decrease", "improve", "%"]
+        has_metric = any(w in h_lower for w in metric_words)
+        if not has_metric:
+            concerns.append("No measurable outcome mentioned.")
+            suggestions.append("Include expected metric direction (e.g., 'should lower loss ratio').")
+
+        # Check for architectural specificity
+        arch_words = ["conv", "attention", "ssm", "scan", "fft", "frequency",
+                      "linear", "residual", "gate", "sort", "pool", "kernel",
+                      "functional", "basis", "fixed_point", "token_mixing",
+                      "channel_mixing", "depth", "ops", "graph"]
+        has_arch = any(w in h_lower for w in arch_words)
+        if not has_arch:
+            concerns.append("No architectural specifics mentioned.")
+            suggestions.append("Reference specific operations, structure types, or graph properties.")
+
+        if not concerns:
+            return {
+                "verdict": "proceed",
+                "concerns": [],
+                "suggestions": [],
+                "confidence": 0.7,
+            }
+        elif len(concerns) >= 3:
+            return {
+                "verdict": "revise",
+                "concerns": concerns,
+                "suggestions": suggestions,
+                "confidence": 0.3,
+            }
+        else:
+            return {
+                "verdict": "caution",
+                "concerns": concerns,
+                "suggestions": suggestions,
+                "confidence": 0.5,
+            }
+
     def _extract_breakthrough_metrics_from_context(self, context: str) -> Dict[str, float]:
         """Best-effort parse of validation metrics from free-form context text."""
         parsed: Dict[str, float] = {}

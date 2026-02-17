@@ -124,6 +124,16 @@ def _estimate_op_flops(op_name: str, seq_len: int, d_model: int,
         # Tropical/hyperbolic/clifford: ~2-5x elementwise
         return 3 * S * D
 
+    elif cat == OpCategory.FUNCTIONAL:
+        if op_name == "integral_kernel":
+            # Kernel mixing: S*S + S*D*D
+            return S * S * D + S * D * D
+        if op_name == "fixed_point_iter":
+            # 3 iterations of D*D linear + tanh
+            return 3 * S * D * D
+        # basis_expansion: ~4 * S * D (sin/cos)
+        return 4 * S * D
+
     elif cat == OpCategory.STRUCTURAL:
         if op_name == "multi_head_mix":
             # L2 normalize per head: ~3 ops per element

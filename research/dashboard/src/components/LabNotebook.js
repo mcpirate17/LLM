@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
@@ -23,6 +23,41 @@ const TYPE_COLORS = {
   error: 'var(--accent-red)',
   note: 'var(--text-muted)',
 };
+
+const CRITIQUE_VERDICT_STYLES = {
+  proceed: { color: 'var(--accent-green)', label: 'Proceed', icon: '\u2714' },
+  caution: { color: 'var(--accent-yellow)', label: 'Caution', icon: '\u26A0' },
+  revise: { color: 'var(--accent-red)', label: 'Revise', icon: '\u2718' },
+};
+
+function hypothesisProvenanceLabel(source) {
+  if (source === 'llm_context') return 'LLM + Context';
+  if (source === 'structured_hypothesis') return 'LLM Structured';
+  if (source === 'rule_based_fallback') return 'Rule Fallback';
+  if (source === 'rule_based') return 'Rule-Based';
+  if (source === 'user_input') return 'User Input';
+  if (source === 'runner_template') return 'Runner Template';
+  return null;
+}
+
+function hypothesisConfidence(metadata) {
+  if (metadata?.confidence != null) return metadata.confidence;
+  if (metadata?.critique_confidence != null) return metadata.critique_confidence;
+  return 'not provided';
+}
+
+function hypothesisCritiqueValue(metadata) {
+  const critique = metadata?.preflight_critique || metadata?.critique;
+  if (!critique) return null;
+  if (typeof critique === 'string') return critique;
+  if (typeof critique === 'object') {
+    const verdict = critique.verdict || 'unknown';
+    const gate = critique.gate || 'n/a';
+    const concerns = Array.isArray(critique.concerns) ? critique.concerns : [];
+    return `${verdict} (gate=${gate})${concerns.length ? ` — ${concerns[0]}` : ''}`;
+  }
+  return null;
+}
 
 /**
  * Score a notebook entry 0-100 by importance.
@@ -63,11 +98,33 @@ const COLUMNS = [
   { key: 'timestamp', label: 'Time' },
 ];
 
+const LAB_NOTEBOOK_SORT_PREFS_KEY = 'dashboard.lab-notebook.sort.v1';
+
 function LabNotebook({ entries, onSelectExperiment }) {
-  const [sortKey, setSortKey] = useState('_score');
-  const [sortDesc, setSortDesc] = useState(true);
+  const [sortKey, setSortKey] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(LAB_NOTEBOOK_SORT_PREFS_KEY) || '{}');
+      if (typeof stored.sortKey === 'string' && COLUMNS.some((column) => column.key === stored.sortKey)) {
+        return stored.sortKey;
+      }
+    } catch {}
+    return '_score';
+  });
+  const [sortDesc, setSortDesc] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(LAB_NOTEBOOK_SORT_PREFS_KEY) || '{}');
+      if (typeof stored.sortDesc === 'boolean') {
+        return stored.sortDesc;
+      }
+    } catch {}
+    return true;
+  });
   const [expandedId, setExpandedId] = useState(null);
   const [copiedValue, copyText] = useCopyToClipboard();
+
+  useEffect(() => {
+    localStorage.setItem(LAB_NOTEBOOK_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
+  }, [sortKey, sortDesc]);
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -80,7 +137,17 @@ function LabNotebook({ entries, onSelectExperiment }) {
 
   const augmented = useMemo(() => {
     if (!entries) return [];
-    return entries.map(e => ({ ...e, _score: entryScore(e) }));
+    return entries.map(e => {
+      let parsedMetadata = e.metadata;
+      if (!parsedMetadata || typeof parsedMetadata !== 'object') {
+        try {
+          parsedMetadata = e.metadata_json ? JSON.parse(e.metadata_json) : {};
+        } catch {
+          parsedMetadata = {};
+        }
+      }
+      return { ...e, metadata: parsedMetadata || {}, _score: entryScore(e) };
+    });
   }, [entries]);
 
   const sorted = useMemo(() => {
@@ -161,6 +228,14 @@ function LabNotebook({ entries, onSelectExperiment }) {
             const contentPreview = (entry.content || '').length > 120
               ? entry.content.slice(0, 120) + '...'
               : entry.content;
+            const provenanceSource = entry.metadata?.source;
+            const provenanceLabel = hypothesisProvenanceLabel(provenanceSource);
+            const critique = entry.metadata?.preflight_critique || entry.metadata?.critique;
+            const critiqueObject = critique && typeof critique === 'object' ? critique : null;
+            const critiqueText = hypothesisCritiqueValue(entry.metadata);
+            const critiqueStyle = critiqueObject?.verdict
+              ? (CRITIQUE_VERDICT_STYLES[critiqueObject.verdict] || CRITIQUE_VERDICT_STYLES.caution)
+              : null;
 
             return (
               <React.Fragment key={entry.entry_id || i}>
@@ -192,6 +267,36 @@ function LabNotebook({ entries, onSelectExperiment }) {
                     }}>
                       {entry.entry_type}
                     </span>
+                    {entry.entry_type === 'hypothesis' && provenanceLabel && (
+                      <span style={{
+                        marginLeft: 6,
+                        fontSize: 10,
+                        color: 'var(--text-muted)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 3,
+                        padding: '1px 5px',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {provenanceLabel}
+                      </span>
+                    )}
+                    {entry.entry_type === 'hypothesis' && critiqueStyle && (
+                      <span
+                        title={`Preflight review: ${critiqueStyle.label}${critiqueObject?.concerns?.length ? ' — ' + critiqueObject.concerns[0] : ''}`}
+                        style={{
+                          marginLeft: 6,
+                          fontSize: 10,
+                          color: critiqueStyle.color,
+                          border: `1px solid ${critiqueStyle.color}55`,
+                          background: `${critiqueStyle.color}11`,
+                          borderRadius: 3,
+                          padding: '1px 5px',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {critiqueStyle.icon} {critiqueStyle.label}
+                      </span>
+                    )}
                   </td>
                   <td style={{ fontWeight: 500, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {entry.title}
@@ -231,6 +336,58 @@ function LabNotebook({ entries, onSelectExperiment }) {
                         whiteSpace: 'pre-wrap',
                       }}>
                         {entry.content}
+                        {entry.entry_type === 'hypothesis' && provenanceLabel && (
+                          <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+                            <div><strong>Hypothesis provenance:</strong> {provenanceLabel}</div>
+                            <div><strong>Context used:</strong> {entry.metadata?.used_context ? 'yes' : 'no'}</div>
+                            <div><strong>Review status:</strong> {entry.metadata?.review_status || 'not provided'}</div>
+                            <div><strong>Confidence:</strong> {hypothesisConfidence(entry.metadata)}</div>
+                          </div>
+                        )}
+                        {entry.entry_type === 'hypothesis' && critiqueStyle && critiqueObject && (
+                          <div style={{
+                            marginTop: 10,
+                            padding: '8px 10px',
+                            borderRadius: 6,
+                            border: `1px solid ${critiqueStyle.color}`,
+                            background: `${critiqueStyle.color}11`,
+                            fontSize: 12,
+                            lineHeight: 1.5,
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: (critiqueObject.concerns?.length || critiqueObject.suggestions?.length) ? 6 : 0 }}>
+                              <span style={{ fontSize: 14 }}>{critiqueStyle.icon}</span>
+                              <strong style={{ color: critiqueStyle.color }}>Preflight Review: {critiqueStyle.label}</strong>
+                              {critiqueObject.confidence != null && (
+                                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                                  confidence {(critiqueObject.confidence * 100).toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                            {critiqueObject.concerns?.length > 0 && (
+                              <div style={{ marginBottom: critiqueObject.suggestions?.length ? 4 : 0 }}>
+                                {critiqueObject.concerns.map((c, ci) => (
+                                  <div key={ci} style={{ color: 'var(--text-secondary)', paddingLeft: 20 }}>
+                                    &bull; {c}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {critiqueObject.suggestions?.length > 0 && (
+                              <div>
+                                {critiqueObject.suggestions.map((s, si) => (
+                                  <div key={si} style={{ color: 'var(--text-muted)', paddingLeft: 20, fontStyle: 'italic' }}>
+                                    &rarr; {s}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {entry.entry_type === 'hypothesis' && !critiqueStyle && critiqueText && (
+                          <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+                            <strong>Critique:</strong> {critiqueText}
+                          </div>
+                        )}
                         <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                           {entry.experiment_id && onSelectExperiment && (
                             <button

@@ -168,15 +168,40 @@ const COLUMNS = [
   { key: 'timestamp', label: 'Time' },
 ];
 
+const TRENDS_SORT_PREFS_KEY = 'dashboard.trends.sort.v1';
+
 function TrendCharts({ onSelectExperiment }) {
   const [trends, setTrends] = useState(null);
   const [weightEvents, setWeightEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [sortKey, setSortKey] = useState('_score');
-  const [sortDesc, setSortDesc] = useState(true);
+  const [sortKey, setSortKey] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(TRENDS_SORT_PREFS_KEY) || '{}');
+      const validKeys = new Set(COLUMNS.map((column) => column.key));
+      if (typeof stored.sortKey === 'string' && validKeys.has(stored.sortKey)) {
+        return stored.sortKey;
+      }
+    } catch {}
+    return '_score';
+  });
+  const [sortDesc, setSortDesc] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(TRENDS_SORT_PREFS_KEY) || '{}');
+      if (typeof stored.sortDesc === 'boolean') {
+        return stored.sortDesc;
+      }
+    } catch {}
+    return true;
+  });
   const [lastUpdated, setLastUpdated] = useState(null);
   const [copiedValue, copyText] = useCopyToClipboard();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TRENDS_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
+    } catch {}
+  }, [sortKey, sortDesc]);
 
   useEffect(() => {
     const safeFetch = (url) => fetch(url).then(r => {

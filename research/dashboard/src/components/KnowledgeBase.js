@@ -20,6 +20,9 @@ const CATEGORY_LABELS = {
   tool_insight: 'Tool Insight',
 };
 
+const KNOWLEDGE_CATEGORIES = ['principle', 'anti_pattern', 'sweet_spot', 'correlation', 'tool_insight'];
+const KNOWLEDGE_BASE_PREFS_KEY = 'dashboard.knowledge-base.prefs.v1';
+
 function ConfidenceBar({ confidence }) {
   const pct = Math.min(confidence * 100, 100);
   const color = confidenceColor(confidence);
@@ -41,8 +44,25 @@ function KnowledgeBase({ onSelectExperiment }) {
   const [loading, setLoading] = useState(true);
   const [searchLoading, setSearchLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [filter, setFilter] = useState(null);
-  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(KNOWLEDGE_BASE_PREFS_KEY) || '{}');
+      if (stored.filter === null) return null;
+      if (typeof stored.filter === 'string' && KNOWLEDGE_CATEGORIES.includes(stored.filter)) {
+        return stored.filter;
+      }
+    } catch {}
+    return null;
+  });
+  const [search, setSearch] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(KNOWLEDGE_BASE_PREFS_KEY) || '{}');
+      if (typeof stored.search === 'string') {
+        return stored.search;
+      }
+    } catch {}
+    return '';
+  });
   const [expanded, setExpanded] = useState({});
   const [lastUpdated, setLastUpdated] = useState(null);
   const [copiedValue, copyText] = useCopyToClipboard();
@@ -58,6 +78,12 @@ function KnowledgeBase({ onSelectExperiment }) {
       .then(d => { setAllEntries(Array.isArray(d) ? d : []); setIsSearchResult(false); setLastUpdated(new Date()); setLoading(false); })
       .catch(e => { setError('Failed to load knowledge base: ' + e.message); setLoading(false); });
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(KNOWLEDGE_BASE_PREFS_KEY, JSON.stringify({ filter, search }));
+    } catch {}
+  }, [filter, search]);
 
   const categoryCounts = useMemo(() => {
     const counts = {};
@@ -112,8 +138,6 @@ function KnowledgeBase({ onSelectExperiment }) {
     setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const categories = ['principle', 'anti_pattern', 'sweet_spot', 'correlation', 'tool_insight'];
-
   return (
     <div>
       <h2 style={{ fontSize: 16, marginBottom: 16 }}>Knowledge Base</h2>
@@ -135,7 +159,7 @@ function KnowledgeBase({ onSelectExperiment }) {
         >
           All ({allEntries.length})
         </button>
-        {categories.map(cat => (
+        {KNOWLEDGE_CATEGORIES.map(cat => (
           <button
             key={cat}
             className={`tab ${filter === cat ? 'active' : ''}`}

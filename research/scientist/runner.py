@@ -17,6 +17,7 @@ import gc
 import hashlib
 import json
 import queue
+import re
 import threading
 import time
 import traceback
@@ -50,7 +51,8 @@ from .llm.context import (build_experiment_context,
                           build_hypothesis_context, build_go_no_go_context,
                           build_knowledge_extraction_context,
                           build_campaign_report_context,
-                          build_campaign_formulation_context)
+                          build_campaign_formulation_context,
+                          build_manual_start_fallback_context)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -203,6 +205,8 @@ class LiveProgress:
     best_fitness: Optional[float] = None
     avg_fitness: Optional[float] = None
     archive_size: int = 0
+    # Preflight hypothesis critique
+    hypothesis_critique: Optional[Dict] = None
 
     def to_dict(self) -> Dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -300,6 +304,30 @@ class ExperimentRunner:
         """Create a reproducible 31-bit seed from contextual parts."""
         key = "|".join(str(p) for p in parts)
         return int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) & 0x7FFFFFFF
+
+    @staticmethod
+    def _build_hypothesis_metadata(
+        source: str,
+        llm_used: bool = False,
+        fallback_used: bool = False,
+        used_context: bool = False,
+        review_status: str = "not_reviewed",
+        confidence: Optional[float] = None,
+        critique: Any = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {
+            "source": source,
+            "llm_used": llm_used,
+            "fallback_used": fallback_used,
+            "used_context": used_context,
+            "review_status": review_status,
+            "confidence": confidence,
+            "critique": critique,
+        }
+        if extra:
+            metadata.update(extra)
+        return metadata
 
     def _get_corpus_batcher(self, config: RunConfig) -> Optional[CorpusTokenBatcher]:
         """Lazily create or reuse corpus batcher for corpus-mode training."""
@@ -519,6 +547,9 @@ class ExperimentRunner:
         }
         if hypothesis is None:
             context = self._build_start_experiment_hypothesis_context(nb, config)
+            llm_available = self.aria._get_llm() is not None
+            if llm_available and not (context or "").strip():
+                context = build_manual_start_fallback_context(config.to_dict())
             result = None
             if context:
                 result = self.aria.formulate_hypothesis(
@@ -541,6 +572,23 @@ class ExperimentRunner:
             if context:
                 hypothesis_metadata["context_char_count"] = len(context)
 
+        # Preflight hypothesis critique
+        critique = None
+        if hypothesis:
+            try:
+                critique_context = self._build_start_experiment_hypothesis_context(
+                    nb, config,
+                ) if hypothesis_metadata.get("source") == "user_input" else ""
+                critique = self.aria.critique_hypothesis(
+                    hypothesis, context=critique_context,
+                )
+                hypothesis_metadata["preflight_critique"] = critique
+                hypothesis_metadata["critique"] = critique
+                hypothesis_metadata["critique_confidence"] = critique.get("confidence")
+                hypothesis_metadata["review_status"] = f"preflight_{critique.get('gate', 'warn')}"
+            except Exception as e:
+                logger.warning(f"Hypothesis critique failed: {e}")
+
         exp_id = nb.start_experiment(
             experiment_type="synthesis",
             config=config.to_dict(),
@@ -555,6 +603,7 @@ class ExperimentRunner:
                 status="generating",
                 total_programs=config.n_programs,
                 aria_message=self.aria.greet(),
+                hypothesis_critique=critique,
             )
 
         self._emit_event("experiment_started", {
@@ -562,6 +611,7 @@ class ExperimentRunner:
             "hypothesis": hypothesis,
             "config": config.to_dict(),
             "aria_greeting": self.aria.greet(),
+            "hypothesis_critique": critique,
         })
 
         self._thread = threading.Thread(
@@ -599,7 +649,7 @@ class ExperimentRunner:
             return context
         except Exception as e:
             logger.debug("Failed to build manual hypothesis context: %s", e)
-            return ""
+            return build_manual_start_fallback_context(config.to_dict())
 
     def start_continuous(self, config: RunConfig) -> str:
         """Start continuous experiment mode in background."""
@@ -1408,6 +1458,15 @@ class ExperimentRunner:
                     success_metric=structured_hyp["success_metric"],
                     parent_id=parent_id,
                     confidence=structured_hyp["confidence"],
+                    metadata={
+                        "source": "structured_hypothesis",
+                        "llm_used": True,
+                        "fallback_used": False,
+                        "used_context": True,
+                        "review_status": "not_reviewed",
+                        "confidence": structured_hyp.get("confidence"),
+                        "critique": structured_hyp.get("critique"),
+                    },
                 )
                 self._current_hypothesis_id = hypothesis_id
 
@@ -1735,6 +1794,12 @@ class ExperimentRunner:
             experiment_type="evolution",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source="runner_template",
+                llm_used=False,
+                fallback_used=False,
+                used_context=False,
+            ),
         )
 
         with self._lock:
@@ -1845,6 +1910,12 @@ class ExperimentRunner:
             experiment_type="novelty",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source="runner_template",
+                llm_used=False,
+                fallback_used=False,
+                used_context=False,
+            ),
         )
 
         with self._lock:
@@ -2021,6 +2092,12 @@ class ExperimentRunner:
             experiment_type="investigation",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source="llm_context",
+                llm_used=True,
+                fallback_used=False,
+                used_context=True,
+            ),
         )
 
         with self._lock:
@@ -2319,6 +2396,12 @@ class ExperimentRunner:
                 "continuous_auto",
             ),
             hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source="llm_context",
+                llm_used=True,
+                fallback_used=False,
+                used_context=True,
+            ),
         )
 
         with self._lock:
@@ -3435,16 +3518,33 @@ class ExperimentRunner:
             analytics = ExperimentAnalytics(nb)
             structured = analytics.compute_insights()
 
-            # Deduplicate: skip insights whose content already exists
-            existing = {row["content"] for row in nb.get_insights(limit=200)}
+            # Deduplicate: normalize numbers out of content so
+            # "appears in 144 survivors" matches "appears in 145 survivors"
+            def _dedup_key(text: str) -> str:
+                s = re.sub(r'\d+\.\d+%?', '#', text)   # decimals / pcts
+                s = re.sub(r'\b\d{2,}\b', '#', s)       # multi-digit ints
+                return s
+
+            # Build map: dedup_key -> list of existing insight rows
+            existing_by_key: dict = {}
+            for row in nb.get_insights(limit=500):
+                key = _dedup_key(row["content"])
+                existing_by_key.setdefault(key, []).append(row)
 
             recorded = []
             for ins in structured:
                 content = ins if isinstance(ins, str) else ins.get("content", "")
-                if content in existing:
-                    continue
+                key = _dedup_key(content)
                 category = ins.get("category", "pattern") if isinstance(ins, dict) else "pattern"
                 confidence = ins.get("confidence", 0.7) if isinstance(ins, dict) else 0.7
+
+                old_entries = existing_by_key.get(key, [])
+                if old_entries:
+                    # Supersede all old versions of this insight
+                    for old in old_entries:
+                        nb.supersede_insight(old["insight_id"])
+                    existing_by_key[key] = []
+
                 nb.record_insight(category, content, exp_id, confidence=confidence)
                 self.aria.add_insight(content)
                 recorded.append(content)
@@ -4285,6 +4385,7 @@ class ExperimentRunner:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+        source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
             hypothesis = (
                 f"Investigation: deep study of {len(result_ids)} screening survivors "
@@ -4295,6 +4396,12 @@ class ExperimentRunner:
             experiment_type="investigation",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source=source,
+                llm_used=False,
+                fallback_used=False,
+                used_context=False,
+            ),
         )
         nb.close()
 
@@ -4633,6 +4740,7 @@ class ExperimentRunner:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+        source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
             hypothesis = (
                 f"Validation: publication-grade testing of {len(result_ids)} "
@@ -4643,6 +4751,12 @@ class ExperimentRunner:
             experiment_type="validation",
             config=self._validation_config_with_result_ids(config, result_ids, trigger),
             hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source=source,
+                llm_used=False,
+                fallback_used=False,
+                used_context=False,
+            ),
         )
         nb.close()
 
@@ -5373,13 +5487,26 @@ class ExperimentRunner:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+        hypothesis_metadata = self._build_hypothesis_metadata(
+            source="user_input" if hypothesis is not None else "unknown",
+            llm_used=False,
+            fallback_used=False,
+            used_context=False,
+        )
         if hypothesis is None:
-            hypothesis = self.aria.formulate_hypothesis()
+            result = self.aria.formulate_hypothesis(return_metadata=True)
+            if isinstance(result, tuple):
+                hypothesis, meta = result
+                hypothesis_metadata.update(meta or {})
+            else:
+                hypothesis = result
+                hypothesis_metadata["source"] = "rule_based"
 
         exp_id = nb.start_experiment(
             experiment_type="evolution",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=hypothesis_metadata,
         )
         nb.close()
 
@@ -5415,13 +5542,26 @@ class ExperimentRunner:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+        hypothesis_metadata = self._build_hypothesis_metadata(
+            source="user_input" if hypothesis is not None else "unknown",
+            llm_used=False,
+            fallback_used=False,
+            used_context=False,
+        )
         if hypothesis is None:
-            hypothesis = self.aria.formulate_hypothesis()
+            result = self.aria.formulate_hypothesis(return_metadata=True)
+            if isinstance(result, tuple):
+                hypothesis, meta = result
+                hypothesis_metadata.update(meta or {})
+            else:
+                hypothesis = result
+                hypothesis_metadata["source"] = "rule_based"
 
         exp_id = nb.start_experiment(
             experiment_type="novelty",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=hypothesis_metadata,
         )
         nb.close()
 
@@ -5857,6 +5997,7 @@ class ExperimentRunner:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+        source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
             hypothesis = (
                 f"Scale-up validation: testing whether {len(result_ids)} "
@@ -5867,6 +6008,12 @@ class ExperimentRunner:
             experiment_type="scale_up",
             config=config.to_dict(),
             hypothesis=hypothesis,
+            hypothesis_metadata=self._build_hypothesis_metadata(
+                source=source,
+                llm_used=False,
+                fallback_used=False,
+                used_context=False,
+            ),
         )
         nb.close()
 

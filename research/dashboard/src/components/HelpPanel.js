@@ -74,6 +74,26 @@ Clamped to [0.3, 5.0]. Higher weight = sampled more often.
 **Learning Log** - Audit trail of weight changes applied before each experiment. Viewable in the Learning tab.`
   },
   {
+    title: 'Token Mixing Taxonomy',
+    content: `Each candidate architecture uses one or more token mixing mechanisms. The Program Detail view classifies detected ops into families:
+
+**QKV-based (Attention)** - Standard softmax attention, causal masking, local window attention, multi-head mixing. Complexity: O(n²) or O(n) for windowed variants.
+
+**State Space (SSM)** - Selective scan (Mamba-style) with input-dependent state transitions. Linear complexity, recurrent.
+
+**Convolution** - Depthwise 1D convolution along the sequence dimension. Linear complexity, local receptive field.
+
+**Frequency Domain** - FFT-based mixing: transform to frequency domain, process, then inverse FFT. Linear complexity, global mixing.
+
+**Sort-based** - Differentiable sorting/argsort along sequence dimension. O(n log n) complexity, data-dependent routing.
+
+**Pooling** - Token pool-and-restore for hierarchical compression. Linear complexity.
+
+**Functional/Operator** - Neural operator primitives: basis expansion (sinusoidal projection), integral kernel mixing (learned position kernel), and fixed-point iteration (implicit DEQ-style layers). These operate in function space rather than discrete token space.
+
+A program labeled **QKV-free** uses none of the standard attention primitives — it relies entirely on alternative mechanisms like SSMs, convolutions, frequency-domain mixing, or functional operators.`
+  },
+  {
     title: 'LLM Configuration',
     content: `Aria uses an LLM backend for analysis, hypothesis generation, and summaries. Without one, she falls back to rule-based methods.
 

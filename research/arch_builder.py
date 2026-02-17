@@ -429,6 +429,28 @@ class GraphAttention(nn.Module):
         return self.attn(x + edges)
 
 
+class IntegralKernelMixer(nn.Module):
+    """Functional operator-style token mixing via low-rank integral kernels."""
+    def __init__(self, dim: int, n_basis: int = 16, **kwargs):
+        super().__init__()
+        self.n_basis = n_basis
+        self.kernel_in = nn.Linear(dim, n_basis, bias=False)
+        self.kernel_out = nn.Linear(dim, n_basis, bias=False)
+        self.value_proj = nn.Linear(dim, dim, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Build latent basis anchors from sequence-wide weighted integration
+        in_weights = F.softmax(self.kernel_in(x), dim=1)  # (B, S, K), normalized over sequence
+        values = self.value_proj(x)  # (B, S, D)
+        anchors = torch.einsum("bsk,bsd->bkd", in_weights, values)  # (B, K, D)
+
+        # Per-token function coefficients project anchors back to token space
+        out_weights = F.softmax(self.kernel_out(x), dim=-1)  # (B, S, K), normalized over basis
+        mixed = torch.einsum("bsk,bkd->bsd", out_weights, anchors)
+        return self.out_proj(mixed)
+
+
 # ── Channel Mixing Modules ─────────────────────────────────────────────
 
 class SwiGLUMLP(nn.Module):
@@ -545,6 +567,47 @@ class PolynomialExpansion(nn.Module):
             power = power * h
             result = result + power
         return self.proj_out(result)
+
+
+class BasisExpansionLayer(nn.Module):
+    """Function-space basis expansion with learned per-token coefficients."""
+    def __init__(self, dim: int, n_basis: int = 8):
+        super().__init__()
+        self.n_basis = n_basis
+        self.coeff_proj = nn.Linear(dim, n_basis, bias=False)
+        self.basis_proj = nn.Linear(dim, dim * n_basis, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, S, D = x.shape
+        coeff = F.softmax(self.coeff_proj(x), dim=-1)  # (B, S, K)
+        basis = self.basis_proj(x).reshape(B, S, self.n_basis, D)
+        basis = torch.tanh(basis)
+        mixed = (coeff.unsqueeze(-1) * basis).sum(dim=2)
+        return self.out_proj(mixed)
+
+
+class ImplicitFixedPointLayer(nn.Module):
+    """Implicit fixed-point style channel transform with damped iterations."""
+    def __init__(self, dim: int, hidden_mult: float = 2.0, n_steps: int = 4):
+        super().__init__()
+        hidden = max(dim, int(dim * hidden_mult))
+        self.in_proj = nn.Linear(dim, hidden, bias=False)
+        self.out_proj = nn.Linear(hidden, dim, bias=False)
+        self.residual_proj = nn.Linear(dim, dim, bias=False)
+        self.n_steps = n_steps
+        self.damping = nn.Parameter(torch.tensor(0.5))
+
+    def _f(self, h: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        update = self.out_proj(F.silu(self.in_proj(h))) + self.residual_proj(x)
+        return torch.tanh(update)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x
+        alpha = torch.sigmoid(self.damping)
+        for _ in range(self.n_steps):
+            h = alpha * self._f(h, x) + (1.0 - alpha) * h
+        return h
 
 
 class ProductKeyMemory(nn.Module):
@@ -1144,6 +1207,7 @@ def _build_token_mixer(choice: str, cfg: BuildConfig) -> nn.Module:
         "differentiable_sort": lambda: DifferentiableSortMixer(cfg.dim),
         "compressed_attention": lambda: CompressedAttention(cfg.dim, cfg.n_heads, cfg.compression_factor, max_seq_len=cfg.max_seq_len),
         "cross_attention_pool": lambda: CrossAttentionPool(cfg.dim, cfg.n_heads),
+        "integral_kernel_mixing": lambda: IntegralKernelMixer(cfg.dim),
     }
     return mixers[choice]()
 
@@ -1157,6 +1221,8 @@ def _build_channel_mixer(choice: str, cfg: BuildConfig) -> nn.Module:
         "conv1d_glu": lambda: Conv1dGLU(cfg.dim),
         "polynomial_expansion": lambda: PolynomialExpansion(cfg.dim),
         "product_key_memory": lambda: ProductKeyMemory(cfg.dim),
+        "basis_expansion_layer": lambda: BasisExpansionLayer(cfg.dim),
+        "implicit_fixed_point": lambda: ImplicitFixedPointLayer(cfg.dim),
         "identity_skip": lambda: IdentityMLP(),
     }
     return mixers[choice]()

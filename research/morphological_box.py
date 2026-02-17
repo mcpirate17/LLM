@@ -118,6 +118,8 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                    tags=("subquadratic",)),
             Option("cross_attention_pool", "Cross-attend to a small set of learned queries",
                    tags=("subquadratic", "bottleneck")),
+                 Option("integral_kernel_mixing", "Functional operator mixing via learned integral kernels",
+                     tags=("functional", "operator_learning", "global_mixing", "novel")),
         ),
     ),
 
@@ -140,6 +142,10 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                    tags=("polynomial",)),
             Option("product_key_memory", "Product-key memory lookup (large sparse)",
                    tags=("memory", "sparse_compute")),
+                 Option("basis_expansion_layer", "Function-space basis expansion with learned coefficients",
+                     tags=("functional", "operator_learning", "basis")),
+                 Option("implicit_fixed_point", "Implicit fixed-point channel solver (deep-equilibrium style)",
+                     tags=("functional", "implicit_solver", "recurrent")),
             Option("identity_skip", "No channel mixing (identity / skip connection only)",
                    tags=("minimal",)),
         ),
@@ -353,6 +359,18 @@ def _check_structural_constraints(spec: ArchSpec) -> Optional[str]:
     # Feedback loop + early exit = contradictory
     if c["topology"] == "feedback_loop" and c["compute_routing"] == "early_exit":
         return "feedback loops + early exit: contradictory (can't exit if looping back)"
+
+    # Functional token mixing should pair with expressive function-space channels
+    if c["token_mixing"] == "integral_kernel_mixing":
+        if c["channel_mixing"] not in ("basis_expansion_layer", "implicit_fixed_point", "polynomial_expansion"):
+            return (
+                "integral-kernel functional mixing requires function-space channel transforms "
+                "(basis_expansion_layer, implicit_fixed_point, or polynomial_expansion)"
+            )
+
+    # Implicit fixed-point channels conflict with hard early exits
+    if c["channel_mixing"] == "implicit_fixed_point" and c["compute_routing"] == "early_exit":
+        return "implicit fixed-point channel solver + early exit: unstable stopping dynamics"
 
     return None
 

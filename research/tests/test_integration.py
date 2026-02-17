@@ -1528,6 +1528,100 @@ class TestMorphologicalConstraints(unittest.TestCase):
             mb._OPTION_MAP.clear()
             mb._OPTION_MAP.update(original_map)
 
+    def test_functional_family_roll_with_fixed_choices(self):
+        from research import morphological_box as mb
+
+        spec = mb.roll(
+            seed=777,
+            fixed={
+                "token_mixing": "integral_kernel_mixing",
+                "channel_mixing": "basis_expansion_layer",
+            },
+        )
+        self.assertEqual(spec.choices["token_mixing"], "integral_kernel_mixing")
+        self.assertEqual(spec.choices["channel_mixing"], "basis_expansion_layer")
+        valid, reason = mb.is_valid_spec(spec)
+        self.assertTrue(valid, reason)
+
+    def test_functional_token_mixing_rejects_minimal_channel_combo(self):
+        from research import morphological_box as mb
+
+        base = mb.roll(seed=778)
+        choices = dict(base.choices)
+        choices["token_mixing"] = "integral_kernel_mixing"
+        choices["channel_mixing"] = "identity_skip"
+        spec = mb.ArchSpec(choices=choices, seed=778)
+
+        valid, reason = mb.is_valid_spec(spec)
+        self.assertFalse(valid)
+        self.assertIn("integral-kernel functional mixing", reason or "")
+
+    def test_grammar_can_generate_functional_primitives(self):
+        from research.synthesis.grammar import GrammarConfig, generate_layer_graph
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY, OpCategory
+
+        functional_ops = {"basis_expansion", "integral_kernel", "fixed_point_iter"}
+        excluded = {
+            name for name, op in PRIMITIVE_REGISTRY.items()
+            if op.category in (OpCategory.PARAMETERIZED, OpCategory.MATH_SPACE, OpCategory.FUNCTIONAL)
+            and name not in functional_ops
+        }
+
+        cfg = GrammarConfig(
+            model_dim=64,
+            max_depth=7,
+            max_ops=12,
+            split_prob=0.0,
+            merge_prob=0.0,
+            freq_domain_prob=0.0,
+            residual_prob=0.0,
+            excluded_ops=excluded,
+        )
+        cfg.category_weights["functional"] = 8.0
+        cfg.category_weights["parameterized"] = 0.2
+        cfg.category_weights["math_space"] = 0.0
+
+        found = False
+        for seed in range(20, 35):
+            graph = generate_layer_graph(cfg, seed=seed)
+            op_names = [n.op_name for n in graph.nodes.values() if not n.is_input]
+            if any(op in functional_ops for op in op_names):
+                found = True
+                break
+
+        self.assertTrue(found, "Expected at least one generated graph to include a functional primitive")
+
+
+@unittest.skipUnless(HAS_TORCH, "torch not available")
+class TestFunctionalArchitectureBuild(unittest.TestCase):
+    def test_build_and_forward_functional_family_spec(self):
+        from research import morphological_box as mb
+        from research.arch_builder import BuildConfig, build_model
+
+        spec = mb.roll(
+            seed=999,
+            fixed={
+                "token_mixing": "integral_kernel_mixing",
+                "channel_mixing": "implicit_fixed_point",
+                "compute_routing": "uniform",
+            },
+        )
+        cfg = BuildConfig(
+            dim=64,
+            n_heads=4,
+            n_kv_heads=2,
+            n_layers=2,
+            vocab_size=512,
+            max_seq_len=32,
+            mlp_ratio=2.0,
+        )
+        model = build_model(spec, cfg)
+        input_ids = torch.randint(0, cfg.vocab_size, (2, 16))
+        logits = model(input_ids)
+
+        self.assertEqual(tuple(logits.shape), (2, 16, cfg.vocab_size))
+        self.assertTrue(torch.isfinite(logits).all())
+
 
 # ── Test 3: RunConfig & Mode Selection ──
 
@@ -1811,6 +1905,13 @@ class TestAPI(unittest.TestCase):
             test_method="Run integration schema assertions",
             success_metric="All assertions pass",
             confidence=0.7,
+            metadata={
+                "source": "llm_context",
+                "used_context": True,
+                "review_status": "not_reviewed",
+                "confidence": 0.7,
+                "critique": "schema stability check",
+            },
         )
         nb.record_decision(
             campaign_id=campaign_id,
@@ -1909,6 +2010,17 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertIsInstance(data, list)
+        if data:
+            row = data[0]
+            self.assertIn("qkv_usage", row)
+            self.assertIn(row["qkv_usage"], {"full_qkv", "q_eq_k_eq_v", "qkv_free"})
+            self.assertIn("uses_qkv", row)
+            self.assertIsInstance(row["uses_qkv"], bool)
+            self.assertIn("compression_metrics", row)
+            self.assertIn("reproducibility_packet", row)
+            self.assertIn("compression_ratio", row["compression_metrics"])
+            self.assertIn("quality_retention_score", row["compression_metrics"])
+            self.assertIn("status", row["reproducibility_packet"])
 
     def test_api_programs_sort_options(self):
         for sort in ["novelty_score", "loss_ratio"]:
@@ -1922,6 +2034,15 @@ class TestAPI(unittest.TestCase):
             result_id = programs[0]["result_id"]
             r = self.client.get(f"/api/programs/{result_id}")
             self.assertEqual(r.status_code, 200)
+            detail = r.get_json()
+            self.assertIn("qkv_usage", detail)
+            self.assertIn(detail["qkv_usage"], {"full_qkv", "q_eq_k_eq_v", "qkv_free"})
+            self.assertIn("uses_qkv", detail)
+            self.assertIsInstance(detail["uses_qkv"], bool)
+            self.assertIn("compression_metrics", detail)
+            self.assertIn("reproducibility_packet", detail)
+            self.assertIn("compression_ratio", detail["compression_metrics"])
+            self.assertIn("status", detail["reproducibility_packet"])
 
     def test_api_trends(self):
         r = self.client.get("/api/trends")
@@ -1940,6 +2061,9 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertIsInstance(data, list)
+        if data:
+            self.assertIn("metadata", data[0])
+            self.assertIsInstance(data[0]["metadata"], dict)
 
     def test_api_leaderboard(self):
         r = self.client.get("/api/leaderboard")
@@ -1948,6 +2072,8 @@ class TestAPI(unittest.TestCase):
         self.assertIn("entries", data)
         self.assertIn("by_tier", data)
         self.assertIn("total", data)
+        self.assertIn("cross_run_stability_summary", data)
+        self.assertIn("cross_run_stability_window", data)
         self.assertGreater(data["total"], 0)
 
     def test_api_leaderboard_tier_filter(self):
@@ -1999,6 +2125,13 @@ class TestAPI(unittest.TestCase):
         self.assertIn("available", data)
         self.assertIn("by_mode", data)
 
+    def test_api_analytics_math_family_coverage(self):
+        r = self.client.get("/api/analytics/math-family-coverage")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("families", data)
+        self.assertIn("totals", data)
+
     def test_api_analytics_learning_summary(self):
         r = self.client.get("/api/analytics/learning-summary")
         self.assertEqual(r.status_code, 200)
@@ -2035,6 +2168,40 @@ class TestAPI(unittest.TestCase):
     def test_api_stop_when_not_running(self):
         r = self.client.post("/api/experiments/stop")
         self.assertEqual(r.status_code, 409)
+
+    def test_api_start_returns_preflight_critique_gate(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_experiment = MagicMock(return_value="exp-preflight")
+        fake_runner.progress = MagicMock(
+            aria_message="Preflight complete",
+            hypothesis_critique={
+                "verdict": "caution",
+                "gate": "warn",
+                "confidence": 0.61,
+                "checks": [
+                    {"key": "testability", "label": "Testability", "status": "pass"},
+                    {"key": "measurable_metric", "label": "Measurable Metric", "status": "warn"},
+                    {"key": "confound_risk", "label": "Confound Risk", "status": "warn"},
+                    {"key": "fallback_plan", "label": "Fallback Plan", "status": "warn"},
+                ],
+                "concerns": ["Metric needs tighter threshold."],
+                "suggestions": ["Add a fallback baseline check."],
+            },
+        )
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/experiments/start", json={"n_programs": 1, "hypothesis": "test"})
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("hypothesis_critique", data)
+        self.assertIn("hypothesis_review_gate", data)
+        self.assertEqual(data["hypothesis_review_gate"], "warn")
+        self.assertIsInstance(data["hypothesis_critique"], dict)
+        self.assertIn("checks", data["hypothesis_critique"])
 
     def test_api_start_requires_result_ids_for_investigation(self):
         r = self.client.post("/api/experiments/start",
@@ -2100,10 +2267,21 @@ class TestAPI(unittest.TestCase):
         entry = data["entries"][0]
         required_entry_keys = [
             "entry_id", "result_id", "composite_score", "tier",
-            "screening_loss_ratio", "architecture_family",
+            "screening_loss_ratio", "architecture_family", "cross_run_stability",
+            "qkv_usage", "uses_qkv", "compression_metrics", "reproducibility_packet",
         ]
         for key in required_entry_keys:
             self.assertIn(key, entry, f"leaderboard entry missing key: {key}")
+
+        stability = entry["cross_run_stability"]
+        self.assertIn("trend", stability)
+        self.assertIn("seen_runs", stability)
+        self.assertIn(entry["qkv_usage"], {"full_qkv", "q_eq_k_eq_v", "qkv_free"})
+        self.assertIsInstance(entry["uses_qkv"], bool)
+        self.assertIn("compression_ratio", entry["compression_metrics"])
+        self.assertIn("quality_retention_score", entry["compression_metrics"])
+        self.assertIn("status", entry["reproducibility_packet"])
+        self.assertIn("ready_count", entry["reproducibility_packet"])
 
     def test_api_analytics_grammar_weights_schema(self):
         """Grammar weights must have default and holdout_validation keys."""
@@ -2157,6 +2335,93 @@ class TestAPI(unittest.TestCase):
             mode = data["by_mode"][0]
             self.assertIn("routing_mode", mode)
             self.assertIn("n_programs", mode)
+            self.assertIn("sample_size_label", mode)
+            self.assertIn("confidence_label", mode)
+            self.assertIn("stability_label", mode)
+
+    def test_api_analytics_routing_comparison_schema(self):
+        """Routing comparison endpoint returns consolidated mode labels and totals."""
+        r = self.client.get("/api/analytics/routing-comparison")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("available", data)
+        self.assertIn("by_mode", data)
+        self.assertIn("n_modes", data)
+        self.assertIn("total_programs", data)
+        self.assertIn("routed_programs", data)
+        self.assertIn("uniform_programs", data)
+        self.assertIn("explanation", data)
+        self.assertIsInstance(data["by_mode"], list)
+        if data["by_mode"]:
+            row = data["by_mode"][0]
+            for key in (
+                "routing_mode", "n_programs", "stage1_pass_rate",
+                "avg_drop_rate", "avg_utilization_entropy",
+                "avg_confidence_mean", "sample_size_label",
+                "confidence_label", "stability_label", "efficiency_label",
+            ):
+                self.assertIn(key, row)
+
+    def test_api_analytics_gating_diagnostics_schema(self):
+        """Gating diagnostics endpoint returns entropy/collapse/retention structures."""
+        r = self.client.get("/api/analytics/gating-diagnostics")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("available", data)
+        self.assertIn("total_routed_programs", data)
+        self.assertIn("avg_gate_entropy", data)
+        self.assertIn("collapse_risk_counts", data)
+        self.assertIn("by_mode", data)
+        self.assertIn("token_retention_curve_overall", data)
+        self.assertIn("explanation", data)
+        self.assertIsInstance(data["by_mode"], list)
+        self.assertIsInstance(data["collapse_risk_counts"], dict)
+        if data["by_mode"]:
+            row = data["by_mode"][0]
+            for key in (
+                "routing_mode", "n_programs", "avg_gate_entropy",
+                "collapse_risk_label", "avg_token_retention", "token_retention_curve",
+            ):
+                self.assertIn(key, row)
+
+    def test_api_analytics_math_family_coverage_schema(self):
+        """Math family coverage returns stable family/totals structures."""
+        r = self.client.get("/api/analytics/math-family-coverage")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("families", data)
+        self.assertIn("totals", data)
+        self.assertIsInstance(data["families"], list)
+        self.assertIsInstance(data["totals"], dict)
+        self.assertIn("n_tested", data["totals"])
+        self.assertIn("n_survived", data["totals"])
+        if data["families"]:
+            row = data["families"][0]
+            for key in (
+                "family", "n_tested", "n_survived",
+                "survival_rate", "tested_share", "survivor_share",
+            ):
+                self.assertIn(key, row)
+
+    def test_api_analytics_compression_coverage_schema(self):
+        """Compression coverage returns stable technique/totals structures."""
+        r = self.client.get("/api/analytics/compression-coverage")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("techniques", data)
+        self.assertIn("totals", data)
+        self.assertIsInstance(data["techniques"], list)
+        self.assertIsInstance(data["totals"], dict)
+        for key in ("n_tested", "n_survived", "n_compressed_tested", "n_compressed_survived"):
+            self.assertIn(key, data["totals"])
+        if data["techniques"]:
+            row = data["techniques"][0]
+            for key in (
+                "technique", "n_tested", "n_survived", "survival_rate",
+                "tested_share", "survivor_share", "avg_compression_ratio",
+                "avg_estimated_memory_mb", "avg_quality_retention",
+            ):
+                self.assertIn(key, row)
 
     def test_api_analytics_learning_summary_schema(self):
         """Learning summary returns a stable bullet-list contract."""
@@ -2179,10 +2444,14 @@ class TestAPI(unittest.TestCase):
 
         required = [
             "summary", "top_programs", "recent_experiments",
+            "math_family_coverage",
+            "routing_mode_comparison",
+            "gating_behavior_diagnostics",
             "op_success_rates", "structural_correlations",
             "failure_patterns", "top_op_combinations",
             "efficiency_frontier", "experiment_clusters",
             "grammar_weights", "learning_log", "insights", "narrative",
+            "cross_run_stability",
         ]
         for key in required:
             self.assertIn(key, data, f"report missing key: {key}")
@@ -2192,6 +2461,52 @@ class TestAPI(unittest.TestCase):
         self.assertIn("learned", grammar)
         self.assertIn("control_comparison", grammar)
         self.assertIn("holdout_validation", grammar)
+
+        stability = data["cross_run_stability"]
+        self.assertIn("summary", stability)
+        self.assertIn("candidates", stability)
+        self.assertIn("window_size", stability)
+        self.assertIsInstance(stability["summary"], dict)
+        self.assertIsInstance(stability["candidates"], list)
+        self.assertIn("families", data["math_family_coverage"])
+        self.assertIn("totals", data["math_family_coverage"])
+        self.assertIsInstance(data["math_family_coverage"]["families"], list)
+        self.assertIsInstance(data["math_family_coverage"]["totals"], dict)
+        self.assertIn("available", data["routing_mode_comparison"])
+        self.assertIn("by_mode", data["routing_mode_comparison"])
+        self.assertIsInstance(data["routing_mode_comparison"]["by_mode"], list)
+        self.assertIn("available", data["gating_behavior_diagnostics"])
+        self.assertIn("by_mode", data["gating_behavior_diagnostics"])
+        self.assertIn("token_retention_curve_overall", data["gating_behavior_diagnostics"])
+        self.assertIsInstance(data["gating_behavior_diagnostics"]["by_mode"], list)
+        if data["top_programs"]:
+            row = data["top_programs"][0]
+            self.assertIn("qkv_usage", row)
+            self.assertIn(row["qkv_usage"], {"full_qkv", "q_eq_k_eq_v", "qkv_free"})
+            self.assertIn("uses_qkv", row)
+            self.assertIsInstance(row["uses_qkv"], bool)
+            self.assertIn("compression_metrics", row)
+            self.assertIn("reproducibility_packet", row)
+            self.assertIn("compression_ratio", row["compression_metrics"])
+            self.assertIn("status", row["reproducibility_packet"])
+
+    def test_api_reproducibility_manifest_schema(self):
+        """Repro manifest includes canonical metrics and packet completeness."""
+        r_programs = self.client.get("/api/programs")
+        self.assertEqual(r_programs.status_code, 200)
+        programs = r_programs.get_json()
+        if not programs:
+            return
+        result_id = programs[0]["result_id"]
+
+        r = self.client.get(f"/api/reproducibility-manifest/{result_id}")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("canonical_metrics", data)
+        self.assertIn("packet_status", data)
+        self.assertIn("compression", data["canonical_metrics"])
+        self.assertIn("compression_ratio", data["canonical_metrics"]["compression"])
+        self.assertIn("status", data["packet_status"])
 
     def test_api_trends_entry_schema(self):
         """Trends entries should expose timeline and stage-rate fields."""
@@ -2266,9 +2581,17 @@ class TestAPI(unittest.TestCase):
         self.assertIn("experiments", data)
         self.assertIn("hypotheses", data)
         self.assertIn("decisions", data)
+        self.assertIn("success_criteria_tracker", data)
         self.assertIsInstance(data["experiments"], list)
         self.assertIsInstance(data["hypotheses"], list)
         self.assertIsInstance(data["decisions"], list)
+        self.assertIsInstance(data["success_criteria_tracker"], list)
+        self.assertGreater(len(data["hypotheses"]), 0)
+
+        hypothesis = data["hypotheses"][0]
+        self.assertIn("metadata", hypothesis)
+        self.assertIsInstance(hypothesis["metadata"], dict)
+        self.assertEqual(hypothesis["metadata"].get("source"), "llm_context")
 
     def test_api_campaign_report_schema(self):
         """Campaign report payload must include campaign/report/stats sections."""
@@ -2279,6 +2602,8 @@ class TestAPI(unittest.TestCase):
         self.assertIn("campaign", data)
         self.assertIn("report", data)
         self.assertIn("stats", data)
+        self.assertIn("success_criteria_tracker", data)
+        self.assertIsInstance(data["success_criteria_tracker"], list)
         stats = data["stats"]
         for key in ("n_experiments", "n_hypotheses", "n_confirmed", "n_refuted", "n_decisions"):
             self.assertIn(key, stats, f"campaign report stats missing key: {key}")
@@ -2718,6 +3043,17 @@ class TestPersona(unittest.TestCase):
         hyp = self.aria.formulate_validation_hypothesis()
         self.assertIsInstance(hyp, str)
 
+    def test_hypothesis_critique_returns_gate_and_checks(self):
+        self.aria._get_llm = MagicMock(return_value=None)
+        critique = self.aria.critique_hypothesis("Try something new")
+        self.assertIn("verdict", critique)
+        self.assertIn("gate", critique)
+        self.assertIn(critique["gate"], {"pass", "warn", "fail"})
+        self.assertIn("checks", critique)
+        self.assertIsInstance(critique["checks"], list)
+        check_keys = {c.get("key") for c in critique["checks"] if isinstance(c, dict)}
+        self.assertTrue({"testability", "measurable_metric", "confound_risk", "fallback_plan"}.issubset(check_keys))
+
     def test_announce_breakthrough(self):
         msg = self.aria.announce_breakthrough()
         self.assertIsInstance(msg, str)
@@ -2858,12 +3194,19 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/analytics/op-success", "/api/analytics/failure-patterns",
             "/api/analytics/grammar-weights", "/api/analytics/efficiency-frontier",
             "/api/analytics/learning-log", "/api/analytics/experiment-clusters",
-            "/api/analytics/routing-health", "/api/analytics/learning-summary",
+            "/api/analytics/routing-health", "/api/analytics/math-family-coverage",
+            "/api/analytics/routing-comparison",
+            "/api/analytics/gating-diagnostics",
+            "/api/analytics/compression-coverage",
+            "/api/analytics/learning-summary",
             "/api/analytics/learning-trajectory",
             "/api/metrics/",
             "/api/experiments/start", "/api/experiments/stop",
             "/api/campaigns", "/api/hypotheses",
             "/api/knowledge",
+            "/api/decision-packet/",
+            "/api/reproducibility-manifest/",
+            "/api/analytics/negative-results",
         }
 
         for filepath in self.component_files:
@@ -2958,6 +3301,18 @@ class TestDashboardConsistency(unittest.TestCase):
                     matched,
                     f"Frontend route has no backend mapping: {path} in {os.path.basename(filepath)}",
                 )
+
+    def test_strategy_advisor_breakthrough_count_uses_tier(self):
+        """StrategyAdvisor should count breakthroughs from tier, not score heuristics."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+
+        self.assertIn("const tier = normalizeTier(entry);", content)
+        self.assertIn("if (tier === 'breakthrough')", content)
+        self.assertIn("tierSummary[tier] += 1;", content)
+
+        # Heuristic path may remain only as compatibility fallback for legacy rows.
+        self.assertIn("if (entry.validation_passed && entry.composite_score >= 0.8)", content)
 
     @staticmethod
     def _normalize_route(path: str) -> str:
@@ -3275,6 +3630,38 @@ class TestInlinePhaseMethods(unittest.TestCase):
         self.assertIn("context", call.kwargs)
         self.assertTrue(call.kwargs["context"].strip())
 
+    def test_start_experiment_enforces_context_when_llm_available(self):
+        """Manual start_experiment should still provide fallback context when LLM is available and history context load fails."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_start_context_fallback.db")
+        runner = ExperimentRunner(db_path)
+
+        runner._ensure_math_spaces = MagicMock()
+        runner._run_experiment_thread = MagicMock(return_value=None)
+        runner._build_start_experiment_hypothesis_context = MagicMock(return_value="")
+
+        runner.aria._get_llm = MagicMock(return_value=object())
+        runner.aria.formulate_hypothesis = MagicMock(return_value="fallback-context hypothesis")
+        runner.aria.critique_hypothesis = MagicMock(return_value={
+            "verdict": "proceed",
+            "gate": "pass",
+            "checks": [],
+            "concerns": [],
+            "suggestions": [],
+            "confidence": 0.8,
+        })
+
+        config = RunConfig(n_programs=1)
+        exp_id = runner.start_experiment(config=config, hypothesis=None)
+
+        self.assertIsNotNone(exp_id)
+        call = runner.aria.formulate_hypothesis.call_args
+        self.assertIn("context", call.kwargs)
+        self.assertTrue(call.kwargs["context"].strip())
+        self.assertIn("Manual Start Context", call.kwargs["context"])
+
     def test_start_experiment_records_hypothesis_provenance_metadata(self):
         """Manual start_experiment should persist hypothesis provenance into notebook hypothesis entry metadata."""
         from research.scientist.runner import ExperimentRunner, RunConfig
@@ -3308,9 +3695,79 @@ class TestInlinePhaseMethods(unittest.TestCase):
             metadata = json.loads(entries[0].get("metadata_json") or "{}")
             self.assertEqual(metadata.get("source"), "llm_context")
             self.assertTrue(metadata.get("used_context"))
-            self.assertEqual(metadata.get("review_status"), "not_reviewed")
+            self.assertTrue(str(metadata.get("review_status", "")).startswith("preflight_"))
             self.assertAlmostEqual(float(metadata.get("confidence")), 0.72, places=2)
+            self.assertIn("preflight_critique", metadata)
+            self.assertIn("critique_confidence", metadata)
             self.assertIn("context_char_count", metadata)
+        finally:
+            nb.close()
+
+    def test_start_investigation_records_hypothesis_provenance_metadata(self):
+        """Manual start_investigation should persist source/review provenance metadata."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_start_investigation_hypothesis_metadata.db")
+        runner = ExperimentRunner(db_path)
+
+        runner._ensure_math_spaces = MagicMock()
+        runner._run_investigation_thread = MagicMock(return_value=None)
+
+        config = RunConfig(n_programs=1)
+        exp_id = runner.start_investigation(
+            result_ids=["r1"],
+            config=config,
+            hypothesis="User supplied investigation hypothesis",
+        )
+
+        nb = LabNotebook(db_path)
+        try:
+            entries = nb.get_entries(experiment_id=exp_id, entry_type="hypothesis", limit=5)
+            self.assertTrue(entries)
+            metadata = json.loads(entries[0].get("metadata_json") or "{}")
+            self.assertEqual(metadata.get("source"), "user_input")
+            self.assertEqual(metadata.get("review_status"), "not_reviewed")
+            self.assertIn("confidence", metadata)
+            self.assertIn("critique", metadata)
+        finally:
+            nb.close()
+
+    def test_start_evolution_records_llm_provenance_metadata(self):
+        """start_evolution without user hypothesis should preserve LLM/fallback provenance metadata."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test_start_evolution_hypothesis_metadata.db")
+        runner = ExperimentRunner(db_path)
+
+        runner._ensure_math_spaces = MagicMock()
+        runner._run_evolution_thread = MagicMock(return_value=None)
+        runner.aria.formulate_hypothesis = MagicMock(return_value=(
+            "Auto evolution hypothesis",
+            {
+                "source": "llm_context",
+                "llm_used": True,
+                "fallback_used": False,
+                "used_context": False,
+                "review_status": "not_reviewed",
+                "confidence": 0.66,
+                "critique": None,
+            },
+        ))
+
+        config = RunConfig(n_programs=1)
+        exp_id = runner.start_evolution(config=config, hypothesis=None)
+
+        nb = LabNotebook(db_path)
+        try:
+            entries = nb.get_entries(experiment_id=exp_id, entry_type="hypothesis", limit=5)
+            self.assertTrue(entries)
+            metadata = json.loads(entries[0].get("metadata_json") or "{}")
+            self.assertEqual(metadata.get("source"), "llm_context")
+            self.assertTrue(metadata.get("llm_used"))
+            self.assertEqual(metadata.get("review_status"), "not_reviewed")
+            self.assertAlmostEqual(float(metadata.get("confidence")), 0.66, places=2)
         finally:
             nb.close()
 

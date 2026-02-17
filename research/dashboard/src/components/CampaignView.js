@@ -26,6 +26,53 @@ const DECISION_COLORS = {
   abandon: 'var(--accent-red)',
 };
 
+const SUCCESS_STATUS = {
+  pass: { label: 'Pass', color: 'var(--accent-green)' },
+  at_risk: { label: 'At Risk', color: 'var(--accent-yellow)' },
+  not_yet: { label: 'Not Yet', color: 'var(--text-muted)' },
+};
+
+function hypothesisProvenanceLabel(metadata) {
+  const source = metadata?.source;
+  if (source === 'llm_context') return 'LLM + Context';
+  if (source === 'structured_hypothesis') return 'LLM Structured';
+  if (source === 'rule_based_fallback') return 'Rule Fallback';
+  if (source === 'rule_based') return 'Rule-Based';
+  if (source === 'user_input') return 'User Input';
+  return null;
+}
+
+function parseMetadata(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || value.trim() === '') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatProvenanceConfidence(metadata) {
+  const confidence = metadata?.confidence;
+  if (confidence != null) return confidence;
+  const critiqueConfidence = metadata?.critique_confidence;
+  return critiqueConfidence != null ? critiqueConfidence : 'not provided';
+}
+
+function formatProvenanceCritique(metadata) {
+  const critique = metadata?.preflight_critique || metadata?.critique;
+  if (!critique) return 'not provided';
+  if (typeof critique === 'string') return critique;
+  if (typeof critique === 'object') {
+    const verdict = critique.verdict || 'unknown';
+    const gate = critique.gate || 'n/a';
+    const concerns = Array.isArray(critique.concerns) ? critique.concerns : [];
+    return `${verdict} (gate=${gate})${concerns.length ? ` — ${concerns[0]}` : ''}`;
+  }
+  return 'not provided';
+}
+
 function StatusBadge({ status, colors }) {
   return (
     <span style={{
@@ -117,7 +164,13 @@ function CampaignList({ onSelectCampaign }) {
   );
 }
 
-function HypothesisChain({ hypotheses }) {
+function suggestedModeForHypothesis(status) {
+  if (status === 'confirmed') return 'validation';
+  if (status === 'testing' || status === 'pending' || status === 'inconclusive') return 'investigation';
+  return 'single';
+}
+
+function HypothesisChain({ hypotheses, onHandoff, campaignContext }) {
   if (!hypotheses || hypotheses.length === 0) return null;
 
   return (
@@ -128,7 +181,10 @@ function HypothesisChain({ hypotheses }) {
         width: 2, background: 'var(--border)',
       }} />
 
-      {hypotheses.map((h, i) => (
+      {hypotheses.map((h) => {
+        const metadata = parseMetadata(h.metadata || h.metadata_json);
+        const provenanceLabel = hypothesisProvenanceLabel(metadata);
+        return (
         <div key={h.hypothesis_id} style={{ position: 'relative', marginBottom: 16 }}>
           {/* Node dot */}
           <div style={{
@@ -143,7 +199,21 @@ function HypothesisChain({ hypotheses }) {
             border: `1px solid ${HYPOTHESIS_COLORS[h.status] || 'var(--border)'}44`,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <StatusBadge status={h.status} colors={HYPOTHESIS_COLORS} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <StatusBadge status={h.status} colors={HYPOTHESIS_COLORS} />
+                {provenanceLabel && (
+                  <span style={{
+                    fontSize: 10,
+                    color: 'var(--text-muted)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 3,
+                    padding: '1px 5px',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {provenanceLabel}
+                  </span>
+                )}
+              </div>
               {h.confidence_before != null && (
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                   Confidence: {(h.confidence_before * 100).toFixed(0)}%
@@ -169,9 +239,36 @@ function HypothesisChain({ hypotheses }) {
                 {h.outcome_summary}
               </div>
             )}
+            {provenanceLabel && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                <div><strong>Context used:</strong> {metadata.used_context ? 'yes' : 'no'}</div>
+                <div><strong>Review status:</strong> {metadata.review_status || 'not provided'}</div>
+                <div><strong>Confidence:</strong> {formatProvenanceConfidence(metadata)}</div>
+                <div><strong>Critique:</strong> {formatProvenanceCritique(metadata)}</div>
+              </div>
+            )}
+            {onHandoff && (
+              <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  className="refresh-btn"
+                  style={{ fontSize: 11, padding: '3px 10px' }}
+                  onClick={() => onHandoff({
+                    source: 'campaign_hypothesis',
+                    campaignId: campaignContext?.campaignId,
+                    campaignTitle: campaignContext?.campaignTitle,
+                    objective: campaignContext?.objective,
+                    hypothesis: h.prediction || h.reasoning || null,
+                    suggestedMode: suggestedModeForHypothesis(h.status),
+                  })}
+                >
+                  Send To Control Panel
+                </button>
+              </div>
+            )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -185,6 +282,147 @@ function parseJsonArray(value) {
   } catch {
     return [];
   }
+}
+
+function parseCriteriaText(successCriteria) {
+  if (typeof successCriteria !== 'string' || !successCriteria.trim()) return [];
+  return successCriteria
+    .split(/\n|;|\|/)
+    .map(part => part.trim())
+    .map(part => part.replace(/^[-*•]\s*/, ''))
+    .map(part => part.replace(/^\d+[.)]\s*/, ''))
+    .filter(Boolean);
+}
+
+function parseThreshold(text) {
+  const symbolMatch = text.match(/(<=|>=|<|>|=)\s*(\d+(?:\.\d+)?)(\s*%)?/);
+  if (symbolMatch) {
+    return {
+      op: symbolMatch[1],
+      value: Number(symbolMatch[2]),
+      isPercent: Boolean(symbolMatch[3]),
+    };
+  }
+
+  const phrasePatterns = [
+    { regex: /at least\s*(\d+(?:\.\d+)?)(\s*%)?/, op: '>=' },
+    { regex: /no more than\s*(\d+(?:\.\d+)?)(\s*%)?/, op: '<=' },
+    { regex: /less than\s*(\d+(?:\.\d+)?)(\s*%)?/, op: '<' },
+    { regex: /greater than\s*(\d+(?:\.\d+)?)(\s*%)?/, op: '>' },
+  ];
+
+  for (const pattern of phrasePatterns) {
+    const match = text.match(pattern.regex);
+    if (match) {
+      return {
+        op: pattern.op,
+        value: Number(match[1]),
+        isPercent: Boolean(match[2]),
+      };
+    }
+  }
+
+  return null;
+}
+
+function inferCriterionType(text) {
+  if (text.includes('baseline') || text.includes('loss ratio')) return 'baseline';
+  if (text.includes('novelty')) return 'novelty';
+  if (text.includes('stage 1') || text.includes('stage1') || text.includes('s1') || text.includes('survivor')) return 'stage1';
+  if (text.includes('decision') || text.includes('go/no-go') || text.includes('go no-go')) return 'decision';
+  return 'unknown';
+}
+
+function normalizeThreshold(type, threshold) {
+  if (!threshold) return null;
+  if (type === 'decision') return threshold;
+
+  const shouldNormalizeAsRatio = threshold.isPercent || threshold.value > 1;
+  if (!shouldNormalizeAsRatio) return threshold;
+
+  return {
+    ...threshold,
+    value: threshold.value <= 100 ? threshold.value / 100 : threshold.value,
+  };
+}
+
+function compareThreshold(observed, threshold) {
+  if (observed == null || !threshold) return null;
+  if (threshold.op === '<') return observed < threshold.value;
+  if (threshold.op === '<=') return observed <= threshold.value;
+  if (threshold.op === '>') return observed > threshold.value;
+  if (threshold.op === '>=') return observed >= threshold.value;
+  if (threshold.op === '=') return Math.abs(observed - threshold.value) < 1e-9;
+  return null;
+}
+
+function evaluateSuccessCriteria(successCriteria, context) {
+  const criteria = parseCriteriaText(successCriteria);
+  if (!criteria.length) return [];
+
+  return criteria.map((criterion, index) => {
+    const text = criterion.toLowerCase();
+    const type = inferCriterionType(text);
+    const threshold = normalizeThreshold(type, parseThreshold(text));
+    const id = `${index}-${criterion}`;
+
+    if (type === 'baseline') {
+      const observed = context.bestBaselineRatio;
+      const pass = threshold ? compareThreshold(observed, threshold) : (observed != null ? observed < 1.0 : null);
+      return {
+        id,
+        criterion,
+        status: pass == null ? 'not_yet' : pass ? 'pass' : (context.experimentCount > 0 ? 'at_risk' : 'not_yet'),
+        observedText: observed != null
+          ? `best baseline ratio ${observed.toFixed(3)}${threshold ? ` (target ${threshold.op} ${threshold.value.toFixed(3)})` : ''}`
+          : 'baseline ratio not yet measured',
+      };
+    }
+
+    if (type === 'novelty') {
+      const observed = context.bestNovelty;
+      const pass = threshold ? compareThreshold(observed, threshold) : (observed != null ? observed >= 0.7 : null);
+      return {
+        id,
+        criterion,
+        status: pass == null ? 'not_yet' : pass ? 'pass' : (context.experimentCount > 0 ? 'at_risk' : 'not_yet'),
+        observedText: observed != null
+          ? `best novelty ${observed.toFixed(3)}${threshold ? ` (target ${threshold.op} ${threshold.value.toFixed(3)})` : ''}`
+          : 'novelty signal not yet available',
+      };
+    }
+
+    if (type === 'stage1') {
+      const observed = context.bestStage1Rate;
+      const pass = threshold ? compareThreshold(observed, threshold) : (observed != null ? observed >= 0.05 : null);
+      return {
+        id,
+        criterion,
+        status: pass == null ? 'not_yet' : pass ? 'pass' : (context.experimentCount > 0 ? 'at_risk' : 'not_yet'),
+        observedText: observed != null
+          ? `best S1 rate ${(observed * 100).toFixed(1)}%${threshold ? ` (target ${threshold.op} ${(threshold.value * 100).toFixed(1)}%)` : ''}`
+          : 'S1 evidence not yet available',
+      };
+    }
+
+    if (type === 'decision') {
+      const observed = context.decisionCount;
+      const pass = threshold ? compareThreshold(observed, threshold) : observed > 0;
+      return {
+        id,
+        criterion,
+        status: pass ? 'pass' : (context.hypothesisCount > 0 ? 'at_risk' : 'not_yet'),
+        observedText: `${observed} decision${observed === 1 ? '' : 's'} logged${threshold ? ` (target ${threshold.op} ${threshold.value})` : ''}`,
+      };
+    }
+
+    return {
+      id,
+      criterion,
+      status: 'not_yet',
+      observedText: 'No mapped metric yet (criterion type not recognized).',
+    };
+  });
 }
 
 function DecisionLog({ decisions, hypotheses, experiments, onSelectExperiment }) {
@@ -323,7 +561,7 @@ function DecisionLog({ decisions, hypotheses, experiments, onSelectExperiment })
   );
 }
 
-function CampaignDetail({ campaignId, onBack, onSelectExperiment }) {
+function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHandoff }) {
   const [data, setData] = useState(null);
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -431,6 +669,35 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment }) {
     { key: 'decisions', label: `Decisions (${decisions.length})` },
     { key: 'report', label: 'Report' },
   ];
+  const bestBaselineRatio = experiments
+    .map(exp => exp.best_baseline_ratio)
+    .filter(v => typeof v === 'number')
+    .reduce((best, value) => Math.min(best, value), Number.POSITIVE_INFINITY);
+  const bestNovelty = experiments
+    .map(exp => exp.best_novelty_score)
+    .filter(v => typeof v === 'number')
+    .reduce((best, value) => Math.max(best, value), Number.NEGATIVE_INFINITY);
+  const bestStage1Rate = experiments
+    .map(exp => {
+      const total = exp.n_programs_generated || exp.n_programs || 0;
+      const passed = exp.n_stage1_passed || 0;
+      if (!total) return null;
+      return passed / total;
+    })
+    .filter(v => typeof v === 'number')
+    .reduce((best, value) => Math.max(best, value), Number.NEGATIVE_INFINITY);
+  const fallbackCriteriaTracker = evaluateSuccessCriteria(campaign.success_criteria, {
+    bestBaselineRatio: Number.isFinite(bestBaselineRatio) ? bestBaselineRatio : null,
+    bestNovelty: Number.isFinite(bestNovelty) ? bestNovelty : null,
+    bestStage1Rate: Number.isFinite(bestStage1Rate) ? bestStage1Rate : null,
+    decisionCount: decisions.length,
+    experimentCount: experiments.length,
+    hypothesisCount: hypotheses.length,
+  });
+  const backendCriteriaTracker = Array.isArray(data.success_criteria_tracker)
+    ? data.success_criteria_tracker
+    : (Array.isArray(report?.success_criteria_tracker) ? report.success_criteria_tracker : null);
+  const criteriaTracker = backendCriteriaTracker || fallbackCriteriaTracker;
 
   return (
     <div>
@@ -475,6 +742,52 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment }) {
           >
             {generating ? 'Generating...' : 'Generate Report'}
           </button>
+          {onHypothesisHandoff && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 11, padding: '4px 10px' }}
+                onClick={() => onHypothesisHandoff({
+                  source: 'campaign_objective',
+                  campaignId,
+                  campaignTitle: campaign.title,
+                  objective: campaign.objective,
+                  hypothesis: null,
+                  suggestedMode: 'single',
+                })}
+              >
+                Run Objective (Screening)
+              </button>
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 11, padding: '4px 10px' }}
+                onClick={() => onHypothesisHandoff({
+                  source: 'campaign_objective',
+                  campaignId,
+                  campaignTitle: campaign.title,
+                  objective: campaign.objective,
+                  hypothesis: null,
+                  suggestedMode: 'investigation',
+                })}
+              >
+                Investigate Objective
+              </button>
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 11, padding: '4px 10px' }}
+                onClick={() => onHypothesisHandoff({
+                  source: 'campaign_objective',
+                  campaignId,
+                  campaignTitle: campaign.title,
+                  objective: campaign.objective,
+                  hypothesis: null,
+                  suggestedMode: 'validation',
+                })}
+              >
+                Validate Objective
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -529,6 +842,46 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment }) {
               </ul>
             </div>
           )}
+
+          <div style={{ marginTop: 4, padding: '8px 10px', borderRadius: 6, background: 'var(--bg-tertiary)' }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>
+              Success Criteria Tracker
+            </div>
+            {criteriaTracker.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                No success criteria text provided.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {criteriaTracker.map(item => {
+                  const status = SUCCESS_STATUS[item.status] || SUCCESS_STATUS.not_yet;
+                  return (
+                    <div key={item.id} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '7px 8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{item.criterion}</div>
+                        <span style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          textTransform: 'uppercase',
+                          padding: '2px 6px',
+                          borderRadius: 4,
+                          color: status.color,
+                          border: `1px solid ${status.color}66`,
+                          background: `${status.color}22`,
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {status.label}
+                        </span>
+                      </div>
+                      <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted)' }}>
+                        {item.observedText || item.observed_text}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -612,7 +965,15 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment }) {
               No hypotheses are logged yet for this campaign.
             </p>
           ) : (
-            <HypothesisChain hypotheses={hypotheses} />
+            <HypothesisChain
+              hypotheses={hypotheses}
+              onHandoff={onHypothesisHandoff}
+              campaignContext={{
+                campaignId,
+                campaignTitle: campaign.title,
+                objective: campaign.objective,
+              }}
+            />
           )}
         </div>
       )}
@@ -666,8 +1027,16 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment }) {
   );
 }
 
-function CampaignView({ onSelectExperiment }) {
-  const [selectedCampaign, setSelectedCampaign] = useState(null);
+function CampaignView({ onSelectExperiment, selectedCampaignId, onCampaignIdClear, onHypothesisHandoff }) {
+  const [selectedCampaign, setSelectedCampaign] = useState(selectedCampaignId || null);
+
+  // Accept external campaign selection
+  useEffect(() => {
+    if (selectedCampaignId) {
+      setSelectedCampaign(selectedCampaignId);
+      if (onCampaignIdClear) onCampaignIdClear();
+    }
+  }, [selectedCampaignId, onCampaignIdClear]);
 
   if (selectedCampaign) {
     return (
@@ -675,6 +1044,7 @@ function CampaignView({ onSelectExperiment }) {
         campaignId={selectedCampaign}
         onBack={() => setSelectedCampaign(null)}
         onSelectExperiment={onSelectExperiment}
+        onHypothesisHandoff={onHypothesisHandoff}
       />
     );
   }

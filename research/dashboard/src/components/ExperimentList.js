@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { noveltyColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
@@ -80,11 +80,41 @@ function metricText(value, fallbackReason, formatter) {
   return formatter(value);
 }
 
+function reliabilityColor(level) {
+  if (level === 'high') return 'var(--accent-green)';
+  if (level === 'medium') return 'var(--accent-yellow)';
+  return 'var(--accent-red)';
+}
+
+function experimentMetricChips(exp) {
+  const nPrograms = exp.n_programs_generated || 0;
+  const s1 = exp.n_stage1_passed || 0;
+  const evidenceReliability = nPrograms >= 100 ? 'high' : nPrograms >= 30 ? 'medium' : 'low';
+  return [
+    {
+      label: 'Loss',
+      source: exp.best_loss_ratio != null ? 'measured' : 'not-evaluated',
+      reliability: exp.best_loss_ratio != null ? evidenceReliability : 'low',
+    },
+    {
+      label: 'Novelty',
+      source: exp.best_novelty_score != null ? 'heuristic' : 'insufficient-data',
+      reliability: s1 > 0 ? evidenceReliability : 'low',
+    },
+    {
+      label: 'Baseline',
+      source: 'not-available',
+      reliability: 'low',
+    },
+  ];
+}
+
 const COLUMNS = [
   { key: 'score', label: 'Score' },
   { key: 'rating', label: 'Rating' },
   { key: 'experiment_id', label: 'ID' },
   { key: 'experiment_type', label: 'Type' },
+  { key: 'hypothesis', label: 'Hypothesis' },
   { key: 'status', label: 'Status' },
   { key: 'n_programs_generated', label: 'Programs' },
   { key: 'n_stage1_passed', label: 'S1 Pass' },
@@ -94,10 +124,32 @@ const COLUMNS = [
   { key: 'timestamp', label: 'Time' },
 ];
 
+const EXPERIMENT_LIST_SORT_PREFS_KEY = 'dashboard.experiment-list.sort.v1';
+
 function ExperimentList({ experiments, onSelectExperiment }) {
-  const [sortKey, setSortKey] = useState('score');
-  const [sortDesc, setSortDesc] = useState(true);
+  const [sortKey, setSortKey] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_LIST_SORT_PREFS_KEY) || '{}');
+      if (typeof stored.sortKey === 'string' && COLUMNS.some((column) => column.key === stored.sortKey)) {
+        return stored.sortKey;
+      }
+    } catch {}
+    return 'score';
+  });
+  const [sortDesc, setSortDesc] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_LIST_SORT_PREFS_KEY) || '{}');
+      if (typeof stored.sortDesc === 'boolean') {
+        return stored.sortDesc;
+      }
+    } catch {}
+    return true;
+  });
   const [copiedValue, copyText] = useCopyToClipboard();
+
+  useEffect(() => {
+    localStorage.setItem(EXPERIMENT_LIST_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
+  }, [sortKey, sortDesc]);
 
   const handleSort = (key) => {
     if (sortKey === key) {
@@ -188,6 +240,7 @@ function ExperimentList({ experiments, onSelectExperiment }) {
             const rating = exp._rating;
             const score = exp._score;
             const isActiveValidation = exp.status === 'running' && exp.experiment_type === 'validation';
+            const chips = experimentMetricChips(exp);
             return (
               <tr key={exp.experiment_id}
                 style={{ cursor: onSelectExperiment ? 'pointer' : 'default' }}
@@ -225,6 +278,13 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                   )}
                 </td>
                 <td>{exp.experiment_type}</td>
+                <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}
+                    title={exp.hypothesis || 'No hypothesis'}>
+                  {exp.hypothesis
+                    ? (exp.hypothesis.length > 60 ? exp.hypothesis.slice(0, 60) + '...' : exp.hypothesis)
+                    : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>none</span>
+                  }
+                </td>
                 <td>
                   <span className={`badge ${exp.status === 'completed' ? 'pass' :
                     exp.status === 'running' ? 'running' : 'fail'}`}>
@@ -256,6 +316,25 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                     (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'insufficient data',
                     (v) => v.toFixed(3),
                   )}
+                  <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
+                    {chips.map(chip => (
+                      <span
+                        key={`${exp.experiment_id}-${chip.label}`}
+                        title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                        style={{
+                          fontSize: 10,
+                          padding: '1px 5px',
+                          borderRadius: 4,
+                          border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                          color: reliabilityColor(chip.reliability),
+                          background: `${reliabilityColor(chip.reliability)}22`,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {chip.label}: {chip.source}
+                      </span>
+                    ))}
+                  </div>
                 </td>
                 <td>{formatDuration(exp.duration_seconds)}</td>
                 <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>

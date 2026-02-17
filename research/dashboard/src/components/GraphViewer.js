@@ -47,15 +47,19 @@ function normalizeGraph(graph) {
   // Handle nodes as dict (keyed by ID) — the format from graph_json_parsed
   if (graph.nodes && !Array.isArray(graph.nodes)) {
     const nodeDict = graph.nodes;
-    nodes = Object.values(nodeDict).map(n => ({
-      id: String(n.id),
-      op: n.op_name || n.op || n.type || 'unknown',
-      is_input: n.is_input || false,
-      is_output: n.is_output || false,
-    }));
+    nodes = Object.values(nodeDict)
+      .filter(n => n && typeof n === 'object')
+      .map(n => ({
+        id: String(n.id ?? n.node_id ?? n.key ?? ''),
+        op: n.op_name || n.op || n.type || 'unknown',
+        is_input: n.is_input || false,
+        is_output: n.is_output || false,
+      }))
+      .filter(n => n.id !== '');
 
     // Derive edges from input_ids
     for (const n of Object.values(nodeDict)) {
+      if (!n || typeof n !== 'object') continue;
       const targetId = String(n.id);
       if (n.input_ids && Array.isArray(n.input_ids)) {
         for (const srcId of n.input_ids) {
@@ -65,12 +69,15 @@ function normalizeGraph(graph) {
     }
   } else if (Array.isArray(graph.nodes)) {
     // Already an array format
-    nodes = graph.nodes.map(n => ({
-      id: String(n.id),
-      op: n.op_name || n.op || n.type || 'unknown',
-      is_input: n.is_input || false,
-      is_output: n.is_output || false,
-    }));
+    nodes = graph.nodes
+      .filter(n => n && typeof n === 'object')
+      .map(n => ({
+        id: String(n.id ?? n.node_id ?? n.key ?? ''),
+        op: n.op_name || n.op || n.type || 'unknown',
+        is_input: n.is_input || false,
+        is_output: n.is_output || false,
+      }))
+      .filter(n => n.id !== '');
     edges = (graph.edges || []).map(e => ({
       from: String(e.from),
       to: String(e.to),

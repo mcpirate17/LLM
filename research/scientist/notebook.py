@@ -287,7 +287,8 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     outcome_summary TEXT,
     child_hypotheses TEXT,
     confidence_before REAL,
-    confidence_after REAL
+    confidence_after REAL,
+    metadata_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS decisions (
@@ -505,6 +506,16 @@ class LabNotebook:
                 "ALTER TABLE experiments ADD COLUMN campaign_id TEXT"
             )
 
+        # Migrate hypotheses: add metadata_json if missing
+        hyp_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(hypotheses)").fetchall()
+        }
+        if "metadata_json" not in hyp_cols:
+            self.conn.execute(
+                "ALTER TABLE hypotheses ADD COLUMN metadata_json TEXT"
+            )
+
     @classmethod
     def _detect_code_version(cls) -> str:
         """Detect code version for experiment traceability."""
@@ -674,9 +685,18 @@ class LabNotebook:
         # Log entry
         source = (hypothesis_metadata or {}).get("source", "unknown")
         confidence = (hypothesis_metadata or {}).get("confidence")
+        critique_confidence = (hypothesis_metadata or {}).get("critique_confidence")
         critique = (hypothesis_metadata or {}).get("critique")
-        confidence_text = confidence if confidence is not None else "not provided"
-        critique_text = critique if critique else "not provided"
+        effective_confidence = confidence if confidence is not None else critique_confidence
+        confidence_text = effective_confidence if effective_confidence is not None else "not provided"
+        if isinstance(critique, dict):
+            verdict = critique.get("verdict") or "unknown"
+            gate = critique.get("gate") or "n/a"
+            concerns = critique.get("concerns") or []
+            concern_hint = concerns[0] if concerns else "no concerns recorded"
+            critique_text = f"{verdict} (gate={gate}) — {concern_hint}"
+        else:
+            critique_text = critique if critique else "not provided"
         self.add_entry(ExperimentEntry(
             entry_type="hypothesis",
             title=f"Experiment {exp_id} started",
@@ -1029,6 +1049,14 @@ class LabNotebook:
         )
         self.conn.commit()
         return insight_id
+
+    def supersede_insight(self, insight_id: str) -> None:
+        """Mark an insight as superseded (replaced by a newer version)."""
+        self.conn.execute(
+            "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
+            (insight_id,),
+        )
+        self.conn.commit()
 
     # ── Queries ──
 
@@ -1424,7 +1452,13 @@ class LabNotebook:
         query = (
             "SELECT l.*, pr.graph_json AS _graph_json, "
             "pr.routing_mode AS _routing_mode, "
-            "pr.graph_fingerprint AS _graph_fingerprint "
+            "pr.graph_fingerprint AS _graph_fingerprint, "
+            "pr.arch_spec_json AS _arch_spec_json, "
+            "pr.param_count AS _param_count, "
+            "pr.graph_n_params_estimate AS _graph_n_params_estimate, "
+            "pr.novelty_confidence AS _novelty_confidence, "
+            "pr.cka_source AS _cka_source, "
+            "pr.routing_confidence_mean AS _routing_confidence_mean "
             "FROM leaderboard l "
             "LEFT JOIN program_results pr ON pr.result_id = l.result_id "
             "WHERE 1=1"
@@ -1446,6 +1480,12 @@ class LabNotebook:
             )
             d.pop("_graph_json", None)
             d.pop("_routing_mode", None)
+            d["arch_spec_json"] = d.pop("_arch_spec_json", None)
+            d["param_count"] = d.pop("_param_count", None)
+            d["graph_n_params_estimate"] = d.pop("_graph_n_params_estimate", None)
+            d["novelty_confidence"] = d.pop("_novelty_confidence", None)
+            d["cka_source"] = d.pop("_cka_source", None)
+            d["routing_confidence_mean"] = d.pop("_routing_confidence_mean", None)
             if d.get("investigation_best_training"):
                 try:
                     d["investigation_best_training_parsed"] = json.loads(
@@ -1678,7 +1718,20 @@ class LabNotebook:
                ORDER BY timestamp ASC""",
             (campaign_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        hypotheses = []
+        for row in rows:
+            hypothesis = dict(row)
+            raw_meta = hypothesis.get("metadata_json")
+            if isinstance(raw_meta, str) and raw_meta.strip():
+                try:
+                    parsed = json.loads(raw_meta)
+                    hypothesis["metadata"] = parsed if isinstance(parsed, dict) else {}
+                except (json.JSONDecodeError, TypeError):
+                    hypothesis["metadata"] = {}
+            else:
+                hypothesis["metadata"] = {}
+            hypotheses.append(hypothesis)
+        return hypotheses
 
     def get_campaign_decisions(self, campaign_id: str) -> List[Dict]:
         """Get all decisions for a campaign."""
@@ -1696,7 +1749,8 @@ class LabNotebook:
                           test_method: str, success_metric: str,
                           parent_id: Optional[str] = None,
                           confidence: float = 0.5,
-                          experiment_id: Optional[str] = None) -> str:
+                          experiment_id: Optional[str] = None,
+                          metadata: Optional[Dict] = None) -> str:
         """Record a structured hypothesis. Returns hypothesis_id."""
         hypothesis_id = str(uuid.uuid4())[:12]
         now = time.time()
@@ -1704,11 +1758,12 @@ class LabNotebook:
             """INSERT INTO hypotheses
             (hypothesis_id, campaign_id, experiment_id, timestamp,
              prediction, reasoning, test_method, success_metric,
-             parent_hypothesis_id, status, confidence_before)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+             parent_hypothesis_id, status, confidence_before, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
             (hypothesis_id, campaign_id, experiment_id, now,
              prediction, reasoning, test_method, success_metric,
-             parent_id, confidence),
+             parent_id, confidence,
+             json.dumps(metadata) if metadata else None),
         )
         # Update parent's child list
         if parent_id:

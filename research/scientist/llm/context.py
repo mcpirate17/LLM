@@ -512,6 +512,44 @@ def build_hypothesis_context(
     return "\n\n".join(sections)
 
 
+def build_manual_start_fallback_context(config: Optional[Dict] = None) -> str:
+    """Return minimal context for manual synthesis starts.
+
+    Ensures hypothesis generation still receives non-empty context when
+    history/analytics retrieval is unavailable.
+    """
+    cfg = config or {}
+    lines = [
+        "Manual Start Context (fallback)",
+        "No recent experiment history could be loaded. Use explicit, testable architecture hypotheses.",
+        "Prioritize measurable outcomes (loss ratio / novelty / stage-1 survival).",
+    ]
+
+    n_programs = cfg.get("n_programs")
+    model_dim = cfg.get("model_dim")
+    max_depth = cfg.get("max_depth")
+    max_ops = cfg.get("max_ops")
+    math_space_weight = cfg.get("math_space_weight")
+
+    if n_programs is not None or model_dim is not None:
+        lines.append(
+            "Planned run: "
+            f"n_programs={n_programs if n_programs is not None else '?'}; "
+            f"model_dim={model_dim if model_dim is not None else '?'}"
+        )
+
+    if max_depth is not None or max_ops is not None or math_space_weight is not None:
+        lines.append(
+            "Search envelope: "
+            f"max_depth={max_depth if max_depth is not None else '?'}; "
+            f"max_ops={max_ops if max_ops is not None else '?'}; "
+            f"math_space_weight={math_space_weight if math_space_weight is not None else '?'}"
+        )
+
+    lines.append("Include a fallback plan if the primary mechanism underperforms.")
+    return "\n".join(lines)
+
+
 def build_go_no_go_context(
     candidate: Dict,
     investigation_results: Optional[List[Dict]] = None,

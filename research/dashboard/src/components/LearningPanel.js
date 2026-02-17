@@ -123,6 +123,7 @@ const OP_COLUMNS = [
   { key: 's05_rate', label: 'S0.5 %' },
   { key: 's1_rate', label: 'S1 %' },
   { key: 'avg_novelty', label: 'Avg Novelty' },
+  { key: '_metricQualityOrder', label: 'Metric Quality' },
 ];
 
 const RATING_ORDER = { Strong: 4, Good: 3, Some: 2, Compiles: 1, Weak: 0 };
@@ -144,6 +145,48 @@ function opReliability(stats) {
   return { label: 'Very Low', color: 'var(--accent-red)', order: 0, tip: 'Very low confidence: treat as exploratory only' };
 }
 
+function reliabilityColor(level) {
+  if (level === 'high') return 'var(--accent-green)';
+  if (level === 'medium') return 'var(--accent-yellow)';
+  return 'var(--accent-red)';
+}
+
+function opMetricChips(row) {
+  const confidence = row.avg_novelty_confidence;
+  return [
+    {
+      label: 'S1',
+      source: 'measured',
+      reliability: (row.n_used || 0) >= 100 ? 'high' : (row.n_used || 0) >= 40 ? 'medium' : 'low',
+    },
+    {
+      label: 'Novelty',
+      source: confidence != null && confidence >= 0.5 ? 'artifact-backed' : 'heuristic',
+      reliability: confidence != null
+        ? (confidence >= 0.7 ? 'high' : confidence >= 0.4 ? 'medium' : 'low')
+        : 'low',
+    },
+  ];
+}
+
+function routingMetricChips(row) {
+  const conf = row.avg_confidence_mean;
+  return [
+    {
+      label: 'Routing',
+      source: 'telemetry',
+      reliability: conf != null
+        ? (conf >= 0.7 ? 'high' : conf >= 0.4 ? 'medium' : 'low')
+        : 'low',
+    },
+    {
+      label: 'Sample',
+      source: 'mode-aggregate',
+      reliability: (row.n_programs || 0) >= 80 ? 'high' : (row.n_programs || 0) >= 30 ? 'medium' : 'low',
+    },
+  ];
+}
+
 function OpSuccessTable({ opRates }) {
   const [sortKey, setSortKey] = useState('_score');
   const [sortDesc, setSortDesc] = useState(true);
@@ -162,6 +205,7 @@ function OpSuccessTable({ opRates }) {
       _rating: opRating(stats),
       _reliability: opReliability(stats),
       _reliabilityOrder: opReliability(stats).order,
+      _metricQualityOrder: (stats.n_used || 0),
     }));
   }, [opRates]);
 
@@ -231,6 +275,7 @@ function OpSuccessTable({ opRates }) {
               const s0Count = Math.round((row.s0_rate || 0) * nUsed);
               const s05Count = Math.round((row.s05_rate || 0) * nUsed);
               const s1Count = Math.round((row.s1_rate || 0) * nUsed);
+              const chips = opMetricChips(row);
               return (
                 <tr key={row.op}>
                   <td style={{ fontWeight: 600, color: scoreColor(row._score) }}>
@@ -272,6 +317,27 @@ function OpSuccessTable({ opRates }) {
                     color: (row.avg_novelty || 0) > 0.7 ? 'var(--accent-green)' : (row.avg_novelty || 0) > 0.4 ? 'var(--accent-yellow)' : 'var(--text-muted)'
                   }}>
                     {row.avg_novelty != null ? row.avg_novelty.toFixed(3) : 'not computed'}
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
+                      {chips.map(chip => (
+                        <span
+                          key={`${row.op}-${chip.label}`}
+                          title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 5px',
+                            borderRadius: 4,
+                            border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                            color: reliabilityColor(chip.reliability),
+                            background: `${reliabilityColor(chip.reliability)}22`,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {chip.label}: {chip.source}
+                        </span>
+                      ))}
+                    </div>
                   </td>
                 </tr>
               );
@@ -531,6 +597,35 @@ function LearningTrajectory({ trajectory }) {
 }
 
 function ExperimentClusters({ clustersData }) {
+  const [sortKey, setSortKey] = useState('avg_s1_rate');
+  const [sortDesc, setSortDesc] = useState(true);
+
+  const handleSort = (key) => {
+    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
+  };
+
+  const sorted = useMemo(() => {
+    if (!clustersData?.clusters) return [];
+    const arr = [...clustersData.clusters];
+    arr.sort((a, b) => {
+      let va = a[sortKey], vb = b[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [clustersData?.clusters, sortKey, sortDesc]);
+
+  const clusterCols = [
+    { key: 'cluster_id', label: 'Cluster' },
+    { key: 'size', label: 'Size' },
+    { key: 'avg_s1_rate', label: 'Avg S1%' },
+    { key: 'avg_best_novelty', label: 'Avg Novelty' },
+    { key: 'avg_best_loss_ratio', label: 'Avg Loss Ratio' },
+  ];
+
   if (!clustersData || !clustersData.clusters || clustersData.clusters.length === 0) {
     return (
       <div className="card">
@@ -560,15 +655,25 @@ function ExperimentClusters({ clustersData }) {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Cluster</th>
-              <th>Size</th>
-              <th>Avg S1%</th>
-              <th>Avg Novelty</th>
-              <th>Avg Loss Ratio</th>
+              {clusterCols.map(col => (
+                <th
+                  key={col.key}
+                  onClick={() => handleSort(col.key)}
+                  style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                  aria-label={`Sort by ${col.label}`}
+                >
+                  {col.label}
+                  {sortKey === col.key && (
+                    <span style={{ marginLeft: 4, fontSize: 10 }}>
+                      {sortDesc ? '\u25BC' : '\u25B2'}
+                    </span>
+                  )}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {clustersData.clusters.map(c => (
+            {sorted.map(c => (
               <React.Fragment key={c.cluster_id}>
                 <tr>
                   <td style={{ color: 'var(--accent-blue)' }}>#{c.cluster_id}</td>
@@ -598,6 +703,27 @@ function ExperimentClusters({ clustersData }) {
 }
 
 function RoutingHealth({ data }) {
+  const [sortKey, setSortKey] = useState('n_programs');
+  const [sortDesc, setSortDesc] = useState(true);
+
+  const handleSort = (key) => {
+    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
+  };
+
+  const sorted = useMemo(() => {
+    if (!data?.by_mode) return [];
+    const arr = [...data.by_mode];
+    arr.sort((a, b) => {
+      let va = a[sortKey], vb = b[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [data?.by_mode, sortKey, sortDesc]);
+
   if (!data || data.available === false || !data.by_mode || data.by_mode.length === 0) {
     return (
       <div className="card">
@@ -610,6 +736,19 @@ function RoutingHealth({ data }) {
       </div>
     );
   }
+
+  const routingCols = [
+    { key: 'routing_mode', label: 'Mode' },
+    { key: 'n_programs', label: 'N' },
+    { key: 'sample_size_label', label: 'Sample' },
+    { key: 'stage1_pass_rate', label: 'S1%' },
+    { key: 'avg_drop_rate', label: 'Drop%' },
+    { key: 'avg_utilization_entropy', label: 'Entropy' },
+    { key: 'avg_confidence_mean', label: 'Conf' },
+    { key: 'confidence_label', label: 'Conf Label' },
+    { key: 'stability_label', label: 'Stability' },
+    { key: '_quality', label: 'Metric Quality' },
+  ];
 
   return (
     <div className="card">
@@ -638,28 +777,511 @@ function RoutingHealth({ data }) {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Mode</th>
-              <th>N</th>
-              <th>S1%</th>
-              <th>Drop%</th>
-              <th>Entropy</th>
-              <th>Conf</th>
+              {routingCols.map(col => (
+                <th
+                  key={col.key}
+                  onClick={() => handleSort(col.key)}
+                  style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                  aria-label={`Sort by ${col.label}`}
+                >
+                  {col.label}
+                  {sortKey === col.key && (
+                    <span style={{ marginLeft: 4, fontSize: 10 }}>
+                      {sortDesc ? '\u25BC' : '\u25B2'}
+                    </span>
+                  )}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {data.by_mode.map((row) => (
+            {sorted.map((row) => {
+              const chips = routingMetricChips(row);
+              return (
               <tr key={row.routing_mode}>
                 <td style={{ color: 'var(--accent-blue)' }}>{row.routing_mode}</td>
                 <td>{row.n_programs ?? 0}</td>
+                <td style={{ textTransform: 'uppercase', fontSize: 11 }}>{row.sample_size_label || 'unknown'}</td>
                 <td>{((row.stage1_pass_rate || 0) * 100).toFixed(1)}%</td>
                 <td>{((row.avg_drop_rate || 0) * 100).toFixed(1)}%</td>
                 <td>{row.avg_utilization_entropy != null ? Number(row.avg_utilization_entropy).toFixed(3) : 'not measured'}</td>
                 <td>{row.avg_confidence_mean != null ? Number(row.avg_confidence_mean).toFixed(3) : 'not measured'}</td>
+                <td style={{ textTransform: 'uppercase', fontSize: 11 }}>{row.confidence_label || 'unknown'}</td>
+                <td style={{ textTransform: 'uppercase', fontSize: 11 }}>{row.stability_label || 'unknown'}</td>
+                <td>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
+                    {chips.map(chip => (
+                      <span
+                        key={`${row.routing_mode}-${chip.label}`}
+                        title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                        style={{
+                          fontSize: 10,
+                          padding: '1px 5px',
+                          borderRadius: 4,
+                          border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                          color: reliabilityColor(chip.reliability),
+                          background: `${reliabilityColor(chip.reliability)}22`,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {chip.label}: {chip.source}
+                      </span>
+                    ))}
+                  </div>
+                </td>
+              </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function GatingBehaviorDiagnostics({ data }) {
+  if (!data || data.available === false) {
+    return (
+      <div className="card">
+        <div className="card-title">Gating Behavior Diagnostics</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          No gating diagnostics available yet. This section appears once routed or recursive candidates are evaluated.
+        </p>
+      </div>
+    );
+  }
+
+  const rows = Array.isArray(data.by_mode) ? data.by_mode : [];
+  return (
+    <div className="card">
+      <div className="card-title">Gating Behavior Diagnostics</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Canonical diagnostics for gate entropy, route-collapse risk, and token-retention curves across routing modes.
+      </p>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        <strong style={{ color: 'var(--accent-purple)' }}>Routed candidates:</strong> {data.total_routed_programs || 0}
+        <span style={{ marginLeft: 10 }}>
+          <strong style={{ color: 'var(--accent-purple)' }}>Avg entropy:</strong>{' '}
+          {data.avg_gate_entropy != null ? Number(data.avg_gate_entropy).toFixed(3) : 'not measured'}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+        Collapse risk modes — high: {data?.collapse_risk_counts?.high || 0}, medium: {data?.collapse_risk_counts?.medium || 0}, low: {data?.collapse_risk_counts?.low || 0}
+      </div>
+      {data.explanation && (
+        <div style={{ marginBottom: 10, padding: 8, background: 'var(--bg-tertiary)', borderRadius: 6, borderLeft: '3px solid var(--accent-purple)', fontSize: 12, color: 'var(--text-secondary)' }}>
+          {data.explanation}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div style={{ maxHeight: 260, overflow: 'auto' }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Mode</th>
+                <th>N</th>
+                <th>Entropy</th>
+                <th>Collapse Risk</th>
+                <th>Retention (avg)</th>
+                <th>Retention Curve</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.routing_mode}>
+                  <td style={{ color: 'var(--accent-blue)' }}>{row.routing_mode}</td>
+                  <td>{row.n_programs ?? 0}</td>
+                  <td>{row.avg_gate_entropy != null ? Number(row.avg_gate_entropy).toFixed(3) : 'not measured'}</td>
+                  <td style={{ textTransform: 'uppercase', fontSize: 11 }}>{row.collapse_risk_label || 'unknown'}</td>
+                  <td>{row.avg_token_retention != null ? `${(Number(row.avg_token_retention) * 100).toFixed(1)}%` : 'not measured'}</td>
+                  <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {Array.isArray(row.token_retention_curve) && row.token_retention_curve.length > 0
+                      ? row.token_retention_curve.map(point => `${point.quantile}:${(Number(point.retention) * 100).toFixed(0)}%`).join(' · ')
+                      : 'not measured'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MathFamilyCoverage({ data }) {
+  const rows = Array.isArray(data?.families) ? data.families : [];
+  const totals = data?.totals || {};
+
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-title">Math Family Coverage</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          No program-family coverage data yet.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Math Family Coverage</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Share of evaluated and Stage-1 surviving programs by math family. Use this to verify the search is exploring beyond standard Euclidean patterns.
+      </p>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+        <strong style={{ color: 'var(--accent-purple)' }}>Totals:</strong>{' '}
+        {totals.n_tested ?? 0} tested, {totals.n_survived ?? 0} Stage-1 survivors
+      </div>
+      <div style={{ maxHeight: 260, overflow: 'auto' }}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Family</th>
+              <th>Tested</th>
+              <th>Survivors</th>
+              <th>Survival %</th>
+              <th>Test Share</th>
+              <th>Survivor Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(row => (
+              <tr key={row.family}>
+                <td style={{ textTransform: 'capitalize', color: 'var(--accent-blue)' }}>{row.family}</td>
+                <td>{row.n_tested ?? 0}</td>
+                <td>{row.n_survived ?? 0}</td>
+                <td>{((row.survival_rate || 0) * 100).toFixed(1)}%</td>
+                <td>{((row.tested_share || 0) * 100).toFixed(1)}%</td>
+                <td>{((row.survivor_share || 0) * 100).toFixed(1)}%</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+const COMPRESSION_FACTORS = {
+  low_rank: 0.55, shared_basis: 0.5, hash_trick: 0.35,
+  structured_sparse: 0.4, kronecker: 0.5, polynomial: 0.6,
+  residual_quantized: 0.3,
+};
+
+const WEIGHT_STORAGE_LABELS = {
+  dense_matrix: 'Dense (baseline)', low_rank: 'Low-Rank (UV)',
+  hypernetwork: 'Hypernetwork', shared_basis: 'Shared Basis',
+  hash_trick: 'Hash Trick', kronecker: 'Kronecker',
+  polynomial: 'Polynomial', structured_sparse: 'Structured Sparse',
+};
+
+const TOKEN_REP_LABELS = {
+  standard_float: 'Standard Float', binary_hash: 'Binary Hash',
+  residual_quantized: 'Residual Quantized', complex_valued: 'Complex',
+  quaternion: 'Quaternion', multi_resolution: 'Multi-Resolution',
+  mixture_embedding: 'Mixture Embedding',
+};
+
+function parseArchSpec(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    const p = JSON.parse(value);
+    return p && typeof p === 'object' ? p : null;
+  } catch { return null; }
+}
+
+function CompressionCoverage({ data, programs }) {
+  const analysis = useMemo(() => {
+    if (data && Array.isArray(data.techniques)) {
+      const totals = data.totals || {};
+      const sorted = [...data.techniques]
+        .map((row) => ({
+          technique: row.technique,
+          label: WEIGHT_STORAGE_LABELS[row.technique] || TOKEN_REP_LABELS[row.technique] || row.technique,
+          count: row.n_survived ?? 0,
+          tested: row.n_tested ?? 0,
+          avgLoss: row.avg_loss_ratio,
+          bestLoss: row.best_loss_ratio,
+          avgRatio: row.avg_compression_ratio,
+          avgMemoryMb: row.avg_estimated_memory_mb,
+          avgRetention: row.avg_quality_retention,
+          survivalRate: row.survival_rate,
+        }))
+        .sort((a, b) => (b.count || 0) - (a.count || 0));
+
+      return {
+        sorted,
+        denseCount: Math.max(0, (totals.n_survived || 0) - (totals.n_compressed_survived || 0)),
+        compressedCount: totals.n_compressed_survived || 0,
+        total: totals.n_survived || 0,
+        testedTotal: totals.n_tested || 0,
+        compressedTested: totals.n_compressed_tested || 0,
+      };
+    }
+
+    if (!programs || programs.length === 0) return null;
+    const byTechnique = {};
+    let denseCount = 0;
+    let compressedCount = 0;
+
+    for (const p of programs) {
+      const spec = parseArchSpec(p.arch_spec_json);
+      const ws = spec?.choices?.weight_storage || 'dense_matrix';
+      const tr = spec?.choices?.token_representation;
+      const isDense = ws === 'dense_matrix' && (!tr || tr === 'standard_float');
+      if (isDense) { denseCount++; } else { compressedCount++; }
+
+      const key = ws !== 'dense_matrix' ? ws : (tr && tr !== 'standard_float' ? tr : 'dense_matrix');
+      if (!byTechnique[key]) {
+        byTechnique[key] = { count: 0, totalLoss: 0, lossCount: 0, bestLoss: Infinity };
+      }
+      const m = byTechnique[key];
+      m.count++;
+      if (p.loss_ratio != null) { m.totalLoss += p.loss_ratio; m.lossCount++; }
+      if (p.loss_ratio != null && p.loss_ratio < m.bestLoss) m.bestLoss = p.loss_ratio;
+    }
+
+    const sorted = Object.entries(byTechnique)
+      .map(([technique, m]) => ({
+        technique,
+        label: WEIGHT_STORAGE_LABELS[technique] || TOKEN_REP_LABELS[technique] || technique,
+        count: m.count,
+        avgLoss: m.lossCount > 0 ? m.totalLoss / m.lossCount : null,
+        factor: COMPRESSION_FACTORS[technique] || 1.0,
+        bestLoss: m.bestLoss < Infinity ? m.bestLoss : null,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return { sorted, denseCount, compressedCount, total: programs.length };
+  }, [programs]);
+
+  if (!analysis || analysis.compressedCount === 0) {
+    return (
+      <div className="card">
+        <div className="card-title">Compression Technique Coverage</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          No compressed architectures among survivors yet. All current stage-1 survivors use dense
+          weight matrices. Compression coverage will appear when the system generates and evaluates
+          architectures with non-standard weight storage (low-rank, hash trick, sparse, etc.).
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Compression Technique Coverage</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Weight storage techniques across stage-1 survivors with explicit compression ratio,
+        memory footprint, and quality-retention tradeoff summaries.
+      </p>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 10, fontSize: 12, color: 'var(--text-secondary)' }}>
+        <span><strong style={{ color: 'var(--accent-green)' }}>Compressed:</strong> {analysis.compressedCount}</span>
+        <span><strong style={{ color: 'var(--text-muted)' }}>Dense:</strong> {analysis.denseCount}</span>
+        <span style={{ color: 'var(--text-muted)' }}>({analysis.total} total)</span>
+        {analysis.testedTotal != null && (
+          <span style={{ color: 'var(--text-muted)' }}>
+            tested {analysis.compressedTested}/{analysis.testedTotal} compressed
+          </span>
+        )}
+      </div>
+      <div style={{ maxHeight: 260, overflow: 'auto' }}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Technique</th>
+              <th>Tested</th>
+              <th>N</th>
+              <th>Survival %</th>
+              <th>Avg Loss</th>
+              <th>Best Loss</th>
+              <th>Avg Ratio</th>
+              <th>Avg Mem (MB)</th>
+              <th>Quality Retention</th>
+            </tr>
+          </thead>
+          <tbody>
+            {analysis.sorted.map(row => (
+              <tr key={row.technique}>
+                <td style={{ color: (row.avgRatio != null && row.avgRatio < 1) ? 'var(--accent-green)' : 'var(--text-secondary)', fontWeight: 600 }}>
+                  {row.label}
+                </td>
+                <td>{row.tested ?? '--'}</td>
+                <td>{row.count}</td>
+                <td>{row.survivalRate != null ? `${(row.survivalRate * 100).toFixed(1)}%` : '--'}</td>
+                <td style={{ color: row.avgLoss != null && row.avgLoss < 0.6 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>
+                  {row.avgLoss != null ? row.avgLoss.toFixed(4) : '--'}
+                </td>
+                <td>{row.bestLoss != null ? row.bestLoss.toFixed(4) : '--'}</td>
+                <td style={{ color: row.avgRatio != null && row.avgRatio < 1 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                  {row.avgRatio != null ? `${(row.avgRatio * 100).toFixed(0)}%` : '--'}
+                </td>
+                <td>{row.avgMemoryMb != null ? row.avgMemoryMb.toFixed(2) : '--'}</td>
+                <td>{row.avgRetention != null ? `${(row.avgRetention * 100).toFixed(0)}%` : '--'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const GATING_OPS = new Set(['topk_gate']);
+
+function GatingAggregate({ programs }) {
+  const analysis = useMemo(() => {
+    if (!programs || programs.length === 0) return null;
+    let gatedCount = 0;
+    let ungatedCount = 0;
+    let totalDrop = 0;
+    let dropCount = 0;
+    let totalEntropy = 0;
+    let entropyCount = 0;
+    let totalConf = 0;
+    let confCount = 0;
+    let overflowTotal = 0;
+    const byMode = {};
+
+    for (const p of programs) {
+      const hasRouting = p.routing_mode || p.routing_drop_rate != null;
+      if (!hasRouting) { ungatedCount++; continue; }
+      gatedCount++;
+
+      if (p.routing_drop_rate != null) { totalDrop += p.routing_drop_rate; dropCount++; }
+      if (p.routing_utilization_entropy != null) { totalEntropy += p.routing_utilization_entropy; entropyCount++; }
+      if (p.routing_confidence_mean != null) { totalConf += p.routing_confidence_mean; confCount++; }
+      if (p.routing_capacity_overflow_count != null) overflowTotal += p.routing_capacity_overflow_count;
+
+      // Also detect topk_gate from graph
+      let hasGateOp = false;
+      if (p.graph_json) {
+        try {
+          const g = typeof p.graph_json === 'string' ? JSON.parse(p.graph_json) : p.graph_json;
+          const nodes = g?.nodes || {};
+          const nodeList = Array.isArray(nodes) ? nodes : Object.values(nodes);
+          hasGateOp = nodeList.some(n => GATING_OPS.has(n?.op_name || n?.op));
+        } catch { /* ignore */ }
+      }
+
+      const mode = p.routing_mode || (hasGateOp ? 'gated' : 'unknown');
+      if (!byMode[mode]) byMode[mode] = { count: 0, totalLoss: 0, lossCount: 0 };
+      byMode[mode].count++;
+      if (p.loss_ratio != null) { byMode[mode].totalLoss += p.loss_ratio; byMode[mode].lossCount++; }
+    }
+
+    if (gatedCount === 0) return null;
+
+    const avgDrop = dropCount > 0 ? totalDrop / dropCount : null;
+    const avgEntropy = entropyCount > 0 ? totalEntropy / entropyCount : null;
+    const avgConf = confCount > 0 ? totalConf / confCount : null;
+
+    const modes = Object.entries(byMode)
+      .map(([mode, m]) => ({
+        mode,
+        count: m.count,
+        avgLoss: m.lossCount > 0 ? m.totalLoss / m.lossCount : null,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return { gatedCount, ungatedCount, avgDrop, avgEntropy, avgConf, overflowTotal, modes };
+  }, [programs]);
+
+  if (!analysis) {
+    return (
+      <div className="card">
+        <div className="card-title">Gating Aggregate</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          No gated/routed architectures among survivors yet. Gating diagnostics will appear when the system
+          generates and evaluates architectures with mixture-of-experts routing (topk_gate, etc.).
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Gating Aggregate ({analysis.gatedCount} routed programs)</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Aggregate gating health across all routed stage-1 survivors. Lower drop rate and higher
+        entropy indicate healthier expert utilization system-wide.
+      </p>
+
+      <div style={{ display: 'flex', gap: 20, marginBottom: 12, flexWrap: 'wrap' }}>
+        {analysis.avgDrop != null && (
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Avg Drop Rate</div>
+            <div style={{
+              fontSize: 18, fontWeight: 700,
+              color: analysis.avgDrop > 0.3 ? 'var(--accent-red)' : analysis.avgDrop > 0.1 ? 'var(--accent-yellow)' : 'var(--accent-green)',
+            }}>
+              {(analysis.avgDrop * 100).toFixed(1)}%
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+              {analysis.avgDrop > 0.3 ? 'High token loss' : analysis.avgDrop > 0.1 ? 'Moderate' : 'Healthy'}
+            </div>
+          </div>
+        )}
+        {analysis.avgEntropy != null && (
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Avg Entropy</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-secondary)' }}>
+              {analysis.avgEntropy.toFixed(3)}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Utilization balance</div>
+          </div>
+        )}
+        {analysis.avgConf != null && (
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Avg Confidence</div>
+            <div style={{
+              fontSize: 18, fontWeight: 700,
+              color: analysis.avgConf > 0.8 ? 'var(--accent-green)' : analysis.avgConf > 0.5 ? 'var(--accent-yellow)' : 'var(--accent-red)',
+            }}>
+              {analysis.avgConf.toFixed(3)}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+              {analysis.avgConf > 0.8 ? 'Decisive' : analysis.avgConf > 0.5 ? 'Moderate' : 'Uncertain'}
+            </div>
+          </div>
+        )}
+        {analysis.overflowTotal > 0 && (
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Total Overflows</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent-red)' }}>
+              {analysis.overflowTotal.toLocaleString()}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Capacity overflow events</div>
+          </div>
+        )}
+      </div>
+
+      {analysis.modes.length > 0 && (
+        <div style={{ maxHeight: 180, overflow: 'auto' }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Mode</th>
+                <th>N</th>
+                <th>Avg Loss</th>
+              </tr>
+            </thead>
+            <tbody>
+              {analysis.modes.map(row => (
+                <tr key={row.mode}>
+                  <td style={{ color: 'var(--accent-blue)' }}>{row.mode}</td>
+                  <td>{row.count}</td>
+                  <td style={{ color: row.avgLoss != null && row.avgLoss < 0.6 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>
+                    {row.avgLoss != null ? row.avgLoss.toFixed(4) : '--'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -693,8 +1315,13 @@ function LearningPanel() {
   const [frontier, setFrontier] = useState(null);
   const [clusters, setClusters] = useState(null);
   const [routingHealth, setRoutingHealth] = useState(null);
+  const [routingComparison, setRoutingComparison] = useState(null);
+  const [gatingDiagnostics, setGatingDiagnostics] = useState(null);
+  const [mathFamilyCoverage, setMathFamilyCoverage] = useState(null);
+  const [compressionCoverage, setCompressionCoverage] = useState(null);
   const [learningSummary, setLearningSummary] = useState(null);
   const [trajectory, setTrajectory] = useState(null);
+  const [topPrograms, setTopPrograms] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -712,10 +1339,15 @@ function LearningPanel() {
       safeFetch(`${API_BASE}/api/analytics/efficiency-frontier`),
       safeFetch(`${API_BASE}/api/analytics/experiment-clusters`),
       safeFetch(`${API_BASE}/api/analytics/routing-health`),
+      safeFetch(`${API_BASE}/api/analytics/routing-comparison`),
+      safeFetch(`${API_BASE}/api/analytics/gating-diagnostics`),
+      safeFetch(`${API_BASE}/api/analytics/math-family-coverage`),
+      safeFetch(`${API_BASE}/api/analytics/compression-coverage`),
       safeFetch(`${API_BASE}/api/analytics/learning-summary`),
       safeFetch(`${API_BASE}/api/analytics/learning-trajectory`),
-    ]).then(([w, ops, lg, fr, cl, rh, ls, lt]) => {
-      if (!w && !ops && !lg && !fr && !cl && !rh && !ls && !lt) {
+      safeFetch(`${API_BASE}/api/programs?n=100&sort_by=loss_ratio`),
+    ]).then(([w, ops, lg, fr, cl, rh, rc, gd, mf, cc, ls, lt, tp]) => {
+      if (!w && !ops && !lg && !fr && !cl && !rh && !rc && !gd && !mf && !cc && !ls && !lt) {
         setError('Failed to load analytics data. The API may be unavailable.');
       }
       setWeights(w);
@@ -724,8 +1356,13 @@ function LearningPanel() {
       setFrontier(fr);
       setClusters(cl);
       setRoutingHealth(rh);
+      setRoutingComparison(rc);
+      setGatingDiagnostics(gd);
+      setMathFamilyCoverage(mf);
+      setCompressionCoverage(cc);
       setLearningSummary(ls);
       setTrajectory(lt);
+      setTopPrograms(Array.isArray(tp) ? tp : null);
       setLastUpdated(new Date());
       setLoading(false);
     }).catch(e => {
@@ -766,7 +1403,12 @@ function LearningPanel() {
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <ExperimentClusters clustersData={clusters} />
-        <RoutingHealth data={routingHealth} />
+        <RoutingHealth data={routingComparison || routingHealth} />
+      </div>
+      <MathFamilyCoverage data={mathFamilyCoverage} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <CompressionCoverage data={compressionCoverage} programs={topPrograms} />
+        <GatingBehaviorDiagnostics data={gatingDiagnostics} />
       </div>
       <OpSuccessTable opRates={opRates} />
       <LearningLog log={log} />

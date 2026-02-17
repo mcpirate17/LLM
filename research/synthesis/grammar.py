@@ -48,6 +48,7 @@ class GrammarConfig:
         "sequence": 1.2,
         "frequency": 0.5,
         "math_space": 1.5,
+        "functional": 1.0,
     })
     # Excluded op names (if any)
     excluded_ops: Set[str] = field(default_factory=set)
@@ -231,7 +232,8 @@ def _check_shape_compat(op: PrimitiveOp, input_shapes: List[ShapeInfo], model_di
 
     # Sequence-dependent ops need standard (non-freq) tensors
     if op.name in ("local_window_attn", "sliding_window_mask",
-                    "token_pool_restore", "selective_scan", "conv1d_seq"):
+                    "token_pool_restore", "selective_scan", "conv1d_seq",
+                    "basis_expansion", "integral_kernel", "fixed_point_iter"):
         if not s0.is_standard:
             return False
 
@@ -367,6 +369,19 @@ def _apply_parameterized(graph, config, rng, available_nodes,
             if params_so_far + op_params <= max_params:
                 candidates.append((op.name, op_params))
 
+    # Include functional operator-learning primitives
+    for op in list_primitives(OpCategory.FUNCTIONAL):
+        if op.name in config.excluded_ops:
+            continue
+        if op.n_inputs == 1 and _check_shape_compat(op, [shape], D):
+            formula = op.param_formula.replace("D", str(D))
+            try:
+                op_params = safe_eval_formula(formula)
+            except Exception:
+                op_params = D * D
+            if params_so_far + op_params <= max_params:
+                candidates.append((op.name, op_params))
+
     if not candidates:
         return node_id
 
@@ -381,6 +396,11 @@ def _apply_parameterized(graph, config, rng, available_nodes,
                 op_config["out_dim"] = shape.dim * 2
             else:
                 op_config["out_dim"] = shape.dim
+        elif op_name == "fixed_point_iter":
+            op_config["n_iters"] = rng.choice([2, 3, 4])
+            op_config["damping"] = rng.choice([0.4, 0.5, 0.6])
+        elif op_name == "integral_kernel":
+            op_config["kernel_scale"] = rng.choice([0.15, 0.25, 0.35])
         # New parameterized ops don't need special config beyond defaults
         new_id = graph.add_op(op_name, [node_id], config=op_config)
     except ValueError:

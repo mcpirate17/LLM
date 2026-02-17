@@ -32,6 +32,7 @@ class OpCategory(Enum):
     SEQUENCE = "sequence"
     FREQUENCY = "frequency"
     MATH_SPACE = "math_space"
+    FUNCTIONAL = "functional"
 
 
 # Shape is represented as a tuple of symbolic dimensions
@@ -308,6 +309,21 @@ _register(PrimitiveOp("rfft_seq", OpCategory.FREQUENCY, 1, "rfft",
                        description="Real FFT along sequence dimension"))
 _register(PrimitiveOp("irfft_seq", OpCategory.FREQUENCY, 1, "irfft",
                        description="Inverse real FFT along sequence dim"))
+
+# ── Functional (operator-learning / neural-field) ────────────────────
+
+_register(PrimitiveOp("basis_expansion", OpCategory.FUNCTIONAL, 1, "identity",
+                       has_params=True, param_formula="D*4",
+                       description="Basis-expansion layer: project through sinusoidal bases"))
+_register(PrimitiveOp("integral_kernel", OpCategory.FUNCTIONAL, 1, "identity",
+                       has_params=True, param_formula="D*D",
+                       description="Integral kernel mixing: learned kernel over sequence positions",
+                       config_keys=("kernel_scale",)))
+_register(PrimitiveOp("fixed_point_iter", OpCategory.FUNCTIONAL, 1, "identity",
+                       has_params=True, param_formula="D*D+D",
+                       description="Implicit fixed-point iteration: x = f(x) with learned f",
+                       numerically_risky=True,
+                       config_keys=("n_iters", "damping")))
 
 
 # ── Helper Functions ──────────────────────────────────────────────────

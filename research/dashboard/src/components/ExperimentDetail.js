@@ -3,6 +3,7 @@ import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
 import { formatTime, formatDuration } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
+import { programScore } from '../utils/scores';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -27,18 +28,6 @@ function programRowRating(p) {
   return { color: 'var(--accent-red)', label: 'Failed', tip: 'Failed to compile or crashed — invalid operation combination', order: 0 };
 }
 
-/**
- * Score a program row 0-100.
- * Weights: stage progress (30%), loss ratio (30%), novelty (20%), baseline (20%)
- */
-function programRowScore(p) {
-  const stageScore = (p.stage1_passed ? 1.0 : p.stage05_passed ? 0.5 : p.stage0_passed ? 0.2 : 0) * 30;
-  const lossScore = p.loss_ratio != null ? Math.max(0, 1 - (p.loss_ratio - 0.2) / 0.8) * 30 : 0;
-  const noveltyScore = p.novelty_score != null ? Math.min(p.novelty_score, 1.0) * 20 : 0;
-  const baselineScore = p.baseline_loss_ratio != null ? Math.max(0, Math.min(1, 1.5 - p.baseline_loss_ratio)) * 20 : 0;
-  return Math.round(Math.max(0, Math.min(100, stageScore + lossScore + noveltyScore + baselineScore)));
-}
-
 function progScoreColor(score) {
   if (score >= 70) return 'var(--accent-green)';
   if (score >= 40) return 'var(--accent-yellow)';
@@ -60,6 +49,8 @@ const PROG_COLUMNS = [
   { key: 'flops_forward', label: 'FLOPs' },
   { key: 'baseline_loss_ratio', label: 'Baseline' },
 ];
+
+const EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY = 'dashboard.experiment-detail.programs.sort.v1';
 
 const ROW_RATING_ORDER = { Excellent: 5, Strong: 4, Learned: 3, Stable: 2, Compiled: 1, Failed: 0 };
 
@@ -98,7 +89,7 @@ function FunnelViz({ experiment }) {
 
 function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram }) {
   const sorted = useMemo(() => {
-    const aug = programs.map(p => ({ ...p, _score: programRowScore(p), _rating: programRowRating(p) }));
+    const aug = programs.map(p => ({ ...p, _score: programScore(p), _rating: programRowRating(p) }));
     aug.sort((a, b) => {
       let va, vb;
       if (sortKey === '_score') { va = a._score; vb = b._score; }
@@ -204,8 +195,34 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedProgramId, setSelectedProgramId] = useState(null);
-  const [progSortKey, setProgSortKey] = useState('_score');
-  const [progSortDesc, setProgSortDesc] = useState(true);
+  const [progSortKey, setProgSortKey] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY) || '{}');
+      const validKeys = new Set(PROG_COLUMNS.map((column) => column.key));
+      if (typeof stored.progSortKey === 'string' && validKeys.has(stored.progSortKey)) {
+        return stored.progSortKey;
+      }
+    } catch {}
+    return '_score';
+  });
+  const [progSortDesc, setProgSortDesc] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY) || '{}');
+      if (typeof stored.progSortDesc === 'boolean') {
+        return stored.progSortDesc;
+      }
+    } catch {}
+    return true;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY,
+        JSON.stringify({ progSortKey, progSortDesc }),
+      );
+    } catch {}
+  }, [progSortKey, progSortDesc]);
 
   useEffect(() => {
     if (!experimentId) return;

@@ -59,6 +59,14 @@ class CompiledOp(nn.Module):
         elif op.name == "topk_gate":
             # Gate projection: D -> 2
             self.gate_proj = nn.Parameter(torch.randn(2, D_in) * (1.0 / math.sqrt(D_in)))
+        elif op.name == "basis_expansion":
+            # 4 frequency-scale vectors for sin/cos basis expansion
+            self.weight = nn.Parameter(torch.randn(4, D_in) * 0.5)
+        elif op.name == "integral_kernel":
+            self.weight = nn.Parameter(torch.randn(D_in, D_in) * (1.0 / math.sqrt(D_in)))
+        elif op.name == "fixed_point_iter":
+            # (D+1, D): first D rows are W, last row is bias
+            self.weight = nn.Parameter(torch.randn(D_in + 1, D_in) * (1.0 / math.sqrt(D_in)))
         else:
             # Math space ops or custom — check for custom init
             if hasattr(op, 'init_params'):
@@ -319,6 +327,47 @@ def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...
         if restored.shape[1] < S:
             restored = torch.cat([restored, x[:, -1:, :]], dim=1)
         return restored
+
+    # ── Functional (operator-learning / neural-field) ──
+    elif op_name == "basis_expansion":
+        if not hasattr(module, 'weight'):
+            return x
+        # Project through sinusoidal bases: sin(Wx) and cos(Wx) concatenated then projected back
+        # weight shape: (4, D) — 2 frequency bands * 2 (sin/cos)
+        w = module.weight  # (4, D)
+        expanded = torch.sin(x * w[0]) + torch.cos(x * w[1]) + torch.sin(x * w[2]) + torch.cos(x * w[3])
+        return expanded * (0.25)  # average of 4 basis terms
+    elif op_name == "integral_kernel":
+        if not hasattr(module, 'weight'):
+            return x
+        B, S, D = x.shape
+        kernel_scale = float(config.get("kernel_scale", 0.25))
+        # Learned kernel over positions: K(s,s') = softmax(pos_weight)
+        # weight shape: (D, D) but we use (S, S)-sized kernel from position embeddings
+        # Approximate: weight as (D, D) mixing features, applied after position-weighted sum
+        pos = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
+        pos_diff = (pos - pos.t()).abs().float()
+        kernel = torch.exp(-kernel_scale * pos_diff)  # (S, S) smooth kernel
+        kernel = kernel / kernel.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        # Apply kernel mixing along sequence then feature projection
+        mixed = torch.bmm(kernel.unsqueeze(0).expand(B, -1, -1), x)  # (B, S, D)
+        return F.linear(mixed, module.weight)  # (B, S, D)
+    elif op_name == "fixed_point_iter":
+        if not hasattr(module, 'weight'):
+            return x
+        B, S, D = x.shape
+        # Implicit layer: iterate x = sigma(Wx + b) starting from input
+        # N iterations with damping for stability
+        W = module.weight[:D, :]  # (D, D)
+        b = module.weight[D, :] if module.weight.shape[0] > D else torch.zeros(D, device=x.device)
+        z = x
+        n_iters = max(1, int(config.get("n_iters", 3)))
+        damping = float(config.get("damping", 0.5))
+        damping = max(0.0, min(1.0, damping))
+        for _ in range(n_iters):
+            z_new = torch.tanh(F.linear(z, W) + b)
+            z = (1.0 - damping) * z + damping * z_new  # damped iteration
+        return z
 
     # ── Frequency ──
     elif op_name == "rfft_seq":

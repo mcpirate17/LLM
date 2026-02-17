@@ -30,14 +30,174 @@ logger = logging.getLogger(__name__)
 _runner: Optional[ExperimentRunner] = None
 
 
+def _insight_dedup_key(content: str) -> str:
+    """Normalize numeric values to create a stable dedup key for insights.
+
+    Replaces decimals/percentages and multi-digit integers so that
+    'appears in 144 survivors' matches 'appears in 145 survivors'.
+    Preserves single-digit suffixes in op names like 'split2'.
+    """
+    import re
+    s = re.sub(r'\d+\.\d+%?', '#', content)   # decimals / pcts
+    s = re.sub(r'\b\d{2,}\b', '#', s)           # multi-digit ints
+    return s
+
+
 def _deduplicate_insights(insights: list) -> list:
-    """Keep only the most recent insight per unique content string."""
+    """Keep only the most recent insight per semantic dedup key."""
     seen: dict = {}
     for ins in insights:
-        content = ins.get("content", "")
-        if content not in seen:
-            seen[content] = ins
+        key = _insight_dedup_key(ins.get("content", ""))
+        if key not in seen:
+            seen[key] = ins
     return list(seen.values())
+
+
+def _normalize_entry(entry: dict) -> dict:
+    """Normalize notebook entry shape for UI consumers.
+
+    Ensures ``metadata`` is available as a parsed dict while preserving
+    original ``metadata_json`` for compatibility.
+    """
+    normalized = dict(entry)
+    metadata = normalized.get("metadata")
+    if isinstance(metadata, dict):
+        return normalized
+
+    raw = normalized.get("metadata_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            normalized["metadata"] = parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            normalized["metadata"] = {}
+    else:
+        normalized["metadata"] = {}
+    return normalized
+
+
+def _normalize_entries(entries: list) -> list:
+    return [_normalize_entry(entry) for entry in entries]
+
+
+def _normalize_hypothesis(hypothesis: dict) -> dict:
+    """Normalize campaign hypothesis shape for UI consumers."""
+    normalized = dict(hypothesis)
+    metadata = normalized.get("metadata")
+    if isinstance(metadata, dict):
+        return normalized
+
+    raw = normalized.get("metadata_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            normalized["metadata"] = parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            normalized["metadata"] = {}
+    else:
+        normalized["metadata"] = {}
+    return normalized
+
+
+def _normalize_hypotheses(hypotheses: list) -> list:
+    return [_normalize_hypothesis(hypothesis) for hypothesis in hypotheses]
+
+
+def _rank_label(delta: Optional[int], seen_runs: int) -> str:
+    if seen_runs <= 1:
+        return "new"
+    if delta is None:
+        return "unknown"
+    if delta <= -2:
+        return "up"
+    if delta >= 2:
+        return "down"
+    return "stable"
+
+
+def _compute_cross_run_stability(nb: LabNotebook, top_programs: list) -> dict:
+    """Compute rank movement for top candidates across recent experiments.
+
+    Uses graph fingerprint as the architecture key and tracks its rank
+    among stage-1-passing programs for each completed experiment.
+    """
+    experiments = [
+        exp for exp in nb.get_recent_experiments(40)
+        if exp.get("status") == "completed"
+    ]
+    if not top_programs or not experiments:
+        return {
+            "summary": {"stable": 0, "up": 0, "down": 0, "new": 0},
+            "candidates": [],
+            "window_size": len(experiments),
+        }
+
+    fingerprint_ranks_by_experiment: dict[str, dict[str, int]] = {}
+    for exp in experiments:
+        experiment_id = exp.get("experiment_id")
+        if not experiment_id:
+            continue
+        programs = nb.get_program_results(experiment_id)
+        ranked = sorted(
+            [
+                p for p in programs
+                if p.get("stage1_passed") and p.get("loss_ratio") is not None
+            ],
+            key=lambda p: p.get("loss_ratio", float("inf")),
+        )
+        ranks = {}
+        for idx, program in enumerate(ranked, start=1):
+            fp = program.get("graph_fingerprint")
+            if fp and fp not in ranks:
+                ranks[fp] = idx
+        fingerprint_ranks_by_experiment[experiment_id] = ranks
+
+    candidates = []
+    summary = {"stable": 0, "up": 0, "down": 0, "new": 0}
+    for index, program in enumerate(top_programs[:20], start=1):
+        fp = program.get("graph_fingerprint")
+        if not fp:
+            continue
+
+        history = []
+        for exp in experiments:
+            experiment_id = exp.get("experiment_id")
+            if not experiment_id:
+                continue
+            rank = fingerprint_ranks_by_experiment.get(experiment_id, {}).get(fp)
+            if rank is None:
+                continue
+            history.append({
+                "experiment_id": experiment_id,
+                "timestamp": exp.get("timestamp"),
+                "rank": rank,
+            })
+
+        seen_runs = len(history)
+        latest_rank = history[0]["rank"] if history else None
+        previous_rank = history[1]["rank"] if len(history) > 1 else None
+        delta = None
+        if latest_rank is not None and previous_rank is not None:
+            delta = latest_rank - previous_rank
+        trend = _rank_label(delta, seen_runs)
+        summary[trend] = summary.get(trend, 0) + 1
+
+        candidates.append({
+            "result_id": program.get("result_id"),
+            "graph_fingerprint": fp,
+            "current_overall_rank": index,
+            "seen_runs": seen_runs,
+            "latest_rank": latest_rank,
+            "previous_rank": previous_rank,
+            "rank_delta": delta,
+            "trend": trend,
+        })
+
+    return {
+        "summary": summary,
+        "candidates": candidates,
+        "window_size": len(experiments),
+    }
 
 
 def _get_sse_timeout_seconds() -> float:
@@ -59,6 +219,72 @@ def _get_runner(notebook_path: str) -> ExperimentRunner:
     if _runner is None:
         _runner = ExperimentRunner(notebook_path)
     return _runner
+
+
+def _compute_recommendation(program: dict, leaderboard_entry: Optional[dict]) -> dict:
+    """Deterministic next-action recommendation based on tier and pass/fail."""
+    tier = (leaderboard_entry or {}).get("tier", "screening")
+    s1 = program.get("stage1_passed", False)
+
+    if not s1:
+        return {
+            "action": "archive",
+            "rationale": "Program did not pass Stage 1 learning evaluation.",
+            "confidence": "high",
+        }
+
+    if tier == "breakthrough":
+        return {
+            "action": "publish",
+            "rationale": "Breakthrough-tier architecture with validated performance.",
+            "confidence": "high",
+        }
+
+    if tier == "validation":
+        passed = (leaderboard_entry or {}).get("validation_passed", False)
+        if passed:
+            return {
+                "action": "scale up or publish",
+                "rationale": "Validation passed with multi-seed stability confirmed.",
+                "confidence": "high",
+            }
+        return {
+            "action": "re-validate",
+            "rationale": "Validation tier but not yet passed; may need more seeds or longer training.",
+            "confidence": "medium",
+        }
+
+    if tier == "investigation":
+        passed = (leaderboard_entry or {}).get("investigation_passed", False)
+        if passed:
+            return {
+                "action": "validate",
+                "rationale": "Investigation passed; promote to validation for multi-seed confirmation.",
+                "confidence": "high",
+            }
+        return {
+            "action": "re-investigate or archive",
+            "rationale": "Investigation tier but not yet passed; re-run or archive if stale.",
+            "confidence": "medium",
+        }
+
+    # screening (default)
+    return {
+        "action": "investigate",
+        "rationale": "Screening-tier candidate; needs deeper investigation to confirm potential.",
+        "confidence": "medium",
+    }
+
+
+def _annotate_qkv_usage(programs: list, analytics) -> None:
+    for program in programs:
+        if not isinstance(program, dict):
+            continue
+        qkv_usage = analytics.qkv_usage_enum(program)
+        program["qkv_usage"] = qkv_usage
+        program["uses_qkv"] = qkv_usage != "qkv_free"
+        program["compression_metrics"] = analytics.canonical_compression_metrics(program)
+        program["reproducibility_packet"] = analytics.reproducibility_packet_status(program)
 
 
 def create_app(
@@ -204,6 +430,17 @@ def create_app(
             except Exception as e:
                 logger.debug(f"LLM fingerprint explanation failed for {result_id}: {e}")
 
+            try:
+                from .analytics import ExperimentAnalytics
+                analytics = ExperimentAnalytics(nb)
+                qkv_usage = analytics.qkv_usage_enum(program)
+                program["qkv_usage"] = qkv_usage
+                program["uses_qkv"] = qkv_usage != "qkv_free"
+                program["compression_metrics"] = analytics.canonical_compression_metrics(program)
+                program["reproducibility_packet"] = analytics.reproducibility_packet_status(program)
+            except Exception as e:
+                logger.debug("QKV usage classification failed for %s: %s", result_id, e)
+
             return jsonify(program)
         except Exception as e:
             logger.error(f"Error in /api/programs/{result_id}: {e}\n{traceback.format_exc()}")
@@ -285,7 +522,11 @@ def create_app(
         sort_by = request.args.get("sort", "novelty_score")
         nb = LabNotebook(notebook_path)
         try:
-            return jsonify(nb.get_top_programs(n, sort_by))
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            programs = nb.get_top_programs(n, sort_by)
+            _annotate_qkv_usage(programs, analytics)
+            return jsonify(programs)
         except Exception as e:
             logger.error(f"Error in /api/programs: {e}")
             return jsonify({"error": str(e)}), 500
@@ -299,13 +540,7 @@ def create_app(
         nb = LabNotebook(notebook_path)
         try:
             raw = nb.get_insights(category=category, limit=200)
-            # Deduplicate: keep the most recent insight per unique content
-            seen: dict = {}
-            for ins in raw:
-                content = ins.get("content", "")
-                if content not in seen:
-                    seen[content] = ins
-            return jsonify(list(seen.values()))
+            return jsonify(_deduplicate_insights(raw))
         except Exception as e:
             logger.error(f"Error in /api/insights: {e}")
             return jsonify({"error": str(e)}), 500
@@ -320,9 +555,10 @@ def create_app(
         n = request.args.get("n", 50, type=int)
         nb = LabNotebook(notebook_path)
         try:
-            return jsonify(nb.get_entries(
+            entries = nb.get_entries(
                 experiment_id=exp_id, entry_type=entry_type, limit=n
-            ))
+            )
+            return jsonify(_normalize_entries(entries))
         except Exception as e:
             logger.error(f"Error in /api/entries: {e}")
             return jsonify({"error": str(e)}), 500
@@ -366,16 +602,47 @@ def create_app(
             except Exception as e:
                 logger.warning("Failed enriching dashboard campaign metadata: %s", e)
 
+            recent_experiments = nb.get_recent_experiments(10)
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            top_programs = nb.get_top_programs(10)
+            _annotate_qkv_usage(top_programs, analytics)
+
             data = {
                 "aria": aria.get_status(db_summary=summary),
                 "summary": summary,
-                "recent_experiments": nb.get_recent_experiments(10),
-                "top_programs": nb.get_top_programs(10),
+                "recent_experiments": recent_experiments,
+                "top_programs": top_programs,
                 "insights": _deduplicate_insights(nb.get_insights(limit=50)),
-                "recent_entries": nb.get_entries(limit=20),
+                "recent_entries": _normalize_entries(nb.get_entries(limit=20)),
                 "is_running": runner.is_running,
                 "progress": runner.progress.to_dict(),
             }
+
+            # Compute deltas from latest completed experiment
+            try:
+                completed = [e for e in recent_experiments
+                             if e.get("status") == "completed"]
+                if len(completed) >= 2:
+                    latest = completed[0]
+                    previous = completed[1]
+                    data["deltas"] = {
+                        "experiment_id": latest.get("experiment_id"),
+                        "programs": (latest.get("n_programs_generated") or 0)
+                                    - (previous.get("n_programs_generated") or 0),
+                        "stage1": (latest.get("n_stage1_passed") or 0)
+                                  - (previous.get("n_stage1_passed") or 0),
+                        "best_loss": round(
+                            (latest.get("best_loss_ratio") or 1)
+                            - (previous.get("best_loss_ratio") or 1), 4
+                        ) if latest.get("best_loss_ratio") else None,
+                        "best_novelty": round(
+                            (latest.get("best_novelty_score") or 0)
+                            - (previous.get("best_novelty_score") or 0), 4
+                        ) if latest.get("best_novelty_score") else None,
+                    }
+            except Exception:
+                pass
 
             # Include latest auto-recommendation if experiment just completed
             last_rec = runner.last_recommendation
@@ -405,6 +672,9 @@ def create_app(
                 "top_programs": nb.get_top_programs(20, sort_by="loss_ratio"),
                 "recent_experiments": nb.get_recent_experiments(100),
                 "op_success_rates": analytics.op_success_rates(),
+                "math_family_coverage": analytics.math_family_coverage(),
+                "routing_mode_comparison": analytics.routing_mode_comparison(),
+                "gating_behavior_diagnostics": analytics.gating_behavior_diagnostics(),
                 "structural_correlations": analytics.structural_correlations(),
                 "failure_patterns": analytics.failure_patterns(),
                 "top_op_combinations": analytics.top_op_combinations(10),
@@ -419,6 +689,10 @@ def create_app(
                 "learning_log": nb.get_learning_log(limit=50),
                 "insights": nb.get_insights(),
             }
+            _annotate_qkv_usage(data["top_programs"], analytics)
+            data["cross_run_stability"] = _compute_cross_run_stability(
+                nb, data["top_programs"]
+            )
 
             # Generate narrative (optional, non-blocking)
             try:
@@ -537,6 +811,92 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/analytics/routing-comparison")
+    def api_routing_comparison():
+        """Consolidated routing-mode comparison with confidence/sample labels."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            payload = analytics.routing_mode_comparison() or {}
+            payload.setdefault("available", False)
+            payload.setdefault("by_mode", [])
+            payload.setdefault("n_modes", 0)
+            payload.setdefault("total_programs", 0)
+            payload.setdefault("routed_programs", 0)
+            payload.setdefault("uniform_programs", 0)
+            payload.setdefault("explanation", "Routing comparison data is unavailable.")
+            return jsonify(payload)
+        except Exception as e:
+            logger.error(f"Error in routing-comparison: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/gating-diagnostics")
+    def api_gating_diagnostics():
+        """Canonical gating behavior diagnostics (entropy/collapse/retention)."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            payload = analytics.gating_behavior_diagnostics() or {}
+            payload.setdefault("available", False)
+            payload.setdefault("total_routed_programs", 0)
+            payload.setdefault("avg_gate_entropy", None)
+            payload.setdefault("collapse_risk_counts", {"low": 0, "medium": 0, "high": 0, "unknown": 0})
+            payload.setdefault("by_mode", [])
+            payload.setdefault("token_retention_curve_overall", [])
+            payload.setdefault("explanation", "Gating diagnostics are unavailable.")
+            return jsonify(payload)
+        except Exception as e:
+            logger.error(f"Error in gating-diagnostics: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/math-family-coverage")
+    def api_math_family_coverage():
+        """Coverage of evaluated/surviving programs by mathematical family."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            return jsonify(analytics.math_family_coverage())
+        except Exception as e:
+            logger.error(f"Error in math-family-coverage: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/compression-coverage")
+    def api_compression_coverage():
+        """Coverage of compression techniques across tested and surviving programs."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            return jsonify(analytics.compression_coverage())
+        except Exception as e:
+            logger.error(f"Error in compression-coverage: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/negative-results")
+    def api_negative_results():
+        """Aggregated negative results: failed ops, error types, anti-patterns."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            return jsonify(analytics.negative_results_synthesis())
+        except Exception as e:
+            logger.error(f"Error in negative-results: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/analytics/learning-trajectory")
     def api_learning_trajectory():
         """S1 rate trend over time with regression analysis."""
@@ -591,6 +951,243 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/decision-packet/<result_id>")
+    def api_decision_packet(result_id):
+        """One-click evidence bundle for promotion decisions."""
+        nb = LabNotebook(notebook_path)
+        try:
+            program = nb.get_program_detail(result_id)
+            if program is None:
+                return jsonify({"error": "Not found"}), 404
+
+            fingerprint = program.get("graph_fingerprint", "")
+            experiment_id = program.get("experiment_id")
+
+            # Leaderboard entry
+            leaderboard_entry = None
+            try:
+                rows = nb.get_leaderboard(limit=200)
+                for entry in rows:
+                    if entry.get("result_id") == result_id:
+                        leaderboard_entry = entry
+                        break
+            except Exception:
+                pass
+
+            # Experiment data + failure analysis
+            experiment = None
+            failure_analysis = {"funnel": {}, "errors": {}, "stage_deaths": {}}
+            if experiment_id:
+                try:
+                    experiment = nb.get_experiment(experiment_id)
+                except Exception:
+                    pass
+                try:
+                    failure_analysis = nb.get_failure_analysis(experiment_id)
+                except Exception:
+                    pass
+
+            # Hypothesis chain — find hypothesis linked to this experiment
+            hypothesis_chain = []
+            if experiment_id:
+                try:
+                    hyp_row = nb.conn.execute(
+                        "SELECT hypothesis_id FROM hypotheses WHERE experiment_id = ?",
+                        (experiment_id,),
+                    ).fetchone()
+                    if hyp_row:
+                        hypothesis_chain = nb.get_hypothesis_chain(
+                            hyp_row["hypothesis_id"] if isinstance(hyp_row, dict)
+                            else hyp_row[0]
+                        )
+                except Exception:
+                    pass
+
+            # Cross-run stability for this specific result
+            cross_run = {"trend": "unknown", "seen_runs": 0}
+            try:
+                top = nb.get_top_programs(20, sort_by="loss_ratio")
+                stability = _compute_cross_run_stability(nb, top)
+                for c in stability.get("candidates", []):
+                    if c.get("result_id") == result_id:
+                        cross_run = {
+                            "trend": c.get("trend", "unknown"),
+                            "seen_runs": c.get("seen_runs", 0),
+                        }
+                        break
+            except Exception:
+                pass
+
+            # Build outcomes by phase
+            tier = (leaderboard_entry or {}).get("tier", "screening")
+            outcomes = {
+                "screening": {
+                    "loss_ratio": program.get("loss_ratio"),
+                    "novelty": program.get("novelty_score"),
+                },
+                "investigation": None,
+                "validation": None,
+            }
+            if leaderboard_entry:
+                inv_lr = leaderboard_entry.get("investigation_loss_ratio")
+                if inv_lr is not None:
+                    outcomes["investigation"] = {
+                        "loss_ratio": inv_lr,
+                        "robustness": leaderboard_entry.get("investigation_robustness"),
+                        "passed": bool(leaderboard_entry.get("investigation_passed")),
+                    }
+                val_lr = leaderboard_entry.get("validation_loss_ratio")
+                if val_lr is not None:
+                    outcomes["validation"] = {
+                        "loss_ratio": val_lr,
+                        "baseline_ratio": leaderboard_entry.get("validation_baseline_ratio"),
+                        "multi_seed_std": leaderboard_entry.get("validation_multi_seed_std"),
+                        "passed": bool(leaderboard_entry.get("validation_passed")),
+                    }
+
+            # Baseline comparison
+            bl_ratio = program.get("baseline_loss_ratio")
+            baseline_comparison = {"ratio": bl_ratio, "interpretation": "unknown"}
+            if bl_ratio is not None:
+                if bl_ratio < 0.95:
+                    baseline_comparison["interpretation"] = "outperforms"
+                elif bl_ratio <= 1.05:
+                    baseline_comparison["interpretation"] = "comparable"
+                else:
+                    baseline_comparison["interpretation"] = "underperforms"
+
+            # Failure context
+            failure_context = {
+                "stage_at_death": program.get("stage_at_death"),
+                "error_type": program.get("error_type"),
+                "experiment_errors": failure_analysis.get("errors", {}),
+                "experiment_funnel": failure_analysis.get("funnel", {}),
+            }
+
+            # Recommendation
+            recommendation = _compute_recommendation(program, leaderboard_entry)
+
+            # Evidence flags
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            packet_status = analytics.reproducibility_packet_status(
+                leaderboard_entry if leaderboard_entry else program
+            )
+            evidence_flags = {
+                "has_baseline": bl_ratio is not None,
+                "has_cka_artifact": program.get("cka_source") == "artifact",
+                "has_multi_seed": outcomes["validation"] is not None,
+                "has_hypothesis": len(hypothesis_chain) > 0,
+                "repro_packet_ready": packet_status.get("status") == "ready",
+            }
+
+            return jsonify({
+                "result_id": result_id,
+                "fingerprint": fingerprint,
+                "experiment_id": experiment_id,
+                "hypothesis_chain": hypothesis_chain,
+                "outcomes": outcomes,
+                "baseline_comparison": baseline_comparison,
+                "failure_context": failure_context,
+                "cross_run_stability": cross_run,
+                "recommendation": recommendation,
+                "evidence_flags": evidence_flags,
+                "compression_metrics": analytics.canonical_compression_metrics(
+                    leaderboard_entry if leaderboard_entry else program
+                ),
+                "reproducibility_packet": packet_status,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/decision-packet/{result_id}: {e}\n"
+                         f"{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/reproducibility-manifest/<result_id>")
+    def api_reproducibility_manifest(result_id):
+        """Exportable reproducibility manifest for a program result."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            program = nb.get_program_detail(result_id)
+            if program is None:
+                return jsonify({"error": "Not found"}), 404
+
+            experiment_id = program.get("experiment_id")
+            experiment = None
+            if experiment_id:
+                try:
+                    experiment = nb.get_experiment(experiment_id)
+                except Exception:
+                    pass
+
+            config = (experiment or {}).get("config", {}) or {}
+            training = {}
+            try:
+                tp = json.loads(program.get("training_program_json") or "{}")
+                training = tp
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Grammar weights snapshot from experiment config
+            grammar_weights = config.get("applied_grammar_weights") or config.get("grammar_weights")
+            grammar_config = config.get("grammar_config", {})
+
+            manifest = {
+                "result_id": result_id,
+                "graph_fingerprint": program.get("graph_fingerprint"),
+                "experiment_id": experiment_id,
+                "experiment_type": (experiment or {}).get("experiment_type"),
+                "timestamp": program.get("timestamp"),
+                "code_version": config.get("code_version"),
+                "seeds": {
+                    "experiment_seed": config.get("seed"),
+                    "training_seed": training.get("seed"),
+                },
+                "data": {
+                    "data_mode": config.get("data_mode"),
+                    "dataset": config.get("dataset"),
+                    "seq_len": training.get("seq_len") or config.get("seq_len"),
+                    "batch_size": training.get("batch_size") or config.get("batch_size"),
+                    "vocab_size": training.get("vocab_size") or config.get("vocab_size"),
+                },
+                "grammar": {
+                    "max_ops": grammar_config.get("max_ops"),
+                    "max_depth": grammar_config.get("max_depth"),
+                    "weights_snapshot": grammar_weights,
+                },
+                "training": {
+                    "learning_rate": training.get("learning_rate") or training.get("lr"),
+                    "steps": training.get("steps") or training.get("n_steps"),
+                    "warmup_steps": training.get("warmup_steps"),
+                },
+                "architecture": {
+                    "param_count": program.get("param_count"),
+                    "graph_json": program.get("graph_json"),
+                },
+                "outcomes": {
+                    "stage0_passed": bool(program.get("stage0_passed")),
+                    "stage05_passed": bool(program.get("stage05_passed")),
+                    "stage1_passed": bool(program.get("stage1_passed")),
+                    "loss_ratio": program.get("loss_ratio"),
+                    "novelty_score": program.get("novelty_score"),
+                    "baseline_loss_ratio": program.get("baseline_loss_ratio"),
+                },
+                "canonical_metrics": {
+                    "compression": analytics.canonical_compression_metrics(program),
+                },
+                "packet_status": analytics.reproducibility_packet_status(program),
+            }
+            return jsonify(manifest)
+        except Exception as e:
+            logger.error(f"Error in /api/reproducibility-manifest/{result_id}: {e}\n"
+                         f"{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/programs/<result_id>/training-curve")
     def api_training_curve(result_id):
         """Per-step training data for a program."""
@@ -614,7 +1211,29 @@ def create_app(
         sort_by = request.args.get("sort", "composite_score")
         nb = LabNotebook(notebook_path)
         try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
             entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
+            stability = _compute_cross_run_stability(
+                nb, nb.get_top_programs(20, sort_by="loss_ratio")
+            )
+            stability_by_result = {
+                c.get("result_id"): c
+                for c in stability.get("candidates", [])
+                if c.get("result_id")
+            }
+            for entry in entries:
+                entry["cross_run_stability"] = stability_by_result.get(
+                    entry.get("result_id"),
+                    {
+                        "trend": "unknown",
+                        "seen_runs": 0,
+                        "latest_rank": None,
+                        "previous_rank": None,
+                        "rank_delta": None,
+                    },
+                )
+            _annotate_qkv_usage(entries, analytics)
             # Group by tier for the dashboard
             tiers = {}
             for entry in entries:
@@ -626,6 +1245,8 @@ def create_app(
                 "entries": entries,
                 "by_tier": tiers,
                 "total": len(entries),
+                "cross_run_stability_summary": stability.get("summary", {}),
+                "cross_run_stability_window": stability.get("window_size", 0),
             })
         except Exception as e:
             logger.error(f"Error in /api/leaderboard: {e}")
@@ -681,6 +1302,12 @@ def create_app(
                 "status": "started",
                 "config": config.to_dict(),
                 "aria_message": runner.progress.aria_message,
+                "hypothesis_critique": runner.progress.hypothesis_critique,
+                "hypothesis_review_gate": (
+                    runner.progress.hypothesis_critique.get("gate")
+                    if isinstance(runner.progress.hypothesis_critique, dict)
+                    else None
+                ),
             })
         except Exception as e:
             logger.error(f"Error starting experiment: {e}\n{traceback.format_exc()}")
@@ -982,11 +1609,23 @@ def create_app(
             campaign = nb.get_campaign(campaign_id)
             if campaign is None:
                 return jsonify({"error": "Not found"}), 404
+            experiments = nb.get_campaign_experiments(campaign_id)
+            hypotheses = _normalize_hypotheses(nb.get_campaign_hypotheses(campaign_id))
+            decisions = nb.get_campaign_decisions(campaign_id)
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            success_criteria_tracker = analytics.campaign_success_criteria_tracker(
+                campaign=campaign,
+                experiments=experiments,
+                hypotheses=hypotheses,
+                decisions=decisions,
+            )
             return jsonify({
                 "campaign": campaign,
-                "experiments": nb.get_campaign_experiments(campaign_id),
-                "hypotheses": nb.get_campaign_hypotheses(campaign_id),
-                "decisions": nb.get_campaign_decisions(campaign_id),
+                "experiments": experiments,
+                "hypotheses": hypotheses,
+                "decisions": decisions,
+                "success_criteria_tracker": success_criteria_tracker,
             })
         except Exception as e:
             logger.error(f"Error in /api/campaigns/{campaign_id}: {e}")
@@ -1005,9 +1644,17 @@ def create_app(
                 return jsonify({"error": "Not found"}), 404
 
             experiments = nb.get_campaign_experiments(campaign_id)
-            hypotheses = nb.get_campaign_hypotheses(campaign_id)
+            hypotheses = _normalize_hypotheses(nb.get_campaign_hypotheses(campaign_id))
             decisions = nb.get_campaign_decisions(campaign_id)
             knowledge = nb.get_knowledge()
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            success_criteria_tracker = analytics.campaign_success_criteria_tracker(
+                campaign=campaign,
+                experiments=experiments,
+                hypotheses=hypotheses,
+                decisions=decisions,
+            )
 
             from .llm.context import build_campaign_report_context
             context = build_campaign_report_context(
@@ -1026,6 +1673,7 @@ def create_app(
                     "n_refuted": sum(1 for h in hypotheses if h.get("status") == "refuted"),
                     "n_decisions": len(decisions),
                 },
+                "success_criteria_tracker": success_criteria_tracker,
             })
         except Exception as e:
             logger.error(f"Error in /api/campaigns/{campaign_id}/report: {e}")

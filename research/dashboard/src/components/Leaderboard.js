@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
+import { leaderboardEntryScore, leaderboardEntryScoreBreakdown } from '../utils/scores';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
+const LEADERBOARD_PREFS_KEY = 'aria_leaderboard_prefs_v1';
 
 const TIER_COLORS = {
   screening: 'var(--accent-blue)',
@@ -18,6 +20,269 @@ const TIER_LABELS = {
 };
 
 const TIER_ORDER = { breakthrough: 4, validation: 3, investigation: 2, screening: 1 };
+
+const COMPRESSION_FACTORS = {
+  low_rank: 0.55,
+  shared_basis: 0.5,
+  hash_trick: 0.35,
+  structured_sparse: 0.4,
+  kronecker: 0.5,
+  polynomial: 0.6,
+  residual_quantized: 0.3,
+  compressed_attention: 0.7,
+};
+
+const QKV_OPS = new Set(['local_window_attn', 'sliding_window_mask', 'multi_head_mix']);
+
+function qkvUsageDescriptor(entry) {
+  const usage = entry?.qkv_usage;
+  if (usage === 'qkv_free') {
+    return {
+      label: 'QKV-free',
+      detail: 'Non-attention token mixing path (SSM/conv/frequency/functional).',
+      tone: 'high',
+    };
+  }
+  if (usage === 'q_eq_k_eq_v') {
+    return {
+      label: 'Q=K=V',
+      detail: 'Shared-projection attention variant (reduced attention parameterization).',
+      tone: 'medium',
+    };
+  }
+  if (usage === 'full_qkv') {
+    return {
+      label: 'Full QKV',
+      detail: 'Standard Q/K/V attention primitives are present.',
+      tone: 'medium',
+    };
+  }
+  const qkvFree = detectQkvFree(entry);
+  if (qkvFree === true) {
+    return {
+      label: 'QKV-free*',
+      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
+      tone: 'high',
+    };
+  }
+  if (qkvFree === false) {
+    return {
+      label: 'Uses QKV*',
+      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
+      tone: 'medium',
+    };
+  }
+  return {
+    label: 'QKV unknown',
+    detail: 'Insufficient graph/payload info to classify QKV usage.',
+    tone: 'low',
+  };
+}
+
+/** Detect whether an entry uses QKV-based attention from its graph_json. Returns true/false/null. */
+function detectQkvFree(entry) {
+  const raw = entry._graph_json || entry.graph_json;
+  if (!raw) return null;
+  try {
+    const graph = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const nodes = graph.nodes || {};
+    const ops = Object.values(nodes).map(n => n.op_name || n.op).filter(Boolean);
+    return !ops.some(op => QKV_OPS.has(op));
+  } catch {
+    return null;
+  }
+}
+
+function parseArchSpec(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function compressionSummary(entry) {
+  const spec = parseArchSpec(entry.arch_spec_json);
+  const compressionKey = spec?.choices?.weight_storage || spec?.choices?.token_representation;
+  const factor = COMPRESSION_FACTORS[compressionKey] || 1.0;
+  const rawParams = entry.param_count || entry.graph_n_params_estimate || null;
+  const compressedParams = rawParams != null ? Math.max(1, Math.round(rawParams * factor)) : null;
+  const ratio = rawParams != null && compressedParams != null
+    ? Math.max(0.01, Math.min(1.0, compressedParams / rawParams))
+    : null;
+  const memoryMb = compressedParams != null
+    ? (compressedParams * 4) / (1024 * 1024)
+    : null;
+  const qualityRetention = entry.validation_baseline_ratio != null
+    ? Math.max(0, Math.min(1, 1.25 - entry.validation_baseline_ratio))
+    : entry.investigation_loss_ratio != null
+      ? Math.max(0, Math.min(1, 1.1 - entry.investigation_loss_ratio))
+      : entry.screening_loss_ratio != null
+        ? Math.max(0, Math.min(1, 1.0 - entry.screening_loss_ratio))
+        : null;
+  return {
+    label: compressionKey || 'dense',
+    ratio,
+    memoryMb,
+    qualityRetention,
+  };
+}
+
+function metricChips(entry) {
+  const chips = [];
+  chips.push({
+    label: 'Loss',
+    source: 'measured',
+    reliability: entry.validation_loss_ratio != null ? 'high' : entry.investigation_loss_ratio != null ? 'medium' : 'low',
+  });
+  chips.push({
+    label: 'Novelty',
+    source: entry.cka_source === 'artifact' ? 'artifact-backed' : 'heuristic',
+    reliability: entry.novelty_confidence != null
+      ? (entry.novelty_confidence >= 0.7 ? 'high' : entry.novelty_confidence >= 0.4 ? 'medium' : 'low')
+      : 'low',
+  });
+  chips.push({
+    label: 'Baseline',
+    source: entry.validation_baseline_ratio != null ? 'baseline-run' : 'not-available',
+    reliability: entry.validation_multi_seed_std != null
+      ? (entry.validation_multi_seed_std <= 0.12 ? 'high' : 'medium')
+      : 'low',
+  });
+  if (entry.routing_confidence_mean != null) {
+    chips.push({
+      label: 'Routing',
+      source: 'telemetry',
+      reliability: entry.routing_confidence_mean >= 0.7 ? 'high' : entry.routing_confidence_mean >= 0.4 ? 'medium' : 'low',
+    });
+  }
+  return chips;
+}
+
+function qualityFlags(entry) {
+  const flags = [];
+  if (entry.cka_source === 'artifact') {
+    flags.push({ label: 'CKA artifact-backed', tone: 'high' });
+  } else {
+    flags.push({ label: 'CKA fallback heuristic', tone: 'low' });
+  }
+  if (entry.validation_baseline_ratio != null) {
+    flags.push({ label: 'Baseline measured', tone: 'medium' });
+  } else {
+    flags.push({ label: 'Baseline unavailable', tone: 'low' });
+  }
+  if (entry.routing_confidence_mean != null) {
+    flags.push({ label: 'Routing telemetry', tone: 'medium' });
+  }
+  const qkv = qkvUsageDescriptor(entry);
+  flags.push({ label: qkv.label, tone: qkv.tone, detail: qkv.detail });
+  return flags;
+}
+
+function reliabilityColor(level) {
+  if (level === 'high') return 'var(--accent-green)';
+  if (level === 'medium') return 'var(--accent-yellow)';
+  return 'var(--accent-red)';
+}
+
+function decisionGate(entry) {
+  const checks = {
+    screeningEvidence: entry.screening_loss_ratio != null && entry.screening_novelty != null,
+    investigationEvidence: entry.investigation_loss_ratio != null && entry.investigation_robustness != null,
+    robustnessFloor: entry.investigation_robustness != null && entry.investigation_robustness >= 0.5,
+    validationEvidence: entry.validation_loss_ratio != null
+      && entry.validation_baseline_ratio != null
+      && entry.validation_multi_seed_std != null,
+    baselineBeatsReference: entry.validation_baseline_ratio != null && entry.validation_baseline_ratio < 1.0,
+    consistencyBounded: entry.validation_multi_seed_std != null && entry.validation_multi_seed_std <= 0.12,
+  };
+  const decisionReady = Object.values(checks).every(Boolean);
+  const missing = Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+  return {
+    decisionReady,
+    label: decisionReady ? 'Decision-Ready' : 'Exploratory',
+    color: decisionReady ? 'var(--accent-green)' : 'var(--accent-yellow)',
+    missing,
+  };
+}
+
+function promotionEvidence(entry) {
+  const seenRuns = Number(entry?.cross_run_stability?.seen_runs || 0);
+  const baselineRatioValue = Number(entry?.validation_baseline_ratio);
+  const stdValue = Number(entry?.validation_multi_seed_std);
+  const baselineRatio = Number.isFinite(baselineRatioValue) ? baselineRatioValue : null;
+  const std = Number.isFinite(stdValue) ? stdValue : null;
+  const checks = {
+    baselineEvidence: baselineRatio != null,
+    baselineBeat: baselineRatio != null && baselineRatio < 1.0,
+    multiSeedStd: std != null,
+    boundedStd: std != null && std <= 0.12,
+    ckaArtifactBacked: entry?.cka_source === 'artifact',
+    repeatObserved: seenRuns >= 3,
+  };
+  const totalChecks = Object.keys(checks).length;
+  const evidenceCount = Object.values(checks).filter(Boolean).length;
+  const completeness = evidenceCount / totalChecks;
+  const stdSignal = std == null ? 0 : std <= 0.05 ? 1 : std <= 0.12 ? 0.65 : std <= 0.2 ? 0.35 : 0.1;
+  const repeatSignal = seenRuns >= 5 ? 1 : seenRuns >= 3 ? 0.65 : seenRuns >= 2 ? 0.4 : seenRuns >= 1 ? 0.2 : 0;
+  const margin = baselineRatio == null ? null : 1 - baselineRatio;
+  const marginSignal = margin == null ? 0 : margin >= 0.1 ? 1 : margin > 0 ? 0.7 : 0.15;
+  const score = Math.round((completeness * 0.5 + stdSignal * 0.2 + repeatSignal * 0.2 + marginSignal * 0.1) * 100);
+  const confidence = score >= 75
+    ? { label: 'High', color: 'var(--accent-green)' }
+    : score >= 45
+      ? { label: 'Moderate', color: 'var(--accent-yellow)' }
+      : { label: 'Low', color: 'var(--accent-red)' };
+  const uncertaintyLabel = std == null
+    ? 'unknown'
+    : std <= 0.05 ? 'tight'
+      : std <= 0.12 ? 'bounded'
+        : 'high';
+  const missing = Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+  return {
+    ...confidence,
+    score,
+    seenRuns,
+    std,
+    uncertaintyLabel,
+    evidenceCount,
+    totalChecks,
+    missing,
+  };
+}
+
+function reproducibilityPacketStatus(entry) {
+  const spec = parseArchSpec(entry?.arch_spec_json);
+  const checks = [
+    { label: 'result_id', ok: !!entry?.result_id },
+    { label: 'graph_fingerprint', ok: !!entry?.graph_fingerprint },
+    { label: 'arch_spec', ok: !!spec },
+    { label: 'baseline_ratio', ok: entry?.validation_baseline_ratio != null },
+    { label: 'multi_seed_std', ok: entry?.validation_multi_seed_std != null },
+    { label: 'cka_artifact', ok: entry?.cka_source === 'artifact' },
+  ];
+  const readyCount = checks.filter(check => check.ok).length;
+  const totalChecks = checks.length;
+  const label = readyCount === totalChecks ? 'Ready' : readyCount >= 4 ? 'Partial' : 'Sparse';
+  const color = readyCount === totalChecks
+    ? 'var(--accent-green)'
+    : readyCount >= 4
+      ? 'var(--accent-yellow)'
+      : 'var(--accent-red)';
+  return {
+    label,
+    color,
+    readyCount,
+    totalChecks,
+    missing: checks.filter(check => !check.ok).map(check => check.label),
+  };
+}
 
 function TierBadge({ tier }) {
   return (
@@ -36,112 +301,10 @@ function TierBadge({ tier }) {
   );
 }
 
-/**
- * Compute a 0-100 overall score for a leaderboard entry.
- * Weights shift as the entry advances through tiers.
- *   Screening only:    loss (35%) + novelty (25%) + tier bonus (40%)
- *   + Investigation:   inv_loss (20%) + robustness (15%) replaces some tier weight
- *   + Validation:      val_baseline (25%) + consistency (15%) replaces more
- */
-function entryScore(entry) {
-  // Screening loss: lower is better
-  const sLoss = entry.screening_loss_ratio != null
-    ? Math.max(0, 1 - (entry.screening_loss_ratio - 0.2) / 0.8)
-    : 0;
-
-  // Novelty
-  const novelty = entry.screening_novelty != null
-    ? Math.min(entry.screening_novelty, 1.0)
-    : 0;
-
-  // Investigation loss
-  const iLoss = entry.investigation_loss_ratio != null
-    ? Math.max(0, 1 - (entry.investigation_loss_ratio - 0.2) / 0.8)
-    : 0;
-
-  // Robustness
-  const robust = entry.investigation_robustness != null
-    ? Math.min(entry.investigation_robustness, 1.0)
-    : 0;
-
-  // Validation baseline: < 1 = beats transformer
-  const vBase = entry.validation_baseline_ratio != null
-    ? Math.max(0, Math.min(1, 1.5 - entry.validation_baseline_ratio))
-    : 0;
-
-  // Consistency (inverse of multi-seed std)
-  const consistency = entry.validation_multi_seed_std != null
-    ? Math.max(0, 1 - entry.validation_multi_seed_std * 10)
-    : 0;
-
-  // Tier bonus: higher tiers get a base boost
-  const tierBonus = (TIER_ORDER[entry.tier] || 0) / 4;
-
-  const tier = entry.tier || 'screening';
-  let score;
-  if (tier === 'breakthrough' || tier === 'validation') {
-    score = sLoss * 10 + novelty * 10 + iLoss * 10 + robust * 10 + vBase * 25 + consistency * 15 + tierBonus * 20;
-  } else if (tier === 'investigation') {
-    score = sLoss * 15 + novelty * 15 + iLoss * 20 + robust * 15 + tierBonus * 35;
-  } else {
-    score = sLoss * 35 + novelty * 25 + tierBonus * 40;
-  }
-
-  return Math.round(Math.max(0, Math.min(100, score)));
-}
-
-function entryScoreBreakdown(entry) {
-  const sLoss = entry.screening_loss_ratio != null
-    ? Math.max(0, 1 - (entry.screening_loss_ratio - 0.2) / 0.8)
-    : 0;
-  const novelty = entry.screening_novelty != null
-    ? Math.min(entry.screening_novelty, 1.0)
-    : 0;
-  const iLoss = entry.investigation_loss_ratio != null
-    ? Math.max(0, 1 - (entry.investigation_loss_ratio - 0.2) / 0.8)
-    : 0;
-  const robust = entry.investigation_robustness != null
-    ? Math.min(entry.investigation_robustness, 1.0)
-    : 0;
-  const vBase = entry.validation_baseline_ratio != null
-    ? Math.max(0, Math.min(1, 1.5 - entry.validation_baseline_ratio))
-    : 0;
-  const consistency = entry.validation_multi_seed_std != null
-    ? Math.max(0, 1 - entry.validation_multi_seed_std * 10)
-    : 0;
-  const tierBonus = (TIER_ORDER[entry.tier] || 0) / 4;
-  const tier = entry.tier || 'screening';
-
-  if (tier === 'breakthrough' || tier === 'validation') {
-    return {
-      sLoss: sLoss * 10,
-      novelty: novelty * 10,
-      iLoss: iLoss * 10,
-      robust: robust * 10,
-      vBase: vBase * 25,
-      consistency: consistency * 15,
-      tierBonus: tierBonus * 20,
-    };
-  }
-  if (tier === 'investigation') {
-    return {
-      sLoss: sLoss * 15,
-      novelty: novelty * 15,
-      iLoss: iLoss * 20,
-      robust: robust * 15,
-      tierBonus: tierBonus * 35,
-    };
-  }
-  return {
-    sLoss: sLoss * 35,
-    novelty: novelty * 25,
-    tierBonus: tierBonus * 40,
-  };
-}
-
 const COLUMNS = [
   { key: '_score', label: 'Score' },
   { key: 'tier', label: 'Tier' },
+  { key: '_stability', label: 'Stability' },
   { key: 'model_source', label: 'Source' },
   { key: 'architecture_family', label: 'Family' },
   { key: 'architecture_desc', label: 'Description' },
@@ -152,18 +315,78 @@ const COLUMNS = [
   { key: 'investigation_robustness', label: 'Robust' },
   { key: 'validation_loss_ratio', label: 'V.Loss' },
   { key: 'validation_baseline_ratio', label: 'V.Base' },
+  { key: '_compression_ratio', label: 'Compression' },
+  { key: '_metric_quality', label: 'Metric Quality' },
   { key: '_actions', label: 'Actions' },
 ];
 
-function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
+function Leaderboard({
+  onSelectProgram,
+  onInvestigate,
+  onValidate,
+  highlightResultId,
+  onHighlightClear,
+  onQueueAdd,
+  onQueueRemove,
+  queuedResultIds,
+}) {
+  const leaderboardPrefs = (() => {
+    try {
+      if (typeof window === 'undefined') return {};
+      const stored = window.localStorage.getItem(LEADERBOARD_PREFS_KEY);
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  })();
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeTier, setActiveTier] = useState('all');
-  const [sortKey, setSortKey] = useState('_score');
-  const [sortDesc, setSortDesc] = useState(true);
+  const [activeTier, setActiveTier] = useState(() => {
+    const tier = leaderboardPrefs?.activeTier;
+    return ['all', 'screening', 'investigation', 'validation', 'breakthrough'].includes(tier) ? tier : 'all';
+  });
+  const [sortKey, setSortKey] = useState(() => {
+    return typeof leaderboardPrefs?.sortKey === 'string' ? leaderboardPrefs.sortKey : '_score';
+  });
+  const [sortDesc, setSortDesc] = useState(() => {
+    return typeof leaderboardPrefs?.sortDesc === 'boolean' ? leaderboardPrefs.sortDesc : true;
+  });
   const [actionError, setActionError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [searchQuery, setSearchQuery] = useState(() => {
+    return typeof leaderboardPrefs?.searchQuery === 'string' ? leaderboardPrefs.searchQuery : '';
+  });
+  const [highlightId, setHighlightId] = useState(null);
+  const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
+
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return;
+      window.localStorage.setItem(LEADERBOARD_PREFS_KEY, JSON.stringify({
+        activeTier,
+        sortKey,
+        sortDesc,
+        searchQuery,
+      }));
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [activeTier, sortKey, sortDesc, searchQuery]);
+
+  // Accept external highlight request
+  useEffect(() => {
+    if (highlightResultId) {
+      setHighlightId(highlightResultId);
+      // Clear highlight after 3s animation
+      const timer = setTimeout(() => {
+        setHighlightId(null);
+        if (onHighlightClear) onHighlightClear();
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [highlightResultId, onHighlightClear]);
 
   const fetchLeaderboard = useCallback(async () => {
     try {
@@ -240,6 +463,8 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
   };
 
   const rawEntries = data?.entries || [];
+  const stabilitySummary = data?.cross_run_stability_summary || {};
+  const stabilityWindow = data?.cross_run_stability_window || 0;
 
   // Count by tier for tab badges (from raw unfiltered data)
   const tierCounts = {};
@@ -250,7 +475,15 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
 
   // Augment with computed score and sort client-side
   const sorted = useMemo(() => {
-    const augmented = rawEntries.map(e => ({ ...e, _score: entryScore(e) }));
+    const augmented = rawEntries.map(e => {
+      const compression = compressionSummary(e);
+      return {
+        ...e,
+        _score: leaderboardEntryScore(e, TIER_ORDER),
+        _compression_ratio: compression.ratio,
+        _compression_summary: compression,
+      };
+    });
     augmented.sort((a, b) => {
       let va, vb;
       if (sortKey === 'tier') {
@@ -276,6 +509,26 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
     return augmented;
   }, [rawEntries, sortKey, sortDesc]);
 
+  // Apply search filter
+  const filtered = useMemo(() => {
+    if (!searchQuery.trim()) return sorted;
+    const q = searchQuery.trim().toLowerCase();
+    return sorted.filter(e =>
+      (e.result_id && e.result_id.toLowerCase().includes(q)) ||
+      (e.graph_fingerprint && e.graph_fingerprint.toLowerCase().includes(q)) ||
+      (e.architecture_desc && e.architecture_desc.toLowerCase().includes(q)) ||
+      (e.architecture_family && e.architecture_family.toLowerCase().includes(q))
+    );
+  }, [sorted, searchQuery]);
+
+  // Scroll to highlighted row
+  const highlightRef = useRef(null);
+  useEffect(() => {
+    if (highlightId && highlightRef.current) {
+      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [highlightId, filtered]);
+
   return (
     <div className="card" style={{ padding: 16 }}>
       <div className="card-title" style={{ marginBottom: 12 }}>
@@ -298,6 +551,20 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
       <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
         Glossary: S.Loss = screening loss ratio, I.Loss = investigation loss ratio, V.Loss = validation loss ratio, V.Base {'<'} 1 means better than baseline.
       </p>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Decision gate: rows are <strong>Decision-Ready</strong> only when screening+investigation+validation metrics are present, robustness ≥ 0.50, baseline ratio {'<'} 1.00, and multi-seed std ≤ 0.12.
+      </p>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Metric quality chips show source and reliability: <strong>artifact-backed</strong> vs <strong>heuristic</strong>, with reliability bands from available validation depth and confidence.
+      </p>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Cross-run stability (window {stabilityWindow}): stable {stabilitySummary.stable || 0}, up {stabilitySummary.up || 0}, down {stabilitySummary.down || 0}, new {stabilitySummary.new || 0}.
+      </p>
+      {!!queuedSet.size && (
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          Investigation queue currently has {queuedSet.size} candidate{queuedSet.size === 1 ? '' : 's'} pinned for batch actions.
+        </p>
+      )}
 
       {/* Tier tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -337,6 +604,32 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
         </button>
       </div>
 
+      {/* Search filter */}
+      <div style={{ marginBottom: 12 }}>
+        <input
+          type="text"
+          placeholder="Search by fingerprint, result ID, family, or description..."
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          aria-label="Search leaderboard entries"
+          style={{
+            width: '100%',
+            maxWidth: 400,
+            padding: '6px 10px',
+            fontSize: 12,
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        {searchQuery && (
+          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+            {filtered.length} of {sorted.length} entries
+          </span>
+        )}
+      </div>
+
       {error && (
         <p style={{ color: 'var(--accent-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>
       )}
@@ -346,9 +639,13 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
 
       {loading ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading leaderboard...</p>
-      ) : sorted.length === 0 && !error ? (
+      ) : filtered.length === 0 && !error ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
-          {activeTier === 'all' ? (
+          {searchQuery.trim() ? (
+            <p style={{ margin: 0 }}>
+              No entries match "{searchQuery}". Try a different search term.
+            </p>
+          ) : activeTier === 'all' ? (
             <>
               <p style={{ margin: 0 }}>
                 No leaderboard entries yet.
@@ -398,23 +695,66 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((entry, i) => (
+              {filtered.map((entry, i) => {
+                const gate = decisionGate(entry);
+                const compression = entry._compression_summary || compressionSummary(entry);
+                const chips = metricChips(entry);
+                const flags = qualityFlags(entry);
+                const promotion = promotionEvidence(entry);
+                const reproPacket = reproducibilityPacketStatus(entry);
+                const isHighlighted = highlightId && entry.result_id === highlightId;
+                const isQueued = !!entry.result_id && queuedSet.has(entry.result_id);
+                return (
                 <tr
                   key={entry.entry_id}
+                  ref={isHighlighted ? highlightRef : undefined}
                   style={{
                     borderBottom: '1px solid var(--border)',
                     cursor: 'pointer',
-                    background: entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
+                    background: isHighlighted
+                      ? 'rgba(88, 166, 255, 0.2)'
+                      : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
+                    animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
                   }}
                   onClick={() => onSelectProgram && onSelectProgram(entry.result_id)}
                 >
                   <td style={tdStyle}>{i + 1}</td>
                   <td style={{ ...tdStyle, fontWeight: 600, color: scoreColor(entry._score) }}>
-                    <span title={Object.entries(entryScoreBreakdown(entry)).map(([k, v]) => `${k} ${Number(v || 0).toFixed(1)}`).join(' | ')}>
+                    <span title={Object.entries(leaderboardEntryScoreBreakdown(entry, TIER_ORDER)).map(([k, v]) => `${k} ${Number(v || 0).toFixed(1)}`).join(' | ')}>
                       {entry._score}
                     </span>
                   </td>
                   <td style={tdStyle}><TierBadge tier={entry.tier} /></td>
+                  <td style={tdStyle}>
+                    {(() => {
+                      const s = entry.cross_run_stability || {};
+                      const trend = s.trend || 'unknown';
+                      const color = trend === 'up'
+                        ? 'var(--accent-green)'
+                        : trend === 'down'
+                          ? 'var(--accent-red)'
+                          : trend === 'stable'
+                            ? 'var(--accent-yellow)'
+                            : 'var(--text-muted)';
+                      return (
+                        <span
+                          title={`Trend ${trend}; seen runs ${s.seen_runs ?? 0}; latest rank ${s.latest_rank ?? '--'}; previous rank ${s.previous_rank ?? '--'}`}
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            textTransform: 'uppercase',
+                            padding: '2px 6px',
+                            borderRadius: 4,
+                            color,
+                            background: `${color}22`,
+                            border: `1px solid ${color}55`,
+                          }}
+                        >
+                          {trend}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td style={tdStyle}>
                     <span style={{
                       fontSize: 10,
@@ -458,7 +798,92 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
                         </span>
                       : '--'}
                   </td>
+                  <td style={tdStyle}>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      {compression.ratio != null ? `${(compression.ratio * 100).toFixed(0)}%` : '--'}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      {compression.memoryMb != null ? `${compression.memoryMb.toFixed(2)} MB` : 'n/a'} · {compression.label}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      retention {compression.qualityRetention != null ? `${(compression.qualityRetention * 100).toFixed(0)}%` : 'n/a'}
+                    </div>
+                  </td>
+                  <td style={tdStyle}>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
+                      {chips.map(chip => (
+                        <span
+                          key={`${entry.entry_id}-${chip.label}`}
+                          title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 5px',
+                            borderRadius: 4,
+                            border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                            color: reliabilityColor(chip.reliability),
+                            background: `${reliabilityColor(chip.reliability)}22`,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {chip.label}: {chip.source}
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
+                      {flags.map(flag => (
+                        <span
+                          key={`${entry.entry_id}-${flag.label}`}
+                          title={flag.detail ? `${flag.label} — ${flag.detail}` : `Quality flag: ${flag.label}`}
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 5px',
+                            borderRadius: 4,
+                            border: `1px solid ${reliabilityColor(flag.tone)}55`,
+                            color: reliabilityColor(flag.tone),
+                            background: `${reliabilityColor(flag.tone)}15`,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {flag.label}
+                        </span>
+                      ))}
+                    </div>
+                    <div
+                      style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: promotion.color }}
+                      title={`Evidence checks ${promotion.evidenceCount}/${promotion.totalChecks}; missing: ${promotion.missing.length ? promotion.missing.join(', ') : 'none'}`}
+                    >
+                      Promotion confidence: {promotion.label} ({promotion.score}%)
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      Uncertainty {promotion.uncertaintyLabel}; runs {promotion.seenRuns}; std {promotion.std != null ? promotion.std.toFixed(3) : 'n/a'}
+                    </div>
+                    <div
+                      style={{ marginTop: 2, fontSize: 10, color: reproPacket.color }}
+                      title={reproPacket.missing.length ? `Missing packet fields: ${reproPacket.missing.join(', ')}` : 'Reproducibility packet has all required fields'}
+                    >
+                      Repro packet: {reproPacket.label} ({reproPacket.readyCount}/{reproPacket.totalChecks})
+                    </div>
+                  </td>
                   <td style={tdStyle} onClick={e => e.stopPropagation()}>
+                    <div style={{ marginBottom: 4 }}>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          textTransform: 'uppercase',
+                          padding: '2px 6px',
+                          borderRadius: 4,
+                          color: gate.color,
+                          background: `${gate.color}22`,
+                          border: `1px solid ${gate.color}55`,
+                        }}
+                        title={gate.decisionReady
+                          ? 'All evidence checks passed.'
+                          : `Missing checks: ${gate.missing.join(', ')}`}
+                      >
+                        {gate.label}
+                      </span>
+                    </div>
                     {entry.tier === 'screening' && (
                       <button
                         onClick={() => handleInvestigate([entry.result_id])}
@@ -477,9 +902,35 @@ function Leaderboard({ onSelectProgram, onInvestigate, onValidate }) {
                         Validate
                       </button>
                     )}
+                    {entry.result_id && (onQueueAdd || onQueueRemove) && (
+                      <button
+                        onClick={() => {
+                          if (isQueued) {
+                            onQueueRemove && onQueueRemove(entry.result_id);
+                            return;
+                          }
+                          onQueueAdd && onQueueAdd({
+                            resultId: entry.result_id,
+                            fingerprint: entry.graph_fingerprint,
+                            source: 'leaderboard',
+                            architectureFamily: entry.architecture_family,
+                          });
+                        }}
+                        style={{
+                          ...actionBtnStyle,
+                          marginTop: 4,
+                          borderColor: isQueued ? 'var(--accent-yellow)' : 'var(--accent-blue)',
+                          color: isQueued ? 'var(--accent-yellow)' : 'var(--accent-blue)',
+                        }}
+                        title={isQueued ? 'Remove from investigation queue' : 'Add to investigation queue'}
+                      >
+                        {isQueued ? 'Queued' : 'Queue'}
+                      </button>
+                    )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

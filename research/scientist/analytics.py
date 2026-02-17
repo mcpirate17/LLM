@@ -13,7 +13,7 @@ import json
 import math
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..synthesis.grammar import GrammarConfig
 from ..synthesis.primitives import get_primitive
@@ -27,6 +27,47 @@ class ExperimentAnalytics:
         self.nb = notebook
 
     _OP_NAME_PATTERN = re.compile(r'"op_name"\s*:\s*"([^"]+)"')
+
+    _FULL_QKV_TOKEN_MIXERS: Set[str] = {
+        "softmax_attention",
+        "linear_attention",
+        "graph_attention",
+        "random_feature_attention",
+        "compressed_attention",
+        "cross_attention_pool",
+    }
+    _Q_EQ_K_EQ_V_TOKEN_MIXERS: Set[str] = {
+        "shared_qk_attention",
+    }
+    _QKV_FREE_TOKEN_MIXERS: Set[str] = {
+        "conv_only",
+        "state_space",
+        "fourier_mixing",
+        "differentiable_sort",
+        "integral_kernel_mixing",
+    }
+    _COMPRESSION_FACTORS: Dict[str, float] = {
+        "low_rank": 0.55,
+        "shared_basis": 0.5,
+        "hash_trick": 0.35,
+        "structured_sparse": 0.4,
+        "kronecker": 0.5,
+        "polynomial": 0.6,
+        "residual_quantized": 0.3,
+        "compressed_attention": 0.7,
+    }
+
+    @staticmethod
+    def _as_float(value) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(parsed) or math.isinf(parsed):
+            return None
+        return parsed
 
     @classmethod
     def _extract_ops_fast(cls, graph_json: str) -> Optional[List[str]]:
@@ -52,6 +93,283 @@ class ExperimentAnalytics:
             })
         except (json.JSONDecodeError, TypeError, AttributeError):
             return None
+
+    @staticmethod
+    def _extract_arch_choices(arch_spec_json: Optional[str]) -> Dict[str, str]:
+        if not arch_spec_json:
+            return {}
+        try:
+            arch = json.loads(arch_spec_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(arch, dict):
+            return {}
+        choices = arch.get("choices", {})
+        if not isinstance(choices, dict):
+            return {}
+        return choices
+
+    def qkv_usage_enum(self, program: Dict) -> str:
+        """Classify token-mixing QKV usage for a program.
+
+        Returns one of: ``full_qkv``, ``q_eq_k_eq_v``, ``qkv_free``.
+        """
+        if not isinstance(program, dict):
+            return "qkv_free"
+
+        choices = self._extract_arch_choices(program.get("arch_spec_json"))
+        token_mixing = choices.get("token_mixing")
+
+        if token_mixing in self._FULL_QKV_TOKEN_MIXERS:
+            return "full_qkv"
+        if token_mixing in self._Q_EQ_K_EQ_V_TOKEN_MIXERS:
+            return "q_eq_k_eq_v"
+        if token_mixing in self._QKV_FREE_TOKEN_MIXERS:
+            return "qkv_free"
+
+        graph_json = program.get("graph_json")
+        ops: Set[str] = set()
+        if isinstance(graph_json, str) and graph_json:
+            fast_ops = self._extract_ops_fast(graph_json)
+            if fast_ops is None:
+                fast_ops = self._extract_ops_fallback(graph_json)
+            ops = set(fast_ops or [])
+
+        if ops & {
+            "attention",
+            "self_attention",
+            "mha",
+            "multihead_attention",
+            "qkv_attention",
+            "softmax_attention",
+            "linear_attention",
+            "random_feature_attention",
+            "graph_attention",
+            "compressed_attention",
+            "cross_attention_pool",
+        }:
+            return "full_qkv"
+
+        if ops & {
+            "shared_qk_attention",
+            "shared_qkv_attention",
+        }:
+            return "q_eq_k_eq_v"
+
+        return "qkv_free"
+
+    def canonical_compression_metrics(self, program: Dict) -> Dict:
+        """Compute canonical compression metrics for API payloads."""
+        choices = self._extract_arch_choices(program.get("arch_spec_json"))
+        mechanism = (
+            choices.get("weight_storage")
+            or choices.get("token_representation")
+            or (
+                choices.get("token_mixing")
+                if choices.get("token_mixing") == "compressed_attention"
+                else None
+            )
+            or "dense"
+        )
+        factor = self._COMPRESSION_FACTORS.get(mechanism, 1.0)
+
+        raw_params = self._as_float(
+            program.get("param_count")
+            if program.get("param_count") is not None
+            else program.get("graph_n_params_estimate")
+        )
+        compressed_params = (
+            int(max(1.0, round(raw_params * factor)))
+            if raw_params is not None and raw_params > 0
+            else None
+        )
+        compression_ratio = (
+            max(0.01, min(1.0, compressed_params / raw_params))
+            if raw_params and compressed_params is not None
+            else None
+        )
+
+        baseline_ratio = self._as_float(
+            program.get("validation_baseline_ratio")
+            if program.get("validation_baseline_ratio") is not None
+            else program.get("baseline_loss_ratio")
+        )
+        validation_loss = self._as_float(
+            program.get("validation_loss_ratio")
+            if program.get("validation_loss_ratio") is not None
+            else program.get("loss_ratio")
+        )
+        investigation_loss = self._as_float(program.get("investigation_loss_ratio"))
+        screening_loss = self._as_float(program.get("screening_loss_ratio"))
+
+        if baseline_ratio is not None:
+            quality_retention = max(0.0, min(1.0, 1.25 - baseline_ratio))
+        elif validation_loss is not None:
+            quality_retention = max(0.0, min(1.0, 1.0 - validation_loss))
+        elif investigation_loss is not None:
+            quality_retention = max(0.0, min(1.0, 1.1 - investigation_loss))
+        elif screening_loss is not None:
+            quality_retention = max(0.0, min(1.0, 1.0 - screening_loss))
+        else:
+            quality_retention = None
+
+        compressed_memory_mb = (
+            (compressed_params * 4) / (1024 * 1024)
+            if compressed_params is not None
+            else None
+        )
+        dense_memory_mb = (
+            (raw_params * 4) / (1024 * 1024)
+            if raw_params is not None
+            else None
+        )
+
+        return {
+            "compression_mechanism": mechanism,
+            "compression_factor": factor,
+            "raw_param_count": int(raw_params) if raw_params is not None else None,
+            "compressed_param_estimate": compressed_params,
+            "compression_ratio": compression_ratio,
+            "estimated_memory_mb": compressed_memory_mb,
+            "dense_estimated_memory_mb": dense_memory_mb,
+            "quality_retention_score": quality_retention,
+        }
+
+    def compression_coverage(self) -> Dict:
+        """Summarize compression-technique coverage across tested and surviving programs."""
+        rows = self.nb.conn.execute("""
+            SELECT stage1_passed, arch_spec_json, loss_ratio, baseline_loss_ratio,
+                   param_count, graph_n_params_estimate
+            FROM program_results
+            WHERE arch_spec_json IS NOT NULL OR loss_ratio IS NOT NULL
+        """).fetchall()
+
+        aggregates: Dict[str, Dict] = {}
+        total_tested = 0
+        total_survived = 0
+        compressed_tested = 0
+        compressed_survived = 0
+
+        dense_markers = {"dense", "dense_matrix", "standard_float"}
+
+        for row in rows:
+            record = dict(row)
+            metrics = self.canonical_compression_metrics(record)
+            mechanism = metrics.get("compression_mechanism") or "dense"
+            bucket = aggregates.setdefault(
+                mechanism,
+                {
+                    "technique": mechanism,
+                    "n_tested": 0,
+                    "n_survived": 0,
+                    "sum_loss": 0.0,
+                    "n_loss": 0,
+                    "best_loss": None,
+                    "sum_quality": 0.0,
+                    "n_quality": 0,
+                    "sum_ratio": 0.0,
+                    "n_ratio": 0,
+                    "sum_memory_mb": 0.0,
+                    "n_memory": 0,
+                },
+            )
+
+            bucket["n_tested"] += 1
+            total_tested += 1
+            if mechanism not in dense_markers:
+                compressed_tested += 1
+
+            stage1_passed = bool(record.get("stage1_passed"))
+            if stage1_passed:
+                bucket["n_survived"] += 1
+                total_survived += 1
+                if mechanism not in dense_markers:
+                    compressed_survived += 1
+
+            loss_ratio = self._as_float(record.get("loss_ratio"))
+            if loss_ratio is not None:
+                bucket["sum_loss"] += loss_ratio
+                bucket["n_loss"] += 1
+                if bucket["best_loss"] is None or loss_ratio < bucket["best_loss"]:
+                    bucket["best_loss"] = loss_ratio
+
+            quality_retention = self._as_float(metrics.get("quality_retention_score"))
+            if quality_retention is not None:
+                bucket["sum_quality"] += quality_retention
+                bucket["n_quality"] += 1
+
+            ratio = self._as_float(metrics.get("compression_ratio"))
+            if ratio is not None:
+                bucket["sum_ratio"] += ratio
+                bucket["n_ratio"] += 1
+
+            memory_mb = self._as_float(metrics.get("estimated_memory_mb"))
+            if memory_mb is not None:
+                bucket["sum_memory_mb"] += memory_mb
+                bucket["n_memory"] += 1
+
+        techniques = []
+        for mechanism, bucket in sorted(
+            aggregates.items(), key=lambda item: item[1]["n_tested"], reverse=True
+        ):
+            n_tested = bucket["n_tested"]
+            n_survived = bucket["n_survived"]
+            techniques.append({
+                "technique": mechanism,
+                "n_tested": n_tested,
+                "n_survived": n_survived,
+                "survival_rate": round(n_survived / n_tested, 4) if n_tested > 0 else 0.0,
+                "tested_share": round(n_tested / total_tested, 4) if total_tested > 0 else 0.0,
+                "survivor_share": round(n_survived / total_survived, 4) if total_survived > 0 else 0.0,
+                "avg_loss_ratio": round(bucket["sum_loss"] / bucket["n_loss"], 4) if bucket["n_loss"] > 0 else None,
+                "best_loss_ratio": round(bucket["best_loss"], 4) if bucket["best_loss"] is not None else None,
+                "avg_quality_retention": round(bucket["sum_quality"] / bucket["n_quality"], 4) if bucket["n_quality"] > 0 else None,
+                "avg_compression_ratio": round(bucket["sum_ratio"] / bucket["n_ratio"], 4) if bucket["n_ratio"] > 0 else None,
+                "avg_estimated_memory_mb": round(bucket["sum_memory_mb"] / bucket["n_memory"], 4) if bucket["n_memory"] > 0 else None,
+            })
+
+        return {
+            "techniques": techniques,
+            "totals": {
+                "n_tested": total_tested,
+                "n_survived": total_survived,
+                "n_compressed_tested": compressed_tested,
+                "n_compressed_survived": compressed_survived,
+            },
+        }
+
+    def reproducibility_packet_status(self, program: Dict) -> Dict:
+        """Evaluate reproducibility packet completeness for a program."""
+        arch_choices = self._extract_arch_choices(program.get("arch_spec_json"))
+        checks = [
+            ("result_id", bool(program.get("result_id"))),
+            ("graph_fingerprint", bool(program.get("graph_fingerprint"))),
+            ("arch_spec", bool(arch_choices)),
+            (
+                "baseline_ratio",
+                program.get("validation_baseline_ratio") is not None
+                or program.get("baseline_loss_ratio") is not None,
+            ),
+            (
+                "multi_seed_std",
+                program.get("validation_multi_seed_std") is not None,
+            ),
+            ("cka_artifact", program.get("cka_source") == "artifact"),
+        ]
+        ready_count = sum(1 for _, ok in checks if ok)
+        total_checks = len(checks)
+        if ready_count == total_checks:
+            status = "ready"
+        elif ready_count >= 4:
+            status = "partial"
+        else:
+            status = "sparse"
+        return {
+            "status": status,
+            "ready_count": ready_count,
+            "total_checks": total_checks,
+            "missing": [name for name, ok in checks if not ok],
+        }
 
     def op_success_rates(self) -> Dict[str, Dict]:
         """Get per-op success rates from the op_success_rates table."""
@@ -1046,15 +1364,50 @@ class ExperimentAnalytics:
 
         return f"{sentence_1} {sentence_2} {sentence_3}"
 
-    def routing_health(self) -> Dict:
-        """Aggregate routing telemetry by routing mode.
+    @staticmethod
+    def _routing_sample_size_label(n_programs: int) -> str:
+        if n_programs >= 80:
+            return "high"
+        if n_programs >= 30:
+            return "medium"
+        return "low"
 
-        Returns structured defaults when routing telemetry is not yet available,
-        so dashboard/API consumers can safely render partial states.
-        """
+    @staticmethod
+    def _routing_confidence_label(avg_confidence_mean: Optional[float], avg_confidence_std: Optional[float]) -> str:
+        if avg_confidence_mean is None:
+            return "unknown"
+        adjusted = avg_confidence_mean - 0.5 * (avg_confidence_std or 0.0)
+        if adjusted >= 0.7:
+            return "high"
+        if adjusted >= 0.5:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _routing_stability_label(avg_confidence_std: Optional[float]) -> str:
+        if avg_confidence_std is None:
+            return "unknown"
+        if avg_confidence_std <= 0.08:
+            return "stable"
+        if avg_confidence_std <= 0.16:
+            return "moderate"
+        return "volatile"
+
+    @staticmethod
+    def _routing_efficiency_label(token_retention: Optional[float]) -> str:
+        if token_retention is None:
+            return "unknown"
+        if token_retention >= 0.9:
+            return "high"
+        if token_retention >= 0.75:
+            return "medium"
+        return "low"
+
+    def routing_mode_comparison(self) -> Dict:
+        """Compare routing modes with sample-size and confidence labels."""
         rows = self.nb.conn.execute("""
             SELECT
-                COALESCE(routing_mode, 'unknown') as routing_mode,
+                COALESCE(NULLIF(routing_mode, ''), 'uniform') as routing_mode,
                 COUNT(*) as n_programs,
                 SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as n_stage1_passed,
                 AVG(loss_ratio) as avg_loss_ratio,
@@ -1067,8 +1420,7 @@ class ExperimentAnalytics:
                 AVG(routing_confidence_mean) as avg_confidence_mean,
                 AVG(routing_confidence_std) as avg_confidence_std
             FROM program_results
-            WHERE routing_mode IS NOT NULL
-            GROUP BY COALESCE(routing_mode, 'unknown')
+            GROUP BY COALESCE(NULLIF(routing_mode, ''), 'uniform')
             ORDER BY n_programs DESC
         """).fetchall()
 
@@ -1077,35 +1429,64 @@ class ExperimentAnalytics:
                 "available": False,
                 "n_modes": 0,
                 "total_programs": 0,
+                "routed_programs": 0,
+                "uniform_programs": 0,
                 "by_mode": [],
                 "explanation": (
                     "No routing telemetry available yet. Run routed architectures "
-                    "to estimate drop rate, utilization balance, and confidence."
+                    "to compare routing modes and confidence stability."
                 ),
             }
 
         by_mode = []
         total_programs = 0
         total_stage1 = 0
+        routed_programs = 0
+        uniform_programs = 0
 
         for row in rows:
             n_programs = row["n_programs"] or 0
             n_stage1 = row["n_stage1_passed"] or 0
             total_programs += n_programs
             total_stage1 += n_stage1
+            mode = row["routing_mode"] or "uniform"
+
+            if mode == "uniform":
+                uniform_programs += n_programs
+            else:
+                routed_programs += n_programs
+
+            stage1_pass_rate = n_stage1 / max(n_programs, 1)
+            avg_drop_rate = row["avg_drop_rate"]
+            avg_tokens_total = row["avg_tokens_total"]
+            avg_tokens_processed = row["avg_tokens_processed"]
+            token_retention = None
+            if avg_tokens_total and avg_tokens_total > 0 and avg_tokens_processed is not None:
+                token_retention = avg_tokens_processed / avg_tokens_total
+            elif avg_drop_rate is not None:
+                token_retention = max(0.0, min(1.0, 1.0 - avg_drop_rate))
+
+            avg_conf_mean = row["avg_confidence_mean"]
+            avg_conf_std = row["avg_confidence_std"]
+
             by_mode.append({
-                "routing_mode": row["routing_mode"],
+                "routing_mode": mode,
                 "n_programs": n_programs,
-                "stage1_pass_rate": n_stage1 / max(n_programs, 1),
+                "stage1_pass_rate": stage1_pass_rate,
                 "avg_loss_ratio": row["avg_loss_ratio"],
-                "avg_tokens_total": row["avg_tokens_total"],
-                "avg_tokens_processed": row["avg_tokens_processed"],
+                "avg_tokens_total": avg_tokens_total,
+                "avg_tokens_processed": avg_tokens_processed,
                 "avg_tokens_skipped": row["avg_tokens_skipped"],
-                "avg_drop_rate": row["avg_drop_rate"],
+                "avg_drop_rate": avg_drop_rate,
                 "avg_utilization_entropy": row["avg_utilization_entropy"],
                 "avg_capacity_overflow_count": row["avg_capacity_overflow_count"],
-                "avg_confidence_mean": row["avg_confidence_mean"],
-                "avg_confidence_std": row["avg_confidence_std"],
+                "avg_confidence_mean": avg_conf_mean,
+                "avg_confidence_std": avg_conf_std,
+                "token_retention": token_retention,
+                "sample_size_label": self._routing_sample_size_label(n_programs),
+                "confidence_label": self._routing_confidence_label(avg_conf_mean, avg_conf_std),
+                "stability_label": self._routing_stability_label(avg_conf_std),
+                "efficiency_label": self._routing_efficiency_label(token_retention),
             })
 
         overall_stage1_pass_rate = total_stage1 / max(total_programs, 1)
@@ -1114,6 +1495,8 @@ class ExperimentAnalytics:
             "available": True,
             "n_modes": len(by_mode),
             "total_programs": total_programs,
+            "routed_programs": routed_programs,
+            "uniform_programs": uniform_programs,
             "overall_stage1_pass_rate": overall_stage1_pass_rate,
             "by_mode": by_mode,
             "explanation": self._explain_routing_health(
@@ -1121,6 +1504,186 @@ class ExperimentAnalytics:
                 total_programs=total_programs,
                 overall_stage1_pass_rate=overall_stage1_pass_rate,
             ),
+        }
+
+    def routing_health(self) -> Dict:
+        """Aggregate routing telemetry by routing mode.
+
+        Returns structured defaults when routing telemetry is not yet available,
+        so dashboard/API consumers can safely render partial states.
+        """
+        comparison = self.routing_mode_comparison()
+        if not comparison.get("available"):
+            return {
+                "available": False,
+                "n_modes": 0,
+                "total_programs": 0,
+                "by_mode": [],
+                "explanation": comparison.get("explanation", "Routing telemetry is unavailable."),
+            }
+        return {
+            "available": True,
+            "n_modes": comparison.get("n_modes", 0),
+            "total_programs": comparison.get("total_programs", 0),
+            "overall_stage1_pass_rate": comparison.get("overall_stage1_pass_rate", 0.0),
+            "by_mode": comparison.get("by_mode", []),
+            "explanation": comparison.get("explanation", ""),
+        }
+
+    @staticmethod
+    def _routing_collapse_risk_label(avg_entropy: Optional[float]) -> str:
+        if avg_entropy is None:
+            return "unknown"
+        if avg_entropy >= 1.2:
+            return "low"
+        if avg_entropy >= 0.8:
+            return "medium"
+        return "high"
+
+    @staticmethod
+    def _percentile(values: List[float], percentile: float) -> Optional[float]:
+        if not values:
+            return None
+        ordered = sorted(values)
+        if len(ordered) == 1:
+            return float(ordered[0])
+        position = (len(ordered) - 1) * percentile
+        lower = int(math.floor(position))
+        upper = int(math.ceil(position))
+        if lower == upper:
+            return float(ordered[lower])
+        weight = position - lower
+        return float(ordered[lower] * (1.0 - weight) + ordered[upper] * weight)
+
+    def gating_behavior_diagnostics(self) -> Dict:
+        """Canonical diagnostics for gated/recursive routing behavior."""
+        rows = self.nb.conn.execute("""
+            SELECT
+                COALESCE(NULLIF(routing_mode, ''), 'uniform') AS routing_mode,
+                routing_tokens_total,
+                routing_tokens_processed,
+                routing_drop_rate,
+                routing_utilization_entropy,
+                routing_capacity_overflow_count
+            FROM program_results
+            WHERE routing_mode IS NOT NULL
+               OR routing_drop_rate IS NOT NULL
+               OR routing_utilization_entropy IS NOT NULL
+               OR routing_tokens_total IS NOT NULL
+               OR routing_tokens_processed IS NOT NULL
+        """).fetchall()
+
+        if not rows:
+            return {
+                "available": False,
+                "total_routed_programs": 0,
+                "avg_gate_entropy": None,
+                "collapse_risk_counts": {"low": 0, "medium": 0, "high": 0, "unknown": 0},
+                "by_mode": [],
+                "token_retention_curve_overall": [],
+                "explanation": (
+                    "No gating telemetry available yet. Run routed/recursive candidates "
+                    "to estimate entropy, collapse risk, and token retention behavior."
+                ),
+            }
+
+        by_mode_raw: Dict[str, Dict[str, Any]] = {}
+        total_entropy = 0.0
+        entropy_count = 0
+        overall_retentions: List[float] = []
+        collapse_counts = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+
+        for row in rows:
+            mode = row["routing_mode"] or "uniform"
+            bucket = by_mode_raw.setdefault(mode, {
+                "n_programs": 0,
+                "entropies": [],
+                "retentions": [],
+                "drop_rates": [],
+                "overflows": [],
+            })
+            bucket["n_programs"] += 1
+
+            entropy = row["routing_utilization_entropy"]
+            if entropy is not None:
+                entropy = float(entropy)
+                bucket["entropies"].append(entropy)
+                total_entropy += entropy
+                entropy_count += 1
+
+            drop_rate = row["routing_drop_rate"]
+            if drop_rate is not None:
+                bucket["drop_rates"].append(float(drop_rate))
+
+            overflow = row["routing_capacity_overflow_count"]
+            if overflow is not None:
+                bucket["overflows"].append(float(overflow))
+
+            retention = None
+            total_tokens = row["routing_tokens_total"]
+            processed_tokens = row["routing_tokens_processed"]
+            if total_tokens is not None and processed_tokens is not None and float(total_tokens) > 0:
+                retention = float(processed_tokens) / float(total_tokens)
+            elif drop_rate is not None:
+                retention = max(0.0, min(1.0, 1.0 - float(drop_rate)))
+
+            if retention is not None:
+                retention = max(0.0, min(1.0, retention))
+                bucket["retentions"].append(retention)
+                overall_retentions.append(retention)
+
+        by_mode: List[Dict[str, Any]] = []
+        for mode, bucket in sorted(by_mode_raw.items(), key=lambda item: item[1]["n_programs"], reverse=True):
+            entropies = bucket["entropies"]
+            retentions = bucket["retentions"]
+            avg_entropy = (sum(entropies) / len(entropies)) if entropies else None
+            collapse_label = self._routing_collapse_risk_label(avg_entropy)
+            collapse_counts[collapse_label] += 1
+
+            avg_retention = (sum(retentions) / len(retentions)) if retentions else None
+            token_curve = []
+            for quantile, name in ((0.25, "p25"), (0.5, "p50"), (0.75, "p75")):
+                value = self._percentile(retentions, quantile)
+                if value is not None:
+                    token_curve.append({"quantile": name, "retention": value})
+
+            avg_drop = (sum(bucket["drop_rates"]) / len(bucket["drop_rates"])) if bucket["drop_rates"] else None
+            avg_overflow = (sum(bucket["overflows"]) / len(bucket["overflows"])) if bucket["overflows"] else None
+
+            by_mode.append({
+                "routing_mode": mode,
+                "n_programs": bucket["n_programs"],
+                "avg_gate_entropy": avg_entropy,
+                "collapse_risk_label": collapse_label,
+                "avg_token_retention": avg_retention,
+                "token_retention_curve": token_curve,
+                "avg_drop_rate": avg_drop,
+                "avg_capacity_overflow_count": avg_overflow,
+            })
+
+        overall_curve = []
+        for quantile, name in ((0.25, "p25"), (0.5, "p50"), (0.75, "p75")):
+            value = self._percentile(overall_retentions, quantile)
+            if value is not None:
+                overall_curve.append({"quantile": name, "retention": value})
+
+        avg_gate_entropy = (total_entropy / entropy_count) if entropy_count > 0 else None
+        explanation = (
+            f"Gating diagnostics over {len(rows)} routed candidates: "
+            f"avg gate entropy is {avg_gate_entropy:.2f}. "
+            f"Collapse-risk modes (high) = {collapse_counts['high']}."
+            if avg_gate_entropy is not None
+            else "Gating diagnostics collected, but gate entropy is not yet available."
+        )
+
+        return {
+            "available": True,
+            "total_routed_programs": len(rows),
+            "avg_gate_entropy": avg_gate_entropy,
+            "collapse_risk_counts": collapse_counts,
+            "by_mode": by_mode,
+            "token_retention_curve_overall": overall_curve,
+            "explanation": explanation,
         }
 
     def control_experiment_comparison(self) -> Optional[Dict]:
@@ -1348,6 +1911,101 @@ class ExperimentAnalytics:
             "weight_adjustments": weight_adjustments,
         }
 
+    def math_family_coverage(self) -> Dict:
+        """Summarize evaluated/surviving coverage by mathematical family."""
+        rows = self.nb.conn.execute("""
+            SELECT stage1_passed, graph_json, arch_spec_json
+            FROM program_results
+            WHERE graph_json IS NOT NULL OR arch_spec_json IS NOT NULL
+        """).fetchall()
+
+        family_order = ["euclidean", "hyperbolic", "tropical", "p-adic", "clifford", "functional"]
+        stats = {
+            fam: {"family": fam, "n_tested": 0, "n_survived": 0}
+            for fam in family_order
+        }
+
+        hyperbolic_ops = {"poincare_add", "exp_map", "log_map", "hyp_linear"}
+        tropical_ops = {"tropical_matmul", "tropical_add", "tropical_attention"}
+        padic_ops = {"padic_expand", "ultrametric_attention"}
+        clifford_ops = {"geometric_product", "rotor_transform", "grade_select"}
+        functional_ops = {"basis_expansion", "integral_kernel", "fixed_point_iter"}
+
+        def _family_from_row(graph_json: Optional[str], arch_spec_json: Optional[str]) -> str:
+            op_names: set[str] = set()
+            if graph_json:
+                try:
+                    graph = json.loads(graph_json)
+                    nodes = graph.get("nodes", {}) if isinstance(graph, dict) else {}
+                    node_iter = nodes.values() if isinstance(nodes, dict) else nodes if isinstance(nodes, list) else []
+                    for node in node_iter:
+                        if isinstance(node, dict):
+                            op_name = node.get("op_name") or node.get("op")
+                            if op_name:
+                                op_names.add(op_name)
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    pass
+
+            token_mixing = None
+            channel_mixing = None
+            if arch_spec_json:
+                try:
+                    arch = json.loads(arch_spec_json)
+                    choices = arch.get("choices", {}) if isinstance(arch, dict) else {}
+                    if isinstance(choices, dict):
+                        token_mixing = choices.get("token_mixing")
+                        channel_mixing = choices.get("channel_mixing")
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    pass
+
+            if (op_names & functional_ops) or token_mixing == "integral_kernel_mixing" or channel_mixing in {
+                "basis_expansion_layer", "implicit_fixed_point"
+            }:
+                return "functional"
+            if op_names & hyperbolic_ops:
+                return "hyperbolic"
+            if op_names & tropical_ops:
+                return "tropical"
+            if op_names & padic_ops:
+                return "p-adic"
+            if op_names & clifford_ops:
+                return "clifford"
+            return "euclidean"
+
+        total_tested = 0
+        total_survived = 0
+        for row in rows:
+            family = _family_from_row(row["graph_json"], row["arch_spec_json"])
+            bucket = stats.get(family, stats["euclidean"])
+            bucket["n_tested"] += 1
+            total_tested += 1
+
+            if row["stage1_passed"]:
+                bucket["n_survived"] += 1
+                total_survived += 1
+
+        families = []
+        for fam in family_order:
+            entry = stats[fam]
+            n_tested = entry["n_tested"]
+            n_survived = entry["n_survived"]
+            families.append({
+                "family": fam,
+                "n_tested": n_tested,
+                "n_survived": n_survived,
+                "survival_rate": round(n_survived / n_tested, 4) if n_tested > 0 else 0.0,
+                "tested_share": round(n_tested / total_tested, 4) if total_tested > 0 else 0.0,
+                "survivor_share": round(n_survived / total_survived, 4) if total_survived > 0 else 0.0,
+            })
+
+        return {
+            "families": families,
+            "totals": {
+                "n_tested": total_tested,
+                "n_survived": total_survived,
+            },
+        }
+
     def compute_insights(self) -> List[Dict]:
         """Generate data-driven insights from experiment history.
 
@@ -1468,6 +2126,320 @@ class ExperimentAnalytics:
             })
 
         return insights
+
+    @staticmethod
+    def _parse_criteria_text(success_criteria: str) -> List[str]:
+        if not isinstance(success_criteria, str) or not success_criteria.strip():
+            return []
+        items: List[str] = []
+        for part in re.split(r"\n|;|\|", success_criteria):
+            text = part.strip()
+            if not text:
+                continue
+            text = re.sub(r"^[-*•]\s*", "", text)
+            text = re.sub(r"^\d+[.)]\s*", "", text)
+            if text:
+                items.append(text)
+        return items
+
+    @staticmethod
+    def _parse_threshold(text: str) -> Optional[Dict]:
+        symbol_match = re.search(r"(<=|>=|<|>|=)\s*(\d+(?:\.\d+)?)(\s*%)?", text)
+        if symbol_match:
+            return {
+                "op": symbol_match.group(1),
+                "value": float(symbol_match.group(2)),
+                "is_percent": bool(symbol_match.group(3)),
+            }
+
+        phrase_patterns = [
+            (r"at least\s*(\d+(?:\.\d+)?)(\s*%)?", ">="),
+            (r"no more than\s*(\d+(?:\.\d+)?)(\s*%)?", "<="),
+            (r"less than\s*(\d+(?:\.\d+)?)(\s*%)?", "<"),
+            (r"greater than\s*(\d+(?:\.\d+)?)(\s*%)?", ">"),
+        ]
+        for pattern, op in phrase_patterns:
+            match = re.search(pattern, text)
+            if match:
+                return {
+                    "op": op,
+                    "value": float(match.group(1)),
+                    "is_percent": bool(match.group(2)),
+                }
+        return None
+
+    @staticmethod
+    def _infer_criterion_type(text: str) -> str:
+        if "baseline" in text or "loss ratio" in text:
+            return "baseline"
+        if "novelty" in text:
+            return "novelty"
+        if "stage 1" in text or "stage1" in text or "s1" in text or "survivor" in text:
+            return "stage1"
+        if "decision" in text or "go/no-go" in text or "go no-go" in text:
+            return "decision"
+        return "unknown"
+
+    @staticmethod
+    def _normalize_threshold(criterion_type: str, threshold: Optional[Dict]) -> Optional[Dict]:
+        if not threshold or criterion_type == "decision":
+            return threshold
+        should_normalize_as_ratio = bool(threshold.get("is_percent")) or float(threshold.get("value", 0)) > 1
+        if not should_normalize_as_ratio:
+            return threshold
+        value = float(threshold.get("value", 0))
+        normalized = dict(threshold)
+        normalized["value"] = value / 100.0 if value <= 100 else value
+        return normalized
+
+    @staticmethod
+    def _compare_threshold(observed: Optional[float], threshold: Optional[Dict]) -> Optional[bool]:
+        if observed is None or not threshold:
+            return None
+        op = threshold.get("op")
+        value = float(threshold.get("value", 0))
+        if op == "<":
+            return observed < value
+        if op == "<=":
+            return observed <= value
+        if op == ">":
+            return observed > value
+        if op == ">=":
+            return observed >= value
+        if op == "=":
+            return abs(observed - value) < 1e-9
+        return None
+
+    @staticmethod
+    def _threshold_label(criterion_type: str, threshold: Optional[Dict]) -> str:
+        if not threshold:
+            return ""
+        op = threshold.get("op", "")
+        value = float(threshold.get("value", 0))
+        if criterion_type in {"baseline", "novelty", "stage1"}:
+            if criterion_type == "stage1":
+                return f" (target {op} {value * 100:.1f}%)"
+            return f" (target {op} {value:.3f})"
+        return f" (target {op} {value:g})"
+
+    def campaign_success_criteria_tracker(
+        self,
+        campaign: Dict,
+        experiments: List[Dict],
+        hypotheses: List[Dict],
+        decisions: List[Dict],
+    ) -> List[Dict]:
+        criteria = self._parse_criteria_text((campaign or {}).get("success_criteria", ""))
+        if not criteria:
+            return []
+
+        baseline_values = [
+            float(exp.get("best_baseline_ratio"))
+            for exp in experiments
+            if isinstance(exp.get("best_baseline_ratio"), (int, float))
+        ]
+        novelty_values = [
+            float(exp.get("best_novelty_score"))
+            for exp in experiments
+            if isinstance(exp.get("best_novelty_score"), (int, float))
+        ]
+        stage1_values = []
+        for exp in experiments:
+            total = exp.get("n_programs_generated") or exp.get("n_programs") or 0
+            passed = exp.get("n_stage1_passed") or 0
+            if total:
+                stage1_values.append(float(passed) / float(total))
+
+        best_baseline_ratio = min(baseline_values) if baseline_values else None
+        best_novelty = max(novelty_values) if novelty_values else None
+        best_stage1_rate = max(stage1_values) if stage1_values else None
+        experiment_count = len(experiments)
+        hypothesis_count = len(hypotheses)
+        decision_count = len(decisions)
+
+        tracker: List[Dict] = []
+        for index, criterion in enumerate(criteria):
+            text = criterion.lower()
+            criterion_type = self._infer_criterion_type(text)
+            threshold = self._normalize_threshold(criterion_type, self._parse_threshold(text))
+            item = {
+                "id": f"{index}-{criterion}",
+                "criterion": criterion,
+                "criterion_type": criterion_type,
+                "status": "not_yet",
+                "observed_text": "No mapped metric yet (criterion type not recognized).",
+            }
+
+            if criterion_type == "baseline":
+                observed = best_baseline_ratio
+                passed = self._compare_threshold(observed, threshold) if threshold else (
+                    observed < 1.0 if observed is not None else None
+                )
+                item["status"] = (
+                    "not_yet" if passed is None else "pass" if passed else "at_risk" if experiment_count > 0 else "not_yet"
+                )
+                if observed is not None:
+                    item["observed_text"] = (
+                        f"best baseline ratio {observed:.3f}{self._threshold_label(criterion_type, threshold)}"
+                    )
+                else:
+                    item["observed_text"] = "baseline ratio not yet measured"
+
+            elif criterion_type == "novelty":
+                observed = best_novelty
+                passed = self._compare_threshold(observed, threshold) if threshold else (
+                    observed >= 0.7 if observed is not None else None
+                )
+                item["status"] = (
+                    "not_yet" if passed is None else "pass" if passed else "at_risk" if experiment_count > 0 else "not_yet"
+                )
+                if observed is not None:
+                    item["observed_text"] = (
+                        f"best novelty {observed:.3f}{self._threshold_label(criterion_type, threshold)}"
+                    )
+                else:
+                    item["observed_text"] = "novelty signal not yet available"
+
+            elif criterion_type == "stage1":
+                observed = best_stage1_rate
+                passed = self._compare_threshold(observed, threshold) if threshold else (
+                    observed >= 0.05 if observed is not None else None
+                )
+                item["status"] = (
+                    "not_yet" if passed is None else "pass" if passed else "at_risk" if experiment_count > 0 else "not_yet"
+                )
+                if observed is not None:
+                    item["observed_text"] = (
+                        f"best S1 rate {observed * 100:.1f}%{self._threshold_label(criterion_type, threshold)}"
+                    )
+                else:
+                    item["observed_text"] = "S1 evidence not yet available"
+
+            elif criterion_type == "decision":
+                observed = float(decision_count)
+                passed = self._compare_threshold(observed, threshold) if threshold else observed > 0
+                item["status"] = "pass" if passed else "at_risk" if hypothesis_count > 0 else "not_yet"
+                item["observed_text"] = (
+                    f"{decision_count} decision{'s' if decision_count != 1 else ''} logged"
+                    f"{self._threshold_label(criterion_type, threshold)}"
+                )
+
+            tracker.append(item)
+
+        return tracker
+
+    def negative_results_synthesis(self) -> Dict:
+        """Aggregate repeatedly failed patterns into a "do not pursue" list.
+
+        Combines zero-success ops, dominant error types, anti-correlated
+        structural features, and refuted hypotheses into a single report.
+        """
+        result: Dict = {
+            "failed_ops": [],
+            "dominant_errors": [],
+            "anti_patterns": [],
+            "refuted_hypotheses": [],
+            "summary": "",
+        }
+
+        # 1. Ops with 0% S1 rate and sufficient sample size
+        op_rates = self.op_success_rates()
+        min_usage = 5
+        for op_name, stats in sorted(
+            op_rates.items(), key=lambda x: -(x[1].get("n_used", 0))
+        ):
+            n_used = stats.get("n_used", 0)
+            s1_rate = stats.get("s1_rate", 0)
+            if n_used >= min_usage and s1_rate == 0:
+                s0_rate = stats.get("s0_rate", 0)
+                result["failed_ops"].append({
+                    "op_name": op_name,
+                    "n_used": n_used,
+                    "s0_rate": round(s0_rate, 3),
+                    "s1_rate": 0.0,
+                    "failure_stage": (
+                        "compilation" if s0_rate < 0.5
+                        else "learning"
+                    ),
+                    "confidence": round(min(0.95, 0.4 + n_used / 100), 2),
+                })
+
+        # 2. Dominant error types (top 10 by count)
+        failures = self.failure_patterns()
+        total_failures = sum(v["total"] for v in failures.values())
+        for error_type, info in sorted(
+            failures.items(), key=lambda x: -x[1]["total"]
+        )[:10]:
+            pct = info["total"] / total_failures if total_failures > 0 else 0
+            top_stage = max(
+                info.get("by_stage", {}).items(),
+                key=lambda x: x[1],
+                default=("unknown", 0),
+            )
+            result["dominant_errors"].append({
+                "error_type": error_type,
+                "count": info["total"],
+                "percentage": round(pct * 100, 1),
+                "primary_stage": top_stage[0],
+                "by_stage": info.get("by_stage", {}),
+            })
+
+        # 3. Anti-correlated structural features (negative correlations)
+        correlations = self.structural_correlations()
+        for metric, effect in sorted(
+            correlations.items(), key=lambda x: x[1]
+        ):
+            if effect < -0.15:
+                name = metric.replace("graph_", "").replace("_", " ")
+                result["anti_patterns"].append({
+                    "feature": name,
+                    "metric": metric,
+                    "correlation": round(effect, 3),
+                    "interpretation": (
+                        f"Higher {name} is associated with lower S1 success"
+                    ),
+                })
+
+        # 4. Refuted hypotheses from insights table
+        try:
+            rows = self.nb.conn.execute("""
+                SELECT content, confidence, supporting_evidence, timestamp
+                FROM insights
+                WHERE status = 'refuted'
+                ORDER BY timestamp DESC
+                LIMIT 20
+            """).fetchall()
+            for r in rows:
+                result["refuted_hypotheses"].append({
+                    "content": r["content"],
+                    "confidence": r["confidence"],
+                    "evidence": r["supporting_evidence"],
+                    "timestamp": r["timestamp"],
+                })
+        except Exception:
+            pass
+
+        # 5. Summary text
+        n_ops = len(result["failed_ops"])
+        n_errs = len(result["dominant_errors"])
+        n_anti = len(result["anti_patterns"])
+        n_ref = len(result["refuted_hypotheses"])
+        parts = []
+        if n_ops:
+            op_names = ", ".join(o["op_name"] for o in result["failed_ops"][:5])
+            parts.append(f"{n_ops} ops with 0% S1 rate ({op_names})")
+        if n_errs:
+            parts.append(
+                f"{n_errs} error types, top: {result['dominant_errors'][0]['error_type']}"
+                f" ({result['dominant_errors'][0]['count']} occurrences)"
+            )
+        if n_anti:
+            parts.append(f"{n_anti} anti-correlated structural features")
+        if n_ref:
+            parts.append(f"{n_ref} refuted hypotheses")
+        result["summary"] = "; ".join(parts) if parts else "No negative results to report yet."
+
+        return result
 
     def efficiency_frontier(self) -> List[Dict]:
         """Find Pareto-optimal programs on loss vs FLOPs/params.
