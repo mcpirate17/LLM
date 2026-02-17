@@ -272,6 +272,35 @@ def build_rich_context(
                 lines.append(f"  [{cat}] (conf={conf:.1f}) {content}")
             sections.append("\n".join(lines))
 
+        # Negative results (what consistently fails)
+        neg = analytics_data.get("negative_results", {})
+        neg_lines = []
+        failed_ops = neg.get("failed_ops", [])
+        if failed_ops:
+            neg_lines.append("Negative Results — Consistently Failing Patterns:")
+            for op in failed_ops[:8]:
+                neg_lines.append(
+                    f"  AVOID {op['op_name']}: 0% S1 rate over {op.get('n_used', '?')} "
+                    f"uses, fails at {op.get('failure_stage', '?')} "
+                    f"(confidence={op.get('confidence', 0):.2f})"
+                )
+        anti_patterns = neg.get("anti_patterns", [])
+        if anti_patterns:
+            if not neg_lines:
+                neg_lines.append("Negative Results — Anti-Patterns:")
+            else:
+                neg_lines.append("  Anti-correlated features:")
+            for ap in anti_patterns[:5]:
+                neg_lines.append(
+                    f"  {ap.get('feature', '?')}: correlation={ap.get('correlation', 0):.3f} "
+                    f"— {ap.get('interpretation', '')}"
+                )
+        summary = neg.get("summary", "")
+        if summary:
+            neg_lines.append(f"  Summary: {summary[:200]}")
+        if neg_lines:
+            sections.append("\n".join(neg_lines))
+
     # Past hypothesis outcomes
     if past_hypotheses:
         lines = ["Past Hypothesis Outcomes:"]

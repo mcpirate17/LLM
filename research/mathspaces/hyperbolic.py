@@ -136,3 +136,20 @@ def execute_hyp_tangent_nonlinear(module: nn.Module, x: torch.Tensor) -> torch.T
     euclidean = log_map(x)
     bounded = torch.tanh(euclidean)
     return exp_map(bounded)
+
+
+def execute_hyperbolic_norm(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Normalization that respects manifold structure: log-map → LayerNorm → exp-map.
+
+    Standard LayerNorm distorts hyperbolic geometry. This compound op
+    maps to tangent space first, normalizes there, then maps back.
+    """
+    euclidean = log_map(x)
+    if hasattr(module, 'weight') and hasattr(module, 'bias'):
+        D = euclidean.shape[-1]
+        weight = module.weight[:D]
+        bias = module.bias[:D]
+        normed = F.layer_norm(euclidean, [D], weight, bias)
+    else:
+        normed = F.layer_norm(euclidean, [euclidean.shape[-1]])
+    return exp_map(normed)

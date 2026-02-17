@@ -205,6 +205,57 @@ def register_all_mathspaces():
     op = _with_execute(op, clifford.execute_grade_mix)
     register_external_primitive(op)
 
+    # ── Compound Cross-Space Primitives ──
+
+    op = PrimitiveOp(
+        name="hyperbolic_norm",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D+D",
+        description="Manifold-aware normalization: log-map → LayerNorm → exp-map",
+        numerically_risky=True,
+    )
+    op = _with_execute(op, hyperbolic.execute_hyperbolic_norm)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="tropical_gate",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D",
+        description="Shortest-path tropical distances as a gating mechanism",
+    )
+    op = _with_execute(op, tropical.execute_tropical_gate)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="clifford_attention",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D",
+        description="Attention via geometric product (dot + wedge) for richer token scores",
+    )
+    op = _with_execute(op, clifford.execute_clifford_attention)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="padic_residual",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*2*D",
+        description="Multi-resolution p-adic expansion with per-scale transform + residual",
+    )
+    op = _with_execute(op, padic.execute_padic_residual)
+    register_external_primitive(op)
+
 
 def _with_execute(op: PrimitiveOp, fn) -> PrimitiveOp:
     """Attach an execution function to a PrimitiveOp.

@@ -112,3 +112,23 @@ def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Center features by tropical (min) sequence baseline."""
     baseline = x.amin(dim=1, keepdim=True)
     return x - baseline
+
+
+def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Shortest-path routing as a gating mechanism.
+
+    Tropical distance scores → sigmoid gate → elementwise multiply
+    with linear projection. Routes information based on tropical
+    (shortest-path) proximity rather than learned attention.
+    """
+    B, S, D = x.shape
+    # Tropical distance scores: pairwise min-plus distances
+    distances = tropical_matmul(x, x)  # (B, S, S)
+    gate_scores = tropical_softmax(distances, dim=-1)  # (B, S, S)
+    gated = torch.bmm(gate_scores, x)  # (B, S, D)
+    # Linear projection if params available
+    if hasattr(module, 'weight'):
+        gated = torch.nn.functional.linear(gated, module.weight)
+    # Sigmoid gate blending with residual
+    gate = torch.sigmoid(gated)
+    return x * gate

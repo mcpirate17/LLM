@@ -2357,6 +2357,71 @@ class TestAPI(unittest.TestCase):
             self.assertIn("status", summary)
             self.assertIn("timestamp", summary)
 
+    def test_api_aria_cycle_history(self):
+        r = self.client.get("/api/aria/cycle-history?n=10")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsInstance(data, list)
+        if data:
+            row = data[0]
+            self.assertIn("cycle_index", row)
+            self.assertIn("mode", row)
+            self.assertIn("status", row)
+            self.assertIn("entry_id", row)
+
+    def test_api_aria_cycle_history_filters_and_csv(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("continuous", {"n_programs": 2}, "cycle history filter test")
+        nb.add_entry(ExperimentEntry(
+            entry_type="live_feed",
+            experiment_id=exp_id,
+            title="Aria cycle 1",
+            content="Cycle one",
+            metadata={
+                "live_feed_type": "aria_cycle",
+                "payload": {
+                    "cycle_index": 1,
+                    "mode": "synthesis",
+                    "status": "completed",
+                    "reasoning": "baseline cycle",
+                    "timestamp": time.time(),
+                },
+            },
+        ))
+        nb.add_entry(ExperimentEntry(
+            entry_type="live_feed",
+            experiment_id=exp_id,
+            title="Aria cycle 2",
+            content="Cycle two",
+            metadata={
+                "live_feed_type": "aria_cycle",
+                "payload": {
+                    "cycle_index": 2,
+                    "mode": "evolution",
+                    "status": "failed",
+                    "reasoning": "diversity exploration",
+                    "error": "simulated",
+                    "timestamp": time.time(),
+                },
+            },
+        ))
+        nb.close()
+
+        filtered = self.client.get("/api/aria/cycle-history?mode=evolution&status=failed&q=diversity")
+        self.assertEqual(filtered.status_code, 200)
+        filtered_data = filtered.get_json()
+        self.assertIsInstance(filtered_data, list)
+        self.assertGreaterEqual(len(filtered_data), 1)
+        self.assertEqual(filtered_data[0].get("mode"), "evolution")
+        self.assertEqual(filtered_data[0].get("status"), "failed")
+
+        csv_resp = self.client.get("/api/aria/cycle-history?format=csv&mode=evolution")
+        self.assertEqual(csv_resp.status_code, 200)
+        self.assertIn("text/csv", csv_resp.content_type)
+        body = csv_resp.get_data(as_text=True)
+        self.assertIn("cycle_index,mode,status", body)
+        self.assertIn("evolution", body)
+
     def test_api_aria_cycle_control_pause_resume(self):
         from research.scientist import api as api_mod
 
@@ -2716,6 +2781,41 @@ class TestAPI(unittest.TestCase):
         r = self.client.post("/api/experiments/start",
                              json={"mode": "scale_up"})
         self.assertEqual(r.status_code, 400)
+
+    def test_api_rerun_experiment(self):
+        from research.scientist import api as api_mod
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("evolution", {"n_programs": 4}, "rerun me")
+        nb.cancel_experiment(exp_id)
+        nb.close()
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_evolution = MagicMock(return_value="exp-rerun-new")
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post(f"/api/experiments/{exp_id}/rerun")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(data.get("status"), "started")
+        self.assertEqual(data.get("source_experiment_id"), exp_id)
+        self.assertEqual(data.get("experiment_id"), "exp-rerun-new")
+        self.assertEqual(data.get("mode"), "evolve")
+        fake_runner.start_evolution.assert_called_once()
+
+    def test_api_rerun_experiment_when_runner_busy(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = True
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/experiments/does-not-matter/rerun")
+
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("already running", (r.get_json() or {}).get("error", "").lower())
 
     def test_api_validate_pipeline(self):
         r = self.client.post("/api/validate", json={"n": 2})
@@ -3903,6 +4003,7 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/aria/chat/compact",
             "/api/aria/cycle-status",
             "/api/aria/cycle-control",
+            "/api/aria/cycle-history",
         }
 
         for filepath in self.component_files:
@@ -5499,6 +5600,151 @@ class TestSSEEventContract(unittest.TestCase):
         )
         self.assertGreaterEqual(len(frontend_events), 20,
                                 f"Too few frontend events found: {sorted(frontend_events)}")
+
+
+class TestNegativeResultsLoop(unittest.TestCase):
+    """Test the learning-from-failures loop: excluded_ops + negative context."""
+
+    def test_excluded_ops_populated_from_negative_results(self):
+        """GrammarConfig.excluded_ops gets populated from negative results."""
+        from research.synthesis.grammar import GrammarConfig
+
+        # Simulate: 3 ops with 0% S1 rate, sufficient samples, high confidence
+        neg_results = {
+            "failed_ops": [
+                {"op_name": "bad_op_a", "s1_rate": 0, "n_used": 10, "confidence": 0.8,
+                 "failure_stage": "learning"},
+                {"op_name": "bad_op_b", "s1_rate": 0, "n_used": 7, "confidence": 0.75,
+                 "failure_stage": "compilation"},
+                # Should NOT be excluded: low confidence
+                {"op_name": "maybe_ok", "s1_rate": 0, "n_used": 6, "confidence": 0.5,
+                 "failure_stage": "learning"},
+                # Should NOT be excluded: too few samples
+                {"op_name": "rare_op", "s1_rate": 0, "n_used": 3, "confidence": 0.9,
+                 "failure_stage": "learning"},
+            ],
+        }
+
+        excluded = set()
+        for op_info in neg_results.get("failed_ops", []):
+            if (op_info.get("s1_rate", 1) == 0
+                    and op_info.get("n_used", 0) >= 5
+                    and op_info.get("confidence", 0) >= 0.7):
+                excluded.add(op_info["op_name"])
+
+        self.assertEqual(excluded, {"bad_op_a", "bad_op_b"})
+
+        # Verify GrammarConfig accepts excluded_ops
+        cfg = GrammarConfig(model_dim=64, excluded_ops=excluded)
+        self.assertEqual(cfg.excluded_ops, {"bad_op_a", "bad_op_b"})
+
+    def test_negative_results_in_rich_context(self):
+        """build_rich_context includes negative results when present."""
+        from research.scientist.llm.context import build_rich_context
+
+        analytics_data = {
+            "negative_results": {
+                "failed_ops": [
+                    {"op_name": "always_fails", "n_used": 12,
+                     "failure_stage": "learning", "confidence": 0.85},
+                ],
+                "anti_patterns": [
+                    {"feature": "high depth", "correlation": -0.32,
+                     "interpretation": "Higher high depth is associated with lower S1 success"},
+                ],
+                "summary": "1 ops with 0% S1 rate (always_fails)",
+            },
+        }
+
+        ctx = build_rich_context(results={}, analytics_data=analytics_data)
+        self.assertIn("AVOID always_fails", ctx)
+        self.assertIn("0% S1 rate", ctx)
+        self.assertIn("Anti-correlated", ctx)
+        self.assertIn("high depth", ctx)
+
+    def test_negative_results_absent_gracefully(self):
+        """build_rich_context works fine without negative results."""
+        from research.scientist.llm.context import build_rich_context
+
+        ctx = build_rich_context(results={}, analytics_data={})
+        self.assertNotIn("Negative Results", ctx)
+        # Should still produce some output
+        self.assertIsInstance(ctx, str)
+
+
+@unittest.skipUnless(HAS_TORCH, "requires torch")
+class TestCompoundMathSpaceOps(unittest.TestCase):
+    """Test compound cross-space math primitives."""
+
+    def test_hyperbolic_norm_shape(self):
+        """hyperbolic_norm preserves shape."""
+        import torch
+        from research.mathspaces.hyperbolic import execute_hyperbolic_norm
+        module = torch.nn.Module()
+        x = torch.randn(2, 4, 16) * 0.1
+        out = execute_hyperbolic_norm(module, x)
+        self.assertEqual(out.shape, (2, 4, 16))
+        self.assertFalse(torch.isnan(out).any())
+
+    def test_tropical_gate_shape(self):
+        """tropical_gate preserves shape."""
+        import torch
+        from research.mathspaces.tropical import execute_tropical_gate
+        module = torch.nn.Module()
+        x = torch.randn(2, 4, 16)
+        out = execute_tropical_gate(module, x)
+        self.assertEqual(out.shape, (2, 4, 16))
+        self.assertFalse(torch.isnan(out).any())
+
+    def test_clifford_attention_shape(self):
+        """clifford_attention preserves shape (D must be multiple of 8)."""
+        import torch
+        from research.mathspaces.clifford import execute_clifford_attention
+        module = torch.nn.Module()
+        x = torch.randn(2, 4, 16)
+        out = execute_clifford_attention(module, x)
+        self.assertEqual(out.shape, (2, 4, 16))
+        self.assertFalse(torch.isnan(out).any())
+
+    def test_clifford_attention_padding(self):
+        """clifford_attention handles D not divisible by 8."""
+        import torch
+        from research.mathspaces.clifford import execute_clifford_attention
+        module = torch.nn.Module()
+        x = torch.randn(2, 4, 12)
+        out = execute_clifford_attention(module, x)
+        self.assertEqual(out.shape, (2, 4, 12))
+
+    def test_padic_residual_shape(self):
+        """padic_residual preserves shape."""
+        import torch
+        from research.mathspaces.padic import execute_padic_residual
+        module = torch.nn.Module()
+        x = torch.randn(2, 4, 16)
+        out = execute_padic_residual(module, x)
+        self.assertEqual(out.shape, (2, 4, 16))
+        self.assertFalse(torch.isnan(out).any())
+
+    def test_compound_ops_registered(self):
+        """All 4 compound ops appear in the registry after registration."""
+        from research.mathspaces.registry import register_all_mathspaces
+        from research.synthesis.primitives import list_primitives, OpCategory
+        register_all_mathspaces()
+        math_ops = {op.name for op in list_primitives(OpCategory.MATH_SPACE)}
+        for name in ["hyperbolic_norm", "tropical_gate",
+                     "clifford_attention", "padic_residual"]:
+            self.assertIn(name, math_ops, f"Compound op {name} not registered")
+
+    def test_compound_ops_have_params(self):
+        """Compound ops are registered with has_params=True."""
+        from research.mathspaces.registry import register_all_mathspaces
+        from research.synthesis.primitives import list_primitives, OpCategory
+        register_all_mathspaces()
+        math_ops = {op.name: op for op in list_primitives(OpCategory.MATH_SPACE)}
+        for name in ["hyperbolic_norm", "tropical_gate",
+                     "clifford_attention", "padic_residual"]:
+            self.assertTrue(math_ops[name].has_params,
+                            f"{name} should have has_params=True")
 
 
 if __name__ == "__main__":

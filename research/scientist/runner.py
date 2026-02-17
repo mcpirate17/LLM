@@ -794,6 +794,22 @@ class ExperimentRunner:
             after_progress=after_progress,
             error=cycle_error,
         )
+        try:
+            nb.add_entry(ExperimentEntry(
+                entry_type="live_feed",
+                experiment_id=after_progress.get("experiment_id") or None,
+                title=f"Aria cycle {n_experiments}: {selected_mode}",
+                content=(
+                    f"Cycle {n_experiments} completed in {selected_mode} mode "
+                    f"with ΔS1={summary.get('delta_stage1_survivors', 0)}"
+                ),
+                metadata={
+                    "live_feed_type": "aria_cycle",
+                    "payload": summary,
+                },
+            ))
+        except Exception as e:
+            logger.debug("Failed to persist aria_cycle live-feed entry: %s", e)
         with self._lock:
             self._last_cycle_summary = summary
             self._aria_cycle_history.append(summary)
@@ -3432,6 +3448,7 @@ class ExperimentRunner:
         }
 
         grammar_weights = None
+        excluded_ops: set = set()
         if use_learned_grammar:
             try:
                 from .analytics import ExperimentAnalytics
@@ -3440,11 +3457,31 @@ class ExperimentRunner:
             except Exception as e:
                 logger.warning("Failed computing learned grammar weights for %s: %s", exp_id, e)
 
+            # Populate excluded_ops from negative results
+            try:
+                if analytics is not None:
+                    neg = analytics.negative_results_synthesis()
+                    for op_info in neg.get("failed_ops", []):
+                        if (op_info.get("s1_rate", 1) == 0
+                                and op_info.get("n_used", 0) >= 5
+                                and op_info.get("confidence", 0) >= 0.7):
+                            excluded_ops.add(op_info["op_name"])
+                    if excluded_ops:
+                        nb.log_learning_event(
+                            "excluded_ops_applied",
+                            f"Excluded {len(excluded_ops)} ops with 0% S1 rate: "
+                            f"{', '.join(sorted(excluded_ops))}",
+                            excluded_ops=sorted(excluded_ops),
+                        )
+            except Exception as e:
+                logger.warning("Failed computing excluded ops for %s: %s", exp_id, e)
+
         grammar = GrammarConfig(
             model_dim=config.model_dim,
             max_depth=config.max_depth,
             max_ops=config.max_ops,
             residual_prob=config.residual_prob,
+            excluded_ops=excluded_ops,
         )
 
         if grammar_weights:
@@ -4099,6 +4136,7 @@ class ExperimentRunner:
                 "default_weights": analytics.get_current_grammar_weights(),
                 "learning_log": nb.get_learning_log(limit=10),
                 "insights": nb.get_insights(limit=20),
+                "negative_results": analytics.negative_results_synthesis(),
             }
         except Exception:
             return {}

@@ -127,3 +127,22 @@ def execute_padic_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     valuation = padic_valuation(x).clamp(min=-10.0, max=10.0)
     gate = torch.sigmoid(valuation)
     return x * gate
+
+
+def execute_padic_residual(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Multi-resolution skip connection via p-adic expansion.
+
+    P-adic expansion → per-scale linear transform → recombine + residual.
+    Each scale captures structure at a different resolution, and learned
+    transforms can weight them before residual addition.
+    """
+    B, S, D = x.shape
+    expanded = padic_expansion(x, n_digits=2)  # (B, S, D*2)
+    if hasattr(module, 'weight'):
+        # Weight projects expanded (D*2) back to D
+        transformed = torch.nn.functional.linear(expanded, module.weight)
+    else:
+        # Average the two scales as fallback
+        transformed = (expanded[..., :D] + expanded[..., D:]) * 0.5
+    # Residual connection
+    return x + transformed

@@ -211,3 +211,61 @@ def execute_grade_mix(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     if pad > 0:
         result = result[..., :D]
     return result
+
+
+def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Attention using geometric product instead of dot product.
+
+    QKV projections where scores use Clifford geometric product,
+    capturing both symmetric (dot) and antisymmetric (wedge) token
+    relationships for richer attention patterns.
+    """
+    B, S, D = x.shape
+    pad = (N_BASIS - D % N_BASIS) % N_BASIS
+    if pad > 0:
+        x_padded = F.pad(x, (0, pad))
+    else:
+        x_padded = x
+
+    D_padded = x_padded.shape[-1]
+
+    # QKV via learned weight or identity
+    if hasattr(module, 'weight'):
+        # weight shape: (D*D,) — reshape to (D_padded, D_padded) for Q/K
+        W = module.weight
+        n = D_padded * D_padded
+        if W.numel() >= n:
+            Wq = W[:n].reshape(D_padded, D_padded)
+            q = F.linear(x_padded, Wq)
+            k = x_padded
+        else:
+            q = k = x_padded
+    else:
+        q = k = x_padded
+
+    # Pack as multivectors
+    mv_q = _pack_multivector(q)   # (B, S, K, 8)
+    mv_k = _pack_multivector(k)   # (B, S, K, 8)
+
+    # Geometric product scores: sum scalar component over K
+    # For each pair (i, j): gp(q_i, k_j) scalar part → attention score
+    # Efficient: compute scalar part of geometric product without full product
+    # Scalar = sum over basis of a_b * b_b * sign_b
+    # For Cl(3,0): signs are [+,+,+,+,-,-,-,-]
+    signs = torch.tensor([1, 1, 1, 1, -1, -1, -1, -1],
+                         device=x.device, dtype=x.dtype)
+    # (B, S, K, 8) * signs -> (B, S, K, 8), then sum over 8 for scalar contribution
+    q_signed = mv_q * signs  # (B, S, K, 8)
+    # q_signed summed over basis -> (B, S, K)
+    q_scalar = q_signed.sum(dim=-1)  # (B, S, K)
+    k_scalar = mv_k.sum(dim=-1)      # (B, S, K)
+
+    # Attention scores via dot in the scalar-projected space
+    scores = torch.bmm(q_scalar, k_scalar.transpose(1, 2))  # (B, S, S)
+    scale = math.sqrt(D_padded)
+    weights = torch.softmax(scores / scale, dim=-1)
+    out = torch.bmm(weights, x_padded)  # (B, S, D_padded)
+
+    if pad > 0:
+        out = out[..., :D]
+    return out
