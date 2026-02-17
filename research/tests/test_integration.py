@@ -3268,6 +3268,21 @@ class TestAPI(unittest.TestCase):
         for key in ("entry_id", "title", "content", "confidence", "status"):
             self.assertIn(key, entry, f"knowledge search result missing key: {key}")
 
+    def test_api_knowledge_backfill_schema(self):
+        """Knowledge backfill should return created/skipped details and counts."""
+        r = self.client.post("/api/knowledge/backfill")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsInstance(data, dict)
+        self.assertIn("created", data)
+        self.assertIn("skipped", data)
+        self.assertIn("counts_before", data)
+        self.assertIn("counts_after", data)
+        self.assertIsInstance(data["created"], list)
+        self.assertIsInstance(data["skipped"], list)
+        self.assertIsInstance(data["counts_before"], dict)
+        self.assertIsInstance(data["counts_after"], dict)
+
     def test_api_campaigns_list_schema(self):
         """Campaign list rows must include fields consumed by Campaigns tab."""
         r = self.client.get("/api/campaigns")

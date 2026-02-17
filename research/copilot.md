@@ -259,6 +259,12 @@ These are systemic issues with the research pipeline's scientific validity, not 
     - No git commit hash stored with results. If eval/metrics.py changes, old and new results mixed in same table with no way to distinguish.
     - Fix: store code version hash in experiment metadata.
 
+## GitHub Copilot Observations (2026-02-17)
+
+56. **Knowledge category backfill from real telemetry is now available and verified**
+    - Added `POST /api/knowledge/backfill` in `scientist/api.py` to deterministically populate missing categories from measured notebook data (`anti_pattern`, `sweet_spot`, `correlation`, `tool_insight`) without synthetic placeholders.
+    - Verified against `lab_notebook.db`: before = Principle 4 / others 0; after endpoint execution = Principle 4, Anti-Pattern 1, Sweet Spot 1, Correlation 1, Tool Insight 1 (All 8).
+
 #### Reproducibility
 
 56. **Random seeds not controlled in critical paths** (`runner.py:2309-2312`)

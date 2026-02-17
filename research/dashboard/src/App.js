@@ -13,6 +13,7 @@ import ControlPanel from './components/ControlPanel';
 import LiveFeed from './components/LiveFeed';
 import TrendCharts from './components/TrendCharts';
 import LearningPanel from './components/LearningPanel';
+import CycleTimeline from './components/CycleTimeline';
 import ResearchReport from './components/ResearchReport';
 import HelpPanel from './components/HelpPanel';
 import Leaderboard from './components/Leaderboard';
@@ -132,6 +133,7 @@ function App() {
     knowledge: 'Knowledge',
     trends: 'Trends',
     learning: 'Learning',
+    cycles: 'Cycle Timeline',
     notebook: 'Notebook',
     insights: 'Insights',
     report: 'Report',
@@ -666,7 +668,7 @@ function App() {
         {[
           { section: null, tabs: ['overview'] },
           { section: 'Research', tabs: ['experiments', 'programs', 'leaderboard'] },
-          { section: 'Analysis', tabs: ['trends', 'learning', 'insights', 'report'] },
+          { section: 'Analysis', tabs: ['trends', 'learning', 'cycles', 'insights', 'report'] },
           { section: 'Meta', tabs: ['campaigns', 'knowledge', 'notebook', 'help'] },
         ].map(group => (
           <React.Fragment key={group.section || 'main'}>
@@ -971,6 +973,7 @@ function App() {
             <ExperimentList
               experiments={tabData.experiments || data?.recent_experiments}
               onSelectExperiment={handleSelectExperiment}
+              onRefresh={fetchDashboard}
             />
           </>
         )}
@@ -1034,6 +1037,10 @@ function App() {
 
         {activeTab === 'learning' && (
           <LearningPanel />
+        )}
+
+        {activeTab === 'cycles' && (
+          <CycleTimeline />
         )}
 
         {activeTab === 'notebook' && (

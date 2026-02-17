@@ -149,7 +149,7 @@ function StageFunnel({ generated, s0, s05, s1 }) {
 
 const EXPERIMENT_LIST_SORT_PREFS_KEY = 'dashboard.experiment-list.sort.v1';
 
-function ExperimentList({ experiments, onSelectExperiment }) {
+function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
   const [sortKey, setSortKey] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(EXPERIMENT_LIST_SORT_PREFS_KEY) || '{}');
@@ -170,6 +170,7 @@ function ExperimentList({ experiments, onSelectExperiment }) {
   });
   const [copiedValue, copyText] = useCopyToClipboard();
   const [cancellingId, setCancellingId] = useState(null);
+  const [rerunningId, setRerunningId] = useState(null);
 
   const handleCancel = async (e, experimentId) => {
     e.stopPropagation();
@@ -180,11 +181,32 @@ function ExperimentList({ experiments, onSelectExperiment }) {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         alert(data.error || 'Failed to cancel experiment');
+      } else if (onRefresh) {
+        onRefresh();
       }
     } catch (err) {
       alert('Network error cancelling experiment');
     } finally {
       setCancellingId(null);
+    }
+  };
+
+  const handleRerun = async (e, experimentId) => {
+    e.stopPropagation();
+    if (!window.confirm('Rerun this experiment with its saved config?')) return;
+    setRerunningId(experimentId);
+    try {
+      const res = await fetch(`/api/experiments/${experimentId}/rerun`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to rerun experiment');
+      } else if (onRefresh) {
+        onRefresh();
+      }
+    } catch (err) {
+      alert('Network error rerunning experiment');
+    } finally {
+      setRerunningId(null);
     }
   };
 
@@ -347,6 +369,17 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                       aria-label="Cancel experiment"
                     >
                       {cancellingId === exp.experiment_id ? '...' : 'Cancel'}
+                    </button>
+                  )}
+                  {(exp.status === 'running' || exp.status === 'failed') && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
+                      disabled={rerunningId === exp.experiment_id}
+                      onClick={(e) => handleRerun(e, exp.experiment_id)}
+                      aria-label="Rerun experiment"
+                    >
+                      {rerunningId === exp.experiment_id ? '...' : 'Rerun'}
                     </button>
                   )}
                 </td>

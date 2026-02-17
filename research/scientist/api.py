@@ -9,6 +9,8 @@ Uses Flask for simplicity, SSE for real-time streaming.
 from __future__ import annotations
 
 import json
+import csv
+import io
 import logging
 import os
 import time
@@ -120,6 +122,192 @@ def _normalize_hypothesis(hypothesis: dict) -> dict:
 
 def _normalize_hypotheses(hypotheses: list) -> list:
     return [_normalize_hypothesis(hypothesis) for hypothesis in hypotheses]
+
+
+def _knowledge_title_exists(nb: LabNotebook, title: str) -> bool:
+    """Return True if an active knowledge entry already has this title."""
+    if not title:
+        return False
+    title_norm = str(title).strip().lower()
+    for row in nb.get_knowledge():
+        row_title = str(row.get("title") or "").strip().lower()
+        if row_title == title_norm:
+            return True
+    return False
+
+
+def _pearson_corr(xs: List[float], ys: List[float]) -> Optional[float]:
+    """Small dependency-free Pearson correlation for numeric lists."""
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    n = len(xs)
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    den_x = sum((x - mean_x) ** 2 for x in xs)
+    den_y = sum((y - mean_y) ** 2 for y in ys)
+    den = (den_x * den_y) ** 0.5
+    if den <= 1e-12:
+        return None
+    return num / den
+
+
+def _backfill_knowledge_from_real_data(nb: LabNotebook) -> Dict[str, Any]:
+    """Create missing knowledge categories using measured experiment data."""
+    categories = ["anti_pattern", "sweet_spot", "correlation", "tool_insight"]
+    existing_by_category: Dict[str, int] = {}
+    for category in categories:
+        existing_by_category[category] = len(nb.get_knowledge(category=category))
+
+    created: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+
+    # Shared data pulls
+    completed = nb.conn.execute(
+        """SELECT experiment_id, experiment_type, n_programs_generated,
+                  n_stage1_passed, best_loss_ratio, best_novelty_score, timestamp
+           FROM experiments
+           WHERE status = 'completed'
+           ORDER BY timestamp DESC
+           LIMIT 300"""
+    ).fetchall()
+
+    # 1) Anti-pattern
+    if existing_by_category["anti_pattern"] == 0:
+        zero_survivor_runs = [
+            r for r in completed
+            if (r["n_programs_generated"] or 0) > 0 and (r["n_stage1_passed"] or 0) == 0
+        ]
+        by_mode: Dict[str, List[Any]] = {}
+        for row in zero_survivor_runs:
+            mode = str(row["experiment_type"] or "unknown")
+            by_mode.setdefault(mode, []).append(row)
+        if by_mode:
+            worst_mode, rows = max(by_mode.items(), key=lambda it: len(it[1]))
+            count = len(rows)
+            avg_generated = sum((r["n_programs_generated"] or 0) for r in rows) / max(count, 1)
+            title = f"Anti-Pattern: {worst_mode} often yields zero S1 survivors"
+            content = (
+                f"Observed {count} completed {worst_mode} runs with zero stage-1 survivors "
+                f"(average generated programs: {avg_generated:.1f}). "
+                "This region currently underperforms and should be deprioritized or re-parameterized."
+            )
+            evidence = [str(r["experiment_id"]) for r in rows[:5]]
+            if not _knowledge_title_exists(nb, title):
+                nb.add_knowledge("anti_pattern", title, content, evidence=evidence, confidence=min(0.9, 0.55 + 0.05 * count))
+                created.append({"category": "anti_pattern", "title": title, "evidence_count": len(evidence)})
+            else:
+                skipped.append({"category": "anti_pattern", "reason": "duplicate_title"})
+        else:
+            skipped.append({"category": "anti_pattern", "reason": "insufficient_zero_survivor_runs"})
+    else:
+        skipped.append({"category": "anti_pattern", "reason": "already_populated"})
+
+    # 2) Sweet spot
+    if existing_by_category["sweet_spot"] == 0:
+        candidates = [
+            r for r in completed
+            if (r["n_programs_generated"] or 0) > 0 and (r["n_stage1_passed"] or 0) > 0 and r["best_loss_ratio"] is not None
+        ]
+        if candidates:
+            def _score(row: Any) -> float:
+                gen = float(row["n_programs_generated"] or 1)
+                s1_rate = float(row["n_stage1_passed"] or 0) / max(gen, 1.0)
+                loss = float(row["best_loss_ratio"] or 1.0)
+                return s1_rate - 0.15 * loss
+
+            top = sorted(candidates, key=_score, reverse=True)[:5]
+            best = top[0]
+            best_rate = (best["n_stage1_passed"] or 0) / max(best["n_programs_generated"] or 1, 1)
+            title = f"Sweet Spot: {best['experiment_type']} settings with high S1 yield"
+            content = (
+                f"Top recent runs show {best_rate * 100:.1f}% S1 pass rate with best loss "
+                f"{float(best['best_loss_ratio']):.3f} in {best['experiment_type']} mode. "
+                "These conditions represent a productive search region worth repeating."
+            )
+            evidence = [str(r["experiment_id"]) for r in top]
+            if not _knowledge_title_exists(nb, title):
+                nb.add_knowledge("sweet_spot", title, content, evidence=evidence, confidence=0.72)
+                created.append({"category": "sweet_spot", "title": title, "evidence_count": len(evidence)})
+            else:
+                skipped.append({"category": "sweet_spot", "reason": "duplicate_title"})
+        else:
+            skipped.append({"category": "sweet_spot", "reason": "insufficient_successful_runs"})
+    else:
+        skipped.append({"category": "sweet_spot", "reason": "already_populated"})
+
+    # 3) Correlation
+    if existing_by_category["correlation"] == 0:
+        xs: List[float] = []
+        ys: List[float] = []
+        corr_evidence: List[str] = []
+        for row in completed:
+            gen = row["n_programs_generated"] or 0
+            nov = row["best_novelty_score"]
+            if gen <= 0 or nov is None:
+                continue
+            xs.append(float(nov))
+            ys.append(float(row["n_stage1_passed"] or 0) / float(gen))
+            corr_evidence.append(str(row["experiment_id"]))
+        corr = _pearson_corr(xs, ys)
+        if corr is not None and len(xs) >= 5:
+            relation = "positive" if corr >= 0.15 else "negative" if corr <= -0.15 else "weak"
+            title = f"Correlation: novelty vs S1 pass rate is {relation}"
+            content = (
+                f"Computed Pearson correlation r={corr:.3f} from {len(xs)} completed runs between "
+                "best novelty score and S1 pass rate. "
+                "Use this relationship to calibrate novelty-vs-fitness trade-offs."
+            )
+            evidence = corr_evidence[:8]
+            if not _knowledge_title_exists(nb, title):
+                nb.add_knowledge("correlation", title, content, evidence=evidence, confidence=0.66)
+                created.append({"category": "correlation", "title": title, "evidence_count": len(evidence)})
+            else:
+                skipped.append({"category": "correlation", "reason": "duplicate_title"})
+        else:
+            skipped.append({"category": "correlation", "reason": "insufficient_variance_or_samples"})
+    else:
+        skipped.append({"category": "correlation", "reason": "already_populated"})
+
+    # 4) Tool insight
+    if existing_by_category["tool_insight"] == 0:
+        errors = nb.conn.execute(
+            """SELECT error_type, COUNT(*) AS n
+               FROM program_results
+               WHERE error_type IS NOT NULL AND error_type != ''
+               GROUP BY error_type
+               ORDER BY n DESC
+               LIMIT 1"""
+        ).fetchone()
+        if errors and errors["error_type"]:
+            total_with_error = nb.conn.execute(
+                "SELECT COUNT(*) AS n FROM program_results WHERE error_type IS NOT NULL AND error_type != ''"
+            ).fetchone()["n"]
+            err_type = str(errors["error_type"])
+            count = int(errors["n"] or 0)
+            share = (count / max(total_with_error, 1)) * 100.0
+            title = f"Tool Insight: dominant failure type is {err_type}"
+            content = (
+                f"{err_type} accounts for {count}/{total_with_error} ({share:.1f}%) of logged program failures. "
+                "Prioritizing guardrails and diagnostics around this failure class should improve throughput."
+            )
+            if not _knowledge_title_exists(nb, title):
+                nb.add_knowledge("tool_insight", title, content, evidence=None, confidence=0.69)
+                created.append({"category": "tool_insight", "title": title, "evidence_count": 0})
+            else:
+                skipped.append({"category": "tool_insight", "reason": "duplicate_title"})
+        else:
+            skipped.append({"category": "tool_insight", "reason": "no_error_telemetry"})
+    else:
+        skipped.append({"category": "tool_insight", "reason": "already_populated"})
+
+    after_counts = {category: len(nb.get_knowledge(category=category)) for category in categories}
+    return {
+        "created": created,
+        "skipped": skipped,
+        "counts_before": existing_by_category,
+        "counts_after": after_counts,
+    }
 
 
 def _rank_label(delta: Optional[int], seen_runs: int) -> str:
@@ -1855,6 +2043,63 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/experiments/<experiment_id>/rerun", methods=["POST"])
+    def api_rerun_experiment(experiment_id):
+        """Relaunch an experiment using its stored config and mode."""
+        runner = _get_runner(notebook_path)
+        if runner.is_running:
+            return jsonify({"error": "An experiment is already running"}), 409
+
+        nb = LabNotebook(notebook_path)
+        try:
+            source = nb.get_resumable_experiment(experiment_id)
+            if source is None:
+                source = nb.get_experiment(experiment_id)
+            if source is None:
+                return jsonify({"error": "Experiment not found"}), 404
+
+            try:
+                config_dict = json.loads(source.get("config_json") or "{}")
+            except Exception:
+                config_dict = {}
+            config = RunConfig.from_dict(config_dict)
+            hypothesis = source.get("hypothesis")
+            exp_type = str(source.get("experiment_type") or "synthesis").strip().lower()
+
+            # If it is still marked running from a stale reboot state, mark it cancelled first.
+            if str(source.get("status") or "").strip().lower() == "running":
+                nb.cancel_experiment(experiment_id)
+
+            if exp_type == "continuous":
+                config.continuous = True
+                new_id = runner.start_continuous(config)
+                mode = "continuous"
+            elif exp_type == "evolution":
+                new_id = runner.start_evolution(config, hypothesis=hypothesis)
+                mode = "evolve"
+            elif exp_type == "novelty":
+                new_id = runner.start_novelty_search(config, hypothesis=hypothesis)
+                mode = "novelty"
+            else:
+                # Fallback to single synthesis-style rerun.
+                new_id = runner.start_experiment(config, hypothesis=hypothesis)
+                mode = "single"
+
+            return jsonify({
+                "status": "started",
+                "source_experiment_id": experiment_id,
+                "experiment_id": new_id,
+                "mode": mode,
+                "config": config.to_dict(),
+            })
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error(f"Error rerunning experiment {experiment_id}: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/experiments/cleanup-stale", methods=["POST"])
     def api_cleanup_stale():
         """Clean up stale running experiments that are no longer active."""
@@ -2410,6 +2655,87 @@ def create_app(
         except Exception as e:
             logger.error(f"Error in /api/aria/cycle-status: {e}")
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/aria/cycle-history")
+    def api_aria_cycle_history():
+        """Get persisted Aria cycle summaries from notebook live-feed entries."""
+        n = request.args.get("n", 100, type=int)
+        mode_filter = str(request.args.get("mode") or "").strip().lower()
+        status_filter = str(request.args.get("status") or "").strip().lower()
+        query_text = str(request.args.get("q") or "").strip().lower()
+        output_format = str(request.args.get("format") or "json").strip().lower()
+        nb = LabNotebook(notebook_path)
+        try:
+            entries = _normalize_entries(nb.get_entries(entry_type="live_feed", limit=n * 4))
+            history: List[Dict[str, Any]] = []
+            for entry in reversed(entries):
+                metadata = entry.get("metadata") or {}
+                if not isinstance(metadata, dict):
+                    continue
+                if metadata.get("live_feed_type") != "aria_cycle":
+                    continue
+                payload = metadata.get("payload") or {}
+                if not isinstance(payload, dict):
+                    continue
+                row = dict(payload)
+                row["entry_id"] = entry.get("entry_id")
+                row["experiment_id"] = entry.get("experiment_id")
+                row["entry_timestamp"] = entry.get("timestamp")
+
+                row_mode = str(row.get("mode") or "").strip().lower()
+                row_status = str(row.get("status") or "").strip().lower()
+                if mode_filter and row_mode != mode_filter:
+                    continue
+                if status_filter and row_status != status_filter:
+                    continue
+                if query_text:
+                    searchable = " ".join([
+                        str(row.get("mode") or ""),
+                        str(row.get("status") or ""),
+                        str(row.get("reasoning") or ""),
+                        str(row.get("error") or ""),
+                    ]).lower()
+                    if query_text not in searchable:
+                        continue
+
+                history.append(row)
+                if len(history) >= n:
+                    break
+
+            if output_format == "csv":
+                fieldnames = [
+                    "cycle_index",
+                    "mode",
+                    "status",
+                    "timestamp",
+                    "delta_programs",
+                    "delta_stage1_survivors",
+                    "stage1_survivors",
+                    "confidence",
+                    "experiment_id",
+                    "reasoning",
+                    "error",
+                ]
+                buffer = io.StringIO()
+                writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in history:
+                    writer.writerow({k: row.get(k) for k in fieldnames})
+                csv_payload = buffer.getvalue()
+                return Response(
+                    csv_payload,
+                    mimetype="text/csv",
+                    headers={
+                        "Content-Disposition": "attachment; filename=aria_cycle_history.csv",
+                    },
+                )
+
+            return jsonify(history)
+        except Exception as e:
+            logger.error(f"Error in /api/aria/cycle-history: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
 
     @app.route("/api/aria/cycle-control", methods=["POST"])
     def api_aria_cycle_control():
@@ -3198,6 +3524,19 @@ def create_app(
             return jsonify(entries)
         except Exception as e:
             logger.error(f"Error in knowledge search: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/knowledge/backfill", methods=["POST"])
+    def api_knowledge_backfill():
+        """Backfill missing knowledge categories from measured experiment data."""
+        nb = LabNotebook(notebook_path)
+        try:
+            result = _backfill_knowledge_from_real_data(nb)
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Error in /api/knowledge/backfill: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
