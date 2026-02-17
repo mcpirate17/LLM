@@ -386,7 +386,23 @@ def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...
         if op_name in PRIMITIVE_REGISTRY:
             prim = PRIMITIVE_REGISTRY[op_name]
             if hasattr(prim, 'execute_fn') and prim.execute_fn is not None:
-                return prim.execute_fn(module, *inputs)
+                result = prim.execute_fn(module, *inputs)
+                if isinstance(result, torch.Tensor):
+                    nonfinite = int((~torch.isfinite(result)).sum().item())
+                    telemetry = getattr(module, "mathspace_telemetry", {})
+                    stats = telemetry.get(op_name, {
+                        "calls": 0,
+                        "nonfinite_elements": 0,
+                        "sanitized_calls": 0,
+                    })
+                    stats["calls"] += 1
+                    if nonfinite > 0:
+                        result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
+                        stats["nonfinite_elements"] += nonfinite
+                        stats["sanitized_calls"] += 1
+                    telemetry[op_name] = stats
+                    setattr(module, "mathspace_telemetry", telemetry)
+                return result
 
         raise ValueError(f"Unknown op: {op_name}")
 

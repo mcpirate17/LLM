@@ -176,6 +176,8 @@ function ControlPanel({
   prefillRequest,
   onPrefillApplied,
   displayMode = 'novice',
+  startLocked = false,
+  startLockReason = '',
 }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [hypothesis, setHypothesis] = useState('');
@@ -426,8 +428,14 @@ function ControlPanel({
       const data = await res.json();
       if (res.ok) {
         setLlmConfig(data.config);
-        setLlmMessage('LLM configured successfully');
+        if (data.warning) {
+          setLlmMessage(`Warning: ${data.warning}`);
+        } else {
+          setLlmMessage('LLM configured and verified successfully');
+        }
         setLlmForm({ backend: '', api_key: '', model: '', host: '' });
+        // Notify other components (e.g. StrategyAdvisor) that LLM is now available
+        window.dispatchEvent(new CustomEvent('llm-configured'));
         // Refresh system status
         fetch(`${API_BASE}/api/system/status`)
           .then(r => r.ok ? r.json() : null)
@@ -1295,7 +1303,22 @@ function ControlPanel({
           )}
 
           {/* Start button */}
-          <button className="start-btn" onClick={handleStart}>
+          {startLocked && (
+            <div style={{
+              marginTop: 6,
+              marginBottom: 8,
+              padding: '8px 10px',
+              borderRadius: 6,
+              border: '1px solid var(--accent-yellow)',
+              background: 'rgba(210, 153, 34, 0.12)',
+              color: 'var(--text-secondary)',
+              fontSize: 12,
+              lineHeight: 1.5,
+            }}>
+              {startLockReason || 'Start is locked by Strategy Advisor. Use the primary recommendation or override from Overview advanced setup.'}
+            </div>
+          )}
+          <button className="start-btn" onClick={handleStart} disabled={startLocked}>
             {mode === 'continuous' ? 'Start Continuous Research'
               : mode === 'evolve' ? 'Start Evolution Search'
               : mode === 'novelty' ? 'Start Novelty Search'

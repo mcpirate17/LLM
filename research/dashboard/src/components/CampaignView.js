@@ -140,10 +140,34 @@ function CampaignList({ onSelectCampaign }) {
             <StatusBadge status={c.status} colors={STATUS_COLORS} />
           </div>
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0' }}>{c.objective}</p>
-          <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)', marginTop: 8, flexWrap: 'wrap' }}>
             <span>{c.n_experiments || 0} experiments</span>
             <span>{c.n_hypotheses || 0} hypotheses</span>
             <span>{c.n_decisions || 0} decisions</span>
+            {c.completion_reason && (
+              <span style={{
+                color: c.completion_reason === 'criteria_met' ? 'var(--accent-green)' : 'var(--accent-yellow)',
+                fontWeight: 600,
+              }}>
+                {c.completion_reason === 'criteria_met' ? 'Criteria Met' : 'Pivoted (stale)'}
+              </span>
+            )}
+            {c.successor_campaign_id && (
+              <span
+                style={{ color: 'var(--accent-blue)', cursor: 'pointer', textDecoration: 'underline' }}
+                onClick={(e) => { e.stopPropagation(); onSelectCampaign(c.successor_campaign_id); }}
+              >
+                Next campaign &rarr;
+              </span>
+            )}
+            {c.parent_campaign_id && (
+              <span
+                style={{ color: 'var(--accent-blue)', cursor: 'pointer', textDecoration: 'underline' }}
+                onClick={(e) => { e.stopPropagation(); onSelectCampaign(c.parent_campaign_id); }}
+              >
+                &larr; Previous
+              </span>
+            )}
           </div>
           <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
             <button
@@ -649,12 +673,17 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
       : pendingHypotheses === 0 && decisions.length > 0
         ? { label: 'Decision-Ready', color: 'var(--accent-green)' }
         : { label: 'In Progress', color: 'var(--accent-blue)' };
+  const completionReason = campaign.completion_reason;
   const statusMeaning = campaign.status === 'active'
     ? 'Actively collecting evidence from new experiments.'
     : campaign.status === 'paused'
       ? 'Temporarily paused; no new evidence is being generated.'
       : campaign.status === 'completed'
-        ? 'Research thread completed; decisions are finalized.'
+        ? completionReason === 'criteria_met'
+          ? 'Campaign succeeded — all success criteria were met. A successor campaign was created with evolved objectives.'
+          : completionReason === 'stale'
+            ? 'Campaign pivoted — objectives were not being met after sustained effort. A new campaign was created with adjusted approach.'
+            : 'Research thread completed; decisions are finalized.'
         : 'Not actively progressing.';
   const nextBestAction = experiments.length === 0
     ? 'Run a first experiment to create evidence for this objective.'
@@ -717,6 +746,43 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0' }}>
           <strong>Success Criteria:</strong> {campaign.success_criteria}
         </p>
+        {completionReason && (
+          <div style={{
+            marginTop: 8, padding: '6px 10px', borderRadius: 6,
+            background: completionReason === 'criteria_met' ? 'rgba(63,185,80,0.1)' : 'rgba(210,153,34,0.1)',
+            border: `1px solid ${completionReason === 'criteria_met' ? 'var(--accent-green)' : 'var(--accent-yellow)'}`,
+            fontSize: 12, color: completionReason === 'criteria_met' ? 'var(--accent-green)' : 'var(--accent-yellow)',
+          }}>
+            {completionReason === 'criteria_met'
+              ? 'All success criteria met — campaign completed successfully.'
+              : 'Campaign pivoted after sustained lack of progress.'}
+            {campaign.findings_summary && (
+              <span style={{ color: 'var(--text-secondary)', marginLeft: 6 }}>{campaign.findings_summary}</span>
+            )}
+          </div>
+        )}
+        {(campaign.successor_campaign_id || campaign.parent_campaign_id) && (
+          <div style={{ marginTop: 8, display: 'flex', gap: 12, fontSize: 12 }}>
+            {campaign.parent_campaign_id && (
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 11, padding: '3px 8px' }}
+                onClick={() => onBack && onBack(campaign.parent_campaign_id)}
+              >
+                &larr; Previous Campaign
+              </button>
+            )}
+            {campaign.successor_campaign_id && (
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 11, padding: '3px 8px' }}
+                onClick={() => onBack && onBack(campaign.successor_campaign_id)}
+              >
+                Next Campaign &rarr;
+              </button>
+            )}
+          </div>
+        )}
         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>
           Campaign detail links objective, experiment evidence, hypothesis outcomes, and decisions in one place.
         </p>

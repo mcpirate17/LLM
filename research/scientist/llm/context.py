@@ -727,6 +727,126 @@ def build_campaign_formulation_context(
     return "\n\n".join(sections)
 
 
+def build_briefing_context(
+    recent_experiments: List[Dict],
+    pipeline_tiers: Dict[str, int],
+    learning_trajectory: Dict,
+    campaign: Optional[Dict] = None,
+    grammar_weights: Optional[Dict] = None,
+    default_weights: Optional[Dict] = None,
+    top_programs: Optional[List[Dict]] = None,
+    just_completed: Optional[Dict] = None,
+) -> str:
+    """Build compact context for the Aria briefing prompt.
+
+    Targets <2000 tokens to keep LLM calls fast and cheap.
+    If *just_completed* is provided, it is highlighted at the top so the
+    LLM can reference the experiment that just finished.
+    """
+    sections = []
+
+    # Just-completed experiment (prominent top section)
+    if just_completed:
+        eid = (just_completed.get("experiment_id") or "?")[:12]
+        etype = just_completed.get("experiment_type") or just_completed.get("mode") or "?"
+        gen = just_completed.get("n_programs_generated") or 0
+        s1 = just_completed.get("n_stage1_passed") or 0
+        rate = f"{s1/gen*100:.1f}%" if gen > 0 else "N/A"
+        loss = just_completed.get("best_loss_ratio")
+        loss_str = f", best loss ratio={loss:.4f}" if loss is not None else ""
+        summary = just_completed.get("aria_summary") or ""
+        summary_str = f"\n  Summary: {summary[:120]}" if summary else ""
+        sections.append(
+            f"*** JUST COMPLETED (analyze this first) ***\n"
+            f"  Experiment {eid} ({etype}): {s1}/{gen} S1 survivors ({rate}){loss_str}{summary_str}"
+        )
+
+    # Recent experiments (last 5)
+    if recent_experiments:
+        lines = [f"Recent Experiments ({len(recent_experiments)} most recent):"]
+        for exp in recent_experiments[:5]:
+            eid = (exp.get("experiment_id") or "?")[:8]
+            etype = exp.get("experiment_type", "?")
+            status = exp.get("status", "?")
+            gen = exp.get("n_programs_generated") or 0
+            s1 = exp.get("n_stage1_passed") or 0
+            rate = f"{s1/gen*100:.1f}%" if gen > 0 else "N/A"
+            loss = exp.get("best_loss_ratio")
+            loss_str = f", loss={loss:.4f}" if loss is not None else ""
+            summary = exp.get("aria_summary") or ""
+            summary_str = f" — {summary[:60]}" if summary else ""
+            lines.append(
+                f"  [{eid}] {etype} {status}: {s1}/{gen} S1 ({rate}){loss_str}{summary_str}"
+            )
+        sections.append("\n".join(lines))
+
+    # Pipeline state
+    if pipeline_tiers:
+        parts = []
+        for tier in ["screening", "investigation", "validation", "breakthrough"]:
+            count = pipeline_tiers.get(tier, 0)
+            if count > 0:
+                parts.append(f"{tier}: {count}")
+        if parts:
+            sections.append(f"Pipeline: {', '.join(parts)}")
+        else:
+            sections.append("Pipeline: empty (no candidates yet)")
+
+    # Learning trajectory
+    if learning_trajectory:
+        trend = learning_trajectory.get("trend", "insufficient_data")
+        slope = learning_trajectory.get("slope")
+        recent_rate = learning_trajectory.get("recent_s1_rate")
+        line = f"Learning Trend: {trend}"
+        if slope is not None:
+            line += f" (slope: {slope*100:+.2f}%/experiment)"
+        if recent_rate is not None:
+            line += f", recent S1 rate: {recent_rate*100:.1f}%"
+        sections.append(line)
+
+    # Active campaign
+    if campaign:
+        sections.append(
+            f"Active Campaign: {campaign.get('title', '?')}\n"
+            f"  Objective: {campaign.get('objective', '?')}\n"
+            f"  Status: {campaign.get('status', 'active')}"
+        )
+
+    # Grammar weight changes (top 5 biggest deltas)
+    if grammar_weights and default_weights:
+        deltas = []
+        for cat in sorted(grammar_weights.keys()):
+            cur = grammar_weights.get(cat, 1.0)
+            base = default_weights.get(cat, 1.0)
+            if abs(cur - base) > 0.1:
+                arrow = "+" if cur > base else ""
+                deltas.append((cat, base, cur, cur - base))
+        if deltas:
+            deltas.sort(key=lambda x: abs(x[3]), reverse=True)
+            lines = ["Grammar Weight Changes (biggest shifts):"]
+            for cat, base, cur, delta in deltas[:5]:
+                lines.append(f"  {cat}: {base:.1f} -> {cur:.1f} ({delta:+.1f})")
+            sections.append("\n".join(lines))
+
+    # Top programs
+    if top_programs:
+        lines = [f"Top {len(top_programs)} Programs:"]
+        for p in top_programs[:3]:
+            fp = (p.get("graph_fingerprint") or "?")[:16]
+            loss = p.get("loss_ratio")
+            novelty = p.get("novelty_score")
+            tier = p.get("tier", "screening")
+            parts = [f"{fp} ({tier})"]
+            if loss is not None:
+                parts.append(f"loss={loss:.4f}")
+            if novelty is not None:
+                parts.append(f"novelty={novelty:.3f}")
+            lines.append(f"  {', '.join(parts)}")
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
 def _pct(n: int, total: int) -> str:
     if total == 0:
         return "0%"

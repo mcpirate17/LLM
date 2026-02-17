@@ -129,3 +129,10 @@ def execute_hyp_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     euclidean = log_map(x)
     transformed = F.linear(euclidean, module.weight)
     return exp_map(transformed)
+
+
+def execute_hyp_tangent_nonlinear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Stable tangent-space nonlinearity in hyperbolic coordinates."""
+    euclidean = log_map(x)
+    bounded = torch.tanh(euclidean)
+    return exp_map(bounded)

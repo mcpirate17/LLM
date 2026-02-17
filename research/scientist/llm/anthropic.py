@@ -9,7 +9,7 @@ from .backend import LLMBackend, LLMResponse
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-latest"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 
 
 class AnthropicBackend(LLMBackend):
@@ -54,10 +54,31 @@ class AnthropicBackend(LLMBackend):
 
         response = client.messages.create(**kwargs)
 
-        text = ""
-        for block in response.content:
-            if block.type == "text":
-                text += block.text
+        text_parts = []
+        block_types = []
+        for block in getattr(response, "content", []) or []:
+            block_type = getattr(block, "type", None)
+            if block_type:
+                block_types.append(str(block_type))
+
+            # Native SDK objects: TextBlock, etc.
+            block_text = getattr(block, "text", None)
+            if isinstance(block_text, str) and block_text.strip():
+                text_parts.append(block_text)
+                continue
+
+            # Defensive fallback if blocks arrive as dict-like values
+            if isinstance(block, dict):
+                dict_text = block.get("text")
+                if isinstance(dict_text, str) and dict_text.strip():
+                    text_parts.append(dict_text)
+
+        text = "".join(text_parts).strip()
+        if not text:
+            logger.warning(
+                "Anthropic response had no text blocks (content types: %s)",
+                ",".join(block_types) if block_types else "none",
+            )
 
         tokens = (response.usage.input_tokens + response.usage.output_tokens
                   if response.usage else 0)

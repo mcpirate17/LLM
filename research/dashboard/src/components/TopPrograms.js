@@ -154,7 +154,7 @@ const COLUMNS_COMPACT = [
   { key: 'param_count', label: 'Params' },
 ];
 
-function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAdd, onQueueRemove, queuedResultIds }) {
+function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAdd, onQueueRemove, queuedResultIds, eligibilityByResultId }) {
   const [sortKey, setSortKey] = useState(() => {
     try {
       if (typeof window === 'undefined') return 'score';
@@ -284,6 +284,17 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
             const chips = programMetricChips(p);
             const qualityFlags = programQualityFlags(p);
             const isQueued = !!p.result_id && queuedSet.has(p.result_id);
+            const eligibility = p.result_id ? (eligibilityByResultId?.[p.result_id] || null) : null;
+            const queueEligible = eligibility ? Boolean(eligibility.queueEligible) : true;
+            const queueIntent = eligibility?.validationEligible
+              ? 'validation'
+              : eligibility?.investigationEligible
+                ? 'investigation'
+                : null;
+            const queueAddLabel = queueIntent === 'validation' ? 'Queue Validate' : 'Queue Investigate';
+            const queueAddTitle = queueIntent === 'validation'
+              ? 'Add to validation queue'
+              : 'Add to investigation queue';
             return (
               <tr key={p.result_id || i}
                 style={{ cursor: onSelectProgram ? 'pointer' : 'default' }}
@@ -343,16 +354,30 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
                           onQueueRemove && onQueueRemove(p.result_id);
                           return;
                         }
+                        if (!queueEligible) {
+                          return;
+                        }
                         onQueueAdd && onQueueAdd({
                           resultId: p.result_id,
                           fingerprint: p.graph_fingerprint,
                           source: 'programs',
                           architectureFamily: p.architecture_family,
+                          intent: queueIntent,
+                          queueEligible,
+                          investigationEligible: eligibility?.investigationEligible,
+                          validationEligible: eligibility?.validationEligible,
+                          queueReason: eligibility?.queueReason,
                         });
                       }}
+                      disabled={!isQueued && !queueEligible}
                       aria-label={`${isQueued ? 'Remove' : 'Add'} ${p.result_id} ${isQueued ? 'from' : 'to'} investigation queue`}
+                      title={isQueued
+                        ? 'Remove from investigation queue'
+                        : !queueEligible
+                          ? 'Not eligible for investigation/validation queue actions'
+                          : queueAddTitle}
                     >
-                      {isQueued ? 'Queued' : 'Queue'}
+                      {isQueued ? 'Queued' : !queueEligible ? 'Ineligible' : queueAddLabel}
                     </button>
                   )}
                 </td>

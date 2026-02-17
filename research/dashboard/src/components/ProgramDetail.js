@@ -818,7 +818,7 @@ function GatingDiagnostics({ program }) {
   );
 }
 
-function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign }) {
+function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, eligibilityByResultId }) {
   const [program, setProgram] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -939,6 +939,15 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
   const fmtMs = v => v != null ? `${Number(v).toFixed(1)}ms` : '--';
   const fmtMem = v => v != null ? `${Number(v).toFixed(1)}MB` : '--';
   const fmtInt = v => v != null ? Number(v).toLocaleString() : '--';
+
+  const tier = typeof leaderboardEntry?.tier === 'string' ? leaderboardEntry.tier.toLowerCase() : '';
+  const hasInvestigationEvidence = leaderboardEntry?.investigation_loss_ratio != null;
+  const hasValidationEvidence = leaderboardEntry?.validation_loss_ratio != null || Boolean(leaderboardEntry?.validation_passed);
+  const fallbackEligibility = {
+    investigationEligible: program?.stage1_passed && ((!leaderboardEntry && true) || (tier === 'screening' && !hasInvestigationEvidence)),
+    validationEligible: tier === 'investigation' && Boolean(leaderboardEntry?.investigation_passed) && !hasValidationEvidence,
+  };
+  const resolvedEligibility = eligibilityByResultId?.[resultId] || fallbackEligibility;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -1489,7 +1498,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
             {/* Investigate / Validate actions */}
             {program.stage1_passed && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {(!leaderboardEntry || leaderboardEntry.tier === 'screening') && (
+                {resolvedEligibility.investigationEligible && (
                   <button
                     className="start-btn"
                     disabled={actionStarting === 'investigate'}
@@ -1520,7 +1529,18 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                     {actionStarting === 'investigate' ? 'Starting...' : 'Investigate'}
                   </button>
                 )}
-                {leaderboardEntry?.tier === 'investigation' && leaderboardEntry?.investigation_passed && (
+                {!resolvedEligibility.investigationEligible && (leaderboardEntry?.tier === 'screening') && (
+                  <span style={{
+                    fontSize: 11,
+                    padding: '4px 8px',
+                    borderRadius: 4,
+                    background: 'rgba(210,153,34,0.12)',
+                    color: 'var(--accent-yellow)',
+                  }} title="Candidate already has investigation evidence; wait for changed conditions before re-investigating">
+                    Already investigated
+                  </span>
+                )}
+                {resolvedEligibility.validationEligible && (
                   <button
                     className="start-btn"
                     disabled={actionStarting === 'validate'}

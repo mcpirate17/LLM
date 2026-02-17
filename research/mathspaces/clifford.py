@@ -195,3 +195,19 @@ def execute_grade_select(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     if pad > 0:
         result = result[..., :D]
     return result
+
+
+def execute_grade_mix(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Blend vector and bivector grades for richer geometric features."""
+    B, S, D = x.shape
+    pad = (N_BASIS - D % N_BASIS) % N_BASIS
+    if pad > 0:
+        x = F.pad(x, (0, pad))
+    mv = _pack_multivector(x)
+    g1 = grade_select(mv, grade=1)
+    g2 = grade_select(mv, grade=2)
+    mixed = 0.7 * g1 + 0.3 * g2
+    result = _unpack_multivector(mixed)
+    if pad > 0:
+        result = result[..., :D]
+    return result

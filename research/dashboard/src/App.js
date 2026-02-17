@@ -177,6 +177,7 @@ function App() {
   const [activeOverviewStrategy, setActiveOverviewStrategy] = useState(null);
   const [learningTrend, setLearningTrend] = useState(null);
   const [ariaCycle, setAriaCycle] = useState(null);
+  const [cycleControlBusy, setCycleControlBusy] = useState(false);
   const [allowAdvancedStartOverride, setAllowAdvancedStartOverride] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
   const [eligibilityByResultId, setEligibilityByResultId] = useState({});
@@ -369,6 +370,37 @@ function App() {
   const handleStopAutonomous = async () => {
     setAutonomousMode(false);
     await handleStopExperiment();
+  };
+
+  const handleCycleControl = async (action) => {
+    if (!action || cycleControlBusy) return;
+    setCycleControlBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/aria/cycle-control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const payload = await res.json();
+      if (!res.ok || payload?.error) {
+        throw new Error(payload?.error || `Failed to ${action} cycle`);
+      }
+      if (payload?.cycle) {
+        setAriaCycle(payload.cycle);
+      }
+      if (action === 'start') {
+        setAutonomousMode(true);
+      }
+      if (action === 'pause') {
+        setAutonomousMode(false);
+      }
+      setActionError(null);
+      fetchDashboard();
+    } catch (err) {
+      setActionError(`Cycle control failed: ${err.message}`);
+    } finally {
+      setCycleControlBusy(false);
+    }
   };
 
   const handleSelectExperiment = (expId) => {
@@ -788,6 +820,52 @@ function App() {
                     <span>Mode: {ariaCycle.selected_mode || ariaCycle.last_completed_mode || 'n/a'}</span>
                     <span>{ariaCycle.continuous_active ? 'Continuous active' : 'Continuous idle'}</span>
                   </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {!ariaCycle.continuous_active && (
+                      <button
+                        className="refresh-btn"
+                        onClick={() => handleCycleControl('start')}
+                        disabled={cycleControlBusy || Boolean(data?.is_running)}
+                      >
+                        {cycleControlBusy ? 'Working...' : 'Start Cycle'}
+                      </button>
+                    )}
+                    {ariaCycle.continuous_active && !ariaCycle.cycle_paused && (
+                      <button
+                        className="refresh-btn"
+                        onClick={() => handleCycleControl('pause')}
+                        disabled={cycleControlBusy}
+                      >
+                        {cycleControlBusy ? 'Working...' : 'Pause Cycle'}
+                      </button>
+                    )}
+                    {ariaCycle.cycle_paused && (
+                      <button
+                        className="refresh-btn"
+                        onClick={() => handleCycleControl('resume')}
+                        disabled={cycleControlBusy}
+                      >
+                        {cycleControlBusy ? 'Working...' : 'Resume Cycle'}
+                      </button>
+                    )}
+                  </div>
+                  {Array.isArray(ariaCycle.cycle_history) && ariaCycle.cycle_history.length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4 }}>
+                        Recent Cycles
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {ariaCycle.cycle_history.slice(-4).reverse().map((row) => (
+                          <div
+                            key={`${row.cycle_index}-${row.timestamp}`}
+                            style={{ fontSize: 11, color: 'var(--text-secondary)' }}
+                          >
+                            #{row.cycle_index} · {row.mode || 'synthesis'} · {row.status || 'completed'} · ΔS1 {row.delta_stage1_survivors ?? 0}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               <AriaChatPanel isRunning={Boolean(data?.is_running)} autonomousMode={autonomousMode} onAutonomousEnd={() => setAutonomousMode(false)} />

@@ -23,8 +23,12 @@ from .notebook import LabNotebook
 class ExperimentAnalytics:
     """Data-driven analytics over experiment history."""
 
+    LEARNING_TRAJECTORY_MIN_EXPERIMENTS = 5
+    FINGERPRINT_WEIGHT_CAP = 3.0
+
     def __init__(self, notebook: LabNotebook):
         self.nb = notebook
+        self._last_grammar_weight_diagnostics: Optional[Dict] = None
 
     _OP_NAME_PATTERN = re.compile(r'"op_name"\s*:\s*"([^"]+)"')
 
@@ -523,6 +527,104 @@ class ExperimentAnalytics:
 
         return weights if weights else None
 
+    def _collect_fingerprint_capped_op_rates(
+        self,
+        per_fingerprint_cap: float,
+    ) -> Tuple[Dict[str, Dict], Dict[str, float]]:
+        """Build op success rates with capped contribution per architecture fingerprint."""
+        rows = self.nb.conn.execute(
+            """SELECT result_id, graph_fingerprint, graph_json, stage1_passed,
+                      novelty_score, novelty_confidence
+               FROM program_results
+               WHERE graph_json IS NOT NULL"""
+        ).fetchall()
+
+        extracted_rows: List[Dict] = []
+        fingerprint_counts: Dict[str, int] = defaultdict(int)
+        for row in rows:
+            graph_json = row["graph_json"]
+            if not graph_json:
+                continue
+
+            ops = self._extract_ops_fast(graph_json)
+            if ops is None:
+                ops = self._extract_ops_fallback(graph_json)
+            if not ops:
+                continue
+
+            graph_fingerprint = str(row["graph_fingerprint"] or "").strip()
+            fp_key = graph_fingerprint or f"result:{row['result_id']}"
+            fingerprint_counts[fp_key] += 1
+            extracted_rows.append(
+                {
+                    "fingerprint": fp_key,
+                    "ops": set(ops),
+                    "stage1_passed": bool(row["stage1_passed"]),
+                    "novelty_score": self._as_float(row["novelty_score"]),
+                    "novelty_confidence": self._as_float(row["novelty_confidence"]),
+                }
+            )
+
+        op_stats: Dict[str, Dict] = {}
+        effective_rows = 0.0
+        for extracted in extracted_rows:
+            fp_key = extracted["fingerprint"]
+            fp_count = max(fingerprint_counts.get(fp_key, 1), 1)
+            row_weight = min(1.0, max(per_fingerprint_cap, 0.1) / float(fp_count))
+            effective_rows += row_weight
+
+            for op_name in extracted["ops"]:
+                stats = op_stats.setdefault(
+                    op_name,
+                    {
+                        "n_used": 0.0,
+                        "n_s1": 0.0,
+                        "nov_sum": 0.0,
+                        "nov_n": 0.0,
+                        "conf_sum": 0.0,
+                        "conf_n": 0.0,
+                    },
+                )
+                stats["n_used"] += row_weight
+                if extracted["stage1_passed"]:
+                    stats["n_s1"] += row_weight
+                novelty = extracted["novelty_score"]
+                if novelty is not None:
+                    stats["nov_sum"] += novelty * row_weight
+                    stats["nov_n"] += row_weight
+                confidence = extracted["novelty_confidence"]
+                if confidence is not None:
+                    stats["conf_sum"] += confidence * row_weight
+                    stats["conf_n"] += row_weight
+
+        op_rates: Dict[str, Dict] = {}
+        for op_name, stats in op_stats.items():
+            n_used = stats["n_used"]
+            if n_used <= 0:
+                continue
+            op_rates[op_name] = {
+                "n_used": n_used,
+                "n_stage1_passed": stats["n_s1"],
+                "s1_rate": stats["n_s1"] / n_used,
+                "avg_novelty": (stats["nov_sum"] / stats["nov_n"]) if stats["nov_n"] > 0 else None,
+                "avg_novelty_confidence": (stats["conf_sum"] / stats["conf_n"]) if stats["conf_n"] > 0 else None,
+            }
+
+        total_rows = len(extracted_rows)
+        unique_fingerprints = len(fingerprint_counts)
+        repeat_rows = sum(max(0, count - 1) for count in fingerprint_counts.values())
+        top_fingerprint_count = max(fingerprint_counts.values()) if fingerprint_counts else 0
+        diagnostics: Dict[str, float] = {
+            "total_rows": float(total_rows),
+            "effective_rows": float(round(effective_rows, 4)),
+            "unique_fingerprints": float(unique_fingerprints),
+            "repeat_rows": float(repeat_rows),
+            "rerun_ratio": (repeat_rows / total_rows) if total_rows > 0 else 0.0,
+            "top_fingerprint_concentration": (top_fingerprint_count / total_rows) if total_rows > 0 else 0.0,
+            "fingerprint_cap": float(per_fingerprint_cap),
+        }
+        return op_rates, diagnostics
+
     def compute_grammar_weights(self) -> Optional[Dict[str, float]]:
         """Compute learned category weights from historical success data.
 
@@ -531,15 +633,56 @@ class ExperimentAnalytics:
 
         Returns a dict of category -> weight, or None if insufficient data.
         """
-        op_rates = self.op_success_rates()
+        fingerprint_rates, fingerprint_diag = self._collect_fingerprint_capped_op_rates(
+            per_fingerprint_cap=self.FINGERPRINT_WEIGHT_CAP,
+        )
+        weighting_mode = "fingerprint_capped"
+        op_rates = fingerprint_rates
         if len(op_rates) < 5:
+            op_rates = self.op_success_rates()
+            weighting_mode = "legacy_op_aggregate"
+        if len(op_rates) < 5:
+            self._last_grammar_weight_diagnostics = {
+                "mode": weighting_mode,
+                "insufficient_op_coverage": True,
+                "op_count": len(op_rates),
+                **fingerprint_diag,
+            }
             return None
 
         cat_stats = self._gather_category_stats(op_rates)
         if not cat_stats:
+            self._last_grammar_weight_diagnostics = {
+                "mode": weighting_mode,
+                "insufficient_category_coverage": True,
+                "op_count": len(op_rates),
+                **fingerprint_diag,
+            }
             return None
 
-        return self._compute_weights_from_stats(cat_stats)
+        learned = self._compute_weights_from_stats(cat_stats)
+        self._last_grammar_weight_diagnostics = {
+            "mode": weighting_mode,
+            "insufficient_op_coverage": False,
+            "op_count": len(op_rates),
+            "category_count": len(cat_stats),
+            "used_fingerprint_capping": weighting_mode == "fingerprint_capped",
+            **fingerprint_diag,
+        }
+        return learned
+
+    def grammar_weight_learning_diagnostics(self) -> Dict:
+        """Return diagnostics for grammar-weight learning robustness."""
+        if self._last_grammar_weight_diagnostics is None:
+            self.compute_grammar_weights()
+        diagnostics = dict(self._last_grammar_weight_diagnostics or {})
+        if "mode" not in diagnostics:
+            diagnostics["mode"] = "unknown"
+        if "used_fingerprint_capping" not in diagnostics:
+            diagnostics["used_fingerprint_capping"] = False
+        if "fingerprint_cap" not in diagnostics:
+            diagnostics["fingerprint_cap"] = float(self.FINGERPRINT_WEIGHT_CAP)
+        return diagnostics
 
     def holdout_validation(self, holdout_fraction: float = 0.2) -> Optional[Dict]:
         """Evaluate grammar quality on holdout experiments.
@@ -1836,6 +1979,7 @@ class ExperimentAnalytics:
                 "recent_s1_rate": float,   # avg of last 5
                 "overall_s1_rate": float,
                 "n_experiments": int,
+                "min_experiments_required": int,
                 "weight_adjustments": int, # count of grammar_weights_applied events
             }
         """
@@ -1853,6 +1997,7 @@ class ExperimentAnalytics:
                 "experiment_id": exp.get("experiment_id", ""),
                 "timestamp": exp.get("timestamp", 0),
                 "s1_rate": n_s1 / n_gen,
+                "n_stage1_passed": n_s1,
                 "n_programs": n_gen,
             })
 
@@ -1864,12 +2009,35 @@ class ExperimentAnalytics:
                 "recent_s1_rate": 0.0,
                 "overall_s1_rate": 0.0,
                 "n_experiments": 0,
+                "min_experiments_required": self.LEARNING_TRAJECTORY_MIN_EXPERIMENTS,
+                "trend_confidence": "low",
+                "overall_s1_confidence_halfwidth": 0.0,
                 "weight_adjustments": 0,
             }
 
+        total_programs = sum(max(int(p.get("n_programs") or 0), 0) for p in points)
+        total_stage1 = sum(max(int(p.get("n_stage1_passed") or 0), 0) for p in points)
+        global_rate = total_stage1 / max(total_programs, 1)
+        prior_strength = 12.0
+
+        for point in points:
+            n_programs = max(int(point.get("n_programs") or 0), 0)
+            effective_n = max(1.0, float(n_programs))
+            raw_rate = float(point.get("s1_rate") or 0.0)
+            shrinkage = effective_n / (effective_n + prior_strength)
+            adjusted_rate = global_rate + shrinkage * (raw_rate - global_rate)
+            variance = max(adjusted_rate * (1.0 - adjusted_rate), 0.0)
+            halfwidth = 1.96 * math.sqrt(variance / max(effective_n, 1.0))
+
+            point["adjusted_s1_rate"] = adjusted_rate
+            point["s1_confidence_lower"] = max(0.0, adjusted_rate - halfwidth)
+            point["s1_confidence_upper"] = min(1.0, adjusted_rate + halfwidth)
+            point["s1_confidence_halfwidth"] = halfwidth
+            point["trend_weight"] = min(1.0, effective_n / 20.0)
+
         # Linear regression on S1 rate vs experiment index
         n = len(points)
-        rates = [p["s1_rate"] for p in points]
+        rates = [p.get("adjusted_s1_rate", p["s1_rate"]) for p in points]
         mean_x = (n - 1) / 2.0
         mean_y = sum(rates) / n
         num = sum((i - mean_x) * (r - mean_y) for i, r in enumerate(rates))
@@ -1879,7 +2047,7 @@ class ExperimentAnalytics:
         # Trend classification
         # Use slope relative to mean to avoid noise at tiny scales
         relative_slope = slope / max(mean_y, 0.01)
-        if n < 5:
+        if n < self.LEARNING_TRAJECTORY_MIN_EXPERIMENTS:
             trend = "insufficient_data"
         elif relative_slope > 0.05:
             trend = "improving"
@@ -1890,6 +2058,15 @@ class ExperimentAnalytics:
 
         recent = rates[-5:] if len(rates) >= 5 else rates
         recent_rate = sum(recent) / len(recent)
+        avg_trend_weight = sum(p.get("trend_weight", 0.0) for p in points) / max(len(points), 1)
+        avg_conf_halfwidth = sum(p.get("s1_confidence_halfwidth", 0.0) for p in points) / max(len(points), 1)
+
+        if avg_trend_weight >= 0.75:
+            trend_confidence = "high"
+        elif avg_trend_weight >= 0.45:
+            trend_confidence = "medium"
+        else:
+            trend_confidence = "low"
 
         # Count grammar weight adjustments
         try:
@@ -1908,6 +2085,9 @@ class ExperimentAnalytics:
             "recent_s1_rate": round(recent_rate, 4),
             "overall_s1_rate": round(mean_y, 4),
             "n_experiments": n,
+            "min_experiments_required": self.LEARNING_TRAJECTORY_MIN_EXPERIMENTS,
+            "trend_confidence": trend_confidence,
+            "overall_s1_confidence_halfwidth": round(avg_conf_halfwidth, 6),
             "weight_adjustments": weight_adjustments,
         }
 
@@ -1925,10 +2105,10 @@ class ExperimentAnalytics:
             for fam in family_order
         }
 
-        hyperbolic_ops = {"poincare_add", "exp_map", "log_map", "hyp_linear"}
-        tropical_ops = {"tropical_matmul", "tropical_add", "tropical_attention"}
-        padic_ops = {"padic_expand", "ultrametric_attention"}
-        clifford_ops = {"geometric_product", "rotor_transform", "grade_select"}
+        hyperbolic_ops = {"poincare_add", "exp_map", "log_map", "hyp_linear", "hyp_distance", "hyp_tangent_nonlinear"}
+        tropical_ops = {"tropical_matmul", "tropical_add", "tropical_attention", "tropical_center"}
+        padic_ops = {"padic_expand", "ultrametric_attention", "padic_gate"}
+        clifford_ops = {"geometric_product", "rotor_transform", "grade_select", "grade_mix"}
         functional_ops = {"basis_expansion", "integral_kernel", "fixed_point_iter"}
 
         def _family_from_row(graph_json: Optional[str], arch_spec_json: Optional[str]) -> str:
@@ -2004,6 +2184,189 @@ class ExperimentAnalytics:
                 "n_tested": total_tested,
                 "n_survived": total_survived,
             },
+        }
+
+    def mathspace_operator_impact(self) -> Dict:
+        """Impact summary for math-space operators and families.
+
+        Reports tested counts, S1/validation pass rates, novelty signal,
+        and baseline-win rates for each math-space operator family.
+        """
+        columns = {
+            row["name"]
+            for row in self.nb.conn.execute("PRAGMA table_info(program_results)").fetchall()
+            if row and row["name"]
+        }
+        validation_col = "validation_passed" if "validation_passed" in columns else "NULL AS validation_passed"
+        baseline_col = "validation_baseline_ratio" if "validation_baseline_ratio" in columns else "NULL AS validation_baseline_ratio"
+
+        rows = self.nb.conn.execute(f"""
+            SELECT graph_json, stage1_passed, {validation_col}, novelty_score, {baseline_col}
+            FROM program_results
+            WHERE graph_json IS NOT NULL
+        """).fetchall()
+
+        op_family = {
+            "poincare_add": "hyperbolic",
+            "exp_map": "hyperbolic",
+            "log_map": "hyperbolic",
+            "hyp_linear": "hyperbolic",
+            "hyp_distance": "hyperbolic",
+            "hyp_tangent_nonlinear": "hyperbolic",
+            "tropical_matmul": "tropical",
+            "tropical_add": "tropical",
+            "tropical_attention": "tropical",
+            "tropical_center": "tropical",
+            "padic_expand": "p-adic",
+            "ultrametric_attention": "p-adic",
+            "padic_gate": "p-adic",
+            "geometric_product": "clifford",
+            "rotor_transform": "clifford",
+            "grade_select": "clifford",
+            "grade_mix": "clifford",
+        }
+        tracked_ops = set(op_family.keys())
+
+        if not rows:
+            return {
+                "available": False,
+                "totals": {
+                    "n_programs_with_graph": 0,
+                    "n_programs_with_mathspace": 0,
+                    "n_mathspace_ops_observed": 0,
+                },
+                "by_operator": [],
+                "by_family": [],
+                "explanation": "No graph-level program data available for math-space impact analysis.",
+            }
+
+        by_operator: Dict[str, Dict[str, float]] = {}
+        by_family: Dict[str, Dict[str, float]] = {}
+        programs_with_mathspace = 0
+
+        def _ensure_bucket(store: Dict[str, Dict[str, float]], key: str) -> Dict[str, float]:
+            if key not in store:
+                store[key] = {
+                    "n_tested": 0,
+                    "n_stage1_passed": 0,
+                    "n_validation_passed": 0,
+                    "n_baseline_wins": 0,
+                    "novelty_sum": 0.0,
+                    "novelty_count": 0,
+                }
+            return store[key]
+
+        for row in rows:
+            graph_json = row["graph_json"]
+            if not graph_json:
+                continue
+
+            ops = self._extract_ops_fast(graph_json)
+            if ops is None:
+                ops = self._extract_ops_fallback(graph_json)
+            if not ops:
+                continue
+
+            used_ops = sorted(tracked_ops.intersection(set(ops)))
+            if not used_ops:
+                continue
+
+            programs_with_mathspace += 1
+            used_families = sorted({op_family[op] for op in used_ops})
+            stage1_passed = bool(row["stage1_passed"])
+            validation_passed = bool(row["validation_passed"])
+            novelty = self._as_float(row["novelty_score"])
+            baseline_ratio = self._as_float(row["validation_baseline_ratio"])
+            baseline_win = baseline_ratio is not None and baseline_ratio < 1.0
+
+            for op_name in used_ops:
+                bucket = _ensure_bucket(by_operator, op_name)
+                bucket["n_tested"] += 1
+                if stage1_passed:
+                    bucket["n_stage1_passed"] += 1
+                if validation_passed:
+                    bucket["n_validation_passed"] += 1
+                if baseline_win:
+                    bucket["n_baseline_wins"] += 1
+                if novelty is not None:
+                    bucket["novelty_sum"] += novelty
+                    bucket["novelty_count"] += 1
+
+            for family in used_families:
+                bucket = _ensure_bucket(by_family, family)
+                bucket["n_tested"] += 1
+                if stage1_passed:
+                    bucket["n_stage1_passed"] += 1
+                if validation_passed:
+                    bucket["n_validation_passed"] += 1
+                if baseline_win:
+                    bucket["n_baseline_wins"] += 1
+                if novelty is not None:
+                    bucket["novelty_sum"] += novelty
+                    bucket["novelty_count"] += 1
+
+        def _finalize(rows_by_key: Dict[str, Dict[str, float]], label_key: str) -> List[Dict[str, float]]:
+            finalized: List[Dict[str, float]] = []
+            for key, bucket in rows_by_key.items():
+                n_tested = int(bucket["n_tested"])
+                if n_tested <= 0:
+                    continue
+                novelty_count = int(bucket["novelty_count"])
+                stage1_rate = float(bucket["n_stage1_passed"]) / n_tested
+                validation_rate = float(bucket["n_validation_passed"]) / n_tested
+                baseline_win_rate = float(bucket["n_baseline_wins"]) / n_tested
+                sample_weight = min(1.0, n_tested / 25.0)
+                trust_score = (0.5 * stage1_rate + 0.3 * validation_rate + 0.2 * baseline_win_rate) * sample_weight
+                if trust_score >= 0.6 and n_tested >= 20:
+                    trust_label = "high"
+                elif trust_score >= 0.35 and n_tested >= 8:
+                    trust_label = "medium"
+                else:
+                    trust_label = "low"
+                finalized.append({
+                    label_key: key,
+                    "n_tested": n_tested,
+                    "n_stage1_passed": int(bucket["n_stage1_passed"]),
+                    "n_validation_passed": int(bucket["n_validation_passed"]),
+                    "n_baseline_wins": int(bucket["n_baseline_wins"]),
+                    "stage1_pass_rate": round(stage1_rate, 4),
+                    "validation_pass_rate": round(validation_rate, 4),
+                    "baseline_win_rate": round(baseline_win_rate, 4),
+                    "trust_score": round(trust_score, 4),
+                    "trust_label": trust_label,
+                    "avg_novelty_score": (
+                        round(float(bucket["novelty_sum"]) / novelty_count, 4)
+                        if novelty_count > 0 else None
+                    ),
+                })
+            return sorted(finalized, key=lambda row: (-row["n_tested"], row[label_key]))
+
+        by_operator_rows = _finalize(by_operator, "op_name")
+        by_family_rows = _finalize(by_family, "family")
+        top_trustworthy_ops = sorted(
+            by_operator_rows,
+            key=lambda row: (-(row.get("trust_score") or 0.0), -(row.get("n_tested") or 0), row.get("op_name") or ""),
+        )[:3]
+
+        top_op = by_operator_rows[0]["op_name"] if by_operator_rows else None
+        explanation = (
+            f"Observed {len(by_operator_rows)} math-space ops across {programs_with_mathspace}/{len(rows)} programs with graph traces. "
+            f"Most common op: {top_op}."
+            if top_op
+            else "No math-space operators were observed in current graph traces."
+        )
+
+        return {
+            "available": len(by_operator_rows) > 0,
+            "totals": {
+                "n_programs_with_graph": len(rows),
+                "n_programs_with_mathspace": programs_with_mathspace,
+                "n_mathspace_ops_observed": len(by_operator_rows),
+            },
+            "by_operator": by_operator_rows,
+            "by_family": by_family_rows,
+            "top_trustworthy_operators": top_trustworthy_ops,
+            "explanation": explanation,
         }
 
     def compute_insights(self) -> List[Dict]:

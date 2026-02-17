@@ -511,12 +511,14 @@ function EfficiencyFrontier({ frontier }) {
 }
 
 function LearningTrajectory({ trajectory }) {
+  const minimumExperiments = Math.max(2, Number(trajectory?.min_experiments_required) || 5);
+
   if (!trajectory || trajectory.trend === 'insufficient_data') {
     return (
       <div className="card">
         <div className="card-title">Learning Trajectory</div>
         <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          Need at least 3 experiments to compute a learning trajectory.
+          Need at least {minimumExperiments} experiments to compute a learning trajectory.
         </p>
       </div>
     );
@@ -535,25 +537,83 @@ function LearningTrajectory({ trajectory }) {
       : 'Plateaued';
 
   const points = trajectory.points || [];
-  const W = 300, H = 80, pad = 4;
+  const W = 600, H = 200, pad = 40, padRight = 12, padTop = 12;
 
   let sparkline = null;
   if (points.length >= 2) {
     const rates = points.map(p => p.s1_rate);
     const maxR = Math.max(...rates, 0.01);
-    const step = (W - 2 * pad) / (rates.length - 1);
+    const step = (W - pad - padRight) / (rates.length - 1);
     const pts = rates.map((r, i) => {
       const x = pad + i * step;
-      const y = H - pad - (r / maxR) * (H - 2 * pad);
+      const y = H - pad - (r / maxR) * (H - pad - padTop);
       return `${x},${y}`;
     });
+
+    // Grid lines (4 horizontal)
+    const gridLines = [];
+    const nGrid = 4;
+    for (let g = 0; g <= nGrid; g++) {
+      const val = (maxR * g) / nGrid;
+      const gy = H - pad - (val / maxR) * (H - pad - padTop);
+      gridLines.push(
+        <g key={`grid-${g}`}>
+          <line x1={pad} y1={gy} x2={W - padRight} y2={gy}
+            stroke="var(--border)" strokeWidth={0.5} strokeDasharray={g === 0 ? 'none' : '4 2'} />
+          <text x={pad - 4} y={gy + 3} textAnchor="end"
+            fill="var(--text-muted)" fontSize={9}>
+            {(val * 100).toFixed(1)}%
+          </text>
+        </g>
+      );
+    }
+
+    // X-axis labels (every ~5th experiment)
+    const xLabels = [];
+    const labelEvery = Math.max(1, Math.floor(points.length / 8));
+    for (let i = 0; i < points.length; i += labelEvery) {
+      const x = pad + i * step;
+      xLabels.push(
+        <text key={`x-${i}`} x={x} y={H - pad + 14} textAnchor="middle"
+          fill="var(--text-muted)" fontSize={9}>
+          #{i + 1}
+        </text>
+      );
+    }
+
+    // Regression line
+    const slope = trajectory.slope || 0;
+    const meanY = trajectory.overall_s1_rate || 0;
+    const midIdx = (points.length - 1) / 2;
+    const regStart = Math.max(0, meanY - slope * midIdx);
+    const regEnd = meanY + slope * (points.length - 1 - midIdx);
+    const regY1 = H - pad - (Math.min(Math.max(regStart, 0), maxR) / maxR) * (H - pad - padTop);
+    const regY2 = H - pad - (Math.min(Math.max(regEnd, 0), maxR) / maxR) * (H - pad - padTop);
+
     sparkline = (
-      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxWidth: 700 }}>
+        {gridLines}
+        {xLabels}
+        <line x1={pad} y1={regY1} x2={pad + (points.length - 1) * step} y2={regY2}
+          stroke={trendColor} strokeWidth={1.5} strokeDasharray="6 3" opacity={0.6} />
         <polyline points={pts.join(' ')} fill="none" stroke={trendColor} strokeWidth={2} />
         {pts.map((pt, i) => {
           const [x, y] = pt.split(',');
-          return <circle key={i} cx={x} cy={y} r={2.5} fill={trendColor} />;
+          return (
+            <circle key={i} cx={x} cy={y} r={3} fill={trendColor}
+              style={{ cursor: 'default' }}>
+              <title>Exp #{i + 1}: {(rates[i] * 100).toFixed(1)}% S1 rate</title>
+            </circle>
+          );
         })}
+        <text x={W / 2} y={H - 2} textAnchor="middle" fill="var(--text-muted)" fontSize={10}>
+          Experiment #
+        </text>
+        <text x={8} y={(H - pad) / 2 + padTop} textAnchor="middle"
+          fill="var(--text-muted)" fontSize={10}
+          transform={`rotate(-90, 8, ${(H - pad) / 2 + padTop})`}>
+          S1 Rate
+        </text>
       </svg>
     );
   }
@@ -964,6 +1024,100 @@ function MathFamilyCoverage({ data }) {
   );
 }
 
+function MathspaceImpact({ data }) {
+  const rows = Array.isArray(data?.by_operator) ? data.by_operator : [];
+  const families = Array.isArray(data?.by_family) ? data.by_family : [];
+  const topTrust = Array.isArray(data?.top_trustworthy_operators) ? data.top_trustworthy_operators : [];
+  const totals = data?.totals || {};
+
+  if (!data || data.available === false || rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-title">Mathspace Operator Impact</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          No mathspace operator impact data yet. This appears once programs include hyperbolic/tropical/p-adic/clifford operators.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Mathspace Operator Impact</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Canonical impact slice for mathspace operators and families across Stage-1 pass, validation pass, and novelty signals.
+      </p>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+        <strong style={{ color: 'var(--accent-purple)' }}>Coverage:</strong>{' '}
+        {totals.n_programs_with_mathspace ?? 0}/{totals.n_programs_with_graph ?? 0} programs with graph traces include mathspace ops
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Trust score = (50% S1 pass + 30% validation pass + 20% baseline wins) × sample reliability,
+        where sample reliability scales with tested count up to 25 programs.
+      </div>
+
+      {topTrust.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          {topTrust.map((row) => (
+            <span
+              key={row.op_name}
+              style={{
+                fontSize: 11,
+                padding: '4px 8px',
+                borderRadius: 999,
+                border: `1px solid ${row.trust_label === 'high' ? 'var(--accent-green)' : row.trust_label === 'medium' ? 'var(--accent-yellow)' : 'var(--text-muted)'}`,
+                color: row.trust_label === 'high' ? 'var(--accent-green)' : row.trust_label === 'medium' ? 'var(--accent-yellow)' : 'var(--text-muted)',
+                background: 'var(--bg-tertiary)',
+              }}
+            >
+              {row.op_name} · trust {(Number(row.trust_score || 0) * 100).toFixed(0)}%
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div style={{ maxHeight: 220, overflow: 'auto', marginBottom: 10 }}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Operator</th>
+              <th>Tested</th>
+              <th>S1 %</th>
+              <th>Validation %</th>
+              <th>Baseline Win %</th>
+              <th>Trust %</th>
+              <th>Avg Novelty</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 10).map((row) => (
+              <tr key={row.op_name}>
+                <td style={{ color: 'var(--accent-blue)' }}>{row.op_name}</td>
+                <td>{row.n_tested ?? 0}</td>
+                <td>{((row.stage1_pass_rate || 0) * 100).toFixed(1)}%</td>
+                <td>{((row.validation_pass_rate || 0) * 100).toFixed(1)}%</td>
+                <td>{((row.baseline_win_rate || 0) * 100).toFixed(1)}%</td>
+                <td>{((row.trust_score || 0) * 100).toFixed(1)}%</td>
+                <td>{row.avg_novelty_score != null ? Number(row.avg_novelty_score).toFixed(3) : '--'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {families.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
+          {families.map((row) => (
+            <span key={row.family}>
+              <strong style={{ color: 'var(--accent-purple)' }}>{row.family}:</strong> S1 {(row.stage1_pass_rate * 100).toFixed(0)}% · V {(row.validation_pass_rate * 100).toFixed(0)}%
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const COMPRESSION_FACTORS = {
   low_rank: 0.55, shared_basis: 0.5, hash_trick: 0.35,
   structured_sparse: 0.4, kronecker: 0.5, polynomial: 0.6,
@@ -1129,162 +1283,6 @@ function CompressionCoverage({ data, programs }) {
   );
 }
 
-const GATING_OPS = new Set(['topk_gate']);
-
-function GatingAggregate({ programs }) {
-  const analysis = useMemo(() => {
-    if (!programs || programs.length === 0) return null;
-    let gatedCount = 0;
-    let ungatedCount = 0;
-    let totalDrop = 0;
-    let dropCount = 0;
-    let totalEntropy = 0;
-    let entropyCount = 0;
-    let totalConf = 0;
-    let confCount = 0;
-    let overflowTotal = 0;
-    const byMode = {};
-
-    for (const p of programs) {
-      const hasRouting = p.routing_mode || p.routing_drop_rate != null;
-      if (!hasRouting) { ungatedCount++; continue; }
-      gatedCount++;
-
-      if (p.routing_drop_rate != null) { totalDrop += p.routing_drop_rate; dropCount++; }
-      if (p.routing_utilization_entropy != null) { totalEntropy += p.routing_utilization_entropy; entropyCount++; }
-      if (p.routing_confidence_mean != null) { totalConf += p.routing_confidence_mean; confCount++; }
-      if (p.routing_capacity_overflow_count != null) overflowTotal += p.routing_capacity_overflow_count;
-
-      // Also detect topk_gate from graph
-      let hasGateOp = false;
-      if (p.graph_json) {
-        try {
-          const g = typeof p.graph_json === 'string' ? JSON.parse(p.graph_json) : p.graph_json;
-          const nodes = g?.nodes || {};
-          const nodeList = Array.isArray(nodes) ? nodes : Object.values(nodes);
-          hasGateOp = nodeList.some(n => GATING_OPS.has(n?.op_name || n?.op));
-        } catch { /* ignore */ }
-      }
-
-      const mode = p.routing_mode || (hasGateOp ? 'gated' : 'unknown');
-      if (!byMode[mode]) byMode[mode] = { count: 0, totalLoss: 0, lossCount: 0 };
-      byMode[mode].count++;
-      if (p.loss_ratio != null) { byMode[mode].totalLoss += p.loss_ratio; byMode[mode].lossCount++; }
-    }
-
-    if (gatedCount === 0) return null;
-
-    const avgDrop = dropCount > 0 ? totalDrop / dropCount : null;
-    const avgEntropy = entropyCount > 0 ? totalEntropy / entropyCount : null;
-    const avgConf = confCount > 0 ? totalConf / confCount : null;
-
-    const modes = Object.entries(byMode)
-      .map(([mode, m]) => ({
-        mode,
-        count: m.count,
-        avgLoss: m.lossCount > 0 ? m.totalLoss / m.lossCount : null,
-      }))
-      .sort((a, b) => b.count - a.count);
-
-    return { gatedCount, ungatedCount, avgDrop, avgEntropy, avgConf, overflowTotal, modes };
-  }, [programs]);
-
-  if (!analysis) {
-    return (
-      <div className="card">
-        <div className="card-title">Gating Aggregate</div>
-        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          No gated/routed architectures among survivors yet. Gating diagnostics will appear when the system
-          generates and evaluates architectures with mixture-of-experts routing (topk_gate, etc.).
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="card">
-      <div className="card-title">Gating Aggregate ({analysis.gatedCount} routed programs)</div>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-        Aggregate gating health across all routed stage-1 survivors. Lower drop rate and higher
-        entropy indicate healthier expert utilization system-wide.
-      </p>
-
-      <div style={{ display: 'flex', gap: 20, marginBottom: 12, flexWrap: 'wrap' }}>
-        {analysis.avgDrop != null && (
-          <div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Avg Drop Rate</div>
-            <div style={{
-              fontSize: 18, fontWeight: 700,
-              color: analysis.avgDrop > 0.3 ? 'var(--accent-red)' : analysis.avgDrop > 0.1 ? 'var(--accent-yellow)' : 'var(--accent-green)',
-            }}>
-              {(analysis.avgDrop * 100).toFixed(1)}%
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-              {analysis.avgDrop > 0.3 ? 'High token loss' : analysis.avgDrop > 0.1 ? 'Moderate' : 'Healthy'}
-            </div>
-          </div>
-        )}
-        {analysis.avgEntropy != null && (
-          <div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Avg Entropy</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-secondary)' }}>
-              {analysis.avgEntropy.toFixed(3)}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Utilization balance</div>
-          </div>
-        )}
-        {analysis.avgConf != null && (
-          <div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Avg Confidence</div>
-            <div style={{
-              fontSize: 18, fontWeight: 700,
-              color: analysis.avgConf > 0.8 ? 'var(--accent-green)' : analysis.avgConf > 0.5 ? 'var(--accent-yellow)' : 'var(--accent-red)',
-            }}>
-              {analysis.avgConf.toFixed(3)}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-              {analysis.avgConf > 0.8 ? 'Decisive' : analysis.avgConf > 0.5 ? 'Moderate' : 'Uncertain'}
-            </div>
-          </div>
-        )}
-        {analysis.overflowTotal > 0 && (
-          <div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Total Overflows</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent-red)' }}>
-              {analysis.overflowTotal.toLocaleString()}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Capacity overflow events</div>
-          </div>
-        )}
-      </div>
-
-      {analysis.modes.length > 0 && (
-        <div style={{ maxHeight: 180, overflow: 'auto' }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Mode</th>
-                <th>N</th>
-                <th>Avg Loss</th>
-              </tr>
-            </thead>
-            <tbody>
-              {analysis.modes.map(row => (
-                <tr key={row.mode}>
-                  <td style={{ color: 'var(--accent-blue)' }}>{row.mode}</td>
-                  <td>{row.count}</td>
-                  <td style={{ color: row.avgLoss != null && row.avgLoss < 0.6 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>
-                    {row.avgLoss != null ? row.avgLoss.toFixed(4) : '--'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function WhatIHaveLearned({ summary }) {
   if (!summary || !summary.bullets || summary.bullets.length === 0) {
@@ -1308,6 +1306,122 @@ function WhatIHaveLearned({ summary }) {
   );
 }
 
+function ControlComparison({ data }) {
+  if (!data || data.status === 'insufficient_data') {
+    return (
+      <div className="card">
+        <div className="card-title">Learning Effectiveness</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          Need at least 2 control experiments and 2 learned-weight experiments to compare.
+          Control experiments run every 5th continuous experiment with default grammar weights.
+        </p>
+      </div>
+    );
+  }
+
+  const { control, learned, s1_rate_difference, z_score, significant_at_p05, learned_is_better, interpretation } = data;
+
+  const verdictColor = significant_at_p05
+    ? (learned_is_better ? 'var(--accent-green)' : 'var(--accent-red, #e74c3c)')
+    : 'var(--accent-yellow)';
+
+  return (
+    <div className="card">
+      <div className="card-title">Learning Effectiveness</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Statistical comparison of experiments using learned grammar weights vs control experiments
+        using default weights. A positive difference means learning is helping find better architectures.
+      </p>
+
+      <div style={{
+        padding: '8px 12px', borderRadius: 6, marginBottom: 12,
+        background: significant_at_p05
+          ? (learned_is_better ? 'rgba(63,185,80,0.12)' : 'rgba(248,81,73,0.12)')
+          : 'rgba(210,153,34,0.12)',
+        border: `1px solid ${verdictColor}`,
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: verdictColor, marginBottom: 4 }}>
+          {interpretation}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+          z-score: {z_score} {significant_at_p05 ? '(p < 0.05)' : '(not significant)'}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ padding: '8px 12px', borderRadius: 6, background: 'var(--bg-tertiary)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' }}>
+            Control (Default Weights)
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>
+            {(control.s1_rate * 100).toFixed(2)}%
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {control.s1_passed}/{control.programs} passed | {control.experiments} experiments
+          </div>
+        </div>
+        <div style={{ padding: '8px 12px', borderRadius: 6, background: 'var(--bg-tertiary)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' }}>
+            Learned Weights
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: learned_is_better ? 'var(--accent-green)' : 'var(--text-primary)' }}>
+            {(learned.s1_rate * 100).toFixed(2)}%
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {learned.s1_passed}/{learned.programs} passed | {learned.experiments} experiments
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+        S1 rate difference: {s1_rate_difference > 0 ? '+' : ''}{(s1_rate_difference * 100).toFixed(2)} percentage points
+      </div>
+    </div>
+  );
+}
+
+function ArchitectureRerunTelemetry({ telemetry }) {
+  if (!telemetry) {
+    return null;
+  }
+
+  const uniqueCount = Number(telemetry.unique_fingerprint_count || 0);
+  const totalRows = Number(telemetry.total_result_rows || 0);
+  const repeatRows = Number(telemetry.repeat_result_rows || 0);
+  const rerunRatio = Number(telemetry.rerun_ratio || 0);
+  const topConcentration = Number(telemetry.top_fingerprint_concentration || 0);
+  const weightingMode = telemetry.weighting_mode || 'unknown';
+
+  return (
+    <div className="card">
+      <div className="card-title">Unique Architectures vs Reruns</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Breadth telemetry for architecture search. High rerun ratios or high top-fingerprint concentration
+        indicate learning signal is coming from repeated identities rather than broad exploration.
+      </p>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          <strong style={{ color: 'var(--accent-green)' }}>Unique fingerprints:</strong> {uniqueCount}
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          <strong style={{ color: 'var(--text-muted)' }}>Rows:</strong> {totalRows}
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          <strong style={{ color: rerunRatio >= 0.6 ? 'var(--accent-yellow)' : 'var(--text-muted)' }}>Rerun ratio:</strong>{' '}
+          {(rerunRatio * 100).toFixed(1)}%
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          <strong style={{ color: topConcentration >= 0.35 ? 'var(--accent-yellow)' : 'var(--text-muted)' }}>Top fingerprint concentration:</strong>{' '}
+          {(topConcentration * 100).toFixed(1)}%
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        Repeat rows: {repeatRows} · Weighting mode: {weightingMode}
+      </div>
+    </div>
+  );
+}
+
 function LearningPanel() {
   const [weights, setWeights] = useState(null);
   const [opRates, setOpRates] = useState(null);
@@ -1318,10 +1432,12 @@ function LearningPanel() {
   const [routingComparison, setRoutingComparison] = useState(null);
   const [gatingDiagnostics, setGatingDiagnostics] = useState(null);
   const [mathFamilyCoverage, setMathFamilyCoverage] = useState(null);
+  const [mathspaceImpact, setMathspaceImpact] = useState(null);
   const [compressionCoverage, setCompressionCoverage] = useState(null);
   const [learningSummary, setLearningSummary] = useState(null);
   const [trajectory, setTrajectory] = useState(null);
   const [topPrograms, setTopPrograms] = useState(null);
+  const [controlComparison, setControlComparison] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -1342,12 +1458,14 @@ function LearningPanel() {
       safeFetch(`${API_BASE}/api/analytics/routing-comparison`),
       safeFetch(`${API_BASE}/api/analytics/gating-diagnostics`),
       safeFetch(`${API_BASE}/api/analytics/math-family-coverage`),
+      safeFetch(`${API_BASE}/api/analytics/mathspace-impact`),
       safeFetch(`${API_BASE}/api/analytics/compression-coverage`),
       safeFetch(`${API_BASE}/api/analytics/learning-summary`),
       safeFetch(`${API_BASE}/api/analytics/learning-trajectory`),
       safeFetch(`${API_BASE}/api/programs?n=100&sort_by=loss_ratio`),
-    ]).then(([w, ops, lg, fr, cl, rh, rc, gd, mf, cc, ls, lt, tp]) => {
-      if (!w && !ops && !lg && !fr && !cl && !rh && !rc && !gd && !mf && !cc && !ls && !lt) {
+      safeFetch(`${API_BASE}/api/analytics/control-comparison`),
+    ]).then(([w, ops, lg, fr, cl, rh, rc, gd, mf, mi, cc, ls, lt, tp, ctrl]) => {
+      if (!w && !ops && !lg && !fr && !cl && !rh && !rc && !gd && !mf && !mi && !cc && !ls && !lt) {
         setError('Failed to load analytics data. The API may be unavailable.');
       }
       setWeights(w);
@@ -1359,10 +1477,12 @@ function LearningPanel() {
       setRoutingComparison(rc);
       setGatingDiagnostics(gd);
       setMathFamilyCoverage(mf);
+      setMathspaceImpact(mi);
       setCompressionCoverage(cc);
       setLearningSummary(ls);
       setTrajectory(lt);
       setTopPrograms(Array.isArray(tp) ? tp : null);
+      setControlComparison(ctrl);
       setLastUpdated(new Date());
       setLoading(false);
     }).catch(e => {
@@ -1392,7 +1512,11 @@ function LearningPanel() {
         </p>
       </div>
       <WhatIHaveLearned summary={learningSummary} />
-      <LearningTrajectory trajectory={trajectory} />
+      <ArchitectureRerunTelemetry telemetry={weights?.architecture_rerun_telemetry} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <LearningTrajectory trajectory={trajectory} />
+        <ControlComparison data={controlComparison} />
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <GrammarWeightsChart
           defaultWeights={weights?.default}
@@ -1406,6 +1530,7 @@ function LearningPanel() {
         <RoutingHealth data={routingComparison || routingHealth} />
       </div>
       <MathFamilyCoverage data={mathFamilyCoverage} />
+      <MathspaceImpact data={mathspaceImpact} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <CompressionCoverage data={compressionCoverage} programs={topPrograms} />
         <GatingBehaviorDiagnostics data={gatingDiagnostics} />

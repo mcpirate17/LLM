@@ -210,6 +210,35 @@ function decisionGate(entry) {
   };
 }
 
+function candidateEligibility(entry) {
+  const tier = typeof entry?.tier === 'string' ? entry.tier.toLowerCase() : '';
+  const hasInvestigationEvidence = entry?.investigation_loss_ratio != null;
+  const hasValidationEvidence = entry?.validation_loss_ratio != null || Boolean(entry?.validation_passed);
+
+  const investigationEligible = tier === 'screening' && !hasInvestigationEvidence;
+  const validationEligible = tier === 'investigation' && Boolean(entry?.investigation_passed) && !hasValidationEvidence;
+
+  let queueReason = null;
+  if (!investigationEligible && !validationEligible) {
+    if (tier === 'screening' && hasInvestigationEvidence) {
+      queueReason = 'already_investigated_unchanged';
+    } else if (tier === 'investigation' && !entry?.investigation_passed) {
+      queueReason = 'not_investigation_passed';
+    } else if (tier === 'validation' || tier === 'breakthrough') {
+      queueReason = 'already_promoted';
+    } else {
+      queueReason = 'not_progression_eligible';
+    }
+  }
+
+  return {
+    investigationEligible,
+    validationEligible,
+    queueEligible: investigationEligible || validationEligible,
+    queueReason,
+  };
+}
+
 function promotionEvidence(entry) {
   const seenRuns = Number(entry?.cross_run_stability?.seen_runs || 0);
   const baselineRatioValue = Number(entry?.validation_baseline_ratio);
@@ -329,6 +358,7 @@ function Leaderboard({
   onQueueAdd,
   onQueueRemove,
   queuedResultIds,
+  eligibilityByResultId,
 }) {
   const leaderboardPrefs = (() => {
     try {
@@ -532,7 +562,7 @@ function Leaderboard({
   return (
     <div className="card" style={{ padding: 16 }}>
       <div className="card-title" style={{ marginBottom: 12 }}>
-        Leaderboard
+        Decision Leaderboard
         <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>
           {rawEntries.length} entries
         </span>
@@ -542,8 +572,8 @@ function Leaderboard({
         that the architecture is robust, novel, and competitive with transformer baselines.
       </p>
       <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-        Curated decision view: use this tab for promote/investigate/validate decisions. For broad raw survivor browsing,
-        use Programs (Raw).
+        Curated decision view: use this tab for promote/investigate/validate decisions. For broad survivor browsing,
+        use Candidates (All).
       </p>
       <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
         Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Source: /api/leaderboard
@@ -562,7 +592,7 @@ function Leaderboard({
       </p>
       {!!queuedSet.size && (
         <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-          Investigation queue currently has {queuedSet.size} candidate{queuedSet.size === 1 ? '' : 's'} pinned for batch actions.
+          Progression queue currently has {queuedSet.size} candidate{queuedSet.size === 1 ? '' : 's'} pinned for batch actions.
         </p>
       )}
 
@@ -704,6 +734,16 @@ function Leaderboard({
                 const reproPacket = reproducibilityPacketStatus(entry);
                 const isHighlighted = highlightId && entry.result_id === highlightId;
                 const isQueued = !!entry.result_id && queuedSet.has(entry.result_id);
+                const eligibility = eligibilityByResultId?.[entry.result_id] || candidateEligibility(entry);
+                const queueIntent = eligibility.validationEligible
+                  ? 'validation'
+                  : eligibility.investigationEligible
+                    ? 'investigation'
+                    : null;
+                const queueAddLabel = queueIntent === 'validation' ? 'Queue Validate' : 'Queue Investigate';
+                const queueAddTitle = queueIntent === 'validation'
+                  ? 'Add to validation queue'
+                  : 'Add to investigation queue';
                 return (
                 <tr
                   key={entry.entry_id}
@@ -884,7 +924,7 @@ function Leaderboard({
                         {gate.label}
                       </span>
                     </div>
-                    {entry.tier === 'screening' && (
+                    {eligibility.investigationEligible && (
                       <button
                         onClick={() => handleInvestigate([entry.result_id])}
                         style={actionBtnStyle}
@@ -893,7 +933,16 @@ function Leaderboard({
                         Investigate
                       </button>
                     )}
-                    {entry.tier === 'investigation' && entry.investigation_passed && (
+                    {!eligibility.investigationEligible && entry.tier === 'screening' && (
+                      <span style={{
+                        fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                        background: 'rgba(210,153,34,0.12)', color: 'var(--accent-yellow)',
+                        whiteSpace: 'nowrap',
+                      }} title="Candidate already has investigation evidence; wait for changed conditions before re-investigating">
+                        Already investigated
+                      </span>
+                    )}
+                    {eligibility.validationEligible && (
                       <button
                         onClick={() => handleValidate([entry.result_id])}
                         style={{ ...actionBtnStyle, borderColor: 'var(--accent-purple)', color: 'var(--accent-purple)' }}
@@ -902,6 +951,15 @@ function Leaderboard({
                         Validate
                       </button>
                     )}
+                    {entry.tier === 'investigation' && !entry.investigation_passed && (
+                      <span style={{
+                        fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                        background: 'rgba(248,81,73,0.12)', color: 'var(--accent-red, #e74c3c)',
+                        whiteSpace: 'nowrap',
+                      }} title="Investigation did not pass — search for new candidates or review failure details">
+                        Investigation failed
+                      </span>
+                    )}
                     {entry.result_id && (onQueueAdd || onQueueRemove) && (
                       <button
                         onClick={() => {
@@ -909,22 +967,44 @@ function Leaderboard({
                             onQueueRemove && onQueueRemove(entry.result_id);
                             return;
                           }
+                          if (!eligibility.queueEligible) {
+                            return;
+                          }
                           onQueueAdd && onQueueAdd({
                             resultId: entry.result_id,
                             fingerprint: entry.graph_fingerprint,
                             source: 'leaderboard',
                             architectureFamily: entry.architecture_family,
+                            intent: queueIntent,
+                            queueEligible: eligibility.queueEligible,
+                            investigationEligible: eligibility.investigationEligible,
+                            validationEligible: eligibility.validationEligible,
+                            queueReason: eligibility.queueReason,
                           });
                         }}
+                        disabled={!isQueued && !eligibility.queueEligible}
                         style={{
                           ...actionBtnStyle,
                           marginTop: 4,
-                          borderColor: isQueued ? 'var(--accent-yellow)' : 'var(--accent-blue)',
-                          color: isQueued ? 'var(--accent-yellow)' : 'var(--accent-blue)',
+                          borderColor: !isQueued && !eligibility.queueEligible
+                            ? 'var(--border)'
+                            : isQueued
+                              ? 'var(--accent-yellow)'
+                              : 'var(--accent-blue)',
+                          color: !isQueued && !eligibility.queueEligible
+                            ? 'var(--text-muted)'
+                            : isQueued
+                              ? 'var(--accent-yellow)'
+                              : 'var(--accent-blue)',
+                          opacity: !isQueued && !eligibility.queueEligible ? 0.6 : 1,
                         }}
-                        title={isQueued ? 'Remove from investigation queue' : 'Add to investigation queue'}
+                        title={isQueued
+                          ? 'Remove from investigation queue'
+                          : !eligibility.queueEligible
+                            ? 'Not eligible for investigation/validation queue actions'
+                            : queueAddTitle}
                       >
-                        {isQueued ? 'Queued' : 'Queue'}
+                        {isQueued ? 'Queued' : !eligibility.queueEligible ? 'Ineligible' : queueAddLabel}
                       </button>
                     )}
                   </td>

@@ -116,13 +116,36 @@ const COLUMNS = [
   { key: 'experiment_type', label: 'Type' },
   { key: 'hypothesis', label: 'Hypothesis' },
   { key: 'status', label: 'Status' },
-  { key: 'n_programs_generated', label: 'Programs' },
+  { key: 'stage_funnel', label: 'Funnel' },
   { key: 'n_stage1_passed', label: 'S1 Pass' },
   { key: 'best_loss_ratio', label: 'Best Loss' },
   { key: 'best_novelty_score', label: 'Best Novelty' },
+  { key: 'aria_summary', label: 'Outcome' },
   { key: 'duration_seconds', label: 'Duration' },
   { key: 'timestamp', label: 'Time' },
 ];
+
+/** Mini stage funnel: generated -> compiled -> stage0.5 -> S1 */
+function StageFunnel({ generated, s0, s05, s1 }) {
+  if (!generated) return <span style={{ color: 'var(--text-muted)' }}>--</span>;
+  const stages = [
+    { label: 'Gen', value: generated, color: 'var(--text-secondary)' },
+  ];
+  if (s0 != null) stages.push({ label: 'S0', value: s0, color: s0 > 0 ? 'var(--accent-blue)' : 'var(--text-muted)' });
+  if (s05 != null) stages.push({ label: 'S0.5', value: s05, color: s05 > 0 ? 'var(--accent-yellow)' : 'var(--text-muted)' });
+  stages.push({ label: 'S1', value: s1, color: s1 > 0 ? 'var(--accent-green)' : 'var(--text-muted)' });
+
+  return (
+    <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+      {stages.map((s, i) => (
+        <React.Fragment key={s.label}>
+          {i > 0 && <span style={{ color: 'var(--text-muted)', margin: '0 2px' }}>{'\u203A'}</span>}
+          <span style={{ color: s.color, fontWeight: s.label === 'S1' ? 600 : 400 }}>{s.value}</span>
+        </React.Fragment>
+      ))}
+    </span>
+  );
+}
 
 const EXPERIMENT_LIST_SORT_PREFS_KEY = 'dashboard.experiment-list.sort.v1';
 
@@ -146,6 +169,24 @@ function ExperimentList({ experiments, onSelectExperiment }) {
     return true;
   });
   const [copiedValue, copyText] = useCopyToClipboard();
+  const [cancellingId, setCancellingId] = useState(null);
+
+  const handleCancel = async (e, experimentId) => {
+    e.stopPropagation();
+    if (!window.confirm('Cancel this stuck experiment?')) return;
+    setCancellingId(experimentId);
+    try {
+      const res = await fetch(`/api/experiments/${experimentId}/cancel`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to cancel experiment');
+      }
+    } catch (err) {
+      alert('Network error cancelling experiment');
+    } finally {
+      setCancellingId(null);
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem(EXPERIMENT_LIST_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
@@ -181,6 +222,10 @@ function ExperimentList({ experiments, onSelectExperiment }) {
         const order = { Strong: 4, Some: 3, Validating: 2, Weak: 1, Poor: 0 };
         va = order[a._rating.label] ?? -1;
         vb = order[b._rating.label] ?? -1;
+      } else if (sortKey === 'stage_funnel') {
+        // Sort by compilation rate (stage0/generated)
+        va = (a.n_programs_generated || 0) > 0 ? (a.n_stage0_passed || 0) / a.n_programs_generated : 0;
+        vb = (b.n_programs_generated || 0) > 0 ? (b.n_stage0_passed || 0) / b.n_programs_generated : 0;
       } else {
         va = a[sortKey]; vb = b[sortKey];
       }
@@ -290,8 +335,29 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                     exp.status === 'running' ? 'running' : 'fail'}`}>
                     {exp.status}
                   </span>
+                  {exp.status === 'running' && (
+                    <button
+                      className="refresh-btn"
+                      style={{
+                        fontSize: 10, padding: '1px 5px', marginLeft: 6,
+                        color: 'var(--accent-red)', borderColor: 'var(--accent-red)',
+                      }}
+                      disabled={cancellingId === exp.experiment_id}
+                      onClick={(e) => handleCancel(e, exp.experiment_id)}
+                      aria-label="Cancel experiment"
+                    >
+                      {cancellingId === exp.experiment_id ? '...' : 'Cancel'}
+                    </button>
+                  )}
                 </td>
-                <td>{exp.n_programs_generated || 0}</td>
+                <td title={`${exp.n_programs_generated || 0} generated \u2192 ${exp.n_stage0_passed ?? '?'} compiled \u2192 ${exp.n_stage05_passed ?? '?'} stage0.5 \u2192 ${exp.n_stage1_passed || 0} S1`}>
+                  <StageFunnel
+                    generated={exp.n_programs_generated || 0}
+                    s0={exp.n_stage0_passed}
+                    s05={exp.n_stage05_passed}
+                    s1={exp.n_stage1_passed || 0}
+                  />
+                </td>
                 <td style={{ color: (exp.n_stage1_passed || 0) > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
                   {exp.n_stage1_passed || 0}
                   <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)' }}>
@@ -335,6 +401,21 @@ function ExperimentList({ experiments, onSelectExperiment }) {
                       </span>
                     ))}
                   </div>
+                </td>
+                <td style={{ maxWidth: 240, fontSize: 12, color: 'var(--text-secondary)' }}
+                    title={exp.aria_summary || exp.research_question || ''}>
+                  {exp.aria_summary
+                    ? (exp.aria_summary.length > 80
+                        ? exp.aria_summary.slice(0, 80) + '...'
+                        : exp.aria_summary)
+                    : exp.research_question
+                      ? <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
+                          {exp.research_question.length > 60
+                            ? exp.research_question.slice(0, 60) + '...'
+                            : exp.research_question}
+                        </span>
+                      : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>--</span>
+                  }
                 </td>
                 <td>{formatDuration(exp.duration_seconds)}</td>
                 <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>

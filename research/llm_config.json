@@ -1,0 +1,6 @@
+{
+  "backend": "ollama",
+  "api_key": "",
+  "model": "hf.co/MaziyarPanahi/phi-4-GGUF:Q8_0",
+  "host": "http://localhost:11434"
+}

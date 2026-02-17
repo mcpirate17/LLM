@@ -198,11 +198,25 @@ class Aria:
         """Get current LLM configuration for the dashboard."""
         llm = self._get_llm()
         if llm is None:
-            return {"backend": None, "available": False}
+            return {
+                "backend": None,
+                "available": False,
+                "configured": False,
+                "reachable": False,
+            }
+
+        reachable = True
+        try:
+            if hasattr(llm, "is_available"):
+                reachable = bool(llm.is_available())
+        except Exception:
+            reachable = False
 
         config: Dict = {
             "backend": llm.name,
-            "available": True,
+            "available": reachable,
+            "configured": True,
+            "reachable": reachable,
         }
         if hasattr(llm, "model"):
             config["model"] = llm.model
@@ -536,6 +550,118 @@ class Aria:
             "confidence": 0.3,
             "config": choice["config"],
         }
+
+    def generate_briefing(self, context: str = "") -> Optional[Dict]:
+        """Generate an AI-powered research briefing.
+
+        Returns {briefing_text, suggested_action: {mode, hypothesis, config,
+        reasoning}, confidence, ai_powered: True}, or None if LLM unavailable.
+
+        Results are cached for 60s to avoid repeated LLM calls on refresh.
+        """
+        now = time.time()
+        if (hasattr(self, "_briefing_cache")
+                and self._briefing_cache
+                and now - self._briefing_cache.get("_ts", 0) < 60):
+            return self._briefing_cache
+
+        llm = self._get_llm()
+        if not llm or not context:
+            return None
+
+        try:
+            from .llm.prompts import SYSTEM_PROMPT, BRIEFING_PROMPT
+            prompt = BRIEFING_PROMPT.format(context=context)
+            resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1024)
+            self._track_cost(resp)
+            if resp.text and resp.text.strip():
+                raw_text = resp.text.strip()
+                result = self._parse_briefing(raw_text)
+                if not result.get("briefing_text"):
+                    suggested = result.get("suggested_action") or {}
+                    reasoning = suggested.get("reasoning") if isinstance(suggested, dict) else None
+                    if reasoning:
+                        result["briefing_text"] = str(reasoning).strip()
+                    else:
+                        fallback = raw_text.replace("SUGGESTED_ACTION:", "").strip()
+                        result["briefing_text"] = fallback[:800]
+                result["ai_powered"] = True
+                result["_ts"] = now
+                self._briefing_cache = result
+                return result
+        except Exception as e:
+            logger.warning(f"LLM briefing failed: {e}")
+
+        return None
+
+    def _parse_briefing(self, text: str) -> Dict:
+        """Parse LLM briefing response into structured dict."""
+        import json as _json
+
+        result = {
+            "briefing_text": "",
+            "suggested_action": None,
+            "confidence": 0.5,
+        }
+
+        # Extract briefing text
+        briefing_match = re.search(
+            r'BRIEFING:\s*(.+?)(?=SUGGESTED_ACTION:|$)', text, re.DOTALL)
+        if briefing_match:
+            result["briefing_text"] = briefing_match.group(1).strip()
+        else:
+            # If no BRIEFING: prefix, use the whole text before SUGGESTED_ACTION
+            parts = text.split("SUGGESTED_ACTION:")
+            result["briefing_text"] = parts[0].strip()
+
+        if not result["briefing_text"]:
+            # Also accept common non-strict variants like "Briefing" / "Summary"
+            alt_match = re.search(
+                r'(?:Briefing|Summary)\s*:?\s*(.+?)(?=SUGGESTED_ACTION:|MODE:|$)',
+                text,
+                re.DOTALL,
+            )
+            if alt_match:
+                result["briefing_text"] = alt_match.group(1).strip()
+
+        # Extract suggested action
+        action = {}
+        mode_match = re.search(r'MODE:\s*(\S+)', text)
+        if mode_match:
+            action["mode"] = mode_match.group(1).strip().lower()
+
+        hyp_match = re.search(
+            r'HYPOTHESIS:\s*(.+?)(?=REASONING:|CONFIDENCE:|CONFIG:|$)',
+            text, re.DOTALL)
+        if hyp_match:
+            action["hypothesis"] = hyp_match.group(1).strip()
+
+        reasoning_match = re.search(
+            r'REASONING:\s*(.+?)(?=CONFIDENCE:|CONFIG:|$)', text, re.DOTALL)
+        if reasoning_match:
+            action["reasoning"] = reasoning_match.group(1).strip()
+
+        conf_match = re.search(r'CONFIDENCE:\s*([\d.]+)', text)
+        if conf_match:
+            try:
+                result["confidence"] = float(conf_match.group(1))
+            except ValueError:
+                pass
+
+        json_match = re.search(r'```json\s*(\{.+?\})\s*```', text, re.DOTALL)
+        if json_match:
+            try:
+                action["config"] = _json.loads(json_match.group(1))
+            except _json.JSONDecodeError:
+                pass
+
+        if action.get("mode"):
+            result["suggested_action"] = action
+
+        if not result.get("briefing_text") and action.get("reasoning"):
+            result["briefing_text"] = action["reasoning"]
+
+        return result
 
     def validate_hypothesis(self, hypothesis: str, results: Dict,
                              context: str = "") -> Dict:

@@ -64,6 +64,28 @@ def register_all_mathspaces():
     op = _with_execute(op, hyperbolic.execute_hyp_linear)
     register_external_primitive(op)
 
+    op = PrimitiveOp(
+        name="hyp_distance",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=2,
+        shape_rule="reduce_last",
+        description="Hyperbolic distance between two points in the Poincare ball",
+        numerically_risky=True,
+    )
+    op = _with_execute(op, hyperbolic.execute_hyp_distance)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="hyp_tangent_nonlinear",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Tangent-space nonlinearity with exp/log manifold mapping",
+        numerically_risky=True,
+    )
+    op = _with_execute(op, hyperbolic.execute_hyp_tangent_nonlinear)
+    register_external_primitive(op)
+
     # ── Tropical ──
     op = PrimitiveOp(
         name="tropical_matmul",
@@ -97,6 +119,16 @@ def register_all_mathspaces():
     op = _with_execute(op, tropical.execute_tropical_attention)
     register_external_primitive(op)
 
+    op = PrimitiveOp(
+        name="tropical_center",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Subtract sequence-wise tropical baseline (min) from features",
+    )
+    op = _with_execute(op, tropical.execute_tropical_center)
+    register_external_primitive(op)
+
     # ── p-adic ──
     op = PrimitiveOp(
         name="padic_expand",
@@ -118,6 +150,16 @@ def register_all_mathspaces():
         description="Attention using ultrametric (p-adic) distance",
     )
     op = _with_execute(op, padic.execute_ultrametric_attn)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="padic_gate",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Gate activations by smooth p-adic valuation strength",
+    )
+    op = _with_execute(op, padic.execute_padic_gate)
     register_external_primitive(op)
 
     # ── Clifford ──
@@ -151,6 +193,16 @@ def register_all_mathspaces():
         description="Select vector grade from Clifford multivector",
     )
     op = _with_execute(op, clifford.execute_grade_select)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="grade_mix",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        description="Blend vector and bivector grades in Clifford multivectors",
+    )
+    op = _with_execute(op, clifford.execute_grade_mix)
     register_external_primitive(op)
 
 

@@ -267,6 +267,19 @@ class ExperimentRunner:
         self._hydra_loader = None
         self._hydra_iter = None
         self._hydra_signature: Optional[str] = None
+        self._last_cycle_summary: Optional[Dict[str, Any]] = None
+        self._aria_cycle_history: List[Dict[str, Any]] = []
+        self._aria_cycle_paused: bool = False
+        self._aria_cycle_status: Dict[str, Any] = {
+            "phase": "idle",
+            "phase_label": "Idle",
+            "continuous_active": False,
+            "cycle_index": 0,
+            "selected_mode": None,
+            "last_completed_mode": None,
+            "last_note": "Awaiting run.",
+            "last_transition_ts": time.time(),
+        }
 
         self._recover_stale_experiments_on_startup()
 
@@ -512,6 +525,283 @@ class ExperimentRunner:
         except queue.Full:
             pass  # drop oldest if full
 
+    @staticmethod
+    def _aria_phase_label(phase: str) -> str:
+        labels = {
+            "idle": "Idle",
+            "planning": "Planning",
+            "running": "Running",
+            "analyzing": "Analyzing",
+            "paused": "Paused",
+            "stopping": "Stopping",
+            "completed": "Completed",
+            "failed": "Failed",
+        }
+        return labels.get(phase, phase.replace("_", " ").title())
+
+    def _set_aria_cycle_phase(
+        self,
+        phase: str,
+        *,
+        cycle_index: Optional[int] = None,
+        selected_mode: Optional[str] = None,
+        note: Optional[str] = None,
+        continuous_active: Optional[bool] = None,
+        emit_event: bool = True,
+    ) -> None:
+        """Track Aria's continuous cycle phase for observability APIs/UI."""
+        with self._lock:
+            payload: Dict[str, Any] = {
+                "phase": str(phase or "idle"),
+                "phase_label": self._aria_phase_label(str(phase or "idle")),
+                "last_transition_ts": time.time(),
+            }
+            if cycle_index is not None:
+                payload["cycle_index"] = int(cycle_index)
+            if selected_mode is not None:
+                payload["selected_mode"] = str(selected_mode)
+            if note is not None:
+                payload["last_note"] = str(note)
+            if continuous_active is not None:
+                payload["continuous_active"] = bool(continuous_active)
+            if phase == "running" and selected_mode is not None:
+                payload["last_completed_mode"] = None
+            if phase in {"analyzing", "completed", "failed"} and selected_mode is not None:
+                payload["last_completed_mode"] = str(selected_mode)
+
+            self._aria_cycle_status.update(payload)
+            snapshot = dict(self._aria_cycle_status)
+
+        if emit_event:
+            self._emit_event("aria_cycle_phase", snapshot)
+
+    def get_aria_cycle_status(self) -> Dict[str, Any]:
+        """Return latest Aria cycle status for dashboard/API polling."""
+        with self._lock:
+            cycle = dict(self._aria_cycle_status)
+            progress = self._progress.to_dict()
+            last_cycle = dict(self._last_cycle_summary) if self._last_cycle_summary else None
+            cycle_history = [dict(item) for item in self._aria_cycle_history[-10:]]
+            cycle_paused = bool(self._aria_cycle_paused)
+        cycle["is_running"] = self.is_running
+        cycle["progress_status"] = progress.get("status")
+        cycle["aria_message"] = progress.get("aria_message")
+        cycle["experiment_id"] = progress.get("experiment_id")
+        cycle["last_cycle_summary"] = last_cycle
+        cycle["cycle_history"] = cycle_history
+        cycle["cycle_paused"] = cycle_paused
+        return cycle
+
+    def pause_aria_cycle(self) -> Dict[str, Any]:
+        """Pause continuous cycle progression between experiment iterations."""
+        with self._lock:
+            self._aria_cycle_paused = True
+            running = self.is_running
+        note = (
+            "Pause requested; pausing before the next cycle."
+            if running
+            else "Cycle is paused. Start continuous mode to resume execution."
+        )
+        self._set_aria_cycle_phase(
+            "paused",
+            continuous_active=running,
+            note=note,
+        )
+        self._emit_event("aria_cycle_paused", {"note": note})
+        return self.get_aria_cycle_status()
+
+    def resume_aria_cycle(self) -> Dict[str, Any]:
+        """Resume continuous cycle progression."""
+        with self._lock:
+            self._aria_cycle_paused = False
+            running = self.is_running
+            cycle_index = int(self._aria_cycle_status.get("cycle_index") or 0)
+        self._set_aria_cycle_phase(
+            "planning" if running else "idle",
+            continuous_active=running,
+            cycle_index=cycle_index,
+            note="Cycle resumed." if running else "Cycle resumed and awaiting start.",
+        )
+        self._emit_event("aria_cycle_resumed", {"running": running})
+        return self.get_aria_cycle_status()
+
+    def _wait_for_cycle_resume(self, cycle_index: int) -> None:
+        """Block between cycles while paused, unless stop is requested."""
+        with self._lock:
+            paused = bool(self._aria_cycle_paused)
+        if not paused:
+            return
+        self._set_aria_cycle_phase(
+            "paused",
+            continuous_active=True,
+            cycle_index=cycle_index,
+            note="Cycle paused; waiting for resume.",
+        )
+        while not self._stop_event.is_set():
+            with self._lock:
+                paused = bool(self._aria_cycle_paused)
+            if not paused:
+                break
+            time.sleep(0.5)
+
+    def _build_aria_cycle_summary(
+        self,
+        *,
+        cycle_index: int,
+        selected_mode: str,
+        mode_reasoning: str,
+        mode_confidence: Optional[float],
+        before_progress: Dict[str, Any],
+        after_progress: Dict[str, Any],
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build a compact cycle summary payload for SSE/UI/chat consumers."""
+        before_total = int(before_progress.get("total_programs") or 0)
+        after_total = int(after_progress.get("total_programs") or 0)
+        before_s1 = int(before_progress.get("stage1_passed") or 0)
+        after_s1 = int(after_progress.get("stage1_passed") or 0)
+
+        summary = {
+            "cycle_index": int(cycle_index),
+            "mode": str(selected_mode or "synthesis"),
+            "reasoning": str(mode_reasoning or ""),
+            "confidence": float(mode_confidence or 0.0),
+            "status": "failed" if error else "completed",
+            "programs_total": after_total,
+            "stage1_survivors": after_s1,
+            "delta_programs": max(0, after_total - before_total),
+            "delta_stage1_survivors": max(0, after_s1 - before_s1),
+            "aria_message": str(after_progress.get("aria_message") or ""),
+            "timestamp": time.time(),
+        }
+        if error:
+            summary["error"] = str(error)
+        return summary
+
+    def run_aria_cycle(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        n_experiments: int,
+        t_start: float,
+    ) -> Dict[str, Any]:
+        """Run one continuous research cycle (plan -> run -> analyze -> summarize)."""
+        self._set_aria_cycle_phase(
+            "planning",
+            continuous_active=True,
+            cycle_index=n_experiments,
+            selected_mode=None,
+            note=f"Planning cycle {n_experiments}.",
+        )
+
+        mode_rec = self._select_next_mode(config, nb, n_experiments)
+        selected_mode = mode_rec.get("mode", "synthesis")
+        mode_reasoning = mode_rec.get("reasoning", "")
+        mode_confidence = mode_rec.get("confidence", 0)
+
+        self._emit_event("mode_selected", {
+            "mode": selected_mode,
+            "reasoning": mode_reasoning,
+            "confidence": mode_confidence,
+            "experiment_number": n_experiments,
+        })
+
+        limit_info = []
+        if config.max_experiments > 0:
+            limit_info.append(f"exp {n_experiments}/{config.max_experiments}")
+        if config.max_time_minutes > 0:
+            elapsed_min = (time.time() - t_start) / 60
+            limit_info.append(f"{elapsed_min:.0f}/{config.max_time_minutes}min")
+        if config.max_cost_dollars > 0:
+            limit_info.append(f"${self.aria.total_cost:.2f}/${config.max_cost_dollars:.2f}")
+        limit_str = " | ".join(limit_info) if limit_info else f"exp {n_experiments}"
+
+        pending_inv = getattr(self, "_pending_investigation", None)
+        pending_val = getattr(self, "_pending_validation", None)
+
+        if pending_inv and selected_mode != "investigation":
+            selected_mode = "investigation"
+            mode_reasoning = pending_inv.get("hypothesis", "Auto-investigation")
+            mode_confidence = 0.9
+            self._pending_investigation = None
+            self._emit_event("mode_selected", {
+                "mode": "investigation",
+                "reasoning": "Auto-escalation: S1 survivors qualify for investigation",
+                "confidence": 0.9,
+                "experiment_number": n_experiments,
+            })
+        elif pending_val and selected_mode != "validation":
+            selected_mode = "validation"
+            mode_reasoning = pending_val.get("hypothesis", "Auto-validation")
+            mode_confidence = 0.9
+            self._pending_validation = None
+            self._emit_event("mode_selected", {
+                "mode": "validation",
+                "reasoning": "Auto-escalation: investigation survivors qualify for validation",
+                "confidence": 0.9,
+                "experiment_number": n_experiments,
+            })
+
+        before_progress = self.progress.to_dict()
+        cycle_error: Optional[str] = None
+
+        try:
+            self._set_aria_cycle_phase(
+                "running",
+                continuous_active=True,
+                cycle_index=n_experiments,
+                selected_mode=selected_mode,
+                note=f"Running {selected_mode} cycle {n_experiments}.",
+            )
+            if selected_mode in ("investigation", "validation"):
+                self._run_continuous_phase(
+                    selected_mode, config, nb, n_experiments,
+                    limit_str, mode_reasoning)
+            elif selected_mode == "evolution":
+                self._run_continuous_evolution(
+                    config, nb, n_experiments, limit_str, mode_reasoning)
+            elif selected_mode == "novelty":
+                self._run_continuous_novelty(
+                    config, nb, n_experiments, limit_str, mode_reasoning)
+            else:
+                self._run_continuous_synthesis(
+                    config, nb, n_experiments, limit_str, mode_reasoning)
+        except Exception as e:
+            cycle_error = str(e)
+            logger.warning(f"Continuous mode {selected_mode} failed: {e}")
+            self._emit_event("experiment_failed", {
+                "experiment_number": n_experiments,
+                "mode": selected_mode,
+                "error": cycle_error,
+            })
+        finally:
+            if not self._stop_event.is_set():
+                self._set_aria_cycle_phase(
+                    "analyzing",
+                    continuous_active=True,
+                    cycle_index=n_experiments,
+                    selected_mode=selected_mode,
+                    note="Analyzing outcomes and preparing next recommendation.",
+                )
+
+        after_progress = self.progress.to_dict()
+        summary = self._build_aria_cycle_summary(
+            cycle_index=n_experiments,
+            selected_mode=selected_mode,
+            mode_reasoning=mode_reasoning,
+            mode_confidence=mode_confidence,
+            before_progress=before_progress,
+            after_progress=after_progress,
+            error=cycle_error,
+        )
+        with self._lock:
+            self._last_cycle_summary = summary
+            self._aria_cycle_history.append(summary)
+            if len(self._aria_cycle_history) > 50:
+                self._aria_cycle_history = self._aria_cycle_history[-50:]
+        self._emit_event("aria_cycle_completed", summary)
+        return summary
+
     def get_events(self, timeout: float = 30.0):
         """Generator yielding events for SSE streaming."""
         deadline = time.time() + timeout
@@ -533,6 +823,14 @@ class ExperimentRunner:
 
         self._ensure_math_spaces()
         self._stop_event.clear()
+        self._set_aria_cycle_phase(
+            "idle",
+            continuous_active=False,
+            cycle_index=0,
+            selected_mode=None,
+            note="Single-run experiment started.",
+            emit_event=False,
+        )
 
         # Pre-generate experiment ID
         nb = self._make_notebook()
@@ -658,8 +956,17 @@ class ExperimentRunner:
 
         self._ensure_math_spaces()
         self._stop_event.clear()
+        with self._lock:
+            self._aria_cycle_paused = False
 
         config.continuous = True
+        self._set_aria_cycle_phase(
+            "planning",
+            continuous_active=True,
+            cycle_index=0,
+            selected_mode=None,
+            note="Continuous session initialized.",
+        )
 
         with self._lock:
             self._progress = LiveProgress(
@@ -754,6 +1061,13 @@ class ExperimentRunner:
         """Stop the current experiment gracefully."""
         self._stop_event.set()
         self.aria.state.mood = "contemplative"
+        with self._lock:
+            self._aria_cycle_paused = False
+        self._set_aria_cycle_phase(
+            "stopping",
+            continuous_active=self.is_running,
+            note="Stop requested; wrapping up current work.",
+        )
         with self._lock:
             self._progress.status = "stopped"
             self._progress.aria_message = "Stopping... wrapping up current evaluation."
@@ -1073,6 +1387,217 @@ class ExperimentRunner:
         logger.info(f"Campaign created: {camp_data['title']} ({campaign_id})")
         return campaign_id
 
+    def _maybe_evaluate_campaign(self, config: RunConfig, nb: LabNotebook) -> None:
+        """Evaluate campaign success criteria after an experiment.
+
+        Auto-completes the campaign if criteria are met or the campaign is
+        stale (10+ experiments with no criteria passing).  When a campaign
+        completes, a successor campaign is formulated based on pipeline state.
+        """
+        if not config.enable_campaigns or not self._active_campaign_id:
+            return
+
+        try:
+            evaluation = nb.evaluate_campaign_criteria(self._active_campaign_id)
+
+            if not evaluation["all_met"] and not evaluation["stale"]:
+                return  # still in progress
+
+            campaign = nb.get_campaign(self._active_campaign_id)
+            if not campaign or campaign.get("status") != "active":
+                return
+
+            # --- Complete the campaign ---
+            if evaluation["all_met"]:
+                reason = "criteria_met"
+                findings = (
+                    f"All {evaluation['n_criteria']} success criteria met. "
+                    f"{evaluation['n_passing']} criteria passing."
+                )
+            else:
+                reason = "stale"
+                findings = (
+                    f"Campaign stale after {len(nb.get_campaign_experiments(self._active_campaign_id))} "
+                    f"experiments: {evaluation['n_at_risk']} criteria at risk, "
+                    f"{evaluation['n_passing']} passing."
+                )
+
+            nb.update_campaign(
+                self._active_campaign_id,
+                status="completed",
+                completed_at=time.time(),
+                completion_reason=reason,
+                findings_summary=findings,
+            )
+
+            self._emit_event("campaign_completed", {
+                "campaign_id": self._active_campaign_id,
+                "title": campaign.get("title", ""),
+                "reason": reason,
+                "findings": findings,
+            })
+            logger.info(
+                f"Campaign completed ({reason}): "
+                f"{campaign.get('title', '')} ({self._active_campaign_id})"
+            )
+
+            # --- Formulate successor campaign ---
+            completed_id = self._active_campaign_id
+            self._active_campaign_id = None
+
+            # Determine next focus from pipeline state
+            leaderboard_rows = nb.conn.execute(
+                "SELECT tier, COUNT(*) as cnt FROM leaderboard GROUP BY tier"
+            ).fetchall()
+            tiers = {r["tier"]: r["cnt"] for r in leaderboard_rows}
+
+            recent = nb.get_recent_experiments(10)
+            knowledge = nb.get_knowledge()
+            all_campaigns = nb.conn.execute(
+                "SELECT * FROM campaigns ORDER BY timestamp DESC LIMIT 5"
+            ).fetchall()
+            previous = [dict(r) for r in all_campaigns]
+
+            # Build context that includes pipeline state for Aria
+            from .llm.context import build_campaign_formulation_context
+            context = build_campaign_formulation_context(
+                recent_experiments=recent,
+                knowledge=knowledge,
+                previous_campaigns=previous,
+            )
+            pipeline_hint = (
+                f"\n\nPipeline state: "
+                f"{tiers.get('screening', 0)} screening, "
+                f"{tiers.get('investigation', 0)} investigation, "
+                f"{tiers.get('validation', 0)} validation, "
+                f"{tiers.get('breakthrough', 0)} breakthrough. "
+            )
+            if reason == "criteria_met":
+                pipeline_hint += (
+                    "Previous campaign succeeded — evolve to a more ambitious "
+                    "objective (deeper investigation, validation, or scale-up)."
+                )
+            else:
+                pipeline_hint += (
+                    "Previous campaign stalled — pivot to a different approach "
+                    "(novelty search, different architecture families, or "
+                    "relaxed criteria)."
+                )
+
+            camp_data = self.aria.formulate_campaign(
+                context=context + pipeline_hint
+            )
+
+            # Rule-based fallback: evolve based on pipeline state
+            if camp_data["title"] == "Architecture Discovery Campaign":
+                camp_data = self._pipeline_driven_campaign(tiers, reason)
+
+            successor_id = nb.create_campaign(
+                title=camp_data["title"],
+                objective=camp_data["objective"],
+                success_criteria=camp_data["success_criteria"],
+                parent_id=completed_id,
+            )
+
+            # Link successor to completed campaign
+            nb.update_campaign(
+                completed_id,
+                successor_campaign_id=successor_id,
+            )
+
+            self._active_campaign_id = successor_id
+            self._emit_event("campaign_created", {
+                "campaign_id": successor_id,
+                "title": camp_data["title"],
+                "objective": camp_data["objective"],
+                "predecessor": completed_id,
+            })
+            logger.info(
+                f"Successor campaign: {camp_data['title']} ({successor_id}) "
+                f"→ replacing {completed_id}"
+            )
+
+        except Exception as e:
+            logger.debug(f"Campaign evaluation failed: {e}")
+
+    @staticmethod
+    def _pipeline_driven_campaign(tiers: dict, reason: str) -> dict:
+        """Deterministic campaign formulation based on pipeline state."""
+        screening = tiers.get("screening", 0)
+        investigation = tiers.get("investigation", 0)
+        validation = tiers.get("validation", 0)
+        breakthrough = tiers.get("breakthrough", 0)
+
+        if breakthrough > 0:
+            return {
+                "title": "Scale-Up & Generalization",
+                "objective": (
+                    f"Validate {breakthrough} breakthrough architecture(s) at "
+                    f"larger scale (512+ dim, longer sequences) and on diverse "
+                    f"data distributions to confirm generalization."
+                ),
+                "success_criteria": (
+                    "Breakthrough architecture maintains loss_ratio < 0.5 at "
+                    "model_dim=512; OOD generalization >= 0.67; "
+                    "Reproducible across 5+ random seeds with std <= 0.03"
+                ),
+            }
+        elif validation > 0:
+            return {
+                "title": "Validation & Robustness",
+                "objective": (
+                    f"Complete multi-seed validation for {validation} candidate(s) "
+                    f"and identify which architectures are robust enough for "
+                    f"breakthrough consideration."
+                ),
+                "success_criteria": (
+                    "At least 1 candidate passes validation with multi-seed "
+                    "std <= 0.03 and baseline_ratio < 0.90; "
+                    "Go/no-go decision recorded for each candidate"
+                ),
+            }
+        elif investigation > 0 or screening > 0:
+            total_candidates = investigation + screening
+            return {
+                "title": "Deep Investigation",
+                "objective": (
+                    f"Investigate {total_candidates} screening/investigation "
+                    f"candidate(s) with extended training to identify which "
+                    f"architectures warrant full validation."
+                ),
+                "success_criteria": (
+                    "At least 1 candidate passes investigation with "
+                    "loss_ratio < 0.6 and robustness > 0.7; "
+                    "Clear go/no-go decision for each investigated candidate"
+                ),
+            }
+        elif reason == "stale":
+            return {
+                "title": "Novelty Exploration",
+                "objective": (
+                    "Escape the current search region using evolution and "
+                    "novelty search to discover fundamentally different "
+                    "architecture patterns."
+                ),
+                "success_criteria": (
+                    "Find 3+ architectures with loss_ratio < 0.5 and "
+                    "novelty_score > 0.5; Stage-1 survival rate > 5%"
+                ),
+            }
+        else:
+            return {
+                "title": "Architecture Discovery",
+                "objective": (
+                    "Discover novel computation patterns by exploring diverse "
+                    "op combinations, math spaces, and weight storage techniques."
+                ),
+                "success_criteria": (
+                    "Find 3+ architectures with loss_ratio < 0.5; "
+                    "Stage-1 survival rate > 3%; "
+                    "At least 1 go/no-go decision recorded"
+                ),
+            }
+
     def _maybe_extract_knowledge(self, config: RunConfig, nb: LabNotebook,
                                   n_experiments: int) -> None:
         """Extract knowledge every N experiments."""
@@ -1141,6 +1666,13 @@ class ExperimentRunner:
         n_experiments = 0
         t_start = time.time()
         self.aria.reset_cost_tracking()
+        self._set_aria_cycle_phase(
+            "planning",
+            continuous_active=True,
+            cycle_index=0,
+            selected_mode=None,
+            note="Preparing continuous research loop.",
+        )
 
         # Initialize checkpoint manager
         ckpt = CheckpointManager(config.checkpoint_dir)
@@ -1181,12 +1713,22 @@ class ExperimentRunner:
             logger.debug(f"Campaign init failed: {e}")
 
         while not self._stop_event.is_set():
+            self._wait_for_cycle_resume(n_experiments)
+            if self._stop_event.is_set():
+                break
+
             # Check limits before starting next experiment
             stop_reason = self._check_continuous_limits(
                 config, t_start, n_experiments)
             if stop_reason:
                 self._end_of_session_automation(
                     config, reason=f"continuous_session_end ({stop_reason})")
+                self._set_aria_cycle_phase(
+                    "completed",
+                    continuous_active=False,
+                    cycle_index=n_experiments,
+                    note=f"Session ended: {stop_reason}",
+                )
 
                 with self._lock:
                     self._progress.status = "completed"
@@ -1203,80 +1745,8 @@ class ExperimentRunner:
 
             n_experiments += 1
             nb = self._make_notebook()
-
-            # ── Mode Selection: Aria decides what to do next ──
-            mode_rec = self._select_next_mode(config, nb, n_experiments)
-            selected_mode = mode_rec.get("mode", "synthesis")
-            mode_reasoning = mode_rec.get("reasoning", "")
-
-            self._emit_event("mode_selected", {
-                "mode": selected_mode,
-                "reasoning": mode_reasoning,
-                "confidence": mode_rec.get("confidence", 0),
-                "experiment_number": n_experiments,
-            })
-
-            # Apply config adjustments from mode recommendation
-            mode_config_adj = mode_rec.get("config", {})
-
-            limit_info = []
-            if config.max_experiments > 0:
-                limit_info.append(f"exp {n_experiments}/{config.max_experiments}")
-            if config.max_time_minutes > 0:
-                elapsed_min = (time.time() - t_start) / 60
-                limit_info.append(f"{elapsed_min:.0f}/{config.max_time_minutes}min")
-            if config.max_cost_dollars > 0:
-                limit_info.append(f"${self.aria.total_cost:.2f}/${config.max_cost_dollars:.2f}")
-            limit_str = " | ".join(limit_info) if limit_info else f"exp {n_experiments}"
-
-            # ── Check for pending auto-escalations first ──
-            pending_inv = getattr(self, "_pending_investigation", None)
-            pending_val = getattr(self, "_pending_validation", None)
-
-            if pending_inv and selected_mode != "investigation":
-                # Auto-escalation queued investigation — override mode
-                selected_mode = "investigation"
-                mode_reasoning = pending_inv.get("hypothesis", "Auto-investigation")
-                self._pending_investigation = None
-                self._emit_event("mode_selected", {
-                    "mode": "investigation",
-                    "reasoning": "Auto-escalation: S1 survivors qualify for investigation",
-                    "confidence": 0.9,
-                    "experiment_number": n_experiments,
-                })
-            elif pending_val and selected_mode != "validation":
-                selected_mode = "validation"
-                mode_reasoning = pending_val.get("hypothesis", "Auto-validation")
-                self._pending_validation = None
-                self._emit_event("mode_selected", {
-                    "mode": "validation",
-                    "reasoning": "Auto-escalation: investigation survivors qualify for validation",
-                    "confidence": 0.9,
-                    "experiment_number": n_experiments,
-                })
-
-            # ── Dispatch based on selected mode ──
             try:
-                if selected_mode in ("investigation", "validation"):
-                    self._run_continuous_phase(
-                        selected_mode, config, nb, n_experiments,
-                        limit_str, mode_reasoning)
-                elif selected_mode == "evolution":
-                    self._run_continuous_evolution(
-                        config, nb, n_experiments, limit_str, mode_reasoning)
-                elif selected_mode == "novelty":
-                    self._run_continuous_novelty(
-                        config, nb, n_experiments, limit_str, mode_reasoning)
-                else:
-                    self._run_continuous_synthesis(
-                        config, nb, n_experiments, limit_str, mode_reasoning)
-            except Exception as e:
-                logger.warning(f"Continuous mode {selected_mode} failed: {e}")
-                self._emit_event("experiment_failed", {
-                    "experiment_number": n_experiments,
-                    "mode": selected_mode,
-                    "error": str(e),
-                })
+                self.run_aria_cycle(config, nb, n_experiments, t_start)
             finally:
                 nb.close()
 
@@ -1321,6 +1791,16 @@ class ExperimentRunner:
             self._progress.aria_message = (
                 f"Stopped after {n_experiments} experiments ({elapsed_min:.0f}min{cost_str})."
             )
+        self._set_aria_cycle_phase(
+            "completed" if not self._stop_event.is_set() else "idle",
+            continuous_active=False,
+            cycle_index=n_experiments,
+            note=(
+                f"Continuous run finished after {n_experiments} experiments."
+                if not self._stop_event.is_set()
+                else "Continuous run stopped by user."
+            ),
+        )
 
         # Clean up checkpoints on successful completion (unless keep_checkpoints)
         if not self._stop_event.is_set() and not config.keep_checkpoints:
@@ -1663,6 +2143,7 @@ class ExperimentRunner:
         # queue investigation/validation if criteria met
         results["experiment_id"] = exp_id
         self._auto_escalate(results, config, nb, phase="screening")
+        self._maybe_evaluate_campaign(config, nb)
 
         self._emit_event("experiment_completed", {
             "experiment_id": exp_id, "results": results, "mode": "synthesis",
@@ -1894,6 +2375,7 @@ class ExperimentRunner:
 
         results["experiment_id"] = exp_id
         self._auto_escalate(results, config, nb, phase="screening")
+        self._maybe_evaluate_campaign(config, nb)
 
         self._emit_event("experiment_completed", {
             "experiment_id": exp_id, "results": results, "mode": "evolution",
@@ -2028,6 +2510,7 @@ class ExperimentRunner:
 
         results["experiment_id"] = exp_id
         self._auto_escalate(results, config, nb, phase="screening")
+        self._maybe_evaluate_campaign(config, nb)
 
         self._emit_event("experiment_completed", {
             "experiment_id": exp_id, "results": results, "mode": "novelty",
@@ -2975,6 +3458,15 @@ class ExperimentRunner:
             )
             # Persist for observability
             results["applied_grammar_weights"] = dict(grammar.category_weights)
+            # Emit SSE so LiveFeed can show learning events
+            n_changed = sum(1 for k in grammar_weights
+                            if old_weights.get(k) != grammar_weights[k])
+            self._emit_event("learning_event", {
+                "event_type": "grammar_weights_applied",
+                "experiment_id": exp_id,
+                "n_changed": n_changed,
+                "description": f"Applied learned grammar weights ({n_changed} categories changed)",
+            })
         else:
             grammar.category_weights["math_space"] = config.math_space_weight
 
@@ -4386,6 +4878,21 @@ class ExperimentRunner:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+
+        # Tier guard: reject result IDs already at investigation tier or beyond
+        tiers = nb.get_tiers_for_result_ids(result_ids)
+        already_done = {
+            rid: tier for rid, tier in tiers.items()
+            if tier in ("investigation", "validation", "breakthrough")
+        }
+        if already_done:
+            nb.close()
+            labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_done.items())
+            raise ValueError(
+                f"Cannot investigate: {len(already_done)} candidate(s) already "
+                f"at or beyond investigation tier: {labels}"
+            )
+
         source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
             hypothesis = (
@@ -4741,6 +5248,34 @@ class ExperimentRunner:
         self._stop_event.clear()
 
         nb = self._make_notebook()
+
+        # Tier guard: reject candidates already at validation tier or beyond
+        tiers = nb.get_tiers_for_result_ids(result_ids)
+        already_validated = {
+            rid: tier for rid, tier in tiers.items()
+            if tier in ("validation", "breakthrough")
+        }
+        if already_validated:
+            nb.close()
+            labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_validated.items())
+            raise ValueError(
+                f"Cannot validate: {len(already_validated)} candidate(s) already "
+                f"at or beyond validation tier: {labels}"
+            )
+        # Warn if known-screening candidates haven't been investigated
+        # (result_ids without leaderboard entries are allowed — they may
+        # come from auto-escalation paths that create entries mid-flight)
+        not_investigated = {
+            rid for rid in result_ids
+            if tiers.get(rid) == "screening"
+        }
+        if not_investigated:
+            nb.close()
+            raise ValueError(
+                f"Cannot validate: {len(not_investigated)} candidate(s) are still "
+                f"at screening tier (not investigated): {', '.join(not_investigated)}"
+            )
+
         source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
             hypothesis = (
@@ -5686,6 +6221,30 @@ class ExperimentRunner:
                     "avg_fitness": avg_fit,
                     "population_size": len(population),
                 })
+                try:
+                    nb.add_entry(ExperimentEntry(
+                        entry_type="live_feed",
+                        title=f"Evolution generation {gen + 1}/{config.n_generations}",
+                        content=(
+                            f"Gen {gen + 1}/{config.n_generations}: "
+                            f"best={best_fit:.3f}, avg={avg_fit:.3f}, "
+                            f"pop={len(population)}"
+                        ),
+                        experiment_id=exp_id,
+                        metadata={
+                            "live_feed_type": "evo_gen",
+                            "payload": {
+                                "experiment_id": exp_id,
+                                "generation": gen + 1,
+                                "total_generations": config.n_generations,
+                                "best_fitness": best_fit,
+                                "avg_fitness": avg_fit,
+                                "population_size": len(population),
+                            },
+                        },
+                    ))
+                except Exception as e:
+                    logger.debug("Failed to persist evolution generation feed entry: %s", e)
 
             def novelty_fn(graph, all_graphs):
                 """Structural novelty relative to current population."""
@@ -5876,6 +6435,32 @@ class ExperimentRunner:
                     "archive_size": archive.size(),
                     "best_novelty": max(novelties) if novelties else 0,
                 })
+                try:
+                    best_novelty = max(novelties) if novelties else 0
+                    nb.add_entry(ExperimentEntry(
+                        entry_type="live_feed",
+                        title=f"Novelty generation {gen + 1}/{config.n_generations}",
+                        content=(
+                            f"Gen {gen + 1}/{config.n_generations}: "
+                            f"best_fit={best_fit:.3f}, archive={archive.size()}, "
+                            f"novelty={best_novelty:.3f}"
+                        ),
+                        experiment_id=exp_id,
+                        metadata={
+                            "live_feed_type": "nov_gen",
+                            "payload": {
+                                "experiment_id": exp_id,
+                                "generation": gen + 1,
+                                "total_generations": config.n_generations,
+                                "best_fitness": best_fit,
+                                "avg_fitness": avg_fit,
+                                "archive_size": archive.size(),
+                                "best_novelty": best_novelty,
+                            },
+                        },
+                    ))
+                except Exception as e:
+                    logger.debug("Failed to persist novelty generation feed entry: %s", e)
 
             ns_result = novelty_search(
                 fitness_fn=fitness_fn,

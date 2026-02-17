@@ -15,6 +15,18 @@ function LiveFeed({ apiBase }) {
   const eventSourceRef = useRef(null);
 
   useEffect(() => {
+    let isCancelled = false;
+
+    fetch(`${apiBase}/api/live-feed?n=100`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((history) => {
+        if (isCancelled || !Array.isArray(history) || history.length === 0) {
+          return;
+        }
+        setEvents((prev) => [...history, ...prev].slice(-100));
+      })
+      .catch(() => {});
+
     const es = new EventSource(`${apiBase}/api/events`);
     eventSourceRef.current = es;
 
@@ -264,7 +276,16 @@ function LiveFeed({ apiBase }) {
       }]);
     });
 
+    // Learning events (grammar weight adjustments)
+    es.addEventListener('learning_event', (e) => {
+      const data = JSON.parse(e.data);
+      setEvents(prev => [...prev.slice(-99), {
+        type: 'learning', ...data, ts: Date.now()
+      }]);
+    });
+
     return () => {
+      isCancelled = true;
       es.close();
       setConnected(false);
     };
@@ -557,6 +578,13 @@ function LiveFeed({ apiBase }) {
               {evt.type === 'campaign_completed' && (
                 <span className="feed-event-msg" style={{ color: 'var(--accent-green)', fontWeight: 600 }}>
                   Campaign completed: {evt.title}
+                </span>
+              )}
+              {/* Learning events */}
+              {evt.type === 'learning' && (
+                <span className="feed-event-msg" style={{ color: 'var(--accent-orange, #f0883e)', fontWeight: 600 }}>
+                  {evt.description || 'Grammar weights adjusted'}
+                  {evt.n_changed != null && ` (${evt.n_changed} categories)`}
                 </span>
               )}
             </div>

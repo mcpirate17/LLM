@@ -421,6 +421,97 @@ function FunctionalFamilyEvidence({ coverage }) {
   );
 }
 
+function MathspaceOperatorImpact({ impact }) {
+  const rows = Array.isArray(impact?.by_operator) ? impact.by_operator : [];
+  const families = Array.isArray(impact?.by_family) ? impact.by_family : [];
+  const topTrust = Array.isArray(impact?.top_trustworthy_operators) ? impact.top_trustworthy_operators : [];
+  const totals = impact?.totals || {};
+
+  if (!impact || impact.available === false || rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Mathspace Operator Impact</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Which mathspace operators are most represented and how they correlate with Stage-1/validation outcomes.
+      </p>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+        <strong style={{ color: 'var(--accent-purple)' }}>Coverage:</strong>{' '}
+        {totals.n_programs_with_mathspace ?? 0}/{totals.n_programs_with_graph ?? 0} programs with graph traces use mathspace ops.
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Trust score = (50% S1 pass + 30% validation pass + 20% baseline wins) × sample reliability,
+        where sample reliability scales with tested count up to 25 programs.
+      </div>
+
+      {topTrust.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          {topTrust.map(row => (
+            <span
+              key={row.op_name}
+              style={{
+                fontSize: 11,
+                padding: '4px 8px',
+                borderRadius: 999,
+                border: `1px solid ${row.trust_label === 'high' ? 'var(--accent-green)' : row.trust_label === 'medium' ? 'var(--accent-yellow)' : 'var(--text-muted)'}`,
+                color: row.trust_label === 'high' ? 'var(--accent-green)' : row.trust_label === 'medium' ? 'var(--accent-yellow)' : 'var(--text-muted)',
+                background: 'var(--bg-tertiary)',
+              }}
+            >
+              {row.op_name} · trust {(Number(row.trust_score || 0) * 100).toFixed(0)}%
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div style={{ overflowX: 'auto', marginBottom: 10 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <th style={{ padding: '6px 8px' }}>Operator</th>
+              <th style={{ padding: '6px 8px' }}>N</th>
+              <th style={{ padding: '6px 8px' }}>S1 %</th>
+              <th style={{ padding: '6px 8px' }}>Validation %</th>
+              <th style={{ padding: '6px 8px' }}>Baseline Win %</th>
+              <th style={{ padding: '6px 8px' }}>Trust %</th>
+              <th style={{ padding: '6px 8px' }}>Avg Novelty</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 12).map(row => (
+              <tr key={row.op_name} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '6px 8px', color: 'var(--accent-blue)' }}>{row.op_name}</td>
+                <td style={{ padding: '6px 8px' }}>{row.n_tested ?? 0}</td>
+                <td style={{ padding: '6px 8px' }}>{((row.stage1_pass_rate || 0) * 100).toFixed(1)}%</td>
+                <td style={{ padding: '6px 8px' }}>{((row.validation_pass_rate || 0) * 100).toFixed(1)}%</td>
+                <td style={{ padding: '6px 8px' }}>{((row.baseline_win_rate || 0) * 100).toFixed(1)}%</td>
+                <td style={{ padding: '6px 8px' }}>{((row.trust_score || 0) * 100).toFixed(1)}%</td>
+                <td style={{ padding: '6px 8px' }}>{row.avg_novelty_score != null ? Number(row.avg_novelty_score).toFixed(3) : '--'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {families.length > 0 && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
+          {families.map(row => (
+            <span key={row.family}>
+              <strong style={{ color: 'var(--accent-purple)' }}>{row.family}:</strong> S1 {(row.stage1_pass_rate * 100).toFixed(0)}% · V {(row.validation_pass_rate * 100).toFixed(0)}%
+            </span>
+          ))}
+        </div>
+      )}
+
+      {impact.explanation && (
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>{impact.explanation}</div>
+      )}
+    </div>
+  );
+}
+
 function RoutingModeComparison({ programs, comparison }) {
   const analysis = useMemo(() => {
     if (comparison && Array.isArray(comparison.by_mode)) {
@@ -901,6 +992,7 @@ function decisionGate(program) {
 const DISC_COLUMNS = [
   { key: '_score', label: 'Score' },
   { key: 'graph_fingerprint', label: 'Fingerprint' },
+  { key: 'repeat_count', label: 'Repeats' },
   { key: 'loss_ratio', label: 'Loss Ratio' },
   { key: 'novelty_score', label: 'Novelty' },
   { key: 'baseline_loss_ratio', label: 'Baseline' },
@@ -913,10 +1005,30 @@ const DISC_COLUMNS = [
 ];
 
 const REPORT_DISCOVERY_SORT_PREFS_KEY = 'dashboard.report.discovery-rankings.sort.v1';
+const REPORT_DISCOVERY_VIEW_PREFS_KEY = 'dashboard.report.discovery-rankings.view.v1';
 
 const DISC_RATING_ORDER = { 'S1 - Exceptional': 4, 'S1 - Strong': 3, 'S1 - Moderate': 2, 'S1 - Marginal': 1 };
 
-function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidate, onQueueAdd, onQueueRemove, queuedResultIds }) {
+function reportQueueReasonLabel(reason) {
+  if (reason === 'already_investigated_unchanged') return 'Already investigated (unchanged).';
+  if (reason === 'not_investigation_passed') return 'Investigation did not pass robustness gate.';
+  if (reason === 'already_validated') return 'Already validated.';
+  if (reason === 'not_investigation_tier') return 'Validation requires investigation tier.';
+  if (reason === 'not_screening_tier') return 'Investigation requires screening tier.';
+  if (reason === 'not_stage1_survivor') return 'Candidate is not a Stage-1 survivor.';
+  if (reason === 'not_in_leaderboard') return 'Candidate is not in progression leaderboard yet.';
+  if (reason === 'result_not_found') return 'Result ID not found.';
+  return 'Candidate is not currently eligible for progression actions.';
+}
+
+function DiscoveryRankings({ programs, expandedPrograms, onSelectProgram, onInvestigate, onValidate, onQueueAdd, onQueueRemove, queuedResultIds, eligibilityByResultId }) {
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      const stored = localStorage.getItem(REPORT_DISCOVERY_VIEW_PREFS_KEY);
+      return stored === 'expanded' ? 'expanded' : 'grouped';
+    } catch {}
+    return 'grouped';
+  });
   const [sortKey, setSortKey] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(REPORT_DISCOVERY_SORT_PREFS_KEY) || '{}');
@@ -945,6 +1057,24 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
     } catch {}
   }, [sortKey, sortDesc]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(REPORT_DISCOVERY_VIEW_PREFS_KEY, viewMode);
+    } catch {}
+  }, [viewMode]);
+
+  const groupedRows = Array.isArray(programs) ? programs : [];
+  const expandedRows = Array.isArray(expandedPrograms) && expandedPrograms.length > 0
+    ? expandedPrograms
+    : groupedRows;
+  const isExpanded = viewMode === 'expanded';
+  const sourceRows = isExpanded ? expandedRows : groupedRows;
+
+  const groupedUnique = groupedRows.length;
+  const expandedTotal = expandedRows.length;
+  const rerunRows = expandedRows.filter(p => Number(p.group_repeat_count || p.repeat_count || 1) > 1).length;
+  const rerunRatio = expandedTotal > 0 ? Math.round((rerunRows / expandedTotal) * 100) : 0;
+
   const sortAriaValue = (columnKey) => {
     const normalized = columnKey === 'rating' ? '_ratingOrder' : columnKey;
     if (sortKey !== normalized) return 'none';
@@ -958,7 +1088,9 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
   };
 
   const sorted = useMemo(() => {
-    const aug = programs.map(p => {
+    const aug = sourceRows.map(p => {
+      const repeatCount = Number(p.repeat_count || p.group_repeat_count || 1);
+      const repeatIndex = Number(p.group_repeat_index || 1);
       const lr = p.loss_ratio;
       const nov = p.novelty_score || 0;
       const bl = p.baseline_loss_ratio;
@@ -975,6 +1107,9 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
       const qkv = qkvUsageDescriptor(p);
       return {
         ...p,
+        repeat_count: repeatCount,
+        group_repeat_count: repeatCount,
+        group_repeat_index: repeatIndex,
         _score: discoveryScore(p),
         _scoreBreakdown: discoveryScoreBreakdown(p),
         _ratingOrder: DISC_RATING_ORDER[rLabel] || 0,
@@ -1001,7 +1136,7 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
       return sortDesc ? vb - va : va - vb;
     });
     return aug;
-  }, [programs, sortKey, sortDesc]);
+  }, [sourceRows, sortKey, sortDesc]);
 
   return (
     <div className="card">
@@ -1010,6 +1145,42 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
         The strongest architectures discovered, ranked by a composite of learning speed, novelty, and baseline comparison.
         Higher score is better and is meant for triage (not a publication-grade metric).
       </p>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Rankings are fingerprint-deduplicated: each row is one architecture identity (`graph_fingerprint`) with repeat/run-spread metadata.
+      </p>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        flexWrap: 'wrap',
+        marginBottom: 12,
+      }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          Same architecture repeated means reruns of one fingerprint. Grouped view shows one representative per fingerprint; expanded view shows every rerun row.
+          {expandedTotal > 0 && (
+            <span> Current mix: {groupedUnique} unique architectures across {expandedTotal} rows ({rerunRatio}% reruns).</span>
+          )}
+        </div>
+        <div style={{ display: 'inline-flex', gap: 6 }}>
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 11, padding: '4px 8px', opacity: isExpanded ? 0.8 : 1 }}
+            onClick={() => setViewMode('grouped')}
+            aria-pressed={!isExpanded}
+          >
+            Grouped view
+          </button>
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 11, padding: '4px 8px', opacity: isExpanded ? 1 : 0.8 }}
+            onClick={() => setViewMode('expanded')}
+            aria-pressed={isExpanded}
+          >
+            Expanded reruns
+          </button>
+        </div>
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         <strong>Score bands:</strong> 70+ strong follow-up, 40-69 promising, below 40 low priority. Click a fingerprint to open full program detail.
       </p>
@@ -1049,6 +1220,17 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
           <tbody>
             {sorted.map((p, i) => {
               const gate = decisionGate(p);
+              const eligibility = (p.result_id && eligibilityByResultId?.[p.result_id]) || {
+                investigationEligible: false,
+                validationEligible: false,
+                queueEligible: false,
+                queueReason: 'not_progression_eligible',
+              };
+              const queueIntent = eligibility.validationEligible
+                ? 'validation'
+                : eligibility.investigationEligible
+                  ? 'investigation'
+                  : null;
               return (
               <tr key={p.result_id || i} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px', color: 'var(--text-muted)' }}>{i + 1}</td>
@@ -1094,6 +1276,28 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
                       {(p.graph_fingerprint || '').slice(0, 12)}
                     </span>
                   )}
+                  {(p.repeat_count || 1) > 1 && (
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                      {isExpanded
+                        ? `rerun ${p.group_repeat_index || 1} of ${p.group_repeat_count || p.repeat_count || 1}`
+                        : `repeated ${p.repeat_count}x across ${p.repeat_experiment_span || 1} run${(p.repeat_experiment_span || 1) === 1 ? '' : 's'}`}
+                    </div>
+                  )}
+                  {(p.repeat_loss_min != null || p.repeat_loss_max != null) && (
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      loss spread {p.repeat_loss_min != null ? p.repeat_loss_min.toFixed(4) : '--'} to {p.repeat_loss_max != null ? p.repeat_loss_max.toFixed(4) : '--'}
+                    </div>
+                  )}
+                </td>
+                <td style={{ padding: '6px' }}>
+                  <span style={{ color: (p.repeat_count || 1) > 1 ? 'var(--accent-yellow)' : 'var(--text-muted)', fontWeight: 600 }}>
+                    {p.repeat_count || 1}x
+                  </span>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                    {isExpanded
+                      ? `row ${p.group_repeat_index || 1} in fingerprint group`
+                      : `span ${p.repeat_experiment_span || 1} run${(p.repeat_experiment_span || 1) === 1 ? '' : 's'}`}
+                  </div>
                 </td>
                 <td style={{
                   padding: '6px', fontWeight: 600,
@@ -1206,7 +1410,7 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
                   {p.loss_ratio != null && <RatingBadge program={p} />}
                   {p.result_id && (
                     <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {onInvestigate && (
+                      {onInvestigate && eligibility.investigationEligible && (
                         <button
                           className="refresh-btn"
                           style={{ fontSize: 10, padding: '1px 6px' }}
@@ -1216,7 +1420,7 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
                           Investigate
                         </button>
                       )}
-                      {onValidate && (
+                      {onValidate && eligibility.validationEligible && (
                         <button
                           className="refresh-btn"
                           style={{ fontSize: 10, padding: '1px 6px' }}
@@ -1242,28 +1446,56 @@ function DiscoveryRankings({ programs, onSelectProgram, onInvestigate, onValidat
                       )}
                       {(onQueueAdd || onQueueRemove) && (() => {
                         const isQueued = queuedSet.has(p.result_id);
+                        const queueDisabled = !isQueued && !eligibility.queueEligible;
                         return (
                           <button
                             className="refresh-btn"
                             style={{ fontSize: 10, padding: '1px 6px' }}
+                            disabled={queueDisabled}
                             onClick={() => {
                               if (isQueued) {
                                 onQueueRemove && onQueueRemove(p.result_id);
                               } else {
+                                if (!eligibility.queueEligible) {
+                                  return;
+                                }
                                 onQueueAdd && onQueueAdd({
                                   resultId: p.result_id,
                                   fingerprint: p.graph_fingerprint,
                                   source: 'report',
                                   architectureFamily: null,
+                                  intent: queueIntent,
+                                  queueEligible: eligibility.queueEligible,
+                                  investigationEligible: eligibility.investigationEligible,
+                                  validationEligible: eligibility.validationEligible,
+                                  queueReason: eligibility.queueReason,
                                 });
                               }
                             }}
+                            title={isQueued
+                              ? 'Remove from progression queue'
+                              : queueDisabled
+                                ? reportQueueReasonLabel(eligibility.queueReason)
+                                : queueIntent === 'validation'
+                                  ? 'Add to validation queue'
+                                  : 'Add to investigation queue'}
                             aria-label={`${isQueued ? 'Remove' : 'Add'} ${p.result_id} ${isQueued ? 'from' : 'to'} investigation queue`}
                           >
-                            {isQueued ? 'Queued' : 'Queue'}
+                            {isQueued
+                              ? 'Queued'
+                              : queueDisabled
+                                ? 'Ineligible'
+                                : queueIntent === 'validation'
+                                  ? 'Queue Validate'
+                                  : 'Queue Investigate'}
                           </button>
                         );
                       })()}
+                      {!eligibility.investigationEligible && !eligibility.validationEligible && (
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                          {reportQueueReasonLabel(eligibility.queueReason)}
+                        </span>
+                      )}
                     </div>
                   )}
                 </td>
@@ -1330,6 +1562,7 @@ function EfficiencyChart({ frontier }) {
 
 function generateMarkdown(data) {
   const s = data.summary || {};
+  const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;
   const lines = [];
   lines.push('# Research Report');
   lines.push(`*Generated: ${new Date().toISOString()}*\n`);
@@ -1342,7 +1575,7 @@ function generateMarkdown(data) {
   lines.push('## Key Statistics\n');
   lines.push(`- Total experiments: ${s.total_experiments || 0}`);
   lines.push(`- Programs evaluated: ${s.total_programs_evaluated || 0}`);
-  lines.push(`- Stage 1 survivors: ${s.total_s1_passed || 0}`);
+  lines.push(`- Stage 1 survivors: ${s1Survivors}`);
   lines.push(`- Novel discoveries: ${s.total_novel || 0}`);
   lines.push('');
 
@@ -1455,7 +1688,7 @@ function NegativeResultsSummary() {
   );
 }
 
-function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, onValidate, onQueueAdd, onQueueRemove, queuedResultIds, onHypothesisHandoff }) {
+function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, onValidate, onQueueAdd, onQueueRemove, queuedResultIds, eligibilityByResultId, onHypothesisHandoff }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1494,6 +1727,12 @@ function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, on
 
   const s = data.summary || {};
   const top = data.top_programs || [];
+  const topExpanded = data.top_programs_expanded || [];
+  const reportActionEligibility = data.action_eligibility || {};
+  const mergedEligibilityByResultId = {
+    ...(eligibilityByResultId || {}),
+    ...reportActionEligibility,
+  };
   const experiments = data.recent_experiments || [];
   const ops = data.op_success_rates || [];
   const failures = data.failure_patterns || {};
@@ -1503,12 +1742,15 @@ function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, on
   const learningLog = data.learning_log || [];
   const crossRunStability = data.cross_run_stability || {};
   const mathFamilyCoverage = data.math_family_coverage || { families: [], totals: { n_tested: 0, n_survived: 0 } };
+  const mathspaceOperatorImpact = data.mathspace_operator_impact || null;
   const routingModeComparison = data.routing_mode_comparison || null;
+  const architectureRerunTelemetry = data.architecture_rerun_telemetry || {};
   const stabilitySummary = crossRunStability.summary || {};
   const stabilityCandidates = crossRunStability.candidates || [];
 
   const totalProg = s.total_programs_evaluated || 0;
-  const s1Rate = totalProg > 0 ? ((s.total_s1_passed || 0) / totalProg * 100).toFixed(1) : '0.0';
+  const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;
+  const s1Rate = totalProg > 0 ? (s1Survivors / totalProg * 100).toFixed(1) : '0.0';
 
   // Separate best and worst ops
   const sortedOps = Array.isArray(ops)
@@ -1558,6 +1800,11 @@ function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, on
   const avgReproCompleteness = reproducibilityRows.length > 0
     ? Math.round((reproducibilityRows.reduce((sum, row) => sum + row.readyCount / row.totalChecks, 0) / reproducibilityRows.length) * 100)
     : 0;
+  const uniqueFingerprintCount = Number(architectureRerunTelemetry.unique_fingerprint_count || 0);
+  const totalResultRows = Number(architectureRerunTelemetry.total_result_rows || 0);
+  const repeatResultRows = Number(architectureRerunTelemetry.repeat_result_rows || 0);
+  const rerunRatioPercent = Number(architectureRerunTelemetry.rerun_ratio || 0) * 100;
+  const topFingerprintConcentrationPercent = Number(architectureRerunTelemetry.top_fingerprint_concentration || 0) * 100;
 
   // Failure breakdown
   const failureByType = failures.by_error_type || failures;
@@ -1591,7 +1838,7 @@ function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, on
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12, marginBottom: 16 }}>
           <StatCard label="Experiments" value={s.total_experiments || 0} color="var(--accent-blue)" />
           <StatCard label="Programs Tested" value={totalProg.toLocaleString()} color="var(--accent-purple)" />
-          <StatCard label="S1 Survivors" value={s.total_s1_passed || 0} color="var(--accent-green)" />
+          <StatCard label="S1 Survivors" value={s1Survivors} color="var(--accent-green)" />
           <StatCard label="S1 Pass Rate" value={`${s1Rate}%`} color={parseFloat(s1Rate) > 5 ? 'var(--accent-green)' : 'var(--accent-yellow)'} />
           <StatCard label="Novel" value={s.total_novel || 0} color="var(--accent-yellow)" />
         </div>
@@ -1687,16 +1934,35 @@ function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, on
         )}
       </div>
 
+      <div className="card">
+        <div className="card-title">Unique Architectures vs Reruns</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          Concentration telemetry clarifies whether current learning signals come from architecture breadth
+          or repeated reruns of a few fingerprints.
+        </p>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-secondary)' }}>
+          <span><strong style={{ color: 'var(--accent-green)' }}>Unique fingerprints:</strong> {uniqueFingerprintCount}</span>
+          <span><strong style={{ color: 'var(--text-muted)' }}>Rows:</strong> {totalResultRows}</span>
+          <span><strong style={{ color: rerunRatioPercent >= 60 ? 'var(--accent-yellow)' : 'var(--text-muted)' }}>Rerun ratio:</strong> {rerunRatioPercent.toFixed(1)}%</span>
+          <span><strong style={{ color: topFingerprintConcentrationPercent >= 35 ? 'var(--accent-yellow)' : 'var(--text-muted)' }}>Top fingerprint concentration:</strong> {topFingerprintConcentrationPercent.toFixed(1)}%</span>
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+          Repeat rows: {repeatResultRows} · Weighting mode: {architectureRerunTelemetry.weighting_mode || 'unknown'}
+        </div>
+      </div>
+
       {/* Discovery Rankings */}
       {top.length > 0 && (
         <DiscoveryRankings
           programs={top}
+          expandedPrograms={topExpanded}
           onSelectProgram={onSelectProgram}
           onInvestigate={onInvestigate}
           onValidate={onValidate}
           onQueueAdd={onQueueAdd}
           onQueueRemove={onQueueRemove}
           queuedResultIds={queuedResultIds}
+          eligibilityByResultId={mergedEligibilityByResultId}
         />
       )}
 
@@ -1705,6 +1971,9 @@ function ResearchReport({ onSelectProgram, onSelectExperiment, onInvestigate, on
 
       {/* Functional family coverage evidence */}
       {mathFamilyCoverage.families?.length > 0 && <FunctionalFamilyEvidence coverage={mathFamilyCoverage} />}
+
+      {/* Mathspace operator impact evidence */}
+      {mathspaceOperatorImpact?.available && <MathspaceOperatorImpact impact={mathspaceOperatorImpact} />}
 
       {/* Routing Mode Comparison */}
       {(top.length > 0 || routingModeComparison?.available) && (

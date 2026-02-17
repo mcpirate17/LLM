@@ -106,3 +106,9 @@ def execute_tropical_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     else:
         q = x
     return tropical_attention(q, x, x)
+
+
+def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Center features by tropical (min) sequence baseline."""
+    baseline = x.amin(dim=1, keepdim=True)
+    return x - baseline

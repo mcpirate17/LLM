@@ -2411,6 +2411,47 @@ def create_app(
             logger.error(f"Error in /api/aria/cycle-status: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/aria/cycle-control", methods=["POST"])
+    def api_aria_cycle_control():
+        """Control Aria cycle policy: start, pause, resume."""
+        runner = _get_runner(notebook_path)
+        body = request.get_json(silent=True) or {}
+        action = str(body.get("action") or "").strip().lower()
+
+        if action == "pause":
+            status = runner.pause_aria_cycle()
+            return jsonify({"ok": True, "action": "pause", "cycle": status})
+
+        if action == "resume":
+            status = runner.resume_aria_cycle()
+            return jsonify({"ok": True, "action": "resume", "cycle": status})
+
+        if action == "start":
+            if runner.is_running:
+                return jsonify({"error": "An experiment is already running"}), 409
+
+            config_payload = body.get("config") if isinstance(body.get("config"), dict) else body
+            config_payload = dict(config_payload or {})
+            config_payload.pop("action", None)
+            config_payload["continuous"] = True
+
+            try:
+                config = RunConfig.from_dict(config_payload)
+                exp_id = runner.start_continuous(config)
+                return jsonify({
+                    "ok": True,
+                    "action": "start",
+                    "experiment_id": exp_id,
+                    "cycle": runner.get_aria_cycle_status(),
+                })
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except Exception as e:
+                logger.error(f"Error starting cycle control: {e}")
+                return jsonify({"error": str(e)}), 500
+
+        return jsonify({"error": "action must be one of: start, pause, resume"}), 400
+
     @app.route("/api/aria/recommendation")
     def api_aria_recommendation():
         """Get Aria's experiment recommendation based on all data."""

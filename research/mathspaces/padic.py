@@ -120,3 +120,10 @@ def execute_padic_expand(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
 def execute_ultrametric_attn(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Ultrametric attention."""
     return ultrametric_attention(x)
+
+
+def execute_padic_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Gate activations using smooth p-adic valuation signal."""
+    valuation = padic_valuation(x).clamp(min=-10.0, max=10.0)
+    gate = torch.sigmoid(valuation)
+    return x * gate
