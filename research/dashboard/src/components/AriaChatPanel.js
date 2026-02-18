@@ -32,6 +32,16 @@ function buildMessage(id, role, text, meta = {}) {
   };
 }
 
+function summarizeForChat(text, maxChars = 280) {
+  const cleaned = String(text || '')
+    .replace(/```(?!action\b)[\s\S]*?```/gi, '[details sent to local agent]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  if (cleaned.length <= maxChars) return cleaned;
+  return `${cleaned.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
 function formatTimestamp(ts) {
   // Handle both seconds (from DB) and milliseconds (from JS)
   const ms = ts > 1e12 ? ts : ts * 1000;
@@ -61,10 +71,15 @@ function localHelperReasonLabel(reason) {
 }
 
 function dbMessageToLocal(msg) {
+  // Truncate old verbose messages from DB to keep chat readable
+  let text = msg.text || '';
+  if (msg.role !== 'user' && text.length > 300) {
+    text = text.slice(0, 297).trimEnd() + '...';
+  }
   return {
     id: msg.message_id || `db-${msg.timestamp}`,
     role: msg.role,
-    text: msg.text,
+    text,
     timestamp: msg.timestamp > 1e12 ? msg.timestamp : msg.timestamp * 1000,
     label: msg.label || undefined,
     isSummary: Boolean(msg.summary_of),
@@ -138,11 +153,13 @@ function actionSummary(action) {
   const detail = action.detail || {};
   if (type === 'adjust_config') {
     const changes = detail.changes || {};
-    return `Adjusted config: ${Object.entries(changes).map(([k, v]) => `${k}=${v}`).join(', ')}`;
+    const preview = Object.entries(changes).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(', ');
+    return summarizeForChat(`Adjusted config: ${preview}${Object.keys(changes).length > 4 ? ', …' : ''}`, 160);
   }
   if (type === 'adjust_grammar') {
     const weights = detail.weights || {};
-    return `Adjusted grammar: ${Object.entries(weights).map(([k, v]) => `${k}=${v}`).join(', ')}`;
+    const preview = Object.entries(weights).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(', ');
+    return summarizeForChat(`Adjusted grammar: ${preview}${Object.keys(weights).length > 4 ? ', …' : ''}`, 160);
   }
   if (type === 'start_experiment') {
     return detail.experiment_id ? `Started experiment ${detail.experiment_id.slice(0, 8)}` : (detail.error || 'Experiment busy');
@@ -151,9 +168,9 @@ function actionSummary(action) {
     return detail.path ? `Edited ${detail.path}: ${detail.description || ''}` : (detail.error || 'Edit failed');
   }
   if (type === 'spawn_agent') {
-    return detail.task_id ? `Spawned agent ${detail.task_id}: ${detail.goal || ''}` : (detail.error || 'Agent spawn failed');
+    return detail.task_id ? summarizeForChat(`Spawned agent ${detail.task_id}: ${detail.goal || ''}`, 160) : (detail.error || 'Agent spawn failed');
   }
-  return `${type}: ${action.status}`;
+  return summarizeForChat(`${type}: ${action.status}`, 160);
 }
 
 function renderActions(message) {
@@ -187,7 +204,7 @@ function renderActions(message) {
   );
 }
 
-function renderAgentTask(message) {
+function renderAgentTask(message, showDetails, onToggleDetails) {
   const task = message.agentTask;
   if (!task || !task.task_id) return null;
 
@@ -204,6 +221,7 @@ function renderAgentTask(message) {
   const proposed = Array.isArray(task.proposed_edits) ? task.proposed_edits : [];
   const skipped = Array.isArray(task.skipped_edits) ? task.skipped_edits : [];
   const notes = Array.isArray(task.notes) ? task.notes : [];
+  const hasDetailRows = applied.length > 0 || proposed.length > 0 || skipped.length > 0 || notes.length > 0;
   const plannerBackend = String(task.planner_backend || '').trim();
   const mainLlmBackend = String(task.main_llm_backend || '').trim();
   const localOllamaUsed = Boolean(task.local_ollama_used);
@@ -264,22 +282,40 @@ function renderAgentTask(message) {
       )}
       {task.summary && (
         <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-          {task.summary}
+          {summarizeForChat(task.summary, 180)}
         </div>
       )}
-      {applied.length > 0 && (
+      {hasDetailRows && (
+        <button
+          type="button"
+          onClick={onToggleDetails}
+          style={{
+            alignSelf: 'flex-start',
+            fontSize: 10,
+            color: 'var(--text-muted)',
+            background: 'none',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            padding: '1px 6px',
+            cursor: 'pointer',
+          }}
+        >
+          {showDetails ? 'Hide task details' : 'Show task details'}
+        </button>
+      )}
+      {showDetails && applied.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)' }}>
             Applied edits:
           </span>
-          {applied.slice(0, 3).map((edit, idx) => (
+          {applied.slice(0, 6).map((edit, idx) => (
             <span key={`applied-${edit.path || idx}-${idx}`} style={{ fontSize: 10, color: 'var(--text-muted)' }}>
               {edit.path || 'unknown file'}
             </span>
           ))}
         </div>
       )}
-      {isFailed && notes.length > 0 && (
+      {showDetails && isFailed && notes.length > 0 && (
         <div style={{ fontSize: 10, color: 'var(--accent-red, #f44336)' }}>
           {String(notes[0] || '').slice(0, 180)}
         </div>
@@ -302,6 +338,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
+  const [expandedAgentTasks, setExpandedAgentTasks] = useState({});
   const [localHelper, setLocalHelper] = useState(null);
   const completedAgentTasksRef = useRef(new Set());
   const lastEvidenceSnapshotRef = useRef('');
@@ -480,7 +517,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
           newMessages.push(buildMessage(
             `briefing-${Date.now()}`,
             'aria',
-            consolidatedText,
+            summarizeForChat(consolidatedText, 300),
             { label: briefing.ai_powered ? 'AI Briefing' : 'Fallback Briefing' },
           ));
         }
@@ -579,7 +616,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         const ariaMessage = buildMessage(
           `aria-${Date.now()}`,
           'aria',
-          data.reply,
+          summarizeForChat(data.reply, 300),
           {
             label: data.ai_powered
               ? 'Aria'
@@ -636,7 +673,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         : 'local helper status unknown';
 
       addSystemMessage(
-        `Auto-repair agent started (${taskId}) after ${source} failure — ${helperState}.`,
+        summarizeForChat(`Auto-repair agent started (${taskId}) after ${source} failure — ${helperState}.`, 170),
       );
     };
 
@@ -774,6 +811,21 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
               Local LM: {localHelper.enabled ? 'ready' : localHelperReasonLabel(localHelper.reason)}
             </span>
           )}
+          <span
+            title="Aria code agent can directly patch Python and JavaScript files"
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              color: 'var(--accent-blue)',
+              background: 'rgba(31, 111, 235, 0.12)',
+              border: '1px solid var(--accent-blue)',
+              borderRadius: 4,
+              padding: '1px 5px',
+            }}
+          >
+            Self-fix: .py/.js
+          </span>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           <span
@@ -851,7 +903,18 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
                 {m.role !== 'system' && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatTimestamp(m.timestamp)}</span>}
               </div>
               <div style={{ fontSize: m.role === 'system' ? 11 : 12, lineHeight: 1.45, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{m.text}</div>
-              {renderAgentTask(m)}
+              {renderAgentTask(
+                m,
+                Boolean(expandedAgentTasks[m?.agentTask?.task_id]),
+                () => {
+                  const taskId = m?.agentTask?.task_id;
+                  if (!taskId) return;
+                  setExpandedAgentTasks((prev) => ({
+                    ...prev,
+                    [taskId]: !prev[taskId],
+                  }));
+                },
+              )}
               {renderActions(m)}
               {renderLocalEvidence(m)}
             </div>

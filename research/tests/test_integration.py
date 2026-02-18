@@ -2587,8 +2587,79 @@ class TestAPI(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
-        self.assertIn("Evidence:", data.get("reply", ""))
-        self.assertIn("Recommendation:", data.get("reply", ""))
+        # Fallback reply should be concise
+        reply = data.get("reply", "")
+        self.assertTrue(len(reply) > 0)
+        self.assertTrue(len(reply) < 200, f"Fallback reply too long: {len(reply)} chars")
+
+    def test_api_aria_chat_returns_local_hits_and_spawned_agent_summary(self):
+        """Chat should return local file hits and spawned agent metadata when action block requests spawn_agent."""
+        from research.scientist import api as api_mod
+
+        class _FakeResp:
+            def __init__(self, text):
+                self.text = text
+
+        class _FakeLLM:
+            name = "openai"
+
+            def is_available(self):
+                return True
+
+            def generate(self, prompt, system=None, max_tokens=None):
+                return _FakeResp(
+                    "Taking action now.\n\n"
+                    "```action\n"
+                    "{\"type\": \"spawn_agent\", \"goal\": \"Fix python and js self-edit rails\"}\n"
+                    "```"
+                )
+
+        class _FakeAria:
+            def _get_llm(self):
+                return _FakeLLM()
+
+            def _track_cost(self, _resp):
+                return None
+
+        with patch.object(api_mod, "get_aria", return_value=_FakeAria()), \
+             patch.object(api_mod, "_run_local_chat_agent", return_value={
+                 "tools_used": ["workspace.search"],
+                 "summary": "Local agent findings: indexed workspace files",
+                 "code_hits": [
+                     {
+                         "path": "search/evolution.py",
+                         "abs_path": "/tmp/research/search/evolution.py",
+                         "line": 1,
+                         "score": 7,
+                         "snippet": "Evolutionary Search over Computation Graphs",
+                     }
+                 ],
+             }), \
+             patch.object(api_mod, "_spawn_code_agent_task", return_value={
+                 "task_id": "task_test_spawn",
+                 "status": "queued",
+                 "allow_write": True,
+             }):
+            r = self.client.post(
+                "/api/aria/chat",
+                json={
+                    "message": "Plan next action using local evidence.",
+                    "session_id": "test-session-local-hit-spawn",
+                },
+            )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("reply", data)
+        self.assertTrue(data.get("reply", "").startswith("Taking action now."))
+        self.assertIsInstance(data.get("agent_task"), dict)
+        self.assertEqual(data["agent_task"].get("task_id"), "task_test_spawn")
+        self.assertTrue(data.get("actions_taken"))
+        self.assertEqual(data["actions_taken"][0].get("type"), "spawn_agent")
+        self.assertEqual(data["actions_taken"][0].get("status"), "spawned")
+        self.assertEqual(data.get("local_tools_used"), ["workspace.search"])
+        self.assertTrue(data.get("local_code_hits"))
+        self.assertEqual(data["local_code_hits"][0].get("path"), "search/evolution.py")
 
     def test_api_aria_chat_history(self):
         # Save a message first
@@ -4478,6 +4549,7 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("Ask for Action", content)
         self.assertIn("Self-fix: .py/.js", content)
         self.assertIn("details sent to local agent", content)
+        self.assertIn("Show task details", content)
 
     def test_dashboard_wires_auto_repair_started_event_to_chat(self):
         app_content = self._read_file(self.app_js)
@@ -7505,6 +7577,122 @@ class TestChatActions(unittest.TestCase):
         result = runner._execute_edit_file_action(action, nb)
         self.assertEqual(result["status"], "error")
         self.assertIn(".py and .js", result["error"])
+
+    def test_local_chat_agent_reads_workspace_files(self):
+        """Local chat agent workspace search should read files and return relevant hits."""
+        from research.scientist.api import _chat_search_workspace
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "scientist" / "read_probe.py"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            unique_token = f"local_llm_read_probe_{int(time.time() * 1000)}"
+            target.write_text(
+                "def probe_read_function():\n"
+                f"    return '{unique_token}'\n",
+                encoding="utf-8",
+            )
+
+            hits = _chat_search_workspace(
+                question=unique_token,
+                workspace_root=root,
+                max_hits=6,
+                max_files=200,
+            )
+            hit_paths = [h.get("path") for h in hits]
+            self.assertIn("scientist/read_probe.py", hit_paths)
+
+    def test_workspace_file_index_supports_agent_targeting(self):
+        """Workspace index should expose files/symbols so Aria can choose where to spawn agents."""
+        from research.scientist.api import _build_workspace_file_index, _query_file_index
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "dashboard" / "src" / "agent_index_probe.js"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                "export function ariaIndexProbe() { return 'ok'; }\n",
+                encoding="utf-8",
+            )
+
+            index = _build_workspace_file_index(root, force=True)
+            self.assertIn("dashboard/src/agent_index_probe.js", index)
+
+            ranked = _query_file_index(
+                goal="aria index probe function",
+                workspace_root=root,
+                max_results=5,
+            )
+            ranked_paths = [entry.get("rel_path") for entry in ranked]
+            self.assertIn("dashboard/src/agent_index_probe.js", ranked_paths)
+
+    def test_edit_file_can_modify_research_test_python_file(self):
+        """Edit action should be able to modify a Python test file under research/tests."""
+        from research.scientist.runner import ExperimentRunner
+        import research.scientist.runner as runner_mod
+
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        runner._grammar_weight_overrides = {}
+        nb = MagicMock()
+
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(runner_mod.__file__)))
+        probe_dir = os.path.join(project_root, "research", "tests")
+        os.makedirs(probe_dir, exist_ok=True)
+        filename = f"local_llm_edit_probe_{int(time.time() * 1000)}.py"
+        probe_path = os.path.join(probe_dir, filename)
+        result = None
+
+        try:
+            with open(probe_path, "w", encoding="utf-8") as handle:
+                handle.write("def probe_value():\n    return 1\n")
+
+            action = {
+                "type": "edit_file",
+                "path": f"research/tests/{filename}",
+                "search": "return 1",
+                "replace": "return 2",
+                "description": "local llm edit probe",
+            }
+            result = runner._execute_edit_file_action(action, nb)
+
+            self.assertEqual(result["status"], "applied")
+            self.assertTrue(os.path.exists(result["backup"]))
+            with open(probe_path, "r", encoding="utf-8") as handle:
+                self.assertIn("return 2", handle.read())
+            nb.log_learning_event.assert_called()
+        finally:
+            if os.path.exists(probe_path):
+                os.remove(probe_path)
+            if isinstance(result, dict):
+                backup_path = result.get("backup")
+                if backup_path and os.path.exists(backup_path):
+                    os.remove(backup_path)
+
+    def test_edit_file_can_target_real_search_python_file(self):
+        """Edit action should work on real project files such as search/evolution.py."""
+        from research.scientist.runner import ExperimentRunner
+
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        runner._grammar_weight_overrides = {}
+        nb = MagicMock()
+
+        action = {
+            "type": "edit_file",
+            "path": "search/evolution.py",
+            "search": "Evolutionary Search over Computation Graphs",
+            "replace": "Evolutionary Search over Computation Graphs",
+            "description": "capability probe for real search file",
+        }
+
+        result = runner._execute_edit_file_action(action, nb)
+        self.assertEqual(result["status"], "applied")
+        self.assertTrue(result["path"].endswith("search/evolution.py"))
+        self.assertTrue(os.path.exists(result["backup"]))
+        nb.log_learning_event.assert_called()
+
+        backup_path = result.get("backup")
+        if backup_path and os.path.exists(backup_path):
+            os.remove(backup_path)
 
     def test_edit_file_creates_backup(self):
         """A backup file should be created before editing."""

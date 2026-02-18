@@ -444,14 +444,16 @@ def _chat_requests_detailed_response(question: str) -> bool:
 
 
 def _format_simple_answer_action_plan(text: str) -> str:
-    """Compress LLM response to max 3 sentences. Strip fluff ruthlessly."""
+    """Compress LLM response to max 2 sentences, 200 chars. Strip fluff ruthlessly."""
     import re as _re
 
     raw = str(text or "").strip()
     if not raw:
         return raw
 
-    # Extract sentences, keep max 3
+    # Strip code blocks (action blocks handled separately)
+    raw = _re.sub(r"```[\s\S]*?```", "", raw).strip()
+    # Collapse whitespace
     cleaned = _re.sub(r"\s+", " ", raw)
     sentences = [
         s.strip()
@@ -459,9 +461,11 @@ def _format_simple_answer_action_plan(text: str) -> str:
         if s.strip() and len(s.strip()) > 10
     ]
     if sentences:
-        kept = sentences[:3]
-        return " ".join(kept)
-    return raw[:400]
+        result = " ".join(sentences[:2])
+        if len(result) > 200:
+            result = result[:197].rsplit(" ", 1)[0] + "..."
+        return result
+    return cleaned[:200]
 
 
 def _code_agent_task_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
@@ -5338,6 +5342,9 @@ def create_app(
             )
             if local_agent_result.get("summary"):
                 context = f"{context}\n\n{local_agent_result['summary']}"
+            # Cap context to ~2000 chars to prevent LLM from echoing data back
+            if len(context) > 2000:
+                context = context[:2000] + "\n[context truncated]"
             if code_agent_task:
                 task_id = code_agent_task.get("task_id")
                 context = (
@@ -5373,12 +5380,17 @@ def create_app(
                             "Do NOT provide a summary. Emit action blocks. "
                             "Prefer spawn_agent for complex issues (uses local Ollama, saves money)."
                         )
+                    # Keep only last 5 history lines, each capped at 100 chars
+                    trimmed_history = [
+                        (line[:100] + "..." if len(line) > 100 else line)
+                        for line in history_lines[-5:]
+                    ]
                     prompt = CHAT_PROMPT.format(
                         context=context,
-                        history="\n".join(history_lines) if history_lines else "(none)",
+                        history="\n".join(trimmed_history) if trimmed_history else "(none)",
                         question=prompt_question,
                     )
-                    max_tokens = 384 if brief_response else 1024
+                    max_tokens = 200 if brief_response else 384
                     resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=max_tokens)
                     aria._track_cost(resp)
                     text = (resp.text or "").strip()
@@ -5483,44 +5495,14 @@ def create_app(
             else:
                 fallback_reason = "llm_not_configured"
 
-            strategy = aria.plan_strategy(context) or ""
-            suggestion = aria.suggest_experiment(context) or {}
-            reasoning = suggestion.get("reasoning") if isinstance(suggestion, dict) else None
-
-            if summary_requested:
-                evidence_lines = [
-                    "- LLM chat backend is unavailable; using deterministic analysis.",
-                ]
-                if strategy:
-                    evidence_lines.append(f"- Current strategy signal: {strategy}")
-                recommendation_lines = []
-                if reasoning:
-                    recommendation_lines.append(f"- {reasoning}")
-                else:
-                    recommendation_lines.append("- Use the current Strategy Advisor recommendation to stay aligned with latest metrics.")
-                next_action = "- Run one suggested experiment, then ask again to refresh with new evidence."
-                fallback_reply = (
-                    "Evidence:\n"
-                    + "\n".join(evidence_lines)
-                    + "\n\nRecommendation:\n"
-                    + "\n".join(recommendation_lines)
-                    + "\n\nNext Action:\n"
-                    + next_action
-                )
-            else:
-                fallback_reasoning = reasoning or "Run a fix-oriented request so I can execute actions directly (settings/code/experiment)."
-                fallback_reply = _format_simple_answer_action_plan(
-                    f"{fallback_reasoning}. "
-                    "Ask with a fix intent (e.g., fix what needs fixing and apply changes) to keep execution-first mode active."
-                )
+            # Fallback: no LLM available. Keep it short.
             if code_agent_task:
                 task_id = code_agent_task.get("task_id")
-                fallback_reply = (
-                    f"{fallback_reply}\n\n"
-                    f"Codebase Agent: spawned background task `{task_id}` "
-                    f"(allow_write={bool(code_agent_task.get('allow_write'))}). "
-                    f"Check `/api/aria/agent/status/{task_id}` for progress and applied edits."
-                )
+                fallback_reply = f"Agent `{task_id}` is working on it. No LLM available for chat right now."
+            elif summary_requested:
+                fallback_reply = "LLM unavailable. Check Strategy Advisor for current recommendations."
+            else:
+                fallback_reply = "LLM unavailable. Try a fix-intent request (e.g. 'fix X') to spawn an agent."
             if session_id:
                 try:
                     nb.save_chat_message(
