@@ -120,6 +120,9 @@ class Aria:
         self._last_compression_n_tested: int = 0
         self._last_sparse_rec_cycle: int = -10
         self._last_sparse_n_tested: int = 0
+        # When True, all per-cycle methods skip LLM and use rule-based paths.
+        # Set by runner when entering continuous mode to save API costs.
+        self._continuous_mode: bool = False
 
     def _get_llm(self):
         """Lazy-init LLM backend (only try once)."""
@@ -272,7 +275,7 @@ class Aria:
         where metadata includes provenance details for notebook traceability.
         """
         llm = self._get_llm()
-        if llm and context:
+        if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, HYPOTHESIS_PROMPT
                 prompt = HYPOTHESIS_PROMPT.format(context=context)
@@ -332,7 +335,7 @@ class Aria:
         self.state.experiments_today += 1
 
         llm = self._get_llm()
-        if llm and context:
+        if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, SUMMARY_PROMPT
                 prompt = SUMMARY_PROMPT.format(context=context)
@@ -399,7 +402,10 @@ class Aria:
         """LLM-powered deep analysis of experiment results.
 
         Returns LLM analysis text, or None if LLM unavailable.
+        Skipped entirely in continuous mode to save API costs.
         """
+        if self._continuous_mode:
+            return None
         llm = self._get_llm()
         if not llm or not context:
             return None
@@ -1253,7 +1259,7 @@ class Aria:
     def formulate_investigation_hypothesis(self, context: str = "") -> str:
         """Generate investigation hypothesis for promising candidates."""
         llm = self._get_llm()
-        if llm and context:
+        if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, INVESTIGATION_HYPOTHESIS_PROMPT
                 prompt = INVESTIGATION_HYPOTHESIS_PROMPT.format(context=context)
@@ -1275,7 +1281,7 @@ class Aria:
     def formulate_validation_hypothesis(self, context: str = "") -> str:
         """Generate validation hypothesis for investigation survivors."""
         llm = self._get_llm()
-        if llm and context:
+        if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, VALIDATION_ANALYSIS_PROMPT
                 prompt = VALIDATION_ANALYSIS_PROMPT.format(context=context)
@@ -1705,9 +1711,10 @@ class Aria:
 
         Returns {mode: str, reasoning: str, confidence: float, config: Dict}.
         Uses LLM with MODE_SELECTION_PROMPT, falls back to rule-based.
+        In continuous mode, always uses rule-based to save API costs.
         """
         llm = self._get_llm()
-        if llm and context:
+        if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, MODE_SELECTION_PROMPT
                 prompt = MODE_SELECTION_PROMPT.format(context=context)
@@ -2166,7 +2173,7 @@ class Aria:
         Falls back to template-based hypothesis.
         """
         llm = self._get_llm()
-        if llm and context:
+        if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, STRUCTURED_HYPOTHESIS_PROMPT
                 prompt = STRUCTURED_HYPOTHESIS_PROMPT.format(context=context)
@@ -2298,7 +2305,7 @@ class Aria:
         Falls back to metric-based check.
         """
         llm = self._get_llm()
-        if llm and context:
+        if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, HYPOTHESIS_VALIDATION_PROMPT
                 prompt = HYPOTHESIS_VALIDATION_PROMPT.format(

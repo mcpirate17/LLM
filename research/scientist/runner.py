@@ -2759,6 +2759,9 @@ class ExperimentRunner:
         n_experiments = 0
         t_start = time.time()
         self.aria.reset_cost_tracking()
+        # Skip per-cycle LLM calls — use rule-based paths to save API costs.
+        # LLM is still available for user-initiated chat and campaign formulation.
+        self.aria._continuous_mode = True
         self._set_aria_cycle_phase(
             "planning",
             continuous_active=True,
@@ -2814,6 +2817,7 @@ class ExperimentRunner:
             stop_reason = self._check_continuous_limits(
                 config, t_start, n_experiments)
             if stop_reason:
+                self.aria._continuous_mode = False
                 self._end_of_session_automation(
                     config, reason=f"continuous_session_end ({stop_reason})")
                 self._set_aria_cycle_phase(
@@ -2868,6 +2872,9 @@ class ExperimentRunner:
 
             if config.rest_between_experiments > 0 and not self._stop_event.is_set():
                 time.sleep(config.rest_between_experiments)
+
+        # Re-enable LLM for interactive use after continuous mode ends.
+        self.aria._continuous_mode = False
 
         # Session ending (user stopped) — auto-report and auto-scale-up
         if n_experiments > 0:
