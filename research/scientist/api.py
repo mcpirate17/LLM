@@ -1196,6 +1196,40 @@ def _apply_code_agent_edits(
     }
 
 
+def _agent_post_summary_to_chat(task_id: str) -> None:
+    """Post a one-line agent completion summary to the originating chat session."""
+    snap = _code_agent_task_snapshot(task_id)
+    if not snap:
+        return
+    session_id = str(snap.get("session_id") or "").strip()
+    nb_path = str(snap.get("notebook_path") or "").strip()
+    if not session_id or not nb_path:
+        return
+
+    status = snap.get("status", "unknown")
+    applied = snap.get("applied_edits") or []
+    skipped = snap.get("skipped_edits") or []
+    goal = str(snap.get("goal") or "")[:50]
+
+    if status == "completed" and applied:
+        files = ", ".join(dict.fromkeys(e.get("path", "?") for e in applied))
+        msg = f"Agent {task_id}: Applied {len(applied)} edit(s) to {files}. Validated OK."
+    elif status == "completed":
+        msg = f"Agent {task_id}: No applicable edits found for '{goal}'."
+        if skipped:
+            msg += f" ({len(skipped)} skipped)"
+    else:
+        summary = str(snap.get("summary") or "")[:100]
+        msg = f"Agent {task_id}: Failed — {summary or 'unknown error'}."
+
+    try:
+        nb = LabNotebook(nb_path)
+        nb.save_chat_message(session_id=session_id, role="aria", text=msg, label="Aria")
+        nb.close()
+    except Exception:
+        pass
+
+
 def _run_code_agent_task(
     task_id: str,
     goal: str,
@@ -1319,6 +1353,7 @@ def _run_code_agent_task(
             applied_edits=edit_result.get("applied", []),
             skipped_edits=edit_result.get("skipped", []),
         )
+        _agent_post_summary_to_chat(task_id)
     except Exception as exc:
         _code_agent_task_update(
             task_id,
@@ -1329,12 +1364,14 @@ def _run_code_agent_task(
             notes=[str(exc), traceback.format_exc()[:1200]],
             timings=timings,
         )
+        _agent_post_summary_to_chat(task_id)
 
 
 def _spawn_code_agent_task(
     goal: str,
     notebook_path: str,
     allow_write: bool = True,
+    session_id: str = "",
 ) -> Dict[str, Any]:
     task_id = f"agent-{uuid.uuid4().hex[:10]}"
     now = time.time()
@@ -1345,6 +1382,8 @@ def _spawn_code_agent_task(
         "status": "queued",
         "created_at": now,
         "updated_at": now,
+        "session_id": session_id,
+        "notebook_path": notebook_path,
         "summary": "",
         "notes": [],
         "search_hits": [],
@@ -4052,6 +4091,7 @@ def create_app(
                         ),
                         notebook_path=notebook_path,
                         allow_write=True,
+                        session_id="",
                     )
                 except Exception as spawn_err:
                     logger.warning("Auto self-repair spawn failed: %s", spawn_err)
@@ -5112,10 +5152,12 @@ def create_app(
         if not goal:
             return jsonify({"error": "goal is required"}), 400
 
+        spawn_session_id = str(body.get("session_id") or "").strip()
         task = _spawn_code_agent_task(
             goal=goal,
             notebook_path=notebook_path,
             allow_write=allow_write,
+            session_id=spawn_session_id,
         )
         return jsonify({"ok": True, "task": task}), 202
 
@@ -5184,6 +5226,7 @@ def create_app(
                         goal=question,
                         notebook_path=notebook_path,
                         allow_write=allow_code_writes,
+                        session_id=session_id,
                     )
                 except Exception as exc:
                     logger.warning(f"Unable to spawn codebase agent from chat: {exc}")
@@ -5191,16 +5234,9 @@ def create_app(
             if execution_first_mode:
                 if code_agent_task:
                     task_id = code_agent_task.get("task_id")
-                    concise_reply = (
-                        f"Execution-first mode enabled. Spawned codebase agent `{task_id}`.\n"
-                        f"Status: `/api/aria/agent/status/{task_id}`.\n"
-                        "I’ll prioritize fixes and report outcome + changed files + validation."
-                    )
+                    concise_reply = f"Spawned agent `{task_id}` — will report back when done."
                 else:
-                    concise_reply = (
-                        "Execution-first mode enabled, but I couldn’t start a codebase agent right now.\n"
-                        "Retry in a few seconds or call `/api/aria/agent/spawn` directly."
-                    )
+                    concise_reply = "Couldn't start agent right now. Retry in a few seconds."
                 if session_id:
                     try:
                         nb.save_chat_message(
@@ -5348,37 +5384,33 @@ def create_app(
                     text = (resp.text or "").strip()
                     if text:
                         reply_text, actions = _parse_chat_actions(text)
-                        # Auto-spawn agent if LLM failed to include actions on an actionable question
-                        if not actions and not code_agent_task and _chat_question_is_actionable(question):
-                            try:
-                                code_agent_task = _spawn_code_agent_task(
-                                    goal=f"User asked: {question[:300]}. Aria's analysis: {reply_text[:500]}. Investigate and fix.",
-                                    notebook_path=notebook_path,
-                                    allow_write=allow_code_writes,
-                                )
-                                reply_text = reply_text.rstrip() + "\n\nI'm spawning a code agent to act on this."
-                            except Exception:
-                                pass  # Non-fatal — LLM response still useful
+                        # Auto-spawn removed: only spawn agents when explicitly
+                        # requested via action blocks or fix-intent detection.
                         if concise_default_mode and not explicit_detailed and not summary_requested:
                             reply_text = _format_simple_answer_action_plan(reply_text)
                         if code_agent_task:
                             task_id = code_agent_task.get("task_id")
-                            reply_text = (
-                                f"{reply_text}\n\n"
-                                f"Codebase Agent: spawned background task `{task_id}` "
-                                f"(allow_write={bool(code_agent_task.get('allow_write'))}). "
-                                f"Check `/api/aria/agent/status/{task_id}` for progress and applied edits."
-                            )
+                            reply_text = f"{reply_text}\n\nAgent `{task_id}` working on it."
                         actions_taken = []
                         for action in actions:
                             try:
                                 if str(action.get("type") or "") == "spawn_agent":
                                     goal = str(action.get("goal") or "").strip()
                                     if goal:
+                                        # Enrich goal with file index hits
+                                        try:
+                                            ws = _chat_workspace_root(notebook_path)
+                                            idx_hits = _query_file_index(goal, ws, max_results=6)
+                                            if idx_hits:
+                                                files_hint = ", ".join(h["rel_path"] for h in idx_hits[:6])
+                                                goal = f"{goal}\n[Relevant files: {files_hint}]"
+                                        except Exception:
+                                            pass
                                         agent_task = _spawn_code_agent_task(
                                             goal=goal,
                                             notebook_path=notebook_path,
                                             allow_write=True,
+                                            session_id=session_id,
                                         )
                                         result = {
                                             "status": "spawned",

@@ -2561,7 +2561,7 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertTrue(data.get("execution_first_mode"))
         self.assertTrue(data.get("brief_mode"))
-        self.assertIn("Execution-first mode enabled", data.get("reply", ""))
+        self.assertIn("Spawned agent", data.get("reply", ""))
         self.assertIsNotNone(data.get("agent_task"))
 
     def test_api_aria_chat_needed_to_fix_phrase_triggers_execution_first(self):
@@ -2575,7 +2575,7 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertTrue(data.get("execution_first_mode"))
-        self.assertIn("Execution-first mode enabled", data.get("reply", ""))
+        self.assertIn("Spawned agent", data.get("reply", ""))
 
     def test_api_aria_chat_summary_request_uses_summary_format(self):
         r = self.client.post(
@@ -4476,6 +4476,8 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertNotIn("Auto: Run-only", content)
         self.assertNotIn("Auto: Always", content)
         self.assertIn("Ask for Action", content)
+        self.assertIn("Self-fix: .py/.js", content)
+        self.assertIn("details sent to local agent", content)
 
     def test_dashboard_wires_auto_repair_started_event_to_chat(self):
         app_content = self._read_file(self.app_js)
@@ -4502,6 +4504,14 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("handleRunProductionTemplate", app_content)
         self.assertIn("Run Scale-Up Template", app_content)
         self.assertIn("Run step", app_content)
+
+    def test_strategy_advisor_marks_actionability_and_sanitizes_pseudo_code(self):
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("Actionable", content)
+        self.assertIn("Advice only", content)
+        self.assertIn("sanitizeBriefingText", content)
+        self.assertIn("details sent to local agent", content)
 
     def test_tab_names_match_content(self):
         """All tab names in App.js should have corresponding content blocks."""
