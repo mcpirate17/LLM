@@ -24,8 +24,7 @@ class Option:
     """A single option within a dimension."""
     name: str
     description: str
-    # Tags for constraint checking (e.g., "linear_complexity", "needs_sorting")
-    tags: Tuple[str, ...] = ()
+    tags: Tuple[str, ...] = ()  # Constraint tags
     # Incompatible tags from OTHER dimensions
     incompatible_with: Tuple[str, ...] = ()
 

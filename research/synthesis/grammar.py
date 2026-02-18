@@ -34,6 +34,7 @@ class GrammarConfig:
     max_params_ratio: float = 4.0  # max params relative to D^2
     residual_prob: float = 0.7  # probability of residual connection
     split_prob: float = 0.3     # probability of branching into parallel paths
+    stability_check: bool = True  # validate architectures before compilation
     merge_prob: float = 0.4     # probability of merging paths
     risky_op_prob: float = 0.2  # probability of using numerically risky ops
     freq_domain_prob: float = 0.15  # probability of FFT detour
@@ -114,6 +115,13 @@ def _build_subgraph(
     # Safety guard: hard cap at depth 15 regardless of config to prevent
     # Python stack overflow from unbounded grammar parameter growth.
     _HARD_DEPTH_LIMIT = 15
+    
+    def _validate_depth(self, current_depth: int) -> None:
+        """Validate recursion depth and raise if exceeded."""
+        if current_depth >= self._HARD_DEPTH_LIMIT:
+            raise RecursionError(
+                f"Grammar depth {current_depth} exceeds safety limit {self._HARD_DEPTH_LIMIT}"
+            )
 
     # Base case: stop if we've hit limits
     if (current_depth >= config.max_depth

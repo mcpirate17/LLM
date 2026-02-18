@@ -115,6 +115,11 @@ class Aria:
         self._total_tokens = 0
         self._total_cost = 0.0  # estimated USD
         self._unknown_cost_backends_warned = set()
+        # Cooldown tracking for rule-based mode recommendations
+        self._last_compression_rec_cycle: int = -10
+        self._last_compression_n_tested: int = 0
+        self._last_sparse_rec_cycle: int = -10
+        self._last_sparse_n_tested: int = 0
 
     def _get_llm(self):
         """Lazy-init LLM backend (only try once)."""
@@ -748,7 +753,9 @@ class Aria:
         n_pass_s0 = results.get("stage0_passed", 0)
         novel = results.get("novel_count", 0)
 
-        if novel > 0:
+        # Ground mood in real outcome quality: novelty without Stage-1 survivorship
+        # is still exploratory signal, not a triumphant breakthrough.
+        if n_pass_s1 > 0 and novel > 0:
             self.state.mood = "triumphant"
         elif n_pass_s1 > 0:
             self.state.mood = "excited"
@@ -1797,6 +1804,8 @@ class Aria:
             }
 
         # Compression examination guardrail: keep compact tracks represented.
+        # Only triggers if: enough data, under-represented, AND either cooldown
+        # expired (3+ cycles since last recommendation) or new data appeared.
         compression_coverage = analytics.get("compression_coverage") or {}
         compression_totals = compression_coverage.get("totals") or {}
         n_tested = int(compression_totals.get("n_tested") or 0)
@@ -1804,7 +1813,13 @@ class Aria:
         compressed_share = (
             n_compressed_tested / n_tested if n_tested > 0 else 0.0
         )
-        if n_tested >= 8 and compressed_share < 0.20 and n_experiments % 3 == 0:
+        compression_cooldown_ok = (
+            (n_experiments - self._last_compression_rec_cycle) >= 3
+            and n_compressed_tested > self._last_compression_n_tested
+        )
+        if n_tested >= 8 and compressed_share < 0.20 and compression_cooldown_ok:
+            self._last_compression_rec_cycle = n_experiments
+            self._last_compression_n_tested = n_compressed_tested
             return {
                 "mode": "synthesis",
                 "reasoning": (
@@ -1826,10 +1841,18 @@ class Aria:
             }
 
         # Sparsity exploration guardrail: ensure sparse architectures get tested.
+        # Only triggers if cooldown expired AND new sparse data appeared since
+        # last recommendation (prevents identical recommendations every 4th cycle).
         sparse_coverage = analytics.get("sparse_coverage") or {}
         n_sparse_tested = int(sparse_coverage.get("n_sparse_tested") or 0)
         sparse_share = n_sparse_tested / n_tested if n_tested > 0 else 0.0
-        if n_tested >= 8 and sparse_share < 0.15 and n_experiments % 4 == 1:
+        sparse_cooldown_ok = (
+            (n_experiments - self._last_sparse_rec_cycle) >= 3
+            and n_sparse_tested > self._last_sparse_n_tested
+        )
+        if n_tested >= 8 and sparse_share < 0.15 and sparse_cooldown_ok:
+            self._last_sparse_rec_cycle = n_experiments
+            self._last_sparse_n_tested = n_sparse_tested
             return {
                 "mode": "synthesis",
                 "reasoning": (

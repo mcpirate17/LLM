@@ -691,7 +691,17 @@ class ExperimentAnalytics:
             novelty_factor = 1.0 + raw_novelty * confidence
             base = default_weights.get(cat, 1.0)
             weight = base * amplified * novelty_factor
-            weights[cat] = round(max(0.1, min(8.0, weight)), 2)
+            if cat == "frequency_domain":
+                weights[cat] = round(max(0.0, min(0.1, weight)), 2)
+            else:
+                weights[cat] = round(max(0.5, min(8.0, weight)), 2)
+
+        # Hard cap: frequency_domain shows strong negative correlation with S1 (-0.33).
+        # Cap at 0.1 to suppress generation of frequency-domain ops.
+        _SUPPRESSED_CATEGORIES = {"frequency_domain": 0.1}
+        for cat, cap in _SUPPRESSED_CATEGORIES.items():
+            if cat in weights:
+                weights[cat] = min(weights[cat], cap)
 
         return weights if weights else None
 

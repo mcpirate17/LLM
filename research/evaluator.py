@@ -11,7 +11,6 @@ Each stage produces a structured result that feeds into the experiment database.
 from __future__ import annotations
 
 import gc
-import time
 import traceback
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
@@ -133,6 +132,8 @@ def stage0_smoke_test(
 
         # Check output shape
         expected_shape = (batch_size, seq_len, config.vocab_size)
+        if output.shape != expected_shape:
+            raise ValueError(f"Output shape mismatch: got {output.shape}, expected {expected_shape}")
         result.output_shape = str(tuple(logits.shape))
         if logits.shape != expected_shape:
             result.error = f"Bad output shape: got {logits.shape}, expected {expected_shape}"
@@ -348,4 +349,4 @@ def stage1_micro_train(
     return result
 
 
-import math  # needed for loss_stable check
+import math

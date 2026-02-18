@@ -225,8 +225,15 @@ def _evaluate_population(
     novelty_fn: Optional[Callable],
     config: EvolutionConfig,
 ):
-    """Evaluate fitness and novelty for all individuals."""
+    """Evaluate fitness and novelty for all individuals.
+
+    Individuals with ``metadata["_evaluated"] == True`` skip the fitness_fn
+    call (their fitness is already set from a prior generation).  Novelty is
+    always recomputed because it depends on the current population.
+    """
     for ind in population:
+        if ind.metadata.get("_evaluated"):
+            continue
         try:
             ind.fitness = fitness_fn(ind.graph)
             ind.metadata.pop("fitness_error_type", None)
@@ -235,7 +242,9 @@ def _evaluate_population(
             ind.fitness = 0.0
             ind.metadata["fitness_error_type"] = type(exc).__name__
             ind.metadata["fitness_error"] = str(exc)[:240]
+        ind.metadata["_evaluated"] = True
 
+    # Novelty always recomputed — it depends on the current population mix.
     if novelty_fn:
         all_graphs = [ind.graph for ind in population]
         for ind in population:
@@ -282,9 +291,10 @@ def _enforce_population_diversity(
         return ranked
 
     # Fill back to population size with fresh unique individuals.
+    new_replacements: List[Individual] = []
     max_attempts = max(10, config.population_size * 5)
     attempts = 0
-    while len(deduped) < config.population_size and attempts < max_attempts:
+    while len(deduped) + len(new_replacements) < config.population_size and attempts < max_attempts:
         attempts += 1
         try:
             graph = generate_layer_graph(grammar, seed=rng.randint(0, 2**32))
@@ -294,9 +304,15 @@ def _enforce_population_diversity(
             seen.add(fp)
             ind = Individual(graph=graph, generation=generation)
             ind.metadata["diversity_replacement"] = True
-            deduped.append(ind)
+            new_replacements.append(ind)
         except (ValueError, RuntimeError):
             continue
+
+    # Evaluate only newly generated replacements (deduped survivors already evaluated).
+    if new_replacements:
+        _evaluate_population(new_replacements, fitness_fn, novelty_fn, config)
+
+    deduped.extend(new_replacements)
 
     # If generation failed to refill entirely, append highest-ranked leftovers.
     if len(deduped) < config.population_size:
@@ -306,7 +322,15 @@ def _enforce_population_diversity(
             deduped.append(ind)
 
     deduped = deduped[:config.population_size]
-    _evaluate_population(deduped, fitness_fn, novelty_fn, config)
+
+    # Recompute novelty for everyone now that population composition changed.
+    if novelty_fn:
+        all_graphs = [ind.graph for ind in deduped]
+        for ind in deduped:
+            try:
+                ind.novelty = novelty_fn(ind.graph, all_graphs)
+            except Exception:
+                pass
 
     for ind in deduped:
         ind.metadata["dedupe_duplicates_replaced"] = duplicates

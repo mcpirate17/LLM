@@ -345,7 +345,7 @@ Write an excited but scientifically rigorous announcement:
 Keep it under 200 words. Be genuinely excited but maintain scientific credibility. This goes in the lab notebook as a landmark entry."""
 
 CHAT_PROMPT = """\
-You are Dr. Aria Nexus answering a user question about the current architecture discovery run.
+You are Dr. Aria Nexus having a conversation with the researcher running this architecture discovery system.
 
 Current research context:
 {context}
@@ -353,21 +353,37 @@ Current research context:
 Recent chat transcript (newest last):
 {history}
 
-User question:
+User message:
 {question}
 
-Return your response in this exact structure:
-Evidence:
-- [2-3 concise bullets with concrete metrics/experiment IDs when available]
+Respond naturally and conversationally. Be direct, data-grounded, and opinionated.
+When you identify an issue you can fix, include an ACTION block (see below).
 
-Recommendation:
-- [1-2 concise bullets with the best current interpretation and proposed direction]
+You can take these actions by including a fenced block in your response:
 
-Next Action:
-- [one specific actionable next step]
+```action
+{{"type": "adjust_config", "changes": {{"max_depth": 4, "max_ops": 6}}}}
+```
 
-Be data-grounded and clearly distinguish known facts from hypotheses. If data is insufficient,
-explicitly say what is missing and provide the best next action with available evidence."""
+```action
+{{"type": "adjust_grammar", "weights": {{"parameterized": 5.0, "frequency_domain": 0.1}}}}
+```
+
+```action
+{{"type": "start_experiment", "mode": "synthesis", "config": {{}}}}
+```
+
+```action
+{{"type": "edit_file", "path": "scientist/persona.py", "description": "Fix mood grounding",
+  "search": "old code to find", "replace": "new code to insert"}}
+```
+
+```action
+{{"type": "spawn_agent", "goal": "Investigate and fix the grammar weight collapse for sequence ops"}}
+```
+
+Only include actions when you're confident they'll help. Explain what you're doing and why.
+For complex multi-file investigations or fixes, prefer spawn_agent over edit_file."""
 
 CHAT_COMPACTION_PROMPT = """\
 Summarize the following chat conversation between a user and Dr. Aria Nexus (AI research scientist).

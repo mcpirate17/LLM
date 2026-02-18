@@ -8,7 +8,7 @@ const RESULT_COLORS = {
   'compile_error': 'var(--accent-orange)',
 };
 
-function LiveFeed({ apiBase }) {
+function LiveFeed({ apiBase, experimentId = null }) {
   const [events, setEvents] = useState([]);
   const [connected, setConnected] = useState(false);
   const feedRef = useRef(null);
@@ -17,7 +17,16 @@ function LiveFeed({ apiBase }) {
   useEffect(() => {
     let isCancelled = false;
 
-    fetch(`${apiBase}/api/live-feed?n=100`)
+    setEvents([]);
+
+    if (!experimentId) {
+      return () => {
+        isCancelled = true;
+        setConnected(false);
+      };
+    }
+
+    fetch(`${apiBase}/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=100`)
       .then((r) => (r.ok ? r.json() : []))
       .then((history) => {
         if (isCancelled || !Array.isArray(history) || history.length === 0) {
@@ -289,7 +298,7 @@ function LiveFeed({ apiBase }) {
       es.close();
       setConnected(false);
     };
-  }, [apiBase]);
+  }, [apiBase, experimentId]);
 
   // Auto-scroll to bottom
   useEffect(() => {

@@ -63,7 +63,7 @@ AI scientist system for autonomous architecture discovery via grammar-based prog
 - `synthesis/graph.py` `ComputationGraph` caches computed properties (`_cache` dict). Always mutate via `add_op`/`set_output`, never assign to `.nodes` directly on a live graph.
 - `database.py` `ExperimentDB` supports `with db.batch():` for batched commits.
 - `scientist/analytics.py` imports `get_primitive` and `GrammarConfig` at module level.
-- Grammar weights use multiplicative contrast amplification: `default * (s1_rate/mean)^2 * (1+novelty)`, clamped [0.1, 8.0].
+- Grammar weights use multiplicative contrast amplification: `default * (s1_rate/mean)^2 * (1+novelty)`, clamped [0.5, 8.0]. Floor of 0.5 prevents category starvation.
 
 ## Testing
 

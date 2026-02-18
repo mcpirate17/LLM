@@ -205,7 +205,9 @@ CREATE TABLE IF NOT EXISTS insights (
     content TEXT NOT NULL,
     confidence REAL DEFAULT 0.5,
     supporting_evidence TEXT,
-    status TEXT DEFAULT 'active'  -- 'active', 'confirmed', 'refuted', 'superseded'
+    status TEXT DEFAULT 'active',  -- 'active', 'confirmed', 'refuted', 'superseded'
+    confirmation_strength REAL DEFAULT 0.0,  -- quantitative confidence score
+    independent_validations INTEGER DEFAULT 0  -- count of independent confirmation attempts
 );
 
 CREATE TABLE IF NOT EXISTS training_curves (

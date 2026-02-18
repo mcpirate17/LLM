@@ -183,8 +183,9 @@ These are systemic issues with the research pipeline's scientific validity, not 
 
 #### Self-reinforcing bias loop (CRITICAL)
 
-41. **Grammar learning creates confirmation bias**
+41. **Grammar learning creates confirmation bias** [CRITICAL]
     - Grammar weights learned from prior S1 survivors → applied to next experiment → generates more of the same → those pass S1 → weights reinforced.
+    - **Mitigation needed**: Add grammar diversity penalty, periodic weight resets, or holdout validation set that wasn't used for grammar training.
     - No control experiment with random grammar weights for comparison.
     - No held-out validation: programs used for grammar learning are the same ones ranked on the leaderboard.
     - Fix: (a) null hypothesis test — run N experiments with random weights vs learned weights, (b) train/test split — learn grammar from experiments 1-8, evaluate on 9-10.

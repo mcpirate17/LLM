@@ -13,8 +13,10 @@ import csv
 import io
 import logging
 import os
+import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +32,55 @@ logger = logging.getLogger(__name__)
 
 # Singleton runner shared across requests
 _runner: Optional[ExperimentRunner] = None
+_CODE_AGENT_TASKS: Dict[str, Dict[str, Any]] = {}
+_CODE_AGENT_TASKS_LOCK = threading.Lock()
+_RUN_TRIGGER_LOCK = threading.Lock()
+_LAST_RUN_TRIGGER: Dict[str, Any] = {
+    "experiment_id": None,
+    "source": "unknown",
+    "mode": None,
+    "timestamp": None,
+    "details": {},
+}
+
+
+def _record_run_trigger(
+    experiment_id: str,
+    source: str,
+    mode: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload = {
+        "experiment_id": str(experiment_id or "").strip() or None,
+        "source": str(source or "unknown").strip() or "unknown",
+        "mode": (str(mode).strip() if mode else None),
+        "timestamp": time.time(),
+        "details": details if isinstance(details, dict) else {},
+    }
+    payload["details"] = {
+        key: value for key, value in payload["details"].items() if value is not None
+    }
+    with _RUN_TRIGGER_LOCK:
+        _LAST_RUN_TRIGGER.update(payload)
+        return dict(_LAST_RUN_TRIGGER)
+
+
+def _get_run_trigger_snapshot(active_experiment_id: Optional[str] = None) -> Dict[str, Any]:
+    active_id = str(active_experiment_id or "").strip() or None
+    with _RUN_TRIGGER_LOCK:
+        snap = dict(_LAST_RUN_TRIGGER)
+    if active_id and snap.get("experiment_id") and snap.get("experiment_id") != active_id:
+        return {
+            "experiment_id": active_id,
+            "source": "unknown",
+            "mode": None,
+            "timestamp": None,
+            "details": {},
+            "matched": False,
+        }
+    snap["experiment_id"] = active_id or snap.get("experiment_id")
+    snap["matched"] = bool(active_id) and bool(snap.get("timestamp")) and snap.get("experiment_id") == active_id
+    return snap
 
 
 def _insight_dedup_key(content: str) -> str:
@@ -118,6 +169,1008 @@ def _normalize_hypothesis(hypothesis: dict) -> dict:
     else:
         normalized["metadata"] = {}
     return normalized
+
+
+_CHAT_TOOL_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "about",
+    "what", "when", "where", "which", "does", "have", "into", "your",
+    "they", "them", "there", "their", "should", "would", "could",
+    "while", "after", "before", "being", "been", "just", "then",
+}
+
+
+def _chat_extract_terms(question: str, max_terms: int = 8) -> List[str]:
+    import re
+
+    words = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", question.lower())
+    terms: List[str] = []
+    seen = set()
+    for token in words:
+        if token in _CHAT_TOOL_STOPWORDS:
+            continue
+        if len(token) < 4 and token not in {"api", "llm"}:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+        if len(terms) >= max_terms:
+            break
+    return terms
+
+
+def _chat_workspace_root(notebook_path: str) -> Path:
+    # notebook_path is typically "research/lab_notebook.db" when launched from repo root.
+    resolved = Path(notebook_path).resolve()
+    if resolved.parent.exists():
+        return resolved.parent
+    return Path(__file__).resolve().parent.parent
+
+
+def _chat_should_use_code_tools(question: str) -> bool:
+    lowered = question.lower()
+    triggers = (
+        "code", "file", "function", "class", "module", "endpoint", "api",
+        "bug", "error", "trace", "stack", "log", "where", "how",
+        "why", "read", "search", "implement", "run",
+    )
+    return any(t in lowered for t in triggers)
+
+
+def _chat_search_workspace(
+    question: str,
+    workspace_root: Path,
+    max_hits: int = 6,
+    max_files: int = 1200,
+) -> List[Dict[str, Any]]:
+    import re
+
+    terms = _chat_extract_terms(question)
+    if not terms:
+        return []
+
+    include_ext = {".py", ".js", ".ts", ".tsx", ".md", ".json"}
+    skip_dirs = {
+        ".git", "node_modules", "__pycache__", "build", "dist",
+        ".venv", "venv", ".mypy_cache", ".pytest_cache",
+    }
+
+    results: List[Dict[str, Any]] = []
+    inspected = 0
+    for path in workspace_root.rglob("*"):
+        if inspected >= max_files or len(results) >= max_hits:
+            break
+        if not path.is_file() or path.suffix.lower() not in include_ext:
+            continue
+        if any(part in skip_dirs for part in path.parts):
+            continue
+        try:
+            if path.stat().st_size > 350_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        inspected += 1
+
+        lowered = text.lower()
+        score = sum(lowered.count(t) for t in terms)
+        if score <= 0:
+            continue
+
+        match_pos = None
+        for term in terms:
+            idx = lowered.find(term)
+            if idx >= 0:
+                match_pos = idx
+                break
+        if match_pos is None:
+            continue
+
+        line_no = lowered[:match_pos].count("\n") + 1
+        lines = text.splitlines()
+        start = max(0, line_no - 2)
+        end = min(len(lines), line_no + 1)
+        snippet = "\n".join(lines[start:end]).strip()
+        rel = str(path.relative_to(workspace_root))
+        results.append({
+            "path": rel,
+            "abs_path": str(path),
+            "line": line_no,
+            "score": score,
+            "snippet": snippet[:320],
+        })
+
+    results.sort(key=lambda item: (-int(item.get("score") or 0), item.get("path", "")))
+    return results[:max_hits]
+
+
+def _run_local_chat_agent(
+    question: str,
+    runner: ExperimentRunner,
+    nb: LabNotebook,
+    notebook_path: str,
+    enable_code_tools: bool = True,
+) -> Dict[str, Any]:
+    """Collect local runtime and codebase evidence for Aria chat responses."""
+    findings: List[str] = []
+    tools_used: List[str] = []
+    code_hits: List[Dict[str, Any]] = []
+
+    try:
+        progress = runner.progress.to_dict()
+        tools_used.append("runner.progress")
+        findings.append(
+            "Runtime: "
+            f"status={progress.get('status')}, "
+            f"exp={progress.get('experiment_id')}, "
+            f"generation={progress.get('current_generation')}/{progress.get('total_generations')}, "
+            f"stage1={progress.get('stage1_passed')}"
+        )
+    except Exception as exc:
+        findings.append(f"Runtime probe unavailable: {exc}")
+
+    try:
+        recent = nb.get_recent_experiments(5)
+        tools_used.append("notebook.get_recent_experiments")
+        if recent:
+            top = recent[0]
+            findings.append(
+                "Recent experiment: "
+                f"{top.get('experiment_id')} ({top.get('experiment_type')}, {top.get('status')})"
+            )
+    except Exception as exc:
+        findings.append(f"Recent experiment lookup unavailable: {exc}")
+
+    if enable_code_tools and _chat_should_use_code_tools(question):
+        try:
+            workspace_root = _chat_workspace_root(notebook_path)
+            code_hits = _chat_search_workspace(question, workspace_root=workspace_root)
+            tools_used.append("workspace.search")
+            if code_hits:
+                findings.append(f"Code matches found: {len(code_hits)}")
+        except Exception as exc:
+            findings.append(f"Workspace search unavailable: {exc}")
+
+    summary_lines: List[str] = []
+    if findings:
+        summary_lines.append("Local agent findings:")
+        for item in findings[:6]:
+            summary_lines.append(f"- {item}")
+    if code_hits:
+        summary_lines.append("Code evidence:")
+        for hit in code_hits[:6]:
+            summary_lines.append(
+                f"- {hit.get('path')}:{hit.get('line')} | {hit.get('snippet')}"
+            )
+
+    return {
+        "tools_used": tools_used,
+        "summary": "\n".join(summary_lines)[:3200],
+        "code_hits": code_hits,
+    }
+
+
+def _chat_requests_codebase_fix(question: str) -> bool:
+    lowered = (question or "").lower()
+    triggers = (
+        "fix code", "fix codebase", "self repair", "self-repair", "refactor",
+        "architecture", "design", "repair", "autofix", "patch",
+        "underlying", "javascript", "python", "js and python",
+        "fix issues", "fix issue", "spin off agent", "spin-off agent",
+        "spawn agent", "spawn sub-agent", "autonomous fix", "fix yourself",
+        "do this yourself", "check and fix", "investigate and fix",
+    )
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _chat_requests_brief_response(question: str) -> bool:
+    lowered = (question or "").lower()
+    triggers = (
+        "not babble", "don't babble", "dont babble", "be concise",
+        "keep it short", "short answer", "brief response", "be brief",
+        "too verbose", "too much text", "tldr", "tl;dr",
+    )
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _chat_requests_self_fix_now(question: str) -> bool:
+    lowered = (question or "").lower()
+    triggers = (
+        "fix yourself", "fix itself", "fix this yourself", "fix this itself",
+        "spin off agents and fix", "spawn agents and fix", "check and fix yourself",
+        "can you fix yourself", "fix your own codebase",
+    )
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _chat_requests_detailed_response(question: str) -> bool:
+    lowered = (question or "").lower()
+    triggers = (
+        "explain in detail", "detailed explanation", "full analysis",
+        "deep dive", "step by step why", "verbose", "long form",
+        "why this happened", "show reasoning",
+    )
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _code_agent_task_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
+    with _CODE_AGENT_TASKS_LOCK:
+        task = _CODE_AGENT_TASKS.get(task_id)
+        return dict(task) if isinstance(task, dict) else None
+
+
+def _code_agent_task_update(task_id: str, **fields: Any) -> None:
+    with _CODE_AGENT_TASKS_LOCK:
+        task = _CODE_AGENT_TASKS.get(task_id)
+        if not isinstance(task, dict):
+            return
+        task.update(fields)
+        task["updated_at"] = time.time()
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        parsed = json.loads(raw[start:end + 1])
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _is_remote_primary_llm(llm: Any) -> bool:
+    name = str(getattr(llm, "name", "") or "").strip().lower()
+    return name in {"anthropic", "openai"}
+
+
+def _get_local_ollama_settings() -> Dict[str, Any]:
+    model = str(os.environ.get("ARIA_LOCAL_OLLAMA_MODEL", "qwen2.5-coder:7b-instruct") or "").strip()
+    small_model = str(os.environ.get("ARIA_LOCAL_OLLAMA_SMALL_MODEL", "qwen2.5-coder:3b") or "").strip()
+    host = str(os.environ.get("OLLAMA_HOST", "http://localhost:11434") or "").strip()
+    try:
+        max_vram_gb = float(os.environ.get("ARIA_LOCAL_OLLAMA_MAX_VRAM_GB", "10") or "10")
+    except Exception:
+        max_vram_gb = 10.0
+    try:
+        max_small_workers = int(os.environ.get("ARIA_LOCAL_OLLAMA_3B_MAX_WORKERS", "3") or "3")
+    except Exception:
+        max_small_workers = 3
+    if max_vram_gb <= 0:
+        max_vram_gb = 10.0
+    if max_small_workers < 1:
+        max_small_workers = 1
+    if max_small_workers > 3:
+        max_small_workers = 3
+    return {
+        "model": model,
+        "small_model": small_model,
+        "host": host,
+        "max_vram_gb": max_vram_gb,
+        "max_small_workers": max_small_workers,
+    }
+
+
+def _estimate_small_ollama_worker_capacity(
+    small_model: str,
+    host: str,
+    max_vram_gb: float,
+    max_small_workers: int,
+) -> Dict[str, Any]:
+    estimated = _ollama_model_estimated_vram_gb(model=small_model, host=host)
+    workers = 0
+    if estimated and estimated > 0:
+        workers = int(max_vram_gb // estimated)
+    workers = max(0, min(int(max_small_workers), int(workers), 3))
+    return {
+        "estimated_vram_gb": estimated,
+        "workers_available": workers,
+    }
+
+
+def _is_simple_code_agent_goal(goal: str, search_hits: List[Dict[str, Any]]) -> bool:
+    lowered = str(goal or "").lower()
+    complex_triggers = (
+        "refactor", "architecture", "multi-file", "major", "rewrite",
+        "pipeline", "redesign", "broad", "system-wide",
+    )
+    simple_triggers = (
+        "read", "scan", "inspect", "find", "where", "why",
+        "small", "quick", "minor", "simple", "typo", "rename",
+        "single file", "one file", "lint", "format",
+    )
+    if any(token in lowered for token in complex_triggers):
+        return False
+    signal = any(token in lowered for token in simple_triggers)
+    return signal or (len(search_hits) <= 3 and len(lowered) <= 220)
+
+
+def _ollama_model_estimated_vram_gb(model: str, host: str) -> Optional[float]:
+    model_name = str(model or "").strip()
+    if not model_name:
+        return None
+
+    try:
+        import requests
+
+        resp = requests.get(f"{host.rstrip('/')}/api/tags", timeout=3)
+        if resp.status_code != 200:
+            return None
+        payload = resp.json() if resp.content else {}
+    except Exception:
+        return None
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return None
+
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("name") or item.get("model") or "").strip()
+        if candidate != model_name:
+            continue
+        size_bytes = item.get("size")
+        try:
+            size_gb = float(size_bytes) / (1024 ** 3)
+        except Exception:
+            return None
+        return round(size_gb, 3)
+
+    return None
+
+
+def _ollama_offload_model(model: str, host: str) -> None:
+    """Offload a model from Ollama's VRAM to free GPU memory for training.
+
+    Sends a generate request with keep_alive=0 which tells Ollama to
+    immediately unload the model from memory after responding.
+    """
+    try:
+        import requests
+        requests.post(
+            f"{host.rstrip('/')}/api/generate",
+            json={"model": model, "prompt": "", "keep_alive": 0},
+            timeout=5,
+        )
+    except Exception:
+        # Best-effort — don't block the caller if offload fails
+        pass
+
+
+def _local_ollama_helper_status(main_llm: Any) -> Dict[str, Any]:
+    import shutil
+
+    settings = _get_local_ollama_settings()
+    model = settings["model"]
+    small_model = settings["small_model"]
+    host = settings["host"]
+    max_vram_gb = settings["max_vram_gb"]
+    max_small_workers = settings["max_small_workers"]
+    remote_primary = _is_remote_primary_llm(main_llm)
+
+    status: Dict[str, Any] = {
+        "enabled": False,
+        "reason": "primary_llm_not_remote",
+        "model": model,
+        "small_model": small_model,
+        "host": host,
+        "max_vram_gb": max_vram_gb,
+        "estimated_vram_gb": None,
+        "small_model_estimated_vram_gb": None,
+        "small_model_max_workers": max_small_workers,
+        "small_model_workers_available": 0,
+    }
+
+    if not remote_primary:
+        return status
+    if not model:
+        status["reason"] = "model_not_configured"
+        return status
+    if not shutil.which("ollama"):
+        status["reason"] = "ollama_cli_missing"
+        return status
+
+    small_capacity = _estimate_small_ollama_worker_capacity(
+        small_model=small_model,
+        host=host,
+        max_vram_gb=max_vram_gb,
+        max_small_workers=max_small_workers,
+    )
+    status["small_model_estimated_vram_gb"] = small_capacity.get("estimated_vram_gb")
+    status["small_model_workers_available"] = small_capacity.get("workers_available", 0)
+
+    estimated = _ollama_model_estimated_vram_gb(model=model, host=host)
+    status["estimated_vram_gb"] = estimated
+    if estimated is None:
+        status["reason"] = "model_not_found_or_unreachable"
+        return status
+    if estimated >= max_vram_gb:
+        status["reason"] = "vram_limit_exceeded"
+        return status
+
+    status["enabled"] = True
+    status["reason"] = "ok"
+    return status
+
+
+def _run_local_ollama_small_swarm_planner(
+    goal: str,
+    workspace_root: Path,
+    search_hits: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    import concurrent.futures
+
+    settings = _get_local_ollama_settings()
+    small_model = settings["small_model"]
+    host = settings["host"]
+    max_vram_gb = settings["max_vram_gb"]
+    max_small_workers = settings["max_small_workers"]
+
+    capacity = _estimate_small_ollama_worker_capacity(
+        small_model=small_model,
+        host=host,
+        max_vram_gb=max_vram_gb,
+        max_small_workers=max_small_workers,
+    )
+    workers = int(capacity.get("workers_available") or 0)
+    est = capacity.get("estimated_vram_gb")
+    if workers < 1:
+        return {
+            "ok": False,
+            "reason": "insufficient_vram_for_small_swarm",
+            "estimated_vram_gb": est,
+            "model": small_model,
+            "worker_count": 0,
+            "notes": ["No 3b worker slots available under current VRAM budget."],
+        }
+
+    roles = ["reader", "fixer", "verifier"][:workers]
+    plans: List[Dict[str, Any]] = []
+
+    def _invoke(role: str) -> Dict[str, Any]:
+        role_goal = (
+            f"{goal}\n\n"
+            f"Sub-agent role: {role}. "
+            "Focus on small, precise code reading/fixing tasks with minimal edits."
+        )
+        plan = _run_local_ollama_code_planner(
+            goal=role_goal,
+            workspace_root=workspace_root,
+            search_hits=search_hits,
+            model_override=small_model,
+            max_edits=4,
+            timeout_seconds=75,
+        )
+        plan["role"] = role
+        return plan
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_invoke, role) for role in roles]
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                plans.append(fut.result())
+            except Exception as exc:
+                plans.append({"ok": False, "reason": "swarm_worker_failed", "notes": [str(exc)]})
+
+    successful = [p for p in plans if p.get("ok") and isinstance((p.get("plan") or {}), dict)]
+    if not successful:
+        return {
+            "ok": False,
+            "reason": "swarm_no_valid_plan",
+            "estimated_vram_gb": est,
+            "model": small_model,
+            "worker_count": workers,
+            "notes": [str((plans[0] or {}).get("reason") or "no successful 3b plan")],
+        }
+
+    def _plan_score(plan_obj: Dict[str, Any]) -> float:
+        plan = plan_obj.get("plan") or {}
+        edits = plan.get("edits") if isinstance(plan.get("edits"), list) else []
+        notes = plan.get("notes") if isinstance(plan.get("notes"), list) else []
+        return float(len(edits) * 2 - len(notes) * 0.1)
+
+    chosen = max(successful, key=_plan_score)
+    return {
+        "ok": True,
+        "reason": "ok",
+        "planner_backend": "local_ollama_3b_swarm",
+        "plan": chosen.get("plan"),
+        "estimated_vram_gb": est,
+        "model": small_model,
+        "worker_count": workers,
+        "successful_workers": len(successful),
+    }
+
+
+def _build_ollama_code_context(
+    workspace_root: Path,
+    search_hits: List[Dict[str, Any]],
+    max_files: int = 4,
+    max_chars_per_file: int = 1500,
+) -> str:
+    sections: List[str] = []
+    for hit in search_hits[:max_files]:
+        rel_path = str(hit.get("path") or "").strip()
+        line_no = int(hit.get("line") or 1)
+        target = _resolve_code_agent_target(workspace_root, rel_path)
+        if target is None or not target.exists() or not target.is_file():
+            continue
+        try:
+            lines = target.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            continue
+
+        start = max(0, line_no - 20)
+        end = min(len(lines), line_no + 20)
+        excerpt = "\n".join(lines[start:end]).strip()
+        if len(excerpt) > max_chars_per_file:
+            excerpt = excerpt[:max_chars_per_file] + "\n..."
+
+        sections.append(
+            f"FILE: {rel_path}\n"
+            f"FOCUS_LINE: {line_no}\n"
+            f"SNIPPET:\n{excerpt}\n"
+        )
+
+    return "\n".join(sections)
+
+
+def _run_local_ollama_code_planner(
+    goal: str,
+    workspace_root: Path,
+    search_hits: List[Dict[str, Any]],
+    model_override: Optional[str] = None,
+    max_edits: int = 8,
+    timeout_seconds: int = 120,
+) -> Dict[str, Any]:
+    import shutil
+    import subprocess
+
+    settings = _get_local_ollama_settings()
+    model = str(model_override or settings["model"] or "").strip()
+    host = settings["host"]
+    max_vram_gb = settings["max_vram_gb"]
+
+    if not shutil.which("ollama"):
+        return {"ok": False, "reason": "ollama_cli_missing", "notes": ["`ollama` CLI is not available on PATH."]}
+
+    estimated_vram_gb = _ollama_model_estimated_vram_gb(model=model, host=host)
+    if estimated_vram_gb is None:
+        return {
+            "ok": False,
+            "reason": "model_not_found_or_unreachable",
+            "notes": [f"Ollama model '{model}' not found/reachable at {host}."],
+        }
+    if estimated_vram_gb >= max_vram_gb:
+        return {
+            "ok": False,
+            "reason": "vram_limit_exceeded",
+            "estimated_vram_gb": estimated_vram_gb,
+            "notes": [
+                f"Model '{model}' rejected: estimated VRAM {estimated_vram_gb:.2f}GB must be < {max_vram_gb:.2f}GB."
+            ],
+        }
+
+    evidence = _build_ollama_code_context(workspace_root=workspace_root, search_hits=search_hits)
+    strict_prompt = (
+        "You are a STRICT local code-fix planner. Read the provided code evidence and output JSON only.\n"
+        "Goal:\n"
+        f"{goal}\n\n"
+        "Hard constraints:\n"
+        "1) Return ONLY valid JSON object (no markdown, no commentary).\n"
+        "2) Use this exact schema:\n"
+        "{\n"
+        "  \"summary\": \"short outcome summary\",\n"
+        "  \"edits\": [\n"
+        "    {\"path\": \"relative/path\", \"find\": \"exact existing text\", \"replace\": \"replacement text\", \"reason\": \"short reason\"}\n"
+        "  ],\n"
+        "  \"notes\": [\"optional notes\"]\n"
+        "}\n"
+        f"3) Max {max_edits} edits.\n"
+        "4) Only edit existing files listed in evidence.\n"
+        "5) `find` must be exact text from evidence snippets.\n"
+        "6) If insufficient evidence, return edits as empty list and explain in notes.\n"
+        "7) Preserve behavior unless directly fixing the requested issue.\n\n"
+        "Code evidence:\n"
+        f"{evidence or 'No evidence available.'}\n"
+    )
+
+    env = os.environ.copy()
+    env["OLLAMA_HOST"] = host
+    try:
+        proc = subprocess.run(
+            ["ollama", "run", model],
+            input=strict_prompt,
+            capture_output=True,
+            text=True,
+            timeout=max(10, int(timeout_seconds)),
+            env=env,
+        )
+    except Exception as exc:
+        _ollama_offload_model(model, host)
+        return {"ok": False, "reason": "ollama_run_failed", "notes": [str(exc)]}
+
+    # Offload model from VRAM to free memory for training
+    _ollama_offload_model(model, host)
+
+    output = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        return {
+            "ok": False,
+            "reason": "ollama_nonzero_exit",
+            "notes": [stderr[:300] if stderr else "ollama run returned non-zero exit"],
+        }
+
+    parsed = _extract_json_object(output)
+    if not isinstance(parsed, dict):
+        return {
+            "ok": False,
+            "reason": "invalid_json_output",
+            "notes": [output[:300]],
+        }
+
+    return {
+        "ok": True,
+        "reason": "ok",
+        "plan": parsed,
+        "estimated_vram_gb": estimated_vram_gb,
+        "model": model,
+    }
+
+
+def _resolve_code_agent_target(workspace_root: Path, rel_path: str) -> Optional[Path]:
+    safe_rel = str(rel_path or "").strip().lstrip("/")
+    if not safe_rel:
+        return None
+    if safe_rel.startswith(".."):
+        return None
+    target = (workspace_root / safe_rel).resolve()
+    try:
+        target.relative_to(workspace_root)
+    except Exception:
+        return None
+    return target
+
+
+def _validate_changed_file(path: Path) -> Optional[str]:
+    if path.suffix.lower() == ".py":
+        import py_compile
+
+        try:
+            py_compile.compile(str(path), doraise=True)
+        except Exception as exc:
+            return f"python syntax check failed: {exc}"
+
+    if path.suffix.lower() == ".js":
+        import shutil
+        import subprocess
+
+        node_bin = shutil.which("node")
+        if node_bin:
+            proc = subprocess.run(
+                [node_bin, "--check", str(path)],
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                stderr = (proc.stderr or proc.stdout or "").strip()
+                return f"javascript syntax check failed: {stderr[:240]}"
+    return None
+
+
+def _apply_code_agent_edits(
+    edits: List[Dict[str, Any]],
+    workspace_root: Path,
+    allow_write: bool,
+    max_edits: int = 8,
+) -> Dict[str, Any]:
+    applied: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    proposed: List[Dict[str, Any]] = []
+
+    for edit in (edits or [])[:max_edits]:
+        if not isinstance(edit, dict):
+            continue
+        rel_path = str(edit.get("path") or "").strip()
+        find_text = str(edit.get("find") or "")
+        replace_text = str(edit.get("replace") or "")
+        reason = str(edit.get("reason") or "").strip()
+
+        target = _resolve_code_agent_target(workspace_root, rel_path)
+        if target is None:
+            skipped.append({"path": rel_path, "reason": "invalid or disallowed target path"})
+            continue
+        if not target.exists() or not target.is_file():
+            skipped.append({"path": rel_path, "reason": "target file does not exist"})
+            continue
+        if not find_text:
+            skipped.append({"path": rel_path, "reason": "missing find text"})
+            continue
+
+        record = {
+            "path": rel_path,
+            "abs_path": str(target),
+            "reason": reason,
+            "find": find_text[:120],
+            "replace": replace_text[:120],
+        }
+
+        if not allow_write:
+            proposed.append(record)
+            continue
+
+        try:
+            original = target.read_text(encoding="utf-8")
+        except Exception as exc:
+            skipped.append({"path": rel_path, "reason": f"read failed: {exc}"})
+            continue
+
+        if find_text not in original:
+            skipped.append({"path": rel_path, "reason": "find text not present"})
+            continue
+
+        updated = original.replace(find_text, replace_text, 1)
+        if updated == original:
+            skipped.append({"path": rel_path, "reason": "no-op replacement"})
+            continue
+
+        try:
+            target.write_text(updated, encoding="utf-8")
+            validation_error = _validate_changed_file(target)
+            if validation_error:
+                target.write_text(original, encoding="utf-8")
+                skipped.append({"path": rel_path, "reason": validation_error})
+                continue
+            applied.append(record)
+        except Exception as exc:
+            try:
+                target.write_text(original, encoding="utf-8")
+            except Exception:
+                pass
+            skipped.append({"path": rel_path, "reason": f"write failed: {exc}"})
+
+    return {
+        "applied": applied,
+        "proposed": proposed,
+        "skipped": skipped,
+    }
+
+
+def _run_code_agent_task(
+    task_id: str,
+    goal: str,
+    notebook_path: str,
+    allow_write: bool,
+) -> None:
+    _code_agent_task_update(task_id, status="running", started_at=time.time())
+    try:
+        workspace_root = _chat_workspace_root(notebook_path)
+        search_hits = _chat_search_workspace(goal, workspace_root=workspace_root, max_hits=8)
+
+        llm = get_aria()._get_llm()
+        parsed_plan: Dict[str, Any] = {}
+        llm_used = False
+        planner_backend = "none"
+        main_llm_backend = str(getattr(llm, "name", "") or "none").strip().lower()
+        local_ollama_used = False
+        local_ollama_details: Dict[str, Any] = {}
+
+        if llm:
+            try:
+                if hasattr(llm, "is_available") and not llm.is_available():
+                    llm = None
+                    main_llm_backend = "none"
+            except Exception:
+                llm = None
+                main_llm_backend = "none"
+
+        if llm and _is_remote_primary_llm(llm):
+            simple_goal = _is_simple_code_agent_goal(goal, search_hits)
+            local_plan: Dict[str, Any]
+            if simple_goal:
+                local_plan = _run_local_ollama_small_swarm_planner(
+                    goal=goal,
+                    workspace_root=workspace_root,
+                    search_hits=search_hits,
+                )
+                if not local_plan.get("ok"):
+                    local_plan = _run_local_ollama_code_planner(
+                        goal=goal,
+                        workspace_root=workspace_root,
+                        search_hits=search_hits,
+                    )
+            else:
+                local_plan = _run_local_ollama_code_planner(
+                    goal=goal,
+                    workspace_root=workspace_root,
+                    search_hits=search_hits,
+                )
+
+            local_ollama_details = {
+                "ok": bool(local_plan.get("ok")),
+                "reason": str(local_plan.get("reason") or "unknown"),
+                "model": local_plan.get("model") or _get_local_ollama_settings().get("model"),
+                "estimated_vram_gb": local_plan.get("estimated_vram_gb"),
+                "worker_count": local_plan.get("worker_count"),
+                "successful_workers": local_plan.get("successful_workers"),
+                "policy": "simple_3b_swarm_then_7b" if simple_goal else "complex_7b",
+            }
+            if local_plan.get("ok") and isinstance(local_plan.get("plan"), dict):
+                parsed_plan = dict(local_plan.get("plan") or {})
+                llm_used = True
+                local_ollama_used = True
+                planner_backend = str(local_plan.get("planner_backend") or "local_ollama")
+
+        if llm and not parsed_plan:
+            llm_used = True
+            planner_backend = "primary_llm"
+            evidence = []
+            for hit in search_hits[:8]:
+                evidence.append(
+                    f"- {hit.get('path')}:{hit.get('line')} | {hit.get('snippet')}"
+                )
+            prompt = (
+                "You are Aria's codebase autofix sub-agent. "
+                "Propose targeted edits that improve architecture/design and reliability.\n"
+                "Goal:\n"
+                f"{goal}\n\n"
+                "Workspace evidence:\n"
+                + ("\n".join(evidence) if evidence else "- No direct evidence hits.")
+                + "\n\n"
+                "Return STRICT JSON only with schema:\n"
+                "{\n"
+                "  \"summary\": \"short outcome summary\",\n"
+                "  \"edits\": [\n"
+                "    {\"path\": \"relative/path/to/file.ext\", \"find\": \"exact old text\", \"replace\": \"new text\", \"reason\": \"why\"}\n"
+                "  ],\n"
+                "  \"notes\": [\"optional notes\"]\n"
+                "}\n"
+                "Constraints: max 8 edits, only existing files within workspace, preserve behavior unless fixing issue."
+            )
+
+            planning_payload: Dict[str, Any] = {"text": None, "error": None}
+
+            def _llm_planning_call() -> None:
+                try:
+                    try:
+                        from .llm.prompts import SYSTEM_PROMPT
+
+                        resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1400)
+                    except Exception:
+                        resp = llm.generate(prompt, max_tokens=1400)
+                    planning_payload["text"] = (getattr(resp, "text", "") or "").strip()
+                except Exception as exc:
+                    planning_payload["error"] = str(exc)
+
+            planner = threading.Thread(target=_llm_planning_call, daemon=True)
+            planner.start()
+            planner.join(timeout=45.0)
+
+            if planner.is_alive():
+                parsed_plan = {
+                    "summary": "LLM planning timed out after 45s; no autonomous edits applied.",
+                    "edits": [],
+                    "notes": ["LLM planner timeout"],
+                }
+            elif planning_payload.get("error"):
+                parsed_plan = {
+                    "summary": "LLM planning failed; no autonomous edits applied.",
+                    "edits": [],
+                    "notes": [str(planning_payload.get("error"))[:300]],
+                }
+            else:
+                raw_text = str(planning_payload.get("text") or "")
+                parsed = _extract_json_object(raw_text)
+                if isinstance(parsed, dict):
+                    parsed_plan = parsed
+                else:
+                    parsed_plan = {
+                        "summary": "LLM response was not valid JSON; no edits proposed.",
+                        "edits": [],
+                        "notes": [raw_text[:300]],
+                    }
+        elif not parsed_plan:
+            parsed_plan = {
+                "summary": "LLM unavailable for autonomous code edits; generated diagnostic evidence only.",
+                "edits": [],
+                "notes": ["Configure/reconnect LLM backend to enable autonomous patch proposals."],
+            }
+
+        if local_ollama_details and not local_ollama_used:
+            notes = parsed_plan.get("notes") if isinstance(parsed_plan.get("notes"), list) else []
+            notes = list(notes)
+            reason = local_ollama_details.get("reason")
+            est = local_ollama_details.get("estimated_vram_gb")
+            if est is not None:
+                notes.append(f"Local Ollama helper not used: {reason} (estimated_vram_gb={est}).")
+            else:
+                notes.append(f"Local Ollama helper not used: {reason}.")
+            parsed_plan["notes"] = notes[:8]
+
+        edits = parsed_plan.get("edits") if isinstance(parsed_plan.get("edits"), list) else []
+        edit_result = _apply_code_agent_edits(edits, workspace_root=workspace_root, allow_write=allow_write)
+
+        _code_agent_task_update(
+            task_id,
+            status="completed",
+            finished_at=time.time(),
+            llm_used=llm_used,
+            planner_backend=planner_backend,
+            main_llm_backend=main_llm_backend,
+            local_ollama_used=local_ollama_used,
+            local_ollama=local_ollama_details,
+            summary=str(parsed_plan.get("summary") or "").strip(),
+            notes=parsed_plan.get("notes") if isinstance(parsed_plan.get("notes"), list) else [],
+            search_hits=[
+                {
+                    "path": hit.get("path"),
+                    "abs_path": hit.get("abs_path"),
+                    "line": hit.get("line"),
+                    "score": hit.get("score"),
+                }
+                for hit in search_hits
+            ],
+            proposed_edits=edit_result.get("proposed", []),
+            applied_edits=edit_result.get("applied", []),
+            skipped_edits=edit_result.get("skipped", []),
+        )
+    except Exception as exc:
+        _code_agent_task_update(
+            task_id,
+            status="failed",
+            finished_at=time.time(),
+            summary="Codebase agent task failed before completion.",
+            notes=[str(exc), traceback.format_exc()[:1200]],
+        )
+
+
+def _spawn_code_agent_task(
+    goal: str,
+    notebook_path: str,
+    allow_write: bool = True,
+) -> Dict[str, Any]:
+    task_id = f"agent-{uuid.uuid4().hex[:10]}"
+    now = time.time()
+    task = {
+        "task_id": task_id,
+        "goal": goal,
+        "allow_write": bool(allow_write),
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "summary": "",
+        "notes": [],
+        "search_hits": [],
+        "proposed_edits": [],
+        "applied_edits": [],
+        "skipped_edits": [],
+    }
+    with _CODE_AGENT_TASKS_LOCK:
+        _CODE_AGENT_TASKS[task_id] = task
+
+    worker = threading.Thread(
+        target=_run_code_agent_task,
+        args=(task_id, goal, notebook_path, bool(allow_write)),
+        daemon=True,
+        name=f"aria-code-agent-{task_id}",
+    )
+    worker.start()
+
+    snap = _code_agent_task_snapshot(task_id)
+    return snap or task
 
 
 def _compute_compression_opportunities(coverage: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -716,6 +1769,7 @@ def _compute_recommendation(program: dict, leaderboard_entry: Optional[dict]) ->
                 "action": "scale up or publish",
                 "rationale": "Validation passed with multi-seed stability confirmed.",
                 "confidence": "high",
+                "bias_check": "grammar_independence_verified",
             }
         return {
             "action": "re-validate",
@@ -1118,11 +2172,17 @@ def create_app(
         aria = get_aria()
         try:
             summary = nb.get_dashboard_summary()
+            progress_payload = runner.progress.to_dict()
+            trigger = _get_run_trigger_snapshot(progress_payload.get("experiment_id"))
+            progress_payload["run_trigger_source"] = trigger.get("source")
+            progress_payload["run_trigger"] = trigger
             return jsonify({
                 "aria": aria.get_status(db_summary=summary),
                 "summary": summary,
                 "is_running": runner.is_running,
-                "progress": runner.progress.to_dict(),
+                "progress": progress_payload,
+                "run_trigger_source": trigger.get("source"),
+                "run_trigger": trigger,
             })
         except Exception as e:
             logger.error(f"Error in /api/status: {e}")
@@ -2399,6 +3459,16 @@ def create_app(
             else:
                 exp_id = runner.start_experiment(config, hypothesis=hypothesis)
 
+            _record_run_trigger(
+                experiment_id=exp_id,
+                source="ui_start",
+                mode=mode,
+                details={
+                    "endpoint": "/api/experiments/start",
+                    "auto_harden": auto_harden,
+                },
+            )
+
             return jsonify({
                 "experiment_id": exp_id,
                 "status": "started",
@@ -2491,6 +3561,16 @@ def create_app(
                 new_id = runner.start_experiment(config, hypothesis=hypothesis)
                 mode = "single"
 
+            _record_run_trigger(
+                experiment_id=new_id,
+                source="ui_rerun",
+                mode=mode,
+                details={
+                    "endpoint": f"/api/experiments/{experiment_id}/rerun",
+                    "source_experiment_id": experiment_id,
+                },
+            )
+
             return jsonify({
                 "status": "started",
                 "source_experiment_id": experiment_id,
@@ -2520,9 +3600,15 @@ def create_app(
     def api_progress():
         """Get current experiment progress (poll-based alternative to SSE)."""
         runner = _get_runner(notebook_path)
+        progress_payload = runner.progress.to_dict()
+        trigger = _get_run_trigger_snapshot(progress_payload.get("experiment_id"))
+        progress_payload["run_trigger_source"] = trigger.get("source")
+        progress_payload["run_trigger"] = trigger
         return jsonify({
             "is_running": runner.is_running,
-            "progress": runner.progress.to_dict(),
+            "progress": progress_payload,
+            "run_trigger_source": trigger.get("source"),
+            "run_trigger": trigger,
         })
 
     @app.route("/api/events")
@@ -3278,6 +4364,16 @@ def create_app(
                     auto_harden=auto_harden,
                 )
                 exp_id = runner.start_continuous(config)
+                _record_run_trigger(
+                    experiment_id=exp_id,
+                    source="cycle_control",
+                    mode="continuous",
+                    details={
+                        "endpoint": "/api/aria/cycle-control",
+                        "action": "start",
+                        "auto_harden": auto_harden,
+                    },
+                )
                 return jsonify({
                     "ok": True,
                     "action": "start",
@@ -3349,6 +4445,79 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/aria/tools")
+    def api_aria_tools():
+        """Report Aria tool capabilities and current operational readiness."""
+        runner = _get_runner(notebook_path)
+        aria = get_aria()
+        llm = aria._get_llm()
+        llm_available = False
+        llm_reason = "not_configured"
+        if llm:
+            try:
+                llm_available = bool(getattr(llm, "is_available", lambda: True)())
+                llm_reason = "ok" if llm_available else "unreachable"
+            except Exception:
+                llm_available = False
+                llm_reason = "unreachable"
+
+        cycle_status = runner.get_aria_cycle_status()
+        ollama_helper = _local_ollama_helper_status(llm)
+        return jsonify({
+            "codebase_agent": {
+                "spawn_endpoint": True,
+                "status_endpoint": True,
+                "workspace_scoped": True,
+                "allow_write_default": True,
+                "execution_first_for_fix_requests": True,
+                "small_model_swarm_enabled": True,
+                "small_model_swarm_max_workers": _get_local_ollama_settings().get("max_small_workers", 3),
+                "simple_task_policy": "prefer_3b_swarm_then_7b",
+                "complex_task_policy": "prefer_7b_single",
+            },
+            "local_ollama_helper": ollama_helper,
+            "chat_actions": ["adjust_config", "adjust_grammar", "start_experiment", "edit_file", "spawn_agent"],
+            "local_context_tools": ["runner.progress", "notebook.get_recent_experiments", "workspace.search"],
+            "llm": {
+                "available": llm_available,
+                "reason": llm_reason,
+            },
+            "runner": {
+                "is_running": bool(runner.is_running),
+                "progress_status": (runner.progress.to_dict() or {}).get("status"),
+            },
+            "run_trigger": _get_run_trigger_snapshot((runner.progress.to_dict() or {}).get("experiment_id")),
+            "continuous": {
+                "active": bool(cycle_status.get("continuous_active")),
+                "phase": cycle_status.get("phase"),
+            },
+        })
+
+    @app.route("/api/aria/agent/spawn", methods=["POST"])
+    def api_aria_agent_spawn():
+        """Spawn a background Aria codebase agent task for autonomous repair/refactor."""
+        body = request.get_json(silent=True) or {}
+        goal = str(body.get("goal") or "").strip()
+        allow_write = bool(body.get("allow_write", True))
+
+        if not goal:
+            return jsonify({"error": "goal is required"}), 400
+
+        task = _spawn_code_agent_task(
+            goal=goal,
+            notebook_path=notebook_path,
+            allow_write=allow_write,
+        )
+        return jsonify({"ok": True, "task": task}), 202
+
+    @app.route("/api/aria/agent/status/<task_id>")
+    def api_aria_agent_status(task_id: str):
+        """Get status/result for a background Aria codebase agent task."""
+        task = _code_agent_task_snapshot(task_id)
+        if not task:
+            return jsonify({"error": "task not found"}), 404
+        return jsonify({"ok": True, "task": task})
+
     @app.route("/api/aria/chat", methods=["POST"])
     def api_aria_chat():
         """Interactive Aria chat response grounded in current research context."""
@@ -3356,34 +4525,92 @@ def create_app(
         nb = LabNotebook(notebook_path)
         aria = get_aria()
 
-        def _normalize_chat_sections(text: str) -> str:
-            raw = (text or "").strip()
-            if not raw:
-                return ""
-            if (
-                "Evidence:" in raw
-                and "Recommendation:" in raw
-                and "Next Action:" in raw
-            ):
-                return raw
-            return (
-                "Evidence:\n"
-                f"- {raw}\n\n"
-                "Recommendation:\n"
-                "- Continue with the strongest data-supported direction from recent runs.\n\n"
-                "Next Action:\n"
-                "- Launch the suggested experiment and review post-run briefing for iteration."
-            )
+        def _parse_chat_actions(text: str):
+            """Extract ```action blocks from LLM response.
+
+            Returns (clean_text, list_of_action_dicts).
+            """
+            import re as _re
+            pattern = _re.compile(r"```action\s*\n(.*?)\n```", _re.DOTALL)
+            actions = []
+            valid_types = {"adjust_config", "adjust_grammar", "start_experiment", "edit_file", "spawn_agent"}
+            for m in pattern.finditer(text):
+                try:
+                    obj = json.loads(m.group(1))
+                    if isinstance(obj, dict) and obj.get("type") in valid_types:
+                        actions.append(obj)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            clean = pattern.sub("", text).strip()
+            return clean, actions
 
         try:
             body = request.get_json(silent=True) or {}
             question = str(body.get("message") or "").strip()
             history_raw = body.get("history") or []
             session_id = str(body.get("session_id") or "").strip()
+            spawn_agent = bool(body.get("spawn_agent", False))
+            allow_code_writes = bool(body.get("allow_code_writes", True))
+            explicit_detailed = _chat_requests_detailed_response(question)
+            brief_response = (
+                bool(body.get("brief_response", False))
+                or _chat_requests_brief_response(question)
+            )
+            self_fix_now = _chat_requests_self_fix_now(question)
+            fix_request = spawn_agent or _chat_requests_codebase_fix(question) or self_fix_now
+            execution_first_mode = (fix_request and not explicit_detailed) or self_fix_now
             fallback_reason: Optional[str] = None
+            local_agent_result: Dict[str, Any] = {"tools_used": [], "summary": "", "code_hits": []}
+            code_agent_task: Optional[Dict[str, Any]] = None
 
             if not question:
                 return jsonify({"error": "message is required"}), 400
+
+            if fix_request:
+                try:
+                    code_agent_task = _spawn_code_agent_task(
+                        goal=question,
+                        notebook_path=notebook_path,
+                        allow_write=allow_code_writes,
+                    )
+                except Exception as exc:
+                    logger.warning(f"Unable to spawn codebase agent from chat: {exc}")
+
+            if execution_first_mode:
+                if code_agent_task:
+                    task_id = code_agent_task.get("task_id")
+                    concise_reply = (
+                        f"Execution-first mode enabled. Spawned codebase agent `{task_id}`.\n"
+                        f"Status: `/api/aria/agent/status/{task_id}`.\n"
+                        "I’ll prioritize fixes and report outcome + changed files + validation."
+                    )
+                else:
+                    concise_reply = (
+                        "Execution-first mode enabled, but I couldn’t start a codebase agent right now.\n"
+                        "Retry in a few seconds or call `/api/aria/agent/spawn` directly."
+                    )
+                if session_id:
+                    try:
+                        nb.save_chat_message(
+                            session_id=session_id,
+                            role="aria",
+                            text=concise_reply,
+                            label="Aria",
+                        )
+                    except Exception:
+                        pass
+                return jsonify({
+                    "reply": concise_reply,
+                    "ai_powered": False,
+                    "used_context": False,
+                    "fallback_reason": None,
+                    "brief_mode": True,
+                    "execution_first_mode": True,
+                    "agent_task": code_agent_task,
+                    "actions_taken": [],
+                    "local_tools_used": [],
+                    "local_code_hits": [],
+                })
 
             # Persist user message to DB if session_id provided
             if session_id:
@@ -3454,6 +4681,25 @@ def create_app(
                     f"- Past hypotheses: {len(past_hypotheses) if isinstance(past_hypotheses, list) else 0}"
                 )
 
+            local_agent_result = _run_local_chat_agent(
+                question=question,
+                runner=runner,
+                nb=nb,
+                notebook_path=notebook_path,
+                enable_code_tools=True,
+            )
+            if local_agent_result.get("summary"):
+                context = f"{context}\n\n{local_agent_result['summary']}"
+            if code_agent_task:
+                task_id = code_agent_task.get("task_id")
+                context = (
+                    f"{context}\n\n"
+                    "Autonomous codebase agent was spawned for this request:\n"
+                    f"- task_id={task_id}\n"
+                    f"- allow_write={bool(code_agent_task.get('allow_write'))}\n"
+                    "- can inspect and patch any workspace file with safety checks"
+                )
+
             llm = aria._get_llm()
             if llm:
                 try:
@@ -3463,16 +4709,79 @@ def create_app(
                     fallback_reason = "llm_unreachable"
                 try:
                     from .llm.prompts import SYSTEM_PROMPT, CHAT_PROMPT
+                    prompt_question = question
+                    if brief_response:
+                        prompt_question = (
+                            f"{question}\n\n"
+                            "Response style requirement: keep answer concise (max 4 short bullets). "
+                            "No long preamble."
+                        )
                     prompt = CHAT_PROMPT.format(
                         context=context,
                         history="\n".join(history_lines) if history_lines else "(none)",
-                        question=question,
+                        question=prompt_question,
                     )
-                    resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=768)
+                    max_tokens = 512 if brief_response else 2048
+                    resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=max_tokens)
                     aria._track_cost(resp)
                     text = (resp.text or "").strip()
                     if text:
-                        reply_text = _normalize_chat_sections(text)
+                        reply_text, actions = _parse_chat_actions(text)
+                        if code_agent_task:
+                            task_id = code_agent_task.get("task_id")
+                            reply_text = (
+                                f"{reply_text}\n\n"
+                                f"Codebase Agent: spawned background task `{task_id}` "
+                                f"(allow_write={bool(code_agent_task.get('allow_write'))}). "
+                                f"Check `/api/aria/agent/status/{task_id}` for progress and applied edits."
+                            )
+                        actions_taken = []
+                        for action in actions:
+                            try:
+                                if str(action.get("type") or "") == "spawn_agent":
+                                    goal = str(action.get("goal") or "").strip()
+                                    if goal:
+                                        agent_task = _spawn_code_agent_task(
+                                            goal=goal,
+                                            notebook_path=notebook_path,
+                                            allow_write=True,
+                                        )
+                                        result = {
+                                            "status": "spawned",
+                                            "task_id": agent_task.get("task_id"),
+                                            "goal": goal,
+                                        }
+                                        if not code_agent_task:
+                                            code_agent_task = agent_task
+                                    else:
+                                        result = {"status": "error", "error": "No goal provided"}
+                                else:
+                                    result = runner.execute_chat_action(action, nb)
+                                if (
+                                    str(action.get("type") or "").strip() == "start_experiment"
+                                    and str(result.get("status") or "").strip() == "started"
+                                    and result.get("experiment_id")
+                                ):
+                                    _record_run_trigger(
+                                        experiment_id=str(result.get("experiment_id")),
+                                        source="chat_action",
+                                        mode=str(result.get("mode") or "single").strip() or "single",
+                                        details={
+                                            "endpoint": "/api/aria/chat",
+                                            "session_id": session_id or None,
+                                        },
+                                    )
+                                actions_taken.append({
+                                    "type": action.get("type"),
+                                    "status": result.get("status", "unknown"),
+                                    "detail": result,
+                                })
+                            except Exception as action_err:
+                                actions_taken.append({
+                                    "type": action.get("type"),
+                                    "status": "error",
+                                    "detail": {"error": str(action_err)},
+                                })
                         if session_id:
                             try:
                                 nb.save_chat_message(
@@ -3486,6 +4795,19 @@ def create_app(
                             "ai_powered": True,
                             "used_context": True,
                             "fallback_reason": None,
+                            "brief_mode": brief_response,
+                            "agent_task": code_agent_task,
+                            "actions_taken": actions_taken,
+                            "local_tools_used": local_agent_result.get("tools_used", []),
+                            "local_code_hits": [
+                                {
+                                    "path": hit.get("path"),
+                                    "abs_path": hit.get("abs_path"),
+                                    "line": hit.get("line"),
+                                    "score": hit.get("score"),
+                                }
+                                for hit in local_agent_result.get("code_hits", [])
+                            ],
                         })
                     fallback_reason = fallback_reason or "llm_empty_response"
                 except Exception as e:
@@ -3518,6 +4840,14 @@ def create_app(
                 + "\n\nNext Action:\n"
                 + next_action
             )
+            if code_agent_task:
+                task_id = code_agent_task.get("task_id")
+                fallback_reply = (
+                    f"{fallback_reply}\n\n"
+                    f"Codebase Agent: spawned background task `{task_id}` "
+                    f"(allow_write={bool(code_agent_task.get('allow_write'))}). "
+                    f"Check `/api/aria/agent/status/{task_id}` for progress and applied edits."
+                )
             if session_id:
                 try:
                     nb.save_chat_message(
@@ -3532,6 +4862,18 @@ def create_app(
                 "ai_powered": False,
                 "used_context": True,
                 "fallback_reason": fallback_reason,
+                "brief_mode": brief_response,
+                "agent_task": code_agent_task,
+                "local_tools_used": local_agent_result.get("tools_used", []),
+                "local_code_hits": [
+                    {
+                        "path": hit.get("path"),
+                        "abs_path": hit.get("abs_path"),
+                        "line": hit.get("line"),
+                        "score": hit.get("score"),
+                    }
+                    for hit in local_agent_result.get("code_hits", [])
+                ],
             })
         except Exception as e:
             logger.error(f"Error in /api/aria/chat: {e}")

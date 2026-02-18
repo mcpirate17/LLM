@@ -1,4 +1,5 @@
 """
+Research module entry point.
 Allow running as: python -m research
 
 Modes:
@@ -14,6 +15,7 @@ Modes:
 import argparse
 import sys
 import time
+import gc
 
 
 def main():
@@ -158,7 +160,7 @@ def _run_routing_benchmark(args):
         tps = point.get("tokens_per_sec")
         etc = point.get("effective_token_compute")
         stab = point.get("routing_stability")
-        vloss_str = f"{vloss:.4f}" if isinstance(vloss, (int, float)) else "n/a"
+        vloss_str = f"{vloss:.4f}" if isinstance(vloss, (int, float)) and not math.isnan(vloss) else "n/a"
         tps_str = f"{tps:.1f}" if isinstance(tps, (int, float)) else "n/a"
         etc_str = f"{etc:.1f}" if isinstance(etc, (int, float)) else "n/a"
         stab_str = f"{stab:.3f}" if isinstance(stab, (int, float)) else "n/a"

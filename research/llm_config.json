@@ -1,6 +1,6 @@
 {
-  "backend": "ollama",
-  "api_key": "",
-  "model": "hf.co/MaziyarPanahi/phi-4-GGUF:Q8_0",
-  "host": "http://localhost:11434"
+  "backend": "anthropic",
+  "api_key": "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",
+  "model": "",
+  "host": ""
 }

@@ -212,7 +212,7 @@ class ComputationGraph:
 
         elif rule == "binary_broadcast":
             if len(input_shapes) != 2:
-                raise ValueError(f"Binary op {op.name} needs 2 inputs")
+                raise ValueError(f"Binary op requires 2 inputs, got {len(input_shapes)}")
             s1 = input_shapes[1]
             # Dims must match or one must be 1
             if s0.dim != s1.dim and s0.dim != 1 and s1.dim != 1:

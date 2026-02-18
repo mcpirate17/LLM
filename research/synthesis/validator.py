@@ -4,8 +4,9 @@ Static Validation for Computation Graphs
 Validates graphs before compilation:
 - Shape consistency
 - Gradient flow (differentiable path from input to output)
-- Numerical stability heuristics
+- Numerical stability heuristics (gradient norms, spectral radius)
 - Parameter budget compliance
+- Self-repair: detects and suggests fixes for unstable architectures
 """
 
 from __future__ import annotations

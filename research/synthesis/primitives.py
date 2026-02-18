@@ -61,8 +61,7 @@ class PrimitiveOp:
     numerically_risky: bool = False
     # Description for debugging/display
     description: str = ""
-    # Extra config keys this op needs
-    config_keys: Tuple[str, ...] = ()
+    config_keys: Tuple[str, ...] = ()  # Required config keys
 
     def __hash__(self):
         return hash(self.name)

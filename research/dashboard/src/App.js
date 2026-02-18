@@ -961,7 +961,10 @@ function App() {
 
                 {overviewActivityTab === 'live' ? (
                   data?.is_running ? (
-                    <LiveFeed apiBase={API_BASE} />
+                    <LiveFeed
+                      apiBase={API_BASE}
+                      experimentId={data?.progress?.experiment_id || null}
+                    />
                   ) : (
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)', padding: '8px 4px 12px' }}>
                       No active run right now. Switch to Recent to review latest experiment trends.

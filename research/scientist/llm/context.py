@@ -312,7 +312,77 @@ def build_rich_context(
                              f"novelty: {h.get('best_novelty', 0):.3f}")
         sections.append("\n".join(lines))
 
+    # Session delta — what changed recently (avoids repeating stale observations)
+    if analytics_data:
+        delta_lines = _build_session_delta(analytics_data, history)
+        if delta_lines:
+            sections.append("\n".join(delta_lines))
+
     return "\n\n".join(sections)
+
+
+def _build_session_delta(
+    analytics_data: Dict,
+    history: Optional[List[Dict]] = None,
+) -> List[str]:
+    """Build a 'what changed recently' section to prevent stale repetition.
+
+    Highlights delta information so the LLM focuses on new observations
+    rather than repeating the same analysis every cycle.
+    """
+    lines: List[str] = []
+    lines.append("Session Delta (focus on NEW information, avoid repeating old observations):")
+
+    # Recent experiment outcomes — summarize the last few
+    if history:
+        recent = history[:5]
+        new_s1 = sum(1 for e in recent if int(e.get("stage1_passed") or 0) > 0)
+        total_recent = len(recent)
+        modes = [str(e.get("experiment_type") or "synthesis") for e in recent]
+        lines.append(
+            f"  Last {total_recent} experiments: {new_s1} produced S1 survivors, "
+            f"modes: {', '.join(modes)}"
+        )
+        # Flag if all recent experiments had zero S1
+        if new_s1 == 0 and total_recent >= 3:
+            lines.append(
+                "  WARNING: No new S1 survivors in recent experiments — "
+                "current approach may be saturated. Consider changing strategy."
+            )
+
+    # Grammar weight movement
+    grammar_weights = analytics_data.get("grammar_weights") or {}
+    default_weights = analytics_data.get("default_weights") or {}
+    if grammar_weights and default_weights:
+        big_movers = []
+        for cat in grammar_weights:
+            learned = grammar_weights.get(cat, 1.0)
+            default = default_weights.get(cat, 1.0)
+            if isinstance(learned, (int, float)) and isinstance(default, (int, float)):
+                ratio = learned / max(default, 0.01)
+                if ratio > 2.0 or ratio < 0.5:
+                    big_movers.append(
+                        f"{cat} ({default:.1f}->{learned:.1f}, "
+                        f"{'boosted' if ratio > 1 else 'suppressed'})"
+                    )
+        if big_movers:
+            lines.append(f"  Grammar movers: {'; '.join(big_movers[:5])}")
+        else:
+            lines.append("  Grammar weights: stable (no large shifts)")
+
+    # Sparsity/compression coverage progress
+    sparse_coverage = analytics_data.get("sparse_coverage") or {}
+    n_sparse = int(sparse_coverage.get("n_sparse_tested") or 0)
+    if n_sparse > 0:
+        sparse_surv = sparse_coverage.get("sparse_survival_rate", 0)
+        lines.append(
+            f"  Sparse coverage: {n_sparse} programs tested, "
+            f"{sparse_surv:.1%} survival rate"
+        )
+
+    if len(lines) <= 1:
+        return []  # Nothing interesting to report
+    return lines
 
 
 def build_investigation_context(candidates: list, leaderboard: list) -> str:

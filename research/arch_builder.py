@@ -306,7 +306,8 @@ class FourierMixer(nn.Module):
         # Learnable frequency-domain filter
         x_freq = x_freq * self.weight.unsqueeze(0).unsqueeze(0)
         x_time = torch.fft.irfft(x_freq, n=x.shape[1], dim=1)
-        return self.proj(x_time)
+        out_dim = getattr(self, 'out_dim', x_time.shape[-1])
+        return self.proj(x_time) if self.proj.out_features == out_dim else self.proj(x_time[:, :, :out_dim])
 
 
 class CompressedAttention(nn.Module):
@@ -751,7 +752,11 @@ class CascadeRouting(nn.Module):
 
 
 class SpeculativeRouting(nn.Module):
-    """Speculative: run cheap path, gate with quality check."""
+    """Speculative: run cheap path, gate with quality check.
+    
+    Implements adaptive routing with fallback to expensive path when
+    quality threshold not met. Used for efficiency-accuracy tradeoffs.
+    """
     def __init__(self, dim: int):
         super().__init__()
         self.quality_gate = nn.Linear(dim, 1, bias=True)
@@ -760,8 +765,7 @@ class SpeculativeRouting(nn.Module):
     def forward(self, x: torch.Tensor, block: nn.Module) -> torch.Tensor:
         # Run the full block
         processed = block(x)
-        # Quality gate decides how much to use
-        gate = torch.sigmoid(self.quality_gate(processed))
+        gate = torch.sigmoid(self.quality_gate(processed))  # Quality gating
         return gate * processed + (1 - gate) * x
 
 

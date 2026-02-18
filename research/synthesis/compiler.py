@@ -649,6 +649,6 @@ def compile_model(
 ) -> SynthesizedModel:
     """Compile a list of layer graphs into a complete language model."""
     if not layer_graphs:
-        raise ValueError("Need at least one layer graph")
+        raise ValueError("Empty layer_graphs list")
     model_dim = layer_graphs[0].model_dim
     return SynthesizedModel(layer_graphs, vocab_size, model_dim, max_seq_len)

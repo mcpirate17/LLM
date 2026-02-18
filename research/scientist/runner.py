@@ -17,6 +17,8 @@ import gc
 import hashlib
 import json
 import copy
+import math
+import os
 import queue
 import random
 import re
@@ -533,6 +535,35 @@ class ExperimentRunner:
                     risk_points=12,
                     adjusted=auto_harden,
                 )
+
+            # Simplicity bias: top performers are often shallow/compact.
+            # Apply conservative search caps by default under auto-harden.
+            if screened.max_depth > 3:
+                old = screened.max_depth
+                if auto_harden:
+                    screened.max_depth = 3
+                _record_issue(
+                    key="max_depth",
+                    severity="medium",
+                    reason="Applying simplicity constraint for evolve/novelty: capping max_depth at 3.",
+                    old_value=old,
+                    suggested_value=3,
+                    risk_points=8,
+                    adjusted=auto_harden,
+                )
+            if screened.max_ops > 5:
+                old = screened.max_ops
+                if auto_harden:
+                    screened.max_ops = 5
+                _record_issue(
+                    key="max_ops",
+                    severity="medium",
+                    reason="Applying simplicity constraint for evolve/novelty: capping max_ops at 5.",
+                    old_value=old,
+                    suggested_value=5,
+                    risk_points=8,
+                    adjusted=auto_harden,
+                )
             _harden_min_int(
                 "n_generations", 1, "high",
                 "n_generations must be >= 1 for evolution/novelty search.",
@@ -653,6 +684,7 @@ class ExperimentRunner:
             "last_note": "Awaiting run.",
             "last_transition_ts": time.time(),
         }
+        self._grammar_weight_overrides: Dict[str, float] = {}
 
         self._recover_stale_experiments_on_startup()
 
@@ -1304,6 +1336,156 @@ class ExperimentRunner:
 
         return effective, {"applied": applied, "ignored": ignored}
 
+    def execute_chat_action(self, action: Dict[str, Any], nb) -> Dict[str, Any]:
+        """Execute an action dispatched from Aria's chat response.
+
+        Supported types: adjust_config, adjust_grammar, start_experiment, edit_file.
+        """
+        action_type = str(action.get("type") or "").strip()
+
+        if action_type == "adjust_config":
+            changes = action.get("changes") or {}
+            if not isinstance(changes, dict) or not changes:
+                return {"status": "error", "error": "No changes provided"}
+            # Apply via _config_with_overrides on a fresh default config
+            base = RunConfig()
+            effective, report = self._config_with_overrides(base, changes)
+            # Store as the new defaults for future experiments
+            self._last_chat_config_overrides = changes
+            nb.log_learning_event(
+                "chat_config_adjusted",
+                f"Aria adjusted config: {report.get('applied', {})}",
+                changes=report.get("applied", {}),
+                ignored=report.get("ignored", {}),
+            )
+            return {"status": "applied", "changes": report.get("applied", {}),
+                    "ignored": report.get("ignored", {})}
+
+        elif action_type == "adjust_grammar":
+            weights = action.get("weights") or {}
+            if not isinstance(weights, dict) or not weights:
+                return {"status": "error", "error": "No weights provided"}
+            # Validate values are numeric
+            clean_weights = {}
+            for k, v in weights.items():
+                try:
+                    clean_weights[str(k)] = float(v)
+                except (ValueError, TypeError):
+                    pass
+            if not clean_weights:
+                return {"status": "error", "error": "No valid numeric weights"}
+            self._grammar_weight_overrides.update(clean_weights)
+            nb.log_learning_event(
+                "chat_grammar_adjusted",
+                f"Aria adjusted grammar weights: {clean_weights}",
+                weights=clean_weights,
+                all_overrides=dict(self._grammar_weight_overrides),
+            )
+            return {"status": "applied", "weights": clean_weights}
+
+        elif action_type == "start_experiment":
+            if self.is_running:
+                return {"status": "busy", "error": "An experiment is already running"}
+            mode = str(action.get("mode") or "synthesis").strip().lower()
+            config_overrides = action.get("config") or {}
+            config = RunConfig()
+            if isinstance(config_overrides, dict):
+                for k, v in config_overrides.items():
+                    if hasattr(config, k):
+                        setattr(config, k, v)
+            try:
+                if mode == "evolution":
+                    exp_id = self.start_evolution(config)
+                elif mode == "novelty":
+                    exp_id = self.start_novelty_search(config)
+                else:
+                    exp_id = self.start_experiment(config)
+                return {"status": "started", "experiment_id": exp_id, "mode": mode}
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
+
+        elif action_type == "edit_file":
+            return self._execute_edit_file_action(action, nb)
+
+        else:
+            return {"status": "error", "error": f"Unknown action type: {action_type}"}
+
+    def _execute_edit_file_action(self, action: Dict[str, Any], nb) -> Dict[str, Any]:
+        """Execute an edit_file action with safety rails."""
+        import py_compile
+        import shutil
+
+        path = str(action.get("path") or "").strip()
+        search = str(action.get("search") or "")
+        replace = str(action.get("replace") or "")
+        description = str(action.get("description") or "Chat-initiated edit")
+
+        # Safety: reject path traversal
+        if ".." in path:
+            return {"status": "error", "error": "Path traversal (..) not allowed"}
+
+        # Safety: must be under research/
+        if not path.startswith("research/"):
+            # Also accept paths relative to project root that start with scientist/, etc.
+            if not any(path.startswith(p) for p in ("scientist/", "synthesis/", "eval/",
+                                                      "search/", "training/", "dashboard/")):
+                return {"status": "error", "error": "Path must be under research/"}
+            path = f"research/{path}"
+
+        # Safety: only .py and .js files
+        if not (path.endswith(".py") or path.endswith(".js")):
+            return {"status": "error", "error": "Only .py and .js files can be edited"}
+
+        # Resolve to absolute path
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        abs_path = os.path.normpath(os.path.join(project_root, path))
+
+        # Double-check resolved path is under project
+        if not abs_path.startswith(project_root):
+            return {"status": "error", "error": "Resolved path escapes project directory"}
+
+        if not os.path.isfile(abs_path):
+            return {"status": "error", "error": f"File not found: {path}"}
+
+        # Read current content
+        with open(abs_path, "r") as f:
+            content = f.read()
+
+        if search not in content:
+            return {"status": "error", "error": "Search string not found in file"}
+
+        # Create backup
+        timestamp = int(time.time())
+        backup_path = f"{abs_path}.bak.{timestamp}"
+        shutil.copy2(abs_path, backup_path)
+
+        # Apply edit
+        new_content = content.replace(search, replace, 1)
+        with open(abs_path, "w") as f:
+            f.write(new_content)
+
+        # Syntax check for .py files
+        if path.endswith(".py"):
+            try:
+                py_compile.compile(abs_path, doraise=True)
+            except py_compile.PyCompileError as e:
+                # Restore backup
+                shutil.copy2(backup_path, abs_path)
+                os.remove(backup_path)
+                return {"status": "error", "error": f"Syntax error after edit, reverted: {e}"}
+
+        # Log to notebook
+        nb.log_learning_event(
+            "chat_file_edited",
+            f"Aria edited {path}: {description}",
+            path=path,
+            backup=backup_path,
+            description=description,
+        )
+
+        return {"status": "applied", "path": path, "backup": backup_path,
+                "description": description}
+
     def _compression_focus_override(
         self,
         recommendation: Dict[str, Any],
@@ -1938,7 +2120,59 @@ class ExperimentRunner:
             cost = self.aria.total_cost
             if cost >= config.max_cost_dollars:
                 return f"Cost limit reached (${cost:.2f} / ${config.max_cost_dollars:.2f})"
+
+        # Plateau detection: auto-pause when no learning progress
+        plateau_reason = self._detect_plateau(n_experiments)
+        if plateau_reason:
+            return plateau_reason
+
         return None
+
+    _PLATEAU_WINDOW = 5  # cycles to check for progress
+    _PLATEAU_MIN_CYCLES = 8  # don't trigger before this many cycles
+
+    def _detect_plateau(self, n_experiments: int) -> Optional[str]:
+        """Detect when continuous mode has plateaued.
+
+        Triggers when the last N cycles produced zero new S1 survivors
+        and the mode recommendations are repeating.  Returns a stop reason
+        string or None to continue.
+        """
+        if n_experiments < self._PLATEAU_MIN_CYCLES:
+            return None
+
+        with self._lock:
+            recent = list(self._aria_cycle_history[-self._PLATEAU_WINDOW:])
+
+        if len(recent) < self._PLATEAU_WINDOW:
+            return None
+
+        # Check if any recent cycle produced new S1 survivors
+        total_delta_s1 = sum(
+            int(c.get("delta_stage1_survivors") or 0) for c in recent
+        )
+        if total_delta_s1 > 0:
+            return None  # Still making progress
+
+        # Check mode diversity — if all recent cycles used the same mode, we're stuck
+        recent_modes = [c.get("mode", "synthesis") for c in recent]
+        unique_modes = set(recent_modes)
+
+        # Check for repeated errors
+        error_count = sum(1 for c in recent if c.get("error"))
+        if error_count >= self._PLATEAU_WINDOW - 1:
+            return (
+                f"Plateau: {error_count}/{self._PLATEAU_WINDOW} recent cycles "
+                f"failed with errors. Pausing to avoid wasting resources."
+            )
+
+        if total_delta_s1 == 0:
+            mode_str = ", ".join(recent_modes)
+            return (
+                f"Plateau: 0 new S1 survivors in last {self._PLATEAU_WINDOW} "
+                f"cycles (modes: {mode_str}). "
+                f"Pausing — try adjusting grammar weights, config, or hypothesis."
+            )
 
     def _effective_max_time_minutes(self, config: RunConfig) -> int:
         """Resolve effective continuous-session time limit.
@@ -3048,7 +3282,37 @@ class ExperimentRunner:
             n_generations=config.n_generations,
             grammar_config=grammar,
         )
-        fitness_fn = self._make_fitness_fn(config)
+
+        fitness_cache: dict = {}
+        eval_counters = {"total": 0, "s0": 0, "s1": 0}
+
+        def on_evaluate(graph, fitness, sandbox_result, s1_result):
+            eval_counters["total"] += 1
+            if fitness > 0:
+                eval_counters["s0"] += 1
+            if fitness > 0.2:
+                eval_counters["s1"] += 1
+            try:
+                graph_metrics = self._extract_graph_metrics(graph)
+                nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=graph.fingerprint(),
+                    graph_json=graph_to_json(graph),
+                    stage1_passed=fitness > 0.2,
+                    stage0_passed=fitness > 0,
+                    stage05_passed=fitness > 0,
+                    loss_ratio=1.0 - fitness if fitness > 0 else None,
+                    novelty_score=None,
+                    novelty_confidence=0.2,
+                    stage_at_death="survived" if fitness > 0.2 else "stage1",
+                    model_source="graph_synthesis",
+                    **graph_metrics,
+                )
+            except Exception as e:
+                logger.debug("Failed to record program result: %s", e)
+
+        fitness_fn = self._make_fitness_fn(
+            config, on_evaluate=on_evaluate, fitness_cache=fitness_cache)
 
         def novelty_fn(graph, all_graphs):
             nov = novelty_score(graph)
@@ -3066,10 +3330,10 @@ class ExperimentRunner:
         )
 
         results = {
-            "total": len(population),
-            "stage0_passed": sum(1 for ind in population if ind.fitness > 0),
-            "stage05_passed": sum(1 for ind in population if ind.fitness > 0),
-            "stage1_passed": sum(1 for ind in population if ind.fitness > 0.2),
+            "total": eval_counters["total"],
+            "stage0_passed": eval_counters["s0"],
+            "stage05_passed": eval_counters["s0"],
+            "stage1_passed": eval_counters["s1"],
             "novel_count": sum(1 for ind in population if ind.novelty > 0.5),
             "best_loss_ratio": 1.0 - max((ind.fitness for ind in population), default=0),
             "best_novelty_score": max((ind.novelty for ind in population), default=0),
@@ -3077,21 +3341,6 @@ class ExperimentRunner:
         }
 
         for ind in population[:20]:
-            graph_metrics = self._extract_graph_metrics(ind.graph)
-            nb.record_program_result(
-                experiment_id=exp_id,
-                graph_fingerprint=ind.fingerprint,
-                graph_json=graph_to_json(ind.graph),
-                stage1_passed=ind.fitness > 0.2,
-                stage0_passed=ind.fitness > 0,
-                stage05_passed=ind.fitness > 0,
-                loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
-                novelty_score=ind.novelty,
-                novelty_confidence=0.2,
-                stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
-                model_source="graph_synthesis",
-                **graph_metrics,
-            )
             if ind.fitness > 0.2:
                 results["survivors"].append({
                     "fingerprint": ind.fingerprint,
@@ -3170,11 +3419,47 @@ class ExperimentRunner:
             n_generations=config.n_generations,
             grammar_config=grammar,
         )
-        fitness_fn = self._make_fitness_fn(config)
         dev_str = config.device if torch.cuda.is_available() else "cpu"
+        dev = torch.device(dev_str)
 
-        def fingerprint_fn(graph):
-            """Compute behavioral fingerprint, falling back to None on failure."""
+        fitness_cache: dict = {}
+        fingerprint_cache: dict = {}
+        eval_counters = {"total": 0, "s0": 0, "s1": 0}
+
+        def on_evaluate(graph, fitness, sandbox_result, s1_result):
+            eval_counters["total"] += 1
+            if fitness > 0:
+                eval_counters["s0"] += 1
+            if fitness > 0.2:
+                eval_counters["s1"] += 1
+            try:
+                graph_metrics = self._extract_graph_metrics(graph)
+                nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=graph.fingerprint(),
+                    graph_json=graph_to_json(graph),
+                    stage1_passed=fitness > 0.2,
+                    stage0_passed=fitness > 0,
+                    stage05_passed=fitness > 0,
+                    loss_ratio=1.0 - fitness if fitness > 0 else None,
+                    novelty_score=None,
+                    novelty_confidence=0.2,
+                    stage_at_death="survived" if fitness > 0.2 else "stage1",
+                    model_source="graph_synthesis",
+                    **graph_metrics,
+                )
+            except Exception as e:
+                logger.debug("Failed to record program result: %s", e)
+
+        def combined_fitness_fn(graph):
+            """Compile once, run sandbox + micro-train + fingerprint in one pass."""
+            gfp = graph.fingerprint()
+
+            if gfp in fitness_cache:
+                return fitness_cache[gfp]
+
+            sandbox_result = None
+            s1_result = None
             try:
                 layer_graphs = [graph] * config.n_layers
                 model = compile_model(
@@ -3182,31 +3467,70 @@ class ExperimentRunner:
                     vocab_size=config.vocab_size,
                     max_seq_len=config.max_seq_len,
                 )
-                fp = compute_fingerprint(
-                    model,
-                    seq_len=min(64, config.max_seq_len),
-                    model_dim=config.model_dim,
+                sandbox_result = safe_eval(
+                    model, batch_size=2,
+                    seq_len=min(128, config.max_seq_len),
                     vocab_size=config.vocab_size,
                     device=dev_str,
                 )
+                if not sandbox_result.passed:
+                    del model
+                    fitness = 0.0
+                    fitness_cache[gfp] = fitness
+                    on_evaluate(graph, fitness, sandbox_result, s1_result)
+                    return fitness
+
+                # Compute behavioral fingerprint while model is still in memory
+                try:
+                    bfp = compute_fingerprint(
+                        model,
+                        seq_len=min(64, config.max_seq_len),
+                        model_dim=config.model_dim,
+                        vocab_size=config.vocab_size,
+                        device=dev_str,
+                    )
+                    fingerprint_cache[gfp] = bfp
+                except Exception as e:
+                    logger.debug("Fingerprint computation failed: %s", e)
+
+                s1_result = self._micro_train(
+                    model,
+                    config,
+                    dev,
+                    seed=self._stable_seed("fitness", gfp),
+                )
                 del model
-                return fp
-            except Exception as e:
-                logger.debug("Fingerprint computation failed: %s", e)
-                return None
+                if dev.type == "cuda":
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+                if s1_result.get("passed"):
+                    lr = s1_result.get("loss_ratio", 1.0)
+                    fitness = max(0.0, 1.0 - lr)
+                else:
+                    fitness = 0.1
+            except Exception:
+                fitness = 0.0
+
+            fitness_cache[gfp] = fitness
+            on_evaluate(graph, fitness, sandbox_result, s1_result)
+            return fitness
+
+        def fingerprint_fn(graph):
+            return fingerprint_cache.get(graph.fingerprint())
 
         ns_result = novelty_search(
-            fitness_fn=fitness_fn,
+            fitness_fn=combined_fitness_fn,
             fingerprint_fn=fingerprint_fn,
             config=ns_config,
             stop_check=self._stop_event.is_set,
         )
 
         results = {
-            "total": ns_result.total_evaluated,
-            "stage0_passed": sum(1 for ind in ns_result.best_individuals if ind.fitness > 0),
-            "stage05_passed": sum(1 for ind in ns_result.best_individuals if ind.fitness > 0),
-            "stage1_passed": sum(1 for ind in ns_result.best_individuals if ind.fitness > 0.2),
+            "total": eval_counters["total"],
+            "stage0_passed": eval_counters["s0"],
+            "stage05_passed": eval_counters["s0"],
+            "stage1_passed": eval_counters["s1"],
             "novel_count": sum(1 for ind in ns_result.best_individuals if ind.novelty > 0.5),
             "best_loss_ratio": None,
             "best_novelty_score": None,
@@ -3215,21 +3539,6 @@ class ExperimentRunner:
         }
 
         for ind in ns_result.best_individuals[:20]:
-            graph_metrics = self._extract_graph_metrics(ind.graph)
-            nb.record_program_result(
-                experiment_id=exp_id,
-                graph_fingerprint=ind.fingerprint,
-                graph_json=graph_to_json(ind.graph),
-                stage1_passed=ind.fitness > 0.2,
-                stage0_passed=ind.fitness > 0,
-                stage05_passed=ind.fitness > 0,
-                loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
-                novelty_score=ind.novelty,
-                novelty_confidence=0.2,
-                stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
-                model_source="graph_synthesis",
-                **graph_metrics,
-            )
             lr = 1.0 - ind.fitness if ind.fitness > 0 else None
             if lr is not None and (results["best_loss_ratio"] is None
                                     or lr < results["best_loss_ratio"]):
@@ -4256,7 +4565,9 @@ class ExperimentRunner:
 
         grammar_weights = None
         excluded_ops: set = set()
+        champion_bias: Dict[str, float] = {}
         if use_learned_grammar:
+            analytics = None
             try:
                 from .analytics import ExperimentAnalytics
                 analytics = ExperimentAnalytics(nb)
@@ -4283,6 +4594,38 @@ class ExperimentRunner:
             except Exception as e:
                 logger.warning("Failed computing excluded ops for %s: %s", exp_id, e)
 
+            # Champion bias pass: nudge category weights toward proven winners.
+            # This biases the search toward high-performing projection/sparse patterns
+            # and known-good structural/sequence motifs without hard-coding op-level picks.
+            try:
+                if analytics is not None:
+                    op_rates = analytics.op_success_rates() or {}
+                    if op_rates:
+                        winning_ops = {"exp", "selective_scan", "tropical_center"}
+                        projection_ops = {"low_rank_proj", "shared_basis_proj", "tied_proj"}
+                        sparse_ops = {"nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear"}
+
+                        def _is_reliable(op_name: str, min_used: int = 10, min_s1: float = 0.25) -> bool:
+                            info = op_rates.get(op_name) or {}
+                            n_used = int(info.get("n_used") or 0)
+                            s1_rate = float(info.get("s1_rate") or 0.0)
+                            return n_used >= min_used and s1_rate >= min_s1
+
+                        has_winners = any(_is_reliable(op) for op in winning_ops)
+                        has_projection = any(_is_reliable(op) for op in projection_ops)
+                        has_sparse = any(_is_reliable(op) for op in sparse_ops)
+
+                        if has_winners:
+                            champion_bias["structural"] = max(champion_bias.get("structural", 1.0), 1.2)
+                            champion_bias["sequence"] = max(champion_bias.get("sequence", 1.0), 1.2)
+                        if has_projection:
+                            champion_bias["parameterized"] = max(champion_bias.get("parameterized", 1.0), 1.4)
+                        if has_sparse:
+                            champion_bias["parameterized"] = max(champion_bias.get("parameterized", 1.0), 1.5)
+
+            except Exception as e:
+                logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
+
         grammar = GrammarConfig(
             model_dim=config.model_dim,
             max_depth=config.max_depth,
@@ -4301,6 +4644,31 @@ class ExperimentRunner:
                 new_weights=dict(grammar.category_weights),
             )
             # Persist for observability
+            results["applied_grammar_weights"] = dict(grammar.category_weights)
+
+        if champion_bias:
+            before_bias = dict(grammar.category_weights)
+            for category, multiplier in champion_bias.items():
+                base = float(grammar.category_weights.get(category, 1.0))
+                grammar.category_weights[category] = round(max(0.5, min(8.0, base * multiplier)), 2)
+            nb.log_learning_event(
+                "champion_bias_applied",
+                f"Applied champion grammar bias for {exp_id}",
+                multipliers=champion_bias,
+                old_weights=before_bias,
+                new_weights=dict(grammar.category_weights),
+            )
+            results["applied_grammar_weights"] = dict(grammar.category_weights)
+
+        # Apply chat-driven grammar weight overrides (from Aria actions)
+        if self._grammar_weight_overrides:
+            grammar.category_weights.update(self._grammar_weight_overrides)
+            nb.log_learning_event(
+                "chat_grammar_overrides_applied",
+                f"Applied chat-driven grammar overrides for {exp_id}",
+                overrides=dict(self._grammar_weight_overrides),
+                final_weights=dict(grammar.category_weights),
+            )
             results["applied_grammar_weights"] = dict(grammar.category_weights)
             # Emit SSE so LiveFeed can show learning events
             n_changed = sum(1 for k in grammar_weights
@@ -4415,6 +4783,40 @@ class ExperimentRunner:
                 self._emit_event("program_evaluated", {
                     "index": i, "fingerprint": graph.fingerprint()[:10],
                     "result": "invalid", "error": validation.errors[0] if validation.errors else "",
+                })
+                continue
+
+            # Gradient flow pre-check: skip graphs with no parameterized ops
+            # (these always fail stage0 with zero_grad, ~47% of failures)
+            try:
+                has_learnable = any(
+                    node.op.has_params
+                    for node in graph.nodes.values()
+                    if not node.is_input
+                )
+            except Exception:
+                has_learnable = True  # if check fails, let it through
+            if not has_learnable:
+                program_metrics["stage_at_death"] = "stage0"
+                program_metrics["error_type"] = "zero_grad"
+                program_metrics["error_message"] = "No parameterized ops — gradient flow impossible"
+                # Still compute structural novelty for analytics
+                try:
+                    _nov = novelty_score(graph)
+                    _n_score = _nov.overall_novelty
+                except Exception:
+                    _n_score = None
+                nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=graph.fingerprint(),
+                    graph_json=graph_to_json(graph),
+                    stage0_error="No parameterized ops",
+                    novelty_score=_n_score,
+                    **program_metrics,
+                )
+                self._emit_event("program_evaluated", {
+                    "index": i, "fingerprint": graph.fingerprint()[:10],
+                    "result": "no_params",
                 })
                 continue
 
@@ -4933,6 +5335,15 @@ class ExperimentRunner:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+
+                if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
+                    result["error"] = "zero_grad_precheck_failed"
+                    result["n_train_steps"] = 0
+                    result["max_grad_norm"] = grad_norm
+                    result["mean_grad_norm"] = grad_norm
+                    result["grad_norm_std"] = 0.0
+                    return result
+
                 optimizer.step()
 
                 if dev.type == "cuda":
@@ -7184,12 +7595,30 @@ class ExperimentRunner:
         self._thread.start()
         return exp_id
 
-    def _make_fitness_fn(self, config: RunConfig):
-        """Create fitness function for evolution/novelty search."""
+    def _make_fitness_fn(self, config: RunConfig, *,
+                         on_evaluate=None,
+                         fitness_cache=None):
+        """Create fitness function for evolution/novelty search.
+
+        Args:
+            config: Run configuration.
+            on_evaluate: Optional callback ``(graph, fitness, sandbox_result, s1_result)``
+                fired after every real evaluation (not cache hits).
+            fitness_cache: Optional ``Dict[str, float]`` mapping graph fingerprint
+                to fitness.  Cache hits skip compilation entirely.
+        """
         dev_str = config.device if torch.cuda.is_available() else "cpu"
         dev = torch.device(dev_str)
 
         def fitness_fn(graph):
+            fp = graph.fingerprint()
+
+            # Fast path: return cached fitness without compilation.
+            if fitness_cache is not None and fp in fitness_cache:
+                return fitness_cache[fp]
+
+            sandbox_result = None
+            s1_result = None
             try:
                 layer_graphs = [graph] * config.n_layers
                 model = compile_model(
@@ -7205,14 +7634,19 @@ class ExperimentRunner:
                 )
                 if not sandbox_result.passed:
                     del model
-                    return 0.0
+                    fitness = 0.0
+                    if fitness_cache is not None:
+                        fitness_cache[fp] = fitness
+                    if on_evaluate:
+                        on_evaluate(graph, fitness, sandbox_result, s1_result)
+                    return fitness
 
                 # Micro-train for fitness
                 s1_result = self._micro_train(
                     model,
                     config,
                     dev,
-                    seed=self._stable_seed("fitness", graph.fingerprint()),
+                    seed=self._stable_seed("fitness", fp),
                 )
                 del model
                 if dev.type == "cuda":
@@ -7221,10 +7655,17 @@ class ExperimentRunner:
 
                 if s1_result.get("passed"):
                     lr = s1_result.get("loss_ratio", 1.0)
-                    return max(0.0, 1.0 - lr)
-                return 0.1  # compiled and stable but didn't learn
+                    fitness = max(0.0, 1.0 - lr)
+                else:
+                    fitness = 0.1  # compiled and stable but didn't learn
             except Exception:
-                return 0.0
+                fitness = 0.0
+
+            if fitness_cache is not None:
+                fitness_cache[fp] = fitness
+            if on_evaluate:
+                on_evaluate(graph, fitness, sandbox_result, s1_result)
+            return fitness
 
         return fitness_fn
 
@@ -7256,7 +7697,35 @@ class ExperimentRunner:
                 grammar_config=grammar,
             )
 
-            fitness_fn = self._make_fitness_fn(config)
+            fitness_cache: dict = {}
+            eval_counters = {"total": 0, "s0": 0, "s1": 0}
+
+            def on_evaluate(graph, fitness, sandbox_result, s1_result):
+                eval_counters["total"] += 1
+                if fitness > 0:
+                    eval_counters["s0"] += 1
+                if fitness > 0.2:
+                    eval_counters["s1"] += 1
+                try:
+                    graph_metrics = self._extract_graph_metrics(graph)
+                    nb.record_program_result(
+                        experiment_id=exp_id,
+                        graph_fingerprint=graph.fingerprint(),
+                        graph_json=graph_to_json(graph),
+                        stage1_passed=fitness > 0.2,
+                        stage0_passed=fitness > 0,
+                        stage05_passed=fitness > 0,
+                        loss_ratio=1.0 - fitness if fitness > 0 else None,
+                        novelty_score=None,
+                        novelty_confidence=0.2,
+                        stage_at_death="survived" if fitness > 0.2 else "stage1",
+                        **graph_metrics,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to record program result: %s", e)
+
+            fitness_fn = self._make_fitness_fn(
+                config, on_evaluate=on_evaluate, fitness_cache=fitness_cache)
 
             def gen_callback(gen, population):
                 if self._stop_event.is_set():
@@ -7324,12 +7793,11 @@ class ExperimentRunner:
                 callback=gen_callback,
             )
 
-            # Record top individuals
             results = {
-                "total": len(population),
-                "stage0_passed": sum(1 for ind in population if ind.fitness > 0),
-                "stage05_passed": sum(1 for ind in population if ind.fitness > 0),
-                "stage1_passed": sum(1 for ind in population if ind.fitness > 0.2),
+                "total": eval_counters["total"],
+                "stage0_passed": eval_counters["s0"],
+                "stage05_passed": eval_counters["s0"],
+                "stage1_passed": eval_counters["s1"],
                 "novel_count": sum(1 for ind in population if ind.novelty > 0.5),
                 "best_loss_ratio": 1.0 - max((ind.fitness for ind in population), default=0),
                 "best_novelty_score": max((ind.novelty for ind in population), default=0),
@@ -7337,20 +7805,6 @@ class ExperimentRunner:
             }
 
             for ind in population[:20]:
-                graph_metrics = self._extract_graph_metrics(ind.graph)
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=ind.fingerprint,
-                    graph_json=graph_to_json(ind.graph),
-                    stage1_passed=ind.fitness > 0.2,
-                    stage0_passed=ind.fitness > 0,
-                    stage05_passed=ind.fitness > 0,
-                    loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
-                    novelty_score=ind.novelty,
-                    novelty_confidence=0.2,
-                    stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
-                    **graph_metrics,
-                )
                 if ind.fitness > 0.2:
                     results["survivors"].append({
                         "fingerprint": ind.fingerprint,
@@ -7450,10 +7904,45 @@ class ExperimentRunner:
                 grammar_config=grammar,
             )
 
-            fitness_fn = self._make_fitness_fn(config)
             dev_str = config.device if torch.cuda.is_available() else "cpu"
+            dev = torch.device(dev_str)
 
-            def fingerprint_fn(graph):
+            fitness_cache: dict = {}
+            fingerprint_cache: dict = {}
+            eval_counters = {"total": 0, "s0": 0, "s1": 0}
+
+            def on_evaluate(graph, fitness, sandbox_result, s1_result):
+                eval_counters["total"] += 1
+                if fitness > 0:
+                    eval_counters["s0"] += 1
+                if fitness > 0.2:
+                    eval_counters["s1"] += 1
+                try:
+                    graph_metrics = self._extract_graph_metrics(graph)
+                    nb.record_program_result(
+                        experiment_id=exp_id,
+                        graph_fingerprint=graph.fingerprint(),
+                        graph_json=graph_to_json(graph),
+                        stage1_passed=fitness > 0.2,
+                        stage0_passed=fitness > 0,
+                        stage05_passed=fitness > 0,
+                        loss_ratio=1.0 - fitness if fitness > 0 else None,
+                        novelty_score=None,
+                        novelty_confidence=0.2,
+                        stage_at_death="survived" if fitness > 0.2 else "stage1",
+                        **graph_metrics,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to record program result: %s", e)
+
+            def combined_fitness_fn(graph):
+                """Compile once, run sandbox + micro-train + fingerprint in one pass."""
+                gfp = graph.fingerprint()
+                if gfp in fitness_cache:
+                    return fitness_cache[gfp]
+
+                sandbox_result = None
+                s1_result = None
                 try:
                     layer_graphs = [graph] * config.n_layers
                     model = compile_model(
@@ -7461,18 +7950,57 @@ class ExperimentRunner:
                         vocab_size=config.vocab_size,
                         max_seq_len=config.max_seq_len,
                     )
-                    fp = compute_fingerprint(
-                        model,
-                        seq_len=min(64, config.max_seq_len),
-                        model_dim=config.model_dim,
+                    sandbox_result = safe_eval(
+                        model, batch_size=2,
+                        seq_len=min(128, config.max_seq_len),
                         vocab_size=config.vocab_size,
                         device=dev_str,
                     )
+                    if not sandbox_result.passed:
+                        del model
+                        fitness = 0.0
+                        fitness_cache[gfp] = fitness
+                        on_evaluate(graph, fitness, sandbox_result, s1_result)
+                        return fitness
+
+                    # Compute behavioral fingerprint while model is in memory
+                    try:
+                        bfp = compute_fingerprint(
+                            model,
+                            seq_len=min(64, config.max_seq_len),
+                            model_dim=config.model_dim,
+                            vocab_size=config.vocab_size,
+                            device=dev_str,
+                        )
+                        fingerprint_cache[gfp] = bfp
+                    except Exception as e:
+                        logger.debug("Fingerprint computation failed: %s", e)
+
+                    s1_result = self._micro_train(
+                        model,
+                        config,
+                        dev,
+                        seed=self._stable_seed("fitness", gfp),
+                    )
                     del model
-                    return fp
-                except Exception as e:
-                    logger.debug("Fingerprint computation failed: %s", e)
-                    return None
+                    if dev.type == "cuda":
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                    if s1_result.get("passed"):
+                        lr = s1_result.get("loss_ratio", 1.0)
+                        fitness = max(0.0, 1.0 - lr)
+                    else:
+                        fitness = 0.1
+                except Exception:
+                    fitness = 0.0
+
+                fitness_cache[gfp] = fitness
+                on_evaluate(graph, fitness, sandbox_result, s1_result)
+                return fitness
+
+            def fingerprint_fn(graph):
+                return fingerprint_cache.get(graph.fingerprint())
 
             def gen_callback(gen, population, archive):
                 if self._stop_event.is_set():
@@ -7529,19 +8057,18 @@ class ExperimentRunner:
                     logger.debug("Failed to persist novelty generation feed entry: %s", e)
 
             ns_result = novelty_search(
-                fitness_fn=fitness_fn,
+                fitness_fn=combined_fitness_fn,
                 fingerprint_fn=fingerprint_fn,
                 config=ns_config,
                 callback=gen_callback,
                 stop_check=self._stop_event.is_set,
             )
 
-            # Record results
             results = {
-                "total": ns_result.total_evaluated,
-                "stage0_passed": sum(1 for ind in ns_result.best_individuals if ind.fitness > 0),
-                "stage05_passed": sum(1 for ind in ns_result.best_individuals if ind.fitness > 0),
-                "stage1_passed": sum(1 for ind in ns_result.best_individuals if ind.fitness > 0.2),
+                "total": eval_counters["total"],
+                "stage0_passed": eval_counters["s0"],
+                "stage05_passed": eval_counters["s0"],
+                "stage1_passed": eval_counters["s1"],
                 "novel_count": sum(1 for ind in ns_result.best_individuals if ind.novelty > 0.5),
                 "best_loss_ratio": None,
                 "best_novelty_score": None,
@@ -7550,20 +8077,6 @@ class ExperimentRunner:
             }
 
             for ind in ns_result.best_individuals[:20]:
-                graph_metrics = self._extract_graph_metrics(ind.graph)
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=ind.fingerprint,
-                    graph_json=graph_to_json(ind.graph),
-                    stage1_passed=ind.fitness > 0.2,
-                    stage0_passed=ind.fitness > 0,
-                    stage05_passed=ind.fitness > 0,
-                    loss_ratio=1.0 - ind.fitness if ind.fitness > 0 else None,
-                    novelty_score=ind.novelty,
-                    novelty_confidence=0.2,
-                    stage_at_death="survived" if ind.fitness > 0.2 else "stage1",
-                    **graph_metrics,
-                )
                 if ind.fitness > 0.2:
                     results["survivors"].append({
                         "fingerprint": ind.fingerprint,
