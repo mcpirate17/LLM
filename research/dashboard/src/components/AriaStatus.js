@@ -41,7 +41,7 @@ function AriaStatus({ aria }) {
           <span className="aria-stat-label">Discoveries</span>
           <span>{aria.discoveries_today}</span>
         </div>
-        <div className="aria-stat">
+        <div className="aria-stat" title="Internal activity level — higher when more experiments complete successfully">
           <span className="aria-stat-label">Energy</span>
           <span>{(aria.energy * 100).toFixed(0)}%</span>
         </div>

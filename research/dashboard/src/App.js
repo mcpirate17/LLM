@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import AriaAvatar from './components/AriaAvatar';
 import AriaStatus from './components/AriaStatus';
 import SummaryCards from './components/SummaryCards';
@@ -21,11 +21,13 @@ import CampaignView from './components/CampaignView';
 import KnowledgeBase from './components/KnowledgeBase';
 import StrategyAdvisor from './components/StrategyAdvisor';
 import AriaChatPanel from './components/AriaChatPanel';
+import { EventBusProvider } from './hooks/useEventBus';
 import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
 const DISPLAY_MODE_KEY = 'aria_display_mode_v1';
+const AUTO_REPAIR_SHOW_COMPLETED_KEY = 'aria_auto_repair_show_completed_v1';
 
 function normalizeQueue(items) {
   if (!Array.isArray(items)) return [];
@@ -123,6 +125,22 @@ function resolveQueueIntent(candidate, eligibility) {
   return null;
 }
 
+function isTerminalAgentStatus(status) {
+  const normalized = String(status || '').toLowerCase();
+  return normalized === 'completed' || normalized === 'failed';
+}
+
+function mergeAutoRepairTask(existing, incoming, fallbackSource = 'start') {
+  if (!incoming || !incoming.task_id) return null;
+  return {
+    ...(existing || {}),
+    ...incoming,
+    source: incoming.source || existing?.source || fallbackSource,
+    status: incoming.status || existing?.status || 'queued',
+    updated_at: incoming.updated_at || Date.now() / 1000,
+  };
+}
+
 function App() {
   const TAB_LABELS = {
     overview: 'Overview',
@@ -141,6 +159,7 @@ function App() {
   };
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [overviewActivityTab, setOverviewActivityTab] = useState('recent');
@@ -171,6 +190,14 @@ function App() {
 
   // Action error state (replaces alert())
   const [actionError, setActionError] = useState(null);
+  const [autoRepairTasks, setAutoRepairTasks] = useState([]);
+  const [showCompletedAutoRepairTasks, setShowCompletedAutoRepairTasks] = useState(() => {
+    try {
+      return window.localStorage.getItem(AUTO_REPAIR_SHOW_COMPLETED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
 
   // Cross-view navigation state
   const [leaderboardHighlight, setLeaderboardHighlight] = useState(null);
@@ -182,6 +209,7 @@ function App() {
   const [cycleControlBusy, setCycleControlBusy] = useState(false);
   const [allowAdvancedStartOverride, setAllowAdvancedStartOverride] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
+  const advancedDetailsRef = useRef(null);
   const [eligibilityByResultId, setEligibilityByResultId] = useState({});
   const [investigationQueue, setInvestigationQueue] = useState(() => {
     try {
@@ -205,6 +233,16 @@ function App() {
       window.localStorage.setItem(DISPLAY_MODE_KEY, displayMode);
     } catch {}
   }, [displayMode]);
+
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        AUTO_REPAIR_SHOW_COMPLETED_KEY,
+        showCompletedAutoRepairTasks ? '1' : '0',
+      );
+    } catch {}
+  }, [showCompletedAutoRepairTasks]);
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -234,6 +272,8 @@ function App() {
       }
     } catch (err) {
       setError(err.message);
+    } finally {
+      setInitialLoading(false);
     }
   }, []);
 
@@ -298,19 +338,147 @@ function App() {
     const d = data?.deltas;
     if (!d) return {};
     const deltas = {};
-    if (d.programs !== 0) deltas.experiments = d.programs > 0 ? `+${d.programs}` : `${d.programs}`;
-    if (d.stage1 !== 0) deltas.programs = d.stage1 > 0 ? `+${d.stage1} S1` : `${d.stage1} S1`;
-    if (d.stage1 !== 0) deltas.leaderboard = deltas.programs;
+    if (d.programs !== 0) deltas.experiments = { text: d.programs > 0 ? `+${d.programs}` : `${d.programs}`, positive: d.programs > 0 };
+    if (d.stage1 !== 0) {
+      const entry = { text: d.stage1 > 0 ? `+${d.stage1} S1` : `${d.stage1} S1`, positive: d.stage1 > 0 };
+      deltas.programs = entry;
+      deltas.leaderboard = entry;
+    }
     if (d.best_loss != null && d.best_loss !== 0) {
       const sign = d.best_loss < 0 ? '' : '+';
-      deltas.trends = `${sign}${d.best_loss.toFixed(3)} loss`;
+      deltas.trends = { text: `${sign}${d.best_loss.toFixed(3)} loss`, positive: d.best_loss < 0 };
     }
     if (d.best_novelty != null && d.best_novelty !== 0) {
       const sign = d.best_novelty > 0 ? '+' : '';
-      deltas.report = `${sign}${d.best_novelty.toFixed(3)} nov`;
+      deltas.report = { text: `${sign}${d.best_novelty.toFixed(3)} nov`, positive: d.best_novelty > 0 };
     }
     return deltas;
   }, [data?.deltas]);
+
+  const upsertAutoRepairTask = useCallback((detail, fallbackSource = 'start') => {
+    const task = detail?.task;
+    if (!task || !task.task_id) {
+      return false;
+    }
+
+    const nextTask = {
+      ...task,
+      source: detail?.source || fallbackSource,
+      error: detail?.error || '',
+      status: task.status || 'queued',
+      updated_at: task.updated_at || Date.now() / 1000,
+    };
+
+    setAutoRepairTasks((prev) => {
+      const idx = prev.findIndex((item) => item.task_id === nextTask.task_id);
+      if (idx < 0) {
+        return [nextTask, ...prev].slice(0, 8);
+      }
+      const merged = mergeAutoRepairTask(prev[idx], nextTask, fallbackSource);
+      if (!merged) return prev;
+      const updated = [...prev];
+      updated[idx] = merged;
+      return updated;
+    });
+    return true;
+  }, []);
+
+  useEffect(() => {
+    const onAutoRepairStarted = (event) => {
+      const detail = event?.detail || {};
+      upsertAutoRepairTask(detail, detail?.source || 'event');
+    };
+
+    window.addEventListener('aria-auto-repair-started', onAutoRepairStarted);
+    return () => {
+      window.removeEventListener('aria-auto-repair-started', onAutoRepairStarted);
+    };
+  }, [upsertAutoRepairTask]);
+
+  useEffect(() => {
+    const activeTaskIds = autoRepairTasks
+      .filter((task) => !isTerminalAgentStatus(task?.status))
+      .map((task) => task.task_id)
+      .filter(Boolean);
+
+    if (!activeTaskIds.length) return undefined;
+
+    const interval = setInterval(async () => {
+      await Promise.all(activeTaskIds.map(async (taskId) => {
+        try {
+          const res = await fetch(`${API_BASE}/api/aria/agent/status/${encodeURIComponent(taskId)}`);
+          const payload = await res.json();
+          if (!res.ok || !payload?.task) return;
+
+          const task = payload.task;
+          setAutoRepairTasks((prev) => {
+            const idx = prev.findIndex((item) => item.task_id === taskId);
+            if (idx < 0) return prev;
+            const merged = mergeAutoRepairTask(prev[idx], task, prev[idx]?.source || 'status_poll');
+            if (!merged) return prev;
+            const updated = [...prev];
+            updated[idx] = merged;
+            return updated;
+          });
+        } catch {
+          // Ignore transient polling failures.
+        }
+      }));
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [autoRepairTasks]);
+
+  const activeAutoRepairTasks = useMemo(
+    () => autoRepairTasks.filter((task) => !isTerminalAgentStatus(task?.status)),
+    [autoRepairTasks],
+  );
+
+  const completedAutoRepairCount = useMemo(
+    () => autoRepairTasks.filter((task) => isTerminalAgentStatus(task?.status)).length,
+    [autoRepairTasks],
+  );
+
+  const visibleAutoRepairTasks = useMemo(() => {
+    if (showCompletedAutoRepairTasks) {
+      return autoRepairTasks;
+    }
+    return activeAutoRepairTasks;
+  }, [autoRepairTasks, activeAutoRepairTasks, showCompletedAutoRepairTasks]);
+
+
+  const handleResetAutoRepairStripPreferences = useCallback(() => {
+    setShowCompletedAutoRepairTasks(false);
+    try {
+      window.localStorage.removeItem(AUTO_REPAIR_SHOW_COMPLETED_KEY);
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, []);
+
+  const emitAutoRepairStarted = useCallback((payload, source = 'start') => {
+    const task = payload?.auto_repair_task;
+    if (!payload?.auto_repair_started || !task || !task.task_id) {
+      return false;
+    }
+    upsertAutoRepairTask({
+      source,
+      task,
+      error: payload?.error || '',
+    }, source);
+    try {
+      window.dispatchEvent(new CustomEvent('aria-auto-repair-started', {
+        detail: {
+          source,
+          task,
+          error: payload?.error || '',
+        },
+      }));
+    } catch {
+      // ignore UI event dispatch issues
+    }
+    return true;
+  }, [upsertAutoRepairTask]);
 
   const handleStartExperiment = async (config) => {
     try {
@@ -321,7 +489,13 @@ function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        setActionError(err.error || 'Failed to start experiment');
+        const startedRepair = emitAutoRepairStarted(err, 'start_experiment');
+        if (startedRepair) {
+          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
+          setActionError(`${err.error || 'Failed to start experiment'} — auto-repair started (${taskId}).`);
+        } else {
+          setActionError(err.error || 'Failed to start experiment');
+        }
         return;
       }
       setActionError(null);
@@ -379,7 +553,13 @@ function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        setActionError(err.error || 'Failed to start autonomous mode');
+        const startedRepair = emitAutoRepairStarted(err, 'start_autonomous');
+        if (startedRepair) {
+          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
+          setActionError(`${err.error || 'Failed to start autonomous mode'} — auto-repair started (${taskId}).`);
+        } else {
+          setActionError(err.error || 'Failed to start autonomous mode');
+        }
         return;
       }
       setActionError(null);
@@ -449,7 +629,13 @@ function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        setActionError(err.error || 'Failed to start investigation');
+        const startedRepair = emitAutoRepairStarted(err, 'start_investigation');
+        if (startedRepair) {
+          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
+          setActionError(`${err.error || 'Failed to start investigation'} — auto-repair started (${taskId}).`);
+        } else {
+          setActionError(err.error || 'Failed to start investigation');
+        }
         return;
       }
       setActionError(null);
@@ -468,13 +654,51 @@ function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        setActionError(err.error || 'Failed to start validation');
+        const startedRepair = emitAutoRepairStarted(err, 'start_validation');
+        if (startedRepair) {
+          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
+          setActionError(`${err.error || 'Failed to start validation'} — auto-repair started (${taskId}).`);
+        } else {
+          setActionError(err.error || 'Failed to start validation');
+        }
         return;
       }
       setActionError(null);
       fetchDashboard();
     } catch (err) {
       setActionError('Failed to start validation: ' + err.message);
+    }
+  };
+
+
+  const handleRunProductionTemplate = async (template) => {
+    const payload = template?.start_payload;
+    if (!payload || typeof payload !== 'object') {
+      setActionError('Invalid production template payload');
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        const startedRepair = emitAutoRepairStarted(err, 'run_production_template');
+        if (startedRepair) {
+          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
+          setActionError(`${err.error || 'Failed to run production template'} — auto-repair started (${taskId}).`);
+        } else {
+          setActionError(err.error || 'Failed to run production template');
+        }
+        return;
+      }
+      setActionError(null);
+      setActiveTab('experiments');
+      fetchDashboard();
+    } catch (err) {
+      setActionError('Failed to run production template: ' + err.message);
     }
   };
 
@@ -626,6 +850,12 @@ function App() {
     }
     return deduped;
   }, [data?.insights]);
+  const productionReadiness = data?.production_readiness || null;
+  const epicRecommendation = productionReadiness?.epic_switch_recommendation || null;
+  const topReadinessCandidates = Array.isArray(productionReadiness?.top_candidates)
+    ? productionReadiness.top_candidates
+    : [];
+  const reproducibilityWorkflow = productionReadiness?.reproducibility_workflow || null;
 
   const strategyBlocksAdvancedStart = useMemo(() => {
     if (data?.is_running) return false;
@@ -638,6 +868,7 @@ function App() {
   }, [strategyBlocksAdvancedStart, activeOverviewStrategy]);
 
   return (
+    <EventBusProvider apiBase={API_BASE}>
     <div className="app">
       <header className="app-header">
         <div className="header-left">
@@ -713,10 +944,12 @@ function App() {
                 {tabDeltas[tab] && (
                   <span style={{
                     marginLeft: 4, fontSize: 9, fontWeight: 600, padding: '1px 4px',
-                    borderRadius: 3, background: 'rgba(63, 185, 80, 0.15)',
-                    color: 'var(--accent-green)', whiteSpace: 'nowrap',
+                    borderRadius: 3,
+                    background: tabDeltas[tab].positive ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
+                    color: tabDeltas[tab].positive ? 'var(--accent-green)' : 'var(--accent-red)',
+                    whiteSpace: 'nowrap',
                   }}>
-                    {tabDeltas[tab]}
+                    {tabDeltas[tab].text}
                   </span>
                 )}
               </button>
@@ -726,6 +959,11 @@ function App() {
       </nav>
 
       <main className="app-main">
+        {initialLoading && !error && (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '80px 0', color: 'var(--text-secondary)', fontSize: 14 }}>
+            Loading dashboard...
+          </div>
+        )}
         {error && (
           <div className="error-banner">
             Unable to connect to API: {error}
@@ -735,9 +973,16 @@ function App() {
         )}
 
         {actionError && (
-          <div className="error-banner" style={{ cursor: 'pointer' }} onClick={() => setActionError(null)}>
-            {actionError}
-            <span style={{ marginLeft: 12, fontSize: 11, opacity: 0.7 }}>Click to dismiss</span>
+          <div className="error-banner" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} onClick={() => setActionError(null)}>
+            <span>{actionError}</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); setActionError(null); }}
+              aria-label="Dismiss error"
+              style={{
+                background: 'none', border: 'none', color: 'inherit', cursor: 'pointer',
+                fontSize: 16, padding: '0 4px', opacity: 0.8, flexShrink: 0,
+              }}
+            >&times;</button>
           </div>
         )}
 
@@ -783,7 +1028,7 @@ function App() {
                 >
                   Validate Queue
                 </button>
-                <button className="refresh-btn" onClick={handleQueueClear}>Clear Queue</button>
+                <button className="refresh-btn" onClick={handleQueueClear} style={{ marginLeft: 8, color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }}>Clear Queue</button>
               </div>
             </div>
           </div>
@@ -791,6 +1036,57 @@ function App() {
 
         {activeTab === 'overview' && (
           <div className="overview-grid">
+            {autoRepairTasks.length > 0 && (
+              <div className="card" style={{ gridColumn: '1 / -1', marginBottom: 0, padding: 10, borderLeft: '3px solid var(--accent-purple)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                    Auto-repair tasks
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      {activeAutoRepairTasks.length} active
+                    </div>
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 11, padding: '2px 8px' }}
+                      onClick={handleResetAutoRepairStripPreferences}
+                    >
+                      Reset preferences
+                    </button>
+                    {completedAutoRepairCount > 0 && (
+                      <button
+                        className="refresh-btn"
+                        style={{ fontSize: 11, padding: '2px 8px' }}
+                        onClick={() => setShowCompletedAutoRepairTasks((prev) => !prev)}
+                      >
+                        {showCompletedAutoRepairTasks ? 'Hide completed' : `Show completed (${completedAutoRepairCount})`}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {visibleAutoRepairTasks.length === 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      No active auto-repair tasks right now.
+                    </div>
+                  )}
+                  {visibleAutoRepairTasks.map((task) => {
+                    const status = String(task?.status || 'queued').toLowerCase();
+                    const taskId = String(task?.task_id || '').slice(0, 12);
+                    const source = String(task?.source || 'start').replaceAll('_', ' ');
+                    const headline = task?.summary || task?.goal || task?.error || 'Repairing startup failure';
+                    return (
+                      <div key={task.task_id} style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>{taskId}</strong>
+                        <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent-purple)' }}>{status}</span>
+                        <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>from {source}</span>
+                        <div style={{ marginTop: 2, color: 'var(--text-secondary)' }}>{headline}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <StrategyAdvisor
               dashboardData={data}
               isRunning={data?.is_running}
@@ -805,6 +1101,10 @@ function App() {
                 if (allowed.has(tab)) {
                   setActiveTab(tab);
                 }
+              }}
+              onOpenAdvancedPanel={() => {
+                const el = advancedDetailsRef.current;
+                if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
               }}
               onApplyStrategy={(payload) => {
                 const action = payload?.action;
@@ -839,9 +1139,9 @@ function App() {
                     {ariaCycle.last_note || ariaCycle.aria_message || 'Awaiting run.'}
                   </div>
                   <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    <span>Cycle: {ariaCycle.cycle_index || 0}</span>
-                    <span>Mode: {ariaCycle.selected_mode || ariaCycle.last_completed_mode || 'n/a'}</span>
-                    <span>{ariaCycle.continuous_active ? 'Continuous active' : 'Continuous idle'}</span>
+                    <span>Cycle {ariaCycle.cycle_index || 0}</span>
+                    <span>{(ariaCycle.selected_mode || ariaCycle.last_completed_mode || 'idle').charAt(0).toUpperCase() + (ariaCycle.selected_mode || ariaCycle.last_completed_mode || 'idle').slice(1).replace('_', ' ')}</span>
+                    <span>{ariaCycle.continuous_active ? 'Running continuously' : 'Paused'}</span>
                   </div>
                   <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {!ariaCycle.continuous_active && (
@@ -883,7 +1183,7 @@ function App() {
                             key={`${row.cycle_index}-${row.timestamp}`}
                             style={{ fontSize: 11, color: 'var(--text-secondary)' }}
                           >
-                            #{row.cycle_index} · {row.mode || 'synthesis'} · {row.status || 'completed'} · ΔS1 {row.delta_stage1_survivors ?? 0}
+                            Cycle {row.cycle_index} — {(row.mode || 'synthesis').charAt(0).toUpperCase() + (row.mode || 'synthesis').slice(1)} — {(row.delta_stage1_survivors ?? 0) === 0 ? '0 new survivors' : `${row.delta_stage1_survivors > 0 ? '+' : ''}${row.delta_stage1_survivors} survivor${Math.abs(row.delta_stage1_survivors) !== 1 ? 's' : ''}`}{row.timestamp ? ` — ${new Date(row.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
                           </div>
                         ))}
                       </div>
@@ -892,7 +1192,7 @@ function App() {
                 </div>
               )}
               <AriaChatPanel isRunning={Boolean(data?.is_running)} autonomousMode={autonomousMode} onAutonomousEnd={() => setAutonomousMode(false)} />
-              <details className="card" style={{ marginTop: 12, marginBottom: 0 }} open={Boolean(data?.is_running) || displayMode === 'expert'}>
+              <details ref={advancedDetailsRef} className="card" style={{ marginTop: 12, marginBottom: 0 }} open={Boolean(data?.is_running) || displayMode === 'expert'}>
                 <summary style={{ cursor: 'pointer', fontWeight: 600, color: 'var(--text-primary)', padding: 4 }}>
                   Experiment setup (advanced)
                 </summary>
@@ -946,14 +1246,110 @@ function App() {
             {/* Right column: Summary + Activity */}
             <div className="overview-right">
               <SummaryCards summary={data?.summary} learningTrend={learningTrend} />
+              {productionReadiness && (
+                <div className="card" style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>Production Readiness</div>
+                    <button className="refresh-btn" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => setActiveTab('leaderboard')}>
+                      Open Leaderboard
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>Epic switch:</strong>{' '}
+                    {epicRecommendation?.action === 'switch_to_scale_up_epic' ? 'Switch to scale-up epic' : 'Stay in current epic'}
+                    {epicRecommendation?.reason ? ` — ${epicRecommendation.reason}` : ''}
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 11 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Breakthroughs: <strong style={{ color: 'var(--text-primary)' }}>{productionReadiness?.breakthrough_count ?? 0}</strong></span>
+                    <span style={{ color: 'var(--text-secondary)' }}>Decision-ready: <strong style={{ color: 'var(--text-primary)' }}>{productionReadiness?.decision_ready_count ?? 0}</strong></span>
+                    <span style={{ color: 'var(--text-secondary)' }}>High confidence: <strong style={{ color: 'var(--text-primary)' }}>{productionReadiness?.high_confidence_count ?? 0}</strong></span>
+                    <span style={{ color: 'var(--text-secondary)' }}>Repro ready: <strong style={{ color: 'var(--text-primary)' }}>{productionReadiness?.full_repro_packet_count ?? 0}</strong></span>
+                    <span style={{ color: 'var(--text-secondary)' }}>Artifact CKA: <strong style={{ color: 'var(--text-primary)' }}>{productionReadiness?.artifact_cka_count ?? 0}</strong></span>
+                  </div>
+
+                  {reproducibilityWorkflow && (
+                    <div style={{ marginTop: 8, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>Complete repro packet:</strong>{' '}
+                        {reproducibilityWorkflow?.progress_label || '0/6'}
+                        {typeof reproducibilityWorkflow?.remaining === 'number' ? ` (${reproducibilityWorkflow.remaining} remaining)` : ''}
+                      </div>
+                      {Array.isArray(reproducibilityWorkflow?.next_actions) && reproducibilityWorkflow.next_actions.length > 0 && (
+                        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {reproducibilityWorkflow.next_actions.slice(0, 2).map((action) => (
+                            <div key={`repro-next-${action?.check_id || action?.label || 'step'}`} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                              <span>{action?.label || action?.check_id}</span>
+                              {action?.start_payload && (
+                                <button
+                                  className="refresh-btn"
+                                  style={{ marginLeft: 6, fontSize: 10, padding: '2px 6px' }}
+                                  onClick={() => handleRunProductionTemplate(action)}
+                                >
+                                  Run step
+                                </button>
+                              )}
+                              {action?.guidance && (
+                                <div style={{ color: 'var(--text-muted)' }}>{action.guidance}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {topReadinessCandidates.length > 0 && (
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {topReadinessCandidates.map((candidate) => {
+                        const repro = candidate?.repro_packet || {};
+                        const reproWorkflow = candidate?.reproducibility_workflow || null;
+                        const resultId = String(candidate?.result_id || '').slice(0, 12);
+                        const blockers = [];
+                        if (Array.isArray(candidate?.decision_missing) && candidate.decision_missing.length > 0) {
+                          blockers.push(...candidate.decision_missing);
+                        }
+                        if (Array.isArray(repro?.missing) && repro.missing.length > 0) {
+                          blockers.push(...repro.missing.map((item) => `repro:${item}`));
+                        }
+                        const blockerText = blockers.length > 0 ? blockers.slice(0, 3).join(', ') : 'none';
+                        return (
+                          <div key={candidate?.result_id || resultId} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                            <strong style={{ color: 'var(--text-primary)' }}>{resultId || 'unknown'}</strong>
+                            <span style={{ marginLeft: 6 }}>confidence {candidate?.promotion_confidence_score ?? 0}%</span>
+                            <span style={{ marginLeft: 6 }}>repro {repro?.ready_count ?? 0}/{repro?.total_checks ?? 0}</span>
+                            {reproWorkflow?.progress_label && (
+                              <span style={{ marginLeft: 6 }}>workflow {reproWorkflow.progress_label}</span>
+                            )}
+                            <div style={{ color: 'var(--text-muted)' }}>Blockers: {blockerText}</div>
+                            {Array.isArray(candidate?.scale_up_templates) && candidate.scale_up_templates.length > 0 && (
+                              <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                {candidate.scale_up_templates.slice(0, 2).map((template) => (
+                                  <button
+                                    key={`${candidate?.result_id || resultId}-${template?.template_id || template?.title || 'tpl'}`}
+                                    className="refresh-btn"
+                                    style={{ fontSize: 10, padding: '2px 6px' }}
+                                    onClick={() => handleRunProductionTemplate(template)}
+                                  >
+                                    Run Scale-Up Template
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="card" style={{ marginBottom: 0 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>Activity</div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="refresh-btn" onClick={() => setOverviewActivityTab('live')} style={{ opacity: overviewActivityTab === 'live' ? 1 : 0.75 }}>
+                    <button className="refresh-btn" onClick={() => setOverviewActivityTab('live')} aria-pressed={overviewActivityTab === 'live'}>
                       Live updates
                     </button>
-                    <button className="refresh-btn" onClick={() => setOverviewActivityTab('recent')} style={{ opacity: overviewActivityTab === 'recent' ? 1 : 0.75 }}>
+                    <button className="refresh-btn" onClick={() => setOverviewActivityTab('recent')} aria-pressed={overviewActivityTab === 'recent'}>
                       Recent trends
                     </button>
                   </div>
@@ -1130,6 +1526,7 @@ function App() {
         <span>HYDRA Architecture Explorer — Program Synthesis Engine</span>
       </footer>
     </div>
+    </EventBusProvider>
   );
 }
 

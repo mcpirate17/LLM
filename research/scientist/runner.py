@@ -148,6 +148,8 @@ class RunConfig:
     # Model source
     model_source: str = "graph_synthesis"  # "graph_synthesis", "morphological_box", "mixed"
     morph_ratio: float = 0.5           # fraction of morphological candidates in mixed mode
+    morph_focus_sparse: bool = False   # force sparse weight-storage options in morphological mode
+    morph_sparse_weight_storage: str = ""  # optional explicit sparse storage choice
     refine_source_result_ids: str = ""  # comma-separated source result IDs for local fingerprint refinement
     refine_mutations_per_source: int = 4
     # Training program variation
@@ -1315,7 +1317,187 @@ class ExperimentRunner:
             "Cycle %d done: S0=%d S0.5=%d S1=%d (ΔS1=%+d)%s",
             n_experiments, s0, s05, s1, delta_s1, loss_str,
         )
+
+        # PROACTIVE: Auto-repair on cycle failure
+        if cycle_error:
+            self._proactive_cycle_repair(cycle_error, selected_mode, n_experiments, nb)
+
+        # PROACTIVE: Detect stagnation and auto-adjust
+        self._proactive_stagnation_check(n_experiments, delta_s1, nb)
+
+        # PROACTIVE: Detect recurring error patterns and auto-fix
+        self._proactive_recurring_error_fix(n_experiments, nb)
+
         return summary
+
+    def _proactive_cycle_repair(self, error: str, mode: str,
+                                cycle_index: int, nb: LabNotebook):
+        """Spawn a code agent to fix cycle failures autonomously."""
+        try:
+            from .api import _spawn_code_agent_task, _should_autospawn_self_repair
+            if not _should_autospawn_self_repair(error):
+                return
+            # Rate-limit: don't spawn repair agents more than once per 3 minutes
+            now = time.time()
+            last = getattr(self, "_last_cycle_repair_spawn", 0)
+            if now - last < 180:
+                return
+            self._last_cycle_repair_spawn = now
+
+            # Build targeted goal based on error type
+            import re as _re
+            goal_parts = [f"Cycle {cycle_index} ({mode}) failed with: {error[:500]}."]
+            # Extract file references from traceback
+            file_refs = _re.findall(r'File "([^"]+)", line (\d+)', error)
+            if file_refs:
+                goal_parts.append(
+                    f"Key locations: {', '.join(f'{f}:{l}' for f, l in file_refs[:5])}."
+                )
+            # Detect error class for targeted advice
+            if "ImportError" in error or "ModuleNotFoundError" in error:
+                goal_parts.append("This is an import error — check module paths and __init__.py files.")
+            elif "CUDA" in error or "RuntimeError" in error:
+                goal_parts.append("This may be a CUDA/tensor error — check device placement and tensor shapes.")
+            elif "TypeError" in error or "AttributeError" in error:
+                goal_parts.append("This is a type/attribute error — check function signatures and object interfaces.")
+            goal_parts.append(
+                "Investigate root cause. Apply minimal safe fix. "
+                "Use local Ollama model if available."
+            )
+            notebook_path = str(nb._db_path) if hasattr(nb, "_db_path") else ""
+            task = _spawn_code_agent_task(
+                goal=" ".join(goal_parts),
+                notebook_path=notebook_path,
+                allow_write=True,
+            )
+            task_id = task.get("task_id", "unknown")
+            logger.info("Proactive repair agent spawned: %s for cycle %d error", task_id, cycle_index)
+            nb.log_learning_event(
+                "proactive_repair",
+                f"Auto-spawned repair agent {task_id} for cycle {cycle_index} failure: {error[:200]}",
+                task_id=task_id,
+            )
+        except Exception as e:
+            logger.debug("Proactive cycle repair failed to spawn: %s", e)
+
+    def _proactive_stagnation_check(self, cycle_index: int, delta_s1: int,
+                                    nb: LabNotebook):
+        """Detect stagnation (consecutive zero-survivor cycles) and auto-adjust."""
+        history = getattr(self, "_aria_cycle_history", [])
+        if len(history) < 3:
+            return
+
+        # Check last 3 cycles for zero survivors
+        recent = history[-3:]
+        consecutive_zero = all(
+            (h.get("delta_stage1_survivors", 0) == 0 and
+             h.get("after", {}).get("stage1_passed", 0) == 0)
+            for h in recent
+        )
+        if not consecutive_zero:
+            return
+
+        # Already applied anti-stagnation recently?
+        last_anti = getattr(self, "_last_anti_stagnation_cycle", -10)
+        if cycle_index - last_anti < 3:
+            return
+        self._last_anti_stagnation_cycle = cycle_index
+
+        # Apply anti-stagnation: diversify grammar, reduce depth, try different source
+        adjustments = {
+            "max_depth": max(4, getattr(self, "_grammar_weight_overrides", {}).get("max_depth", 6) - 2),
+            "max_ops": max(4, getattr(self, "_grammar_weight_overrides", {}).get("max_ops", 8) - 2),
+        }
+        self._last_chat_config_overrides = {
+            **(self._last_chat_config_overrides or {}),
+            **adjustments,
+        }
+        # Reset any extreme grammar weights
+        if hasattr(self, "_grammar_weight_overrides"):
+            for k in list(self._grammar_weight_overrides.keys()):
+                v = self._grammar_weight_overrides[k]
+                if isinstance(v, (int, float)) and (v > 6.0 or v < 0.3):
+                    self._grammar_weight_overrides[k] = 1.0
+
+        nb.log_learning_event(
+            "anti_stagnation",
+            f"3 consecutive zero-S1 cycles detected at cycle {cycle_index}. "
+            f"Auto-reduced depth/ops ({adjustments}), reset extreme grammar weights.",
+            adjustments=adjustments,
+        )
+        logger.info(
+            "Anti-stagnation triggered at cycle %d: %s",
+            cycle_index, adjustments,
+        )
+
+    def _proactive_recurring_error_fix(self, cycle_index: int, nb: LabNotebook):
+        """Detect recurring error patterns across cycles and spawn a fix agent.
+
+        If the same error class (first line of traceback) appears 2+ times
+        in the last 5 cycles, spawn a code agent to fix the root cause.
+        """
+        history = getattr(self, "_aria_cycle_history", [])
+        if len(history) < 2:
+            return
+
+        # Collect errors from recent cycles
+        recent = history[-5:]
+        errors = []
+        for h in recent:
+            err = h.get("error")
+            if err:
+                # Normalize: take the error class/first line
+                first_line = str(err).split("\n")[0].strip()[:200]
+                errors.append(first_line)
+
+        if len(errors) < 2:
+            return
+
+        # Find repeated error patterns (same first 80 chars)
+        from collections import Counter
+        error_keys = [e[:80] for e in errors]
+        counts = Counter(error_keys)
+        repeated = [(k, c) for k, c in counts.items() if c >= 2]
+        if not repeated:
+            return
+
+        # Rate-limit: don't spawn more than 1 recurring-error agent per 10 minutes
+        now = time.time()
+        last = getattr(self, "_last_recurring_error_agent", 0)
+        if now - last < 600:
+            return
+        self._last_recurring_error_agent = now
+
+        worst_error = max(repeated, key=lambda x: x[1])
+        try:
+            from .api import _spawn_code_agent_task
+            notebook_path = str(nb._db_path) if hasattr(nb, "_db_path") else ""
+            task = _spawn_code_agent_task(
+                goal=(
+                    f"RECURRING ERROR (seen {worst_error[1]}x in last 5 cycles): "
+                    f"{worst_error[0]}. "
+                    "This error keeps happening. Find the ROOT CAUSE in "
+                    "scientist/runner.py, synthesis/, eval/, or training/ and fix it. "
+                    "Use local Ollama model if available."
+                ),
+                notebook_path=notebook_path,
+                allow_write=True,
+            )
+            task_id = task.get("task_id", "unknown")
+            nb.log_learning_event(
+                "proactive_recurring_error_fix",
+                f"Spawned agent {task_id} for recurring error ({worst_error[1]}x): "
+                f"{worst_error[0][:200]}",
+                task_id=task_id,
+                error_pattern=worst_error[0],
+                occurrences=worst_error[1],
+            )
+            logger.info(
+                "Recurring error agent spawned: %s for pattern seen %dx: %s",
+                task_id, worst_error[1], worst_error[0][:100],
+            )
+        except Exception as e:
+            logger.debug("Failed to spawn recurring error fix agent: %s", e)
 
     @staticmethod
     def _config_with_overrides(
@@ -1394,10 +1576,20 @@ class ExperimentRunner:
                     if hasattr(config, k):
                         setattr(config, k, v)
             try:
+                if mode in {"sparse_morph", "sparse_morphology", "sparse_morphological"}:
+                    config.model_source = "morphological_box"
+                    config.morph_focus_sparse = True
+                    config.n_programs = max(120, int(config.n_programs))
+                    config.n_layers = max(1, min(int(config.n_layers), 4))
+                    config.max_depth = max(2, min(int(config.max_depth), 6))
+                    config.max_ops = max(4, min(int(config.max_ops), 10))
+                    exp_id = self.start_experiment(config)
                 if mode == "evolution":
                     exp_id = self.start_evolution(config)
                 elif mode == "novelty":
                     exp_id = self.start_novelty_search(config)
+                elif mode in {"sparse_morph", "sparse_morphology", "sparse_morphological"}:
+                    pass
                 else:
                     exp_id = self.start_experiment(config)
                 return {"status": "started", "experiment_id": exp_id, "mode": mode}
@@ -5592,7 +5784,7 @@ class ExperimentRunner:
 
     def _auto_recommend(self, results: Dict, config: RunConfig,
                         hypothesis: str, nb: LabNotebook):
-        """Auto-generate a recommendation after experiment completion."""
+        """Auto-generate a recommendation after experiment completion and APPLY it."""
         try:
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb)
@@ -5615,8 +5807,106 @@ class ExperimentRunner:
                         "suggested_config": suggestion.get("config", {}),
                     },
                 ))
+                # PROACTIVE: Apply suggested config/grammar changes immediately
+                self._apply_recommendation(suggestion, nb)
         except Exception as e:
             logger.debug(f"Auto-recommendation failed: {e}")
+
+    def _apply_recommendation(self, suggestion: Dict, nb: LabNotebook):
+        """Proactively apply Aria's recommended config and grammar changes.
+
+        Also detects code-level issues in reasoning and spawns repair agents.
+        """
+        confidence = suggestion.get("confidence", 0)
+        reasoning = str(suggestion.get("reasoning") or "")
+
+        # Detect code-level issues in reasoning and spawn agent
+        if confidence >= 0.3 and reasoning:
+            self._maybe_spawn_agent_from_reasoning(reasoning, nb)
+
+        if confidence < 0.4:
+            return  # Low confidence — don't auto-apply config
+
+        suggested_config = suggestion.get("config") or {}
+        if not suggested_config:
+            return
+
+        # Apply grammar weight overrides if present
+        grammar_overrides = {}
+        config_overrides = {}
+        for k, v in suggested_config.items():
+            if k in ("math_space_weight",):
+                # This is a grammar-level override
+                grammar_overrides[k] = v
+            elif k in (
+                "n_programs", "model_dim", "max_depth", "max_ops",
+                "model_source", "morph_focus_sparse",
+                "use_synthesized_training",
+            ):
+                config_overrides[k] = v
+
+        if grammar_overrides:
+            self._grammar_weight_overrides.update(grammar_overrides)
+            nb.log_learning_event(
+                "auto_grammar_adjusted",
+                f"Aria proactively adjusted grammar weights: {grammar_overrides}",
+                weights=grammar_overrides,
+            )
+            logger.info("Aria auto-applied grammar overrides: %s", grammar_overrides)
+
+        if config_overrides:
+            self._last_chat_config_overrides = {
+                **(self._last_chat_config_overrides or {}),
+                **config_overrides,
+            }
+            nb.log_learning_event(
+                "auto_config_adjusted",
+                f"Aria proactively adjusted config: {config_overrides}",
+                changes=config_overrides,
+            )
+            logger.info("Aria auto-applied config overrides: %s", config_overrides)
+
+    def _maybe_spawn_agent_from_reasoning(self, reasoning: str, nb: LabNotebook):
+        """If Aria's reasoning mentions code issues, spawn a repair agent."""
+        import re as _re
+        # Detect code-issue signals in reasoning text
+        code_issue_patterns = [
+            r'\b(?:error|bug|crash|exception|traceback|broken|fails?|failing)\b.*\b(?:in|at|from)\s+\S+\.py\b',
+            r'\b(?:fix|repair|patch|update)\b.*\b(?:code|file|module|function|class)\b',
+            r'\bImportError\b|\bTypeError\b|\bAttributeError\b|\bNameError\b|\bSyntaxError\b',
+            r'\b(?:missing|undefined|unresolved)\s+(?:import|module|function|method|attribute)\b',
+        ]
+        has_code_issue = any(
+            _re.search(pat, reasoning, _re.IGNORECASE) for pat in code_issue_patterns
+        )
+        if not has_code_issue:
+            return
+        # Rate-limit: don't spawn more than 1 agent per 5 minutes from reasoning
+        now = time.time()
+        last = getattr(self, "_last_reasoning_agent_spawn", 0)
+        if now - last < 300:
+            return
+        self._last_reasoning_agent_spawn = now
+        try:
+            from .api import _spawn_code_agent_task
+            notebook_path = str(nb._db_path) if hasattr(nb, "_db_path") else ""
+            task = _spawn_code_agent_task(
+                goal=(
+                    f"Aria's analysis identified a code issue: {reasoning[:600]}. "
+                    "Investigate and fix. Use local Ollama model if available."
+                ),
+                notebook_path=notebook_path,
+                allow_write=True,
+            )
+            task_id = task.get("task_id", "unknown")
+            nb.log_learning_event(
+                "proactive_reasoning_agent",
+                f"Spawned agent {task_id} from recommendation reasoning: {reasoning[:200]}",
+                task_id=task_id,
+            )
+            logger.info("Spawned reasoning-based repair agent: %s", task_id)
+        except Exception as e:
+            logger.debug("Failed to spawn reasoning-based agent: %s", e)
 
     def _build_rich_context_for_experiment(
         self, results: Dict, config: RunConfig,
@@ -5813,6 +6103,12 @@ class ExperimentRunner:
                 from ..morphological_box import roll, describe_spec
                 from ..arch_builder import build_model, BuildConfig
 
+                sparse_weight_options = (
+                    "structured_sparse",
+                    "semi_structured_2_4",
+                    "block_sparse",
+                )
+
                 build_cfg = BuildConfig(
                     dim=config.model_dim,
                     n_layers=config.n_layers,
@@ -5824,8 +6120,17 @@ class ExperimentRunner:
                     if self._stop_event.is_set():
                         break
                     try:
+                        fixed_choices: Dict[str, str] = {}
+                        if bool(getattr(config, "morph_focus_sparse", False)):
+                            explicit_sparse = str(getattr(config, "morph_sparse_weight_storage", "") or "").strip()
+                            if explicit_sparse in sparse_weight_options:
+                                fixed_choices["weight_storage"] = explicit_sparse
+                            else:
+                                fixed_choices["weight_storage"] = sparse_weight_options[i % len(sparse_weight_options)]
+
                         spec = roll(seed=i + int(time.time() * 1000) % 100000,
-                                    generation=0)
+                                    generation=0,
+                                    fixed=fixed_choices or None)
                         model = build_model(spec, build_cfg)
                         desc = describe_spec(spec)
 

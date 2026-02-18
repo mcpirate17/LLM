@@ -146,7 +146,7 @@ function CycleTimeline() {
           }}
           style={{
             background: 'var(--bg-primary)',
-            border: '1px solid var(--border-color)',
+            border: '1px solid var(--border)',
             borderRadius: 6,
             color: 'var(--text-primary)',
             fontSize: 12,
@@ -168,7 +168,7 @@ function CycleTimeline() {
           }}
           style={{
             background: 'var(--bg-primary)',
-            border: '1px solid var(--border-color)',
+            border: '1px solid var(--border)',
             borderRadius: 6,
             color: 'var(--text-primary)',
             fontSize: 12,
@@ -191,7 +191,7 @@ function CycleTimeline() {
             flex: 1,
             minWidth: 220,
             background: 'var(--bg-primary)',
-            border: '1px solid var(--border-color)',
+            border: '1px solid var(--border)',
             borderRadius: 6,
             color: 'var(--text-primary)',
             fontSize: 12,
@@ -216,7 +216,7 @@ function CycleTimeline() {
             <div
               key={`${row.entry_id || row.timestamp || idx}`}
               style={{
-                border: '1px solid var(--border-color)',
+                border: '1px solid var(--border)',
                 borderRadius: 6,
                 padding: '8px 10px',
                 background: 'var(--bg-tertiary)',

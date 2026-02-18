@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import { discoveryScore, discoveryScoreBreakdown } from '../utils/scores';
 import { scoreColor } from '../utils/format';
+import { reliabilityColor } from '../utils/colors';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -74,11 +75,6 @@ function metricChips(program) {
   return chips;
 }
 
-function reliabilityColor(level) {
-  if (level === 'high') return 'var(--accent-green)';
-  if (level === 'medium') return 'var(--accent-yellow)';
-  return 'var(--accent-red)';
-}
 
 const QKV_OPS = new Set(['local_window_attn', 'sliding_window_mask', 'multi_head_mix']);
 

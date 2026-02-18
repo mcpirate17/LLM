@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useEventBus } from '../hooks/useEventBus';
 
 const RESULT_COLORS = {
   'S1 PASS': 'var(--accent-green)',
@@ -10,294 +11,62 @@ const RESULT_COLORS = {
 
 function LiveFeed({ apiBase, experimentId = null }) {
   const [events, setEvents] = useState([]);
-  const [connected, setConnected] = useState(false);
   const feedRef = useRef(null);
-  const eventSourceRef = useRef(null);
 
+  // Helper to add an event with a mapped type
+  const addEvent = useCallback((type) => (data) => {
+    setEvents(prev => [...prev.slice(-99), { type, ...data, ts: Date.now() }]);
+  }, []);
+
+  // Subscribe to all SSE events via shared EventBus
+  const { connected } = useEventBus('program_evaluated', addEvent('program'));
+  useEventBus('experiment_started', addEvent('start'));
+  useEventBus('experiment_completed', addEvent('complete'));
+  useEventBus('experiment_failed', addEvent('failed'));
+  useEventBus('experiment_stopping', addEvent('stopping'));
+  useEventBus('evolution_started', addEvent('evo_start'));
+  useEventBus('evolution_generation', addEvent('evo_gen'));
+  useEventBus('evolution_completed', addEvent('evo_complete'));
+  useEventBus('novelty_started', addEvent('nov_start'));
+  useEventBus('novelty_generation', addEvent('nov_gen'));
+  useEventBus('novelty_completed', addEvent('nov_complete'));
+  useEventBus('scale_up_started', addEvent('scaleup_start'));
+  useEventBus('scale_up_progress', addEvent('scaleup_progress'));
+  useEventBus('scale_up_completed', addEvent('scaleup_complete'));
+  useEventBus('auto_scale_up_queued', addEvent('auto_scaleup'));
+  useEventBus('mode_selected', addEvent('mode_selected'));
+  useEventBus('investigation_started', addEvent('invest_start'));
+  useEventBus('investigation_progress', addEvent('invest_progress'));
+  useEventBus('investigation_completed', addEvent('invest_complete'));
+  useEventBus('validation_started', addEvent('validate_start'));
+  useEventBus('validation_progress', addEvent('validate_progress'));
+  useEventBus('validation_completed', addEvent('validate_complete'));
+  useEventBus('breakthrough_detected', addEvent('breakthrough'));
+  useEventBus('auto_investigate_queued', addEvent('auto_investigate'));
+  useEventBus('auto_validate_queued', addEvent('auto_validate'));
+  useEventBus('auto_report_generated', addEvent('auto_report'));
+  useEventBus('aria_recommendation', addEvent('recommendation'));
+  useEventBus('hypothesis_recorded', addEvent('hyp_recorded'));
+  useEventBus('hypothesis_resolved', addEvent('hyp_resolved'));
+  useEventBus('decision_recorded', addEvent('decision'));
+  useEventBus('knowledge_extracted', addEvent('knowledge'));
+  useEventBus('campaign_created', addEvent('campaign_created'));
+  useEventBus('campaign_completed', addEvent('campaign_completed'));
+  useEventBus('continuous_limit_reached', addEvent('limit_reached'));
+  useEventBus('learning_event', addEvent('learning'));
+
+  // Load history from REST when experimentId changes
   useEffect(() => {
-    let isCancelled = false;
-
     setEvents([]);
-
-    if (!experimentId) {
-      return () => {
-        isCancelled = true;
-        setConnected(false);
-      };
-    }
+    if (!experimentId) return;
 
     fetch(`${apiBase}/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=100`)
       .then((r) => (r.ok ? r.json() : []))
       .then((history) => {
-        if (isCancelled || !Array.isArray(history) || history.length === 0) {
-          return;
-        }
+        if (!Array.isArray(history) || history.length === 0) return;
         setEvents((prev) => [...history, ...prev].slice(-100));
       })
       .catch(() => {});
-
-    const es = new EventSource(`${apiBase}/api/events`);
-    eventSourceRef.current = es;
-
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-
-    es.addEventListener('program_evaluated', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), { type: 'program', ...data, ts: Date.now() }]);
-    });
-
-    es.addEventListener('experiment_started', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), { type: 'start', ...data, ts: Date.now() }]);
-    });
-
-    es.addEventListener('experiment_completed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), { type: 'complete', ...data, ts: Date.now() }]);
-    });
-
-    es.addEventListener('experiment_failed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), { type: 'failed', ...data, ts: Date.now() }]);
-    });
-
-    es.addEventListener('experiment_stopping', () => {
-      setEvents(prev => [...prev.slice(-99), { type: 'stopping', ts: Date.now() }]);
-    });
-
-    // Evolution events
-    es.addEventListener('evolution_started', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'evo_start', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('evolution_generation', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'evo_gen', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('evolution_completed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'evo_complete', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Novelty events
-    es.addEventListener('novelty_started', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'nov_start', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('novelty_generation', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'nov_gen', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('novelty_completed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'nov_complete', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Continuous mode limit reached
-    es.addEventListener('continuous_limit_reached', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'limit_reached', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Scale-up events
-    es.addEventListener('scale_up_started', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'scaleup_start', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('scale_up_progress', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'scaleup_progress', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('scale_up_completed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'scaleup_complete', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Auto-scale-up queued
-    es.addEventListener('auto_scale_up_queued', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'auto_scaleup', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Mode selection events
-    es.addEventListener('mode_selected', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'mode_selected', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Investigation events
-    es.addEventListener('investigation_started', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'invest_start', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('investigation_progress', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'invest_progress', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('investigation_completed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'invest_complete', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Validation events
-    es.addEventListener('validation_started', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'validate_start', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('validation_progress', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'validate_progress', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('validation_completed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'validate_complete', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Breakthrough detection
-    es.addEventListener('breakthrough_detected', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'breakthrough', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Auto-escalation queued
-    es.addEventListener('auto_investigate_queued', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'auto_investigate', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('auto_validate_queued', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'auto_validate', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Auto-report generated
-    es.addEventListener('auto_report_generated', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'auto_report', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Hypothesis events
-    es.addEventListener('hypothesis_recorded', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'hyp_recorded', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('hypothesis_resolved', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'hyp_resolved', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Decision events
-    es.addEventListener('decision_recorded', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'decision', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Knowledge events
-    es.addEventListener('knowledge_extracted', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'knowledge', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Campaign events
-    es.addEventListener('campaign_created', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'campaign_created', ...data, ts: Date.now()
-      }]);
-    });
-
-    es.addEventListener('campaign_completed', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'campaign_completed', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Aria auto-recommendation
-    es.addEventListener('aria_recommendation', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'recommendation', ...data, ts: Date.now()
-      }]);
-    });
-
-    // Learning events (grammar weight adjustments)
-    es.addEventListener('learning_event', (e) => {
-      const data = JSON.parse(e.data);
-      setEvents(prev => [...prev.slice(-99), {
-        type: 'learning', ...data, ts: Date.now()
-      }]);
-    });
-
-    return () => {
-      isCancelled = true;
-      es.close();
-      setConnected(false);
-    };
   }, [apiBase, experimentId]);
 
   // Auto-scroll to bottom
@@ -308,7 +77,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
   }, [events]);
 
   return (
-    <div className="card live-feed">
+    <div className="live-feed">
       <div className="card-title">
         Live Feed
         <span className={`connection-dot ${connected ? 'connected' : ''}`}></span>

@@ -53,9 +53,6 @@ function SummaryCards({ summary, learningTrend }) {
   return (
     <div className="card">
       <div className="card-title">Research Summary</div>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        Quick snapshot of search progress, candidate quality, and novelty.
-      </p>
       <div className="summary-grid">
         {cards.map((card, i) => (
           <div key={i} className="stat-card">

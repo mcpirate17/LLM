@@ -1,71 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { scoreColor } from '../utils/format';
-import { lossColor, noveltyColor } from '../utils/colors';
+import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
+import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
 import { programScore, programScoreBreakdown } from '../utils/scores';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 const TOP_PROGRAMS_SORT_KEY = 'aria_top_programs_sort_v1';
-
-const QKV_OPS = new Set(['local_window_attn', 'sliding_window_mask', 'multi_head_mix']);
-
-function qkvUsageDescriptor(program) {
-  const usage = program?.qkv_usage;
-  if (usage === 'qkv_free') {
-    return {
-      label: 'QKV-free',
-      detail: 'Uses non-attention token mixing only (e.g., SSM/conv/frequency/functional).',
-      tone: 'high',
-    };
-  }
-  if (usage === 'q_eq_k_eq_v') {
-    return {
-      label: 'Q=K=V',
-      detail: 'Attention-like path with shared projections (reduced attention parameterization).',
-      tone: 'medium',
-    };
-  }
-  if (usage === 'full_qkv') {
-    return {
-      label: 'Full QKV',
-      detail: 'Standard Q/K/V attention path is present.',
-      tone: 'medium',
-    };
-  }
-  const qkvFree = detectQkvFree(program);
-  if (qkvFree === true) {
-    return {
-      label: 'QKV-free*',
-      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
-      tone: 'high',
-    };
-  }
-  if (qkvFree === false) {
-    return {
-      label: 'Uses QKV*',
-      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
-      tone: 'medium',
-    };
-  }
-  return {
-    label: 'QKV unknown',
-    detail: 'Insufficient graph/payload info to classify QKV usage.',
-    tone: 'low',
-  };
-}
-
-/** Detect whether a program uses QKV-based attention from its graph_json. Returns true/false/null. */
-function detectQkvFree(program) {
-  const raw = program.graph_json || program._graph_json;
-  if (!raw) return null;
-  try {
-    const graph = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    const nodes = graph.nodes || {};
-    const ops = Object.values(nodes).map(n => n.op_name || n.op).filter(Boolean);
-    return !ops.some(op => QKV_OPS.has(op));
-  } catch {
-    return null;
-  }
-}
 
 /** Rate a program: green (excellent), amber (promising), red (weak) */
 function programRating(p) {
@@ -85,12 +25,6 @@ function programRating(p) {
 function metricText(value, fallbackReason, formatter) {
   if (value == null) return fallbackReason;
   return formatter(value);
-}
-
-function reliabilityColor(level) {
-  if (level === 'high') return 'var(--accent-green)';
-  if (level === 'medium') return 'var(--accent-yellow)';
-  return 'var(--accent-red)';
 }
 
 function programMetricChips(program) {

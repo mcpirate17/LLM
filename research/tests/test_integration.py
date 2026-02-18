@@ -220,6 +220,21 @@ class TestNotebook(unittest.TestCase):
         config = json.loads(row["config_json"])
         self.assertEqual(config.get("code_version"), "test-version")
 
+    def test_log_learning_event_accepts_extra_keyword_metadata(self):
+        """Learning log should accept extra metadata kwargs without raising."""
+        self.nb.log_learning_event(
+            "chat_config_adjusted",
+            "Adjusted chat config",
+            changes={"max_depth": 4},
+            ignored={"unknown_key": 1},
+        )
+        rows = self.nb.get_learning_log(limit=5)
+        self.assertGreaterEqual(len(rows), 1)
+        latest = rows[0]
+        self.assertEqual(latest["event_type"], "chat_config_adjusted")
+        self.assertIsInstance(latest.get("evidence"), str)
+        self.assertIn("changes", latest.get("evidence") or "")
+
     def test_leaderboard_upsert_and_query(self):
         """Leaderboard CRUD operations."""
         # Create an experiment and program first
@@ -1782,6 +1797,7 @@ class TestRunConfig(unittest.TestCase):
             "validation_steps", "validation_batch_size",
             "validation_seq_len", "validation_n_seeds",
             "model_source", "morph_ratio",
+            "morph_focus_sparse", "morph_sparse_weight_storage",
             "use_synthesized_training", "n_training_programs",
             "data_mode", "corpus_path", "corpus_format",
             "corpus_text_key", "tokenizer_mode", "corpus_max_chars",
@@ -2104,8 +2120,36 @@ class TestAPI(unittest.TestCase):
         self.assertIn("summary", data)
         self.assertIn("recent_experiments", data)
         self.assertIn("top_programs", data)
+        self.assertIn("production_readiness", data)
         self.assertIn("insights", data)
         self.assertIn("is_running", data)
+
+        readiness = data["production_readiness"]
+        self.assertIn("breakthrough_count", readiness)
+        self.assertIn("epic_switch_recommendation", readiness)
+        self.assertIn("scale_up_templates", readiness)
+        self.assertIn("reproducibility_workflow", readiness)
+        self.assertIsInstance(readiness.get("scale_up_templates"), list)
+        if readiness.get("reproducibility_workflow") is not None:
+            repro_workflow = readiness["reproducibility_workflow"]
+            self.assertIn("progress_label", repro_workflow)
+            self.assertIn("next_actions", repro_workflow)
+            self.assertIsInstance(repro_workflow.get("next_actions"), list)
+        if readiness.get("top_candidates"):
+            top_candidate = readiness["top_candidates"][0]
+            self.assertIn("scale_up_templates", top_candidate)
+            self.assertIn("reproducibility_workflow", top_candidate)
+            self.assertIsInstance(top_candidate.get("scale_up_templates"), list)
+            self.assertIsInstance(top_candidate.get("reproducibility_workflow"), dict)
+            if top_candidate.get("scale_up_templates"):
+                first_template = top_candidate["scale_up_templates"][0]
+                self.assertIn("start_payload", first_template)
+                payload = first_template.get("start_payload") or {}
+                self.assertIn(payload.get("mode"), {"validation", "investigation", "scale_up"})
+                self.assertIsInstance(payload.get("result_ids"), list)
+        recommendation = readiness["epic_switch_recommendation"]
+        self.assertIn(recommendation.get("action"), {"stay_current_epic", "switch_to_scale_up_epic"})
+        self.assertIsInstance(recommendation.get("reason"), str)
 
     def test_api_status(self):
         r = self.client.get("/api/status")
@@ -2489,9 +2533,8 @@ class TestAPI(unittest.TestCase):
         self.assertIn("reply", data)
         self.assertIn("ai_powered", data)
         self.assertIn("used_context", data)
-        self.assertIn("Evidence:", data["reply"])
-        self.assertIn("Recommendation:", data["reply"])
-        self.assertIn("Next Action:", data["reply"])
+        # Reply should be concise (no verbose essays)
+        self.assertGreater(len(data["reply"]), 10)
 
     def test_api_aria_chat_with_session_id(self):
         r = self.client.post(
@@ -2505,6 +2548,47 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertIn("reply", data)
         self.assertIn("ai_powered", data)
+
+    def test_api_aria_chat_fix_intent_phrase_triggers_execution_first(self):
+        r = self.client.post(
+            "/api/aria/chat",
+            json={
+                "message": "Is there anything you need to fix to investigate more sparse programs?",
+                "session_id": "test-session-fix-intent",
+            },
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("execution_first_mode"))
+        self.assertTrue(data.get("brief_mode"))
+        self.assertIn("Execution-first mode enabled", data.get("reply", ""))
+        self.assertIsNotNone(data.get("agent_task"))
+
+    def test_api_aria_chat_needed_to_fix_phrase_triggers_execution_first(self):
+        r = self.client.post(
+            "/api/aria/chat",
+            json={
+                "message": "What did you need to fix to improve sparse coverage?",
+                "session_id": "test-session-needed-fix-intent",
+            },
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("execution_first_mode"))
+        self.assertIn("Execution-first mode enabled", data.get("reply", ""))
+
+    def test_api_aria_chat_summary_request_uses_summary_format(self):
+        r = self.client.post(
+            "/api/aria/chat",
+            json={
+                "message": "Please summarize what changed in the last runs.",
+                "session_id": "test-session-summary-mode",
+            },
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("Evidence:", data.get("reply", ""))
+        self.assertIn("Recommendation:", data.get("reply", ""))
 
     def test_api_aria_chat_history(self):
         # Save a message first
@@ -3026,6 +3110,59 @@ class TestAPI(unittest.TestCase):
         self.assertLessEqual(launched_config.max_ops, 10)
         self.assertLessEqual(launched_config.n_programs, 80)
 
+    def test_api_start_sparse_morph_alias_applies_bias(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_experiment = MagicMock(return_value="exp-sparse-morph")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(
+            aria_message="Sparse morph synthesis started",
+            hypothesis_critique=None,
+        )
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/experiments/start", json={
+                "mode": "sparse_morph",
+                "n_layers": 8,
+                "max_depth": 10,
+                "max_ops": 16,
+                "model_source": "graph_synthesis",
+                "n_programs": 90,
+            })
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("prescreen", data)
+        self.assertIn("sparse_morph_bias", data)
+        self.assertGreaterEqual(len(data["sparse_morph_bias"]), 1)
+        fake_runner.prescreen_run_config.assert_called_once()
+        _, kwargs = fake_runner.prescreen_run_config.call_args
+        self.assertEqual(kwargs.get("mode"), "single")
+
+        start_args, _ = fake_runner.start_experiment.call_args
+        launched_config = start_args[0]
+        self.assertEqual(launched_config.model_source, "morphological_box")
+        self.assertTrue(launched_config.morph_focus_sparse)
+        self.assertLessEqual(launched_config.n_layers, 4)
+        self.assertLessEqual(launched_config.max_depth, 6)
+        self.assertLessEqual(launched_config.max_ops, 10)
+        self.assertGreaterEqual(launched_config.n_programs, 120)
+
     def test_api_rerun_experiment(self):
         from research.scientist import api as api_mod
 
@@ -3060,6 +3197,47 @@ class TestAPI(unittest.TestCase):
 
         self.assertEqual(r.status_code, 409)
         self.assertIn("already running", (r.get_json() or {}).get("error", "").lower())
+
+    def test_api_start_experiment_autospawns_self_repair_on_runtime_error(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.start_experiment = MagicMock(
+            side_effect=TypeError("log_learning_event() got an unexpected keyword argument 'changes'")
+        )
+
+        fake_task = {
+            "task_id": "task-auto-repair-1",
+            "status": "queued",
+            "goal": "auto repair",
+            "allow_write": True,
+        }
+
+        with patch.object(api_mod, "_runner", fake_runner), \
+             patch.object(api_mod, "_spawn_code_agent_task", return_value=fake_task) as mock_spawn:
+            r = self.client.post("/api/experiments/start", json={"mode": "single", "n_programs": 1})
+
+        self.assertEqual(r.status_code, 500)
+        data = r.get_json()
+        self.assertIn("error", data)
+        self.assertTrue(data.get("auto_repair_started"))
+        self.assertEqual((data.get("auto_repair_task") or {}).get("task_id"), "task-auto-repair-1")
+        mock_spawn.assert_called_once()
 
     def test_api_validate_pipeline(self):
         r = self.client.post("/api/validate", json={"n": 2})
@@ -4287,6 +4465,43 @@ class TestDashboardConsistency(unittest.TestCase):
                     matched,
                     f"Orphaned API URL in {os.path.basename(filepath)}: {url}",
                 )
+
+    def test_aria_chat_panel_auto_analysis_uses_single_briefing_endpoint(self):
+        chat_panel_path = os.path.join(self.component_dir, "AriaChatPanel.js")
+        content = self._read_file(chat_panel_path)
+        self.assertIn("/api/strategy/briefing", content)
+        self.assertNotIn("/api/aria/strategy", content)
+        self.assertNotIn("/api/aria/recommendation", content)
+        self.assertIn("Auto: Off (Manual only)", content)
+        self.assertNotIn("Auto: Run-only", content)
+        self.assertNotIn("Auto: Always", content)
+        self.assertIn("Ask for Action", content)
+
+    def test_dashboard_wires_auto_repair_started_event_to_chat(self):
+        app_content = self._read_file(self.app_js)
+        chat_panel_path = os.path.join(self.component_dir, "AriaChatPanel.js")
+        chat_content = self._read_file(chat_panel_path)
+
+        self.assertIn("aria-auto-repair-started", app_content)
+        self.assertIn("emitAutoRepairStarted", app_content)
+        self.assertIn("Auto-repair tasks", app_content)
+        self.assertIn("Show completed", app_content)
+        self.assertIn("Reset preferences", app_content)
+        self.assertIn("aria_auto_repair_show_completed_v1", app_content)
+        self.assertIn("/api/aria/agent/status/", app_content)
+        self.assertIn("window.addEventListener('aria-auto-repair-started'", chat_content)
+        self.assertIn("Auto-repair agent started", chat_content)
+
+    def test_dashboard_wires_production_readiness_panel(self):
+        app_content = self._read_file(self.app_js)
+        self.assertIn("Production Readiness", app_content)
+        self.assertIn("Epic switch:", app_content)
+        self.assertIn("Complete repro packet:", app_content)
+        self.assertIn("production_readiness", app_content)
+        self.assertIn("reproducibility_workflow", app_content)
+        self.assertIn("handleRunProductionTemplate", app_content)
+        self.assertIn("Run Scale-Up Template", app_content)
+        self.assertIn("Run step", app_content)
 
     def test_tab_names_match_content(self):
         """All tab names in App.js should have corresponding content blocks."""
@@ -6040,7 +6255,7 @@ class TestSSEEventContract(unittest.TestCase):
             )
         frontend_events = self._extract_events(
             root / "dashboard" / "src" / "components" / "LiveFeed.js",
-            r'addEventListener\(\s*["\'](\w+)["\']',
+            r'(?:addEventListener|useEventBus)\(\s*["\'](\w+)["\']',
         )
 
         # Frontend must not listen for events the backend never sends
@@ -6072,7 +6287,7 @@ class TestSSEEventContract(unittest.TestCase):
 
         frontend_events = self._extract_events(
             root / "dashboard" / "src" / "components" / "LiveFeed.js",
-            r'addEventListener\(\s*["\'](\w+)["\']',
+            r'(?:addEventListener|useEventBus)\(\s*["\'](\w+)["\']',
         )
         self.assertGreaterEqual(len(frontend_events), 20,
                                 f"Too few frontend events found: {sorted(frontend_events)}")
@@ -7439,6 +7654,31 @@ class TestChatActions(unittest.TestCase):
         action = {"type": "start_experiment", "mode": "synthesis"}
         result = runner.execute_chat_action(action, nb)
         self.assertEqual(result["status"], "busy")
+
+    def test_start_sparse_morph_chat_mode_applies_sparse_profile(self):
+        """Chat action sparse_morph mode should force sparse morphological synthesis."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        runner._grammar_weight_overrides = {}
+        runner._thread = None
+        runner.start_experiment = MagicMock(return_value="exp-chat-sparse")
+        nb = MagicMock()
+
+        action = {
+            "type": "start_experiment",
+            "mode": "sparse_morph",
+            "config": {"n_programs": 80, "n_layers": 8, "max_depth": 10, "max_ops": 16},
+        }
+        result = runner.execute_chat_action(action, nb)
+
+        self.assertEqual(result["status"], "started")
+        self.assertEqual(result["mode"], "sparse_morph")
+        runner.start_experiment.assert_called_once()
+        launched_config = runner.start_experiment.call_args[0][0]
+        self.assertIsInstance(launched_config, RunConfig)
+        self.assertEqual(launched_config.model_source, "morphological_box")
+        self.assertTrue(launched_config.morph_focus_sparse)
+        self.assertGreaterEqual(launched_config.n_programs, 120)
 
     def test_parse_spawn_agent_action(self):
         """spawn_agent action type should be recognized."""

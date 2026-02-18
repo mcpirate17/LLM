@@ -26,3 +26,10 @@ export function confidenceColor(confidence) {
   if (v >= 0.4) return 'var(--accent-yellow)';
   return 'var(--accent-red)';
 }
+
+/** Reliability level: high=green, medium=yellow, else red */
+export function reliabilityColor(level) {
+  if (level === 'high') return 'var(--accent-green)';
+  if (level === 'medium') return 'var(--accent-yellow)';
+  return 'var(--accent-red)';
+}

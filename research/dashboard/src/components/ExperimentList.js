@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../utils/format';
-import { noveltyColor } from '../utils/colors';
+import { noveltyColor, reliabilityColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 /** Color-code experiment outcome: green (good), amber (ok), red (bad) */
@@ -80,11 +80,6 @@ function metricText(value, fallbackReason, formatter) {
   return formatter(value);
 }
 
-function reliabilityColor(level) {
-  if (level === 'high') return 'var(--accent-green)';
-  if (level === 'medium') return 'var(--accent-yellow)';
-  return 'var(--accent-red)';
-}
 
 function experimentMetricChips(exp) {
   const nPrograms = exp.n_programs_generated || 0;
@@ -171,21 +166,27 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
   const [copiedValue, copyText] = useCopyToClipboard();
   const [cancellingId, setCancellingId] = useState(null);
   const [rerunningId, setRerunningId] = useState(null);
+  const [confirmingAction, setConfirmingAction] = useState(null); // { id, type }
+  const [inlineError, setInlineError] = useState(null); // { id, message }
 
   const handleCancel = async (e, experimentId) => {
     e.stopPropagation();
-    if (!window.confirm('Cancel this stuck experiment?')) return;
+    if (!confirmingAction || confirmingAction.id !== experimentId || confirmingAction.type !== 'cancel') {
+      setConfirmingAction({ id: experimentId, type: 'cancel' });
+      return;
+    }
+    setConfirmingAction(null);
     setCancellingId(experimentId);
     try {
       const res = await fetch(`/api/experiments/${experimentId}/cancel`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || 'Failed to cancel experiment');
+        setInlineError({ id: experimentId, message: data.error || 'Failed to cancel experiment' });
       } else if (onRefresh) {
         onRefresh();
       }
     } catch (err) {
-      alert('Network error cancelling experiment');
+      setInlineError({ id: experimentId, message: 'Network error cancelling experiment' });
     } finally {
       setCancellingId(null);
     }
@@ -193,18 +194,22 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
 
   const handleRerun = async (e, experimentId) => {
     e.stopPropagation();
-    if (!window.confirm('Rerun this experiment with its saved config?')) return;
+    if (!confirmingAction || confirmingAction.id !== experimentId || confirmingAction.type !== 'rerun') {
+      setConfirmingAction({ id: experimentId, type: 'rerun' });
+      return;
+    }
+    setConfirmingAction(null);
     setRerunningId(experimentId);
     try {
       const res = await fetch(`/api/experiments/${experimentId}/rerun`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || 'Failed to rerun experiment');
+        setInlineError({ id: experimentId, message: data.error || 'Failed to rerun experiment' });
       } else if (onRefresh) {
         onRefresh();
       }
     } catch (err) {
-      alert('Network error rerunning experiment');
+      setInlineError({ id: experimentId, message: 'Network error rerunning experiment' });
     } finally {
       setRerunningId(null);
     }
@@ -358,29 +363,51 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
                     {exp.status}
                   </span>
                   {exp.status === 'running' && (
-                    <button
-                      className="refresh-btn"
-                      style={{
-                        fontSize: 10, padding: '1px 5px', marginLeft: 6,
-                        color: 'var(--accent-red)', borderColor: 'var(--accent-red)',
-                      }}
-                      disabled={cancellingId === exp.experiment_id}
-                      onClick={(e) => handleCancel(e, exp.experiment_id)}
-                      aria-label="Cancel experiment"
-                    >
-                      {cancellingId === exp.experiment_id ? '...' : 'Cancel'}
-                    </button>
+                    confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'cancel' ? (
+                      <span style={{ fontSize: 10, marginLeft: 6 }}>
+                        <span style={{ color: 'var(--accent-yellow)' }}>Cancel?</span>
+                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4, color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }} onClick={(e) => handleCancel(e, exp.experiment_id)}>Yes</button>
+                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 2 }} onClick={(e) => { e.stopPropagation(); setConfirmingAction(null); }}>No</button>
+                      </span>
+                    ) : (
+                      <button
+                        className="refresh-btn"
+                        style={{
+                          fontSize: 10, padding: '1px 5px', marginLeft: 6,
+                          color: 'var(--accent-red)', borderColor: 'var(--accent-red)',
+                        }}
+                        disabled={cancellingId === exp.experiment_id}
+                        onClick={(e) => handleCancel(e, exp.experiment_id)}
+                        aria-label="Cancel experiment"
+                      >
+                        {cancellingId === exp.experiment_id ? '...' : 'Cancel'}
+                      </button>
+                    )
                   )}
                   {(exp.status === 'running' || exp.status === 'failed') && (
-                    <button
-                      className="refresh-btn"
-                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
-                      disabled={rerunningId === exp.experiment_id}
-                      onClick={(e) => handleRerun(e, exp.experiment_id)}
-                      aria-label="Rerun experiment"
-                    >
-                      {rerunningId === exp.experiment_id ? '...' : 'Rerun'}
-                    </button>
+                    confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'rerun' ? (
+                      <span style={{ fontSize: 10, marginLeft: 6 }}>
+                        <span style={{ color: 'var(--accent-yellow)' }}>Rerun?</span>
+                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4 }} onClick={(e) => handleRerun(e, exp.experiment_id)}>Yes</button>
+                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 2 }} onClick={(e) => { e.stopPropagation(); setConfirmingAction(null); }}>No</button>
+                      </span>
+                    ) : (
+                      <button
+                        className="refresh-btn"
+                        style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
+                        disabled={rerunningId === exp.experiment_id}
+                        onClick={(e) => handleRerun(e, exp.experiment_id)}
+                        aria-label="Rerun experiment"
+                      >
+                        {rerunningId === exp.experiment_id ? '...' : 'Rerun'}
+                      </button>
+                    )
+                  )}
+                  {inlineError?.id === exp.experiment_id && (
+                    <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--accent-red)' }}>
+                      {inlineError.message}
+                      <button className="refresh-btn" style={{ fontSize: 9, padding: '0 4px', marginLeft: 4 }} onClick={(e) => { e.stopPropagation(); setInlineError(null); }}>&times;</button>
+                    </span>
                   )}
                 </td>
                 <td title={`${exp.n_programs_generated || 0} generated \u2192 ${exp.n_stage0_passed ?? '?'} compiled \u2192 ${exp.n_stage05_passed ?? '?'} stage0.5 \u2192 ${exp.n_stage1_passed || 0} S1`}>

@@ -8,11 +8,14 @@ Uses Flask for simplicity, SSE for real-time streaming.
 
 from __future__ import annotations
 
+import ast
 import json
 import csv
 import io
 import logging
+import math
 import os
+import re
 import threading
 import time
 import traceback
@@ -34,6 +37,9 @@ logger = logging.getLogger(__name__)
 _runner: Optional[ExperimentRunner] = None
 _CODE_AGENT_TASKS: Dict[str, Dict[str, Any]] = {}
 _CODE_AGENT_TASKS_LOCK = threading.Lock()
+_WORKSPACE_FILE_INDEX: Dict[str, Dict[str, Any]] = {}
+_WORKSPACE_FILE_INDEX_LOCK = threading.Lock()
+_WORKSPACE_FILE_INDEX_BUILT_AT: float = 0.0
 _RUN_TRIGGER_LOCK = threading.Lock()
 _LAST_RUN_TRIGGER: Dict[str, Any] = {
     "experiment_id": None,
@@ -208,13 +214,8 @@ def _chat_workspace_root(notebook_path: str) -> Path:
 
 
 def _chat_should_use_code_tools(question: str) -> bool:
-    lowered = question.lower()
-    triggers = (
-        "code", "file", "function", "class", "module", "endpoint", "api",
-        "bug", "error", "trace", "stack", "log", "where", "how",
-        "why", "read", "search", "implement", "run",
-    )
-    return any(t in lowered for t in triggers)
+    # Always use local tools — context is cheap, ignorance is expensive.
+    return True
 
 
 def _chat_search_workspace(
@@ -355,12 +356,40 @@ def _chat_requests_codebase_fix(question: str) -> bool:
     triggers = (
         "fix code", "fix codebase", "self repair", "self-repair", "refactor",
         "architecture", "design", "repair", "autofix", "patch",
+        "need to fix", "needed to fix", "needs fixing", "anything to fix",
+        "what needs fixing", "what do you need to fix", "what should you fix",
         "underlying", "javascript", "python", "js and python",
         "fix issues", "fix issue", "spin off agent", "spin-off agent",
         "spawn agent", "spawn sub-agent", "autonomous fix", "fix yourself",
         "do this yourself", "check and fix", "investigate and fix",
     )
     return any(trigger in lowered for trigger in triggers)
+
+
+def _chat_requests_summary_response(question: str) -> bool:
+    lowered = (question or "").lower()
+    triggers = (
+        "summary", "summarize", "summarise", "recap",
+        "tl;dr", "tldr", "high-level overview", "give me an overview",
+    )
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _should_autospawn_self_repair(error_message: str) -> bool:
+    lowered = str(error_message or "").lower()
+    triggers = (
+        "unexpected keyword argument",
+        "attributeerror",
+        "nameerror",
+        "importerror",
+        "modulenotfounderror",
+        "syntaxerror",
+        "typeerror",
+        "keyerror",
+        "valueerror",
+        "traceback",
+    )
+    return any(token in lowered for token in triggers)
 
 
 def _chat_requests_brief_response(question: str) -> bool:
@@ -383,6 +412,27 @@ def _chat_requests_self_fix_now(question: str) -> bool:
     return any(trigger in lowered for trigger in triggers)
 
 
+def _chat_question_is_actionable(question: str) -> bool:
+    """Detect if the user's question implies they want something DONE, not just explained."""
+    lowered = (question or "").lower()
+    # Non-actionable: greetings, pure questions about concepts, status checks
+    non_actionable = (
+        "what is", "what are", "hello", "hi aria", "thanks", "thank you",
+        "how are you", "who are you", "what do you think", "status",
+    )
+    if any(lowered.startswith(na) for na in non_actionable):
+        return False
+    # Actionable: anything involving problems, improvements, changes, or exploration
+    actionable = (
+        "fix", "improve", "why is", "why are", "wrong", "broken", "failing",
+        "stagnant", "stuck", "bad", "slow", "issue", "problem", "help",
+        "optimize", "increase", "decrease", "change", "adjust", "try",
+        "run", "start", "stop", "investigate", "look into", "what should",
+        "what next", "next step", "recommend", "suggest", "do something",
+    )
+    return any(trigger in lowered for trigger in actionable)
+
+
 def _chat_requests_detailed_response(question: str) -> bool:
     lowered = (question or "").lower()
     triggers = (
@@ -391,6 +441,27 @@ def _chat_requests_detailed_response(question: str) -> bool:
         "why this happened", "show reasoning",
     )
     return any(trigger in lowered for trigger in triggers)
+
+
+def _format_simple_answer_action_plan(text: str) -> str:
+    """Compress LLM response to max 3 sentences. Strip fluff ruthlessly."""
+    import re as _re
+
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+
+    # Extract sentences, keep max 3
+    cleaned = _re.sub(r"\s+", " ", raw)
+    sentences = [
+        s.strip()
+        for s in _re.split(r"(?<=[.!?])\s+", cleaned)
+        if s.strip() and len(s.strip()) > 10
+    ]
+    if sentences:
+        kept = sentences[:3]
+        return " ".join(kept)
+    return raw[:400]
 
 
 def _code_agent_task_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
@@ -462,38 +533,130 @@ def _get_local_ollama_settings() -> Dict[str, Any]:
     }
 
 
-def _estimate_small_ollama_worker_capacity(
-    small_model: str,
-    host: str,
-    max_vram_gb: float,
-    max_small_workers: int,
-) -> Dict[str, Any]:
-    estimated = _ollama_model_estimated_vram_gb(model=small_model, host=host)
-    workers = 0
-    if estimated and estimated > 0:
-        workers = int(max_vram_gb // estimated)
-    workers = max(0, min(int(max_small_workers), int(workers), 3))
-    return {
-        "estimated_vram_gb": estimated,
-        "workers_available": workers,
+def _build_workspace_file_index(workspace_root: Path, force: bool = False) -> Dict[str, Dict[str, Any]]:
+    """Walk workspace and build a lightweight file index with AST/regex metadata."""
+    global _WORKSPACE_FILE_INDEX, _WORKSPACE_FILE_INDEX_BUILT_AT
+
+    with _WORKSPACE_FILE_INDEX_LOCK:
+        if not force and _WORKSPACE_FILE_INDEX and (time.time() - _WORKSPACE_FILE_INDEX_BUILT_AT) < 300:
+            return dict(_WORKSPACE_FILE_INDEX)
+
+    include_ext = {".py", ".js", ".ts", ".tsx", ".md", ".json"}
+    skip_dirs = {
+        ".git", "node_modules", "__pycache__", "build", "dist",
+        ".venv", "venv", ".mypy_cache", ".pytest_cache",
     }
 
+    index: Dict[str, Dict[str, Any]] = {}
+    for path in workspace_root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in include_ext:
+            continue
+        if any(part in skip_dirs for part in path.parts):
+            continue
+        try:
+            stat = path.stat()
+            if stat.st_size > 500_000:
+                continue
+        except Exception:
+            continue
 
-def _is_simple_code_agent_goal(goal: str, search_hits: List[Dict[str, Any]]) -> bool:
-    lowered = str(goal or "").lower()
-    complex_triggers = (
-        "refactor", "architecture", "multi-file", "major", "rewrite",
-        "pipeline", "redesign", "broad", "system-wide",
-    )
-    simple_triggers = (
-        "read", "scan", "inspect", "find", "where", "why",
-        "small", "quick", "minor", "simple", "typo", "rename",
-        "single file", "one file", "lint", "format",
-    )
-    if any(token in lowered for token in complex_triggers):
-        return False
-    signal = any(token in lowered for token in simple_triggers)
-    return signal or (len(search_hits) <= 3 and len(lowered) <= 220)
+        rel = str(path.relative_to(workspace_root))
+        entry: Dict[str, Any] = {
+            "rel_path": rel,
+            "abs_path": str(path),
+            "size_bytes": stat.st_size,
+            "suffix": path.suffix.lower(),
+            "mtime": stat.st_mtime,
+            "top_level_names": [],
+            "docstring": "",
+            "imports": [],
+            "line_count": 0,
+        }
+
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            lines = text.splitlines()
+            entry["line_count"] = len(lines)
+        except Exception:
+            index[rel] = entry
+            continue
+
+        suffix = path.suffix.lower()
+        if suffix == ".py":
+            try:
+                tree = ast.parse(text, filename=rel)
+                names = []
+                for node in ast.iter_child_nodes(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        names.append(node.name)
+                    elif isinstance(node, ast.ClassDef):
+                        names.append(node.name)
+                entry["top_level_names"] = names
+                docstr = ast.get_docstring(tree)
+                if docstr:
+                    entry["docstring"] = docstr[:200]
+                imps = []
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            imps.append(alias.name)
+                    elif isinstance(node, ast.ImportFrom):
+                        if node.module:
+                            imps.append(node.module)
+                entry["imports"] = imps
+            except Exception:
+                pass
+        elif suffix in (".js", ".ts", ".tsx"):
+            names = re.findall(r"export\s+(?:default\s+)?(?:function|class|const|let|var)\s+(\w+)", text)
+            entry["top_level_names"] = names[:30]
+            first_comment = re.search(r"(?://|/\*)\s*(.{1,120})", text)
+            if first_comment:
+                entry["docstring"] = first_comment.group(1).strip()
+        elif suffix in (".md", ".json"):
+            entry["docstring"] = text[:100].strip()
+
+        index[rel] = entry
+
+    with _WORKSPACE_FILE_INDEX_LOCK:
+        _WORKSPACE_FILE_INDEX = index
+        _WORKSPACE_FILE_INDEX_BUILT_AT = time.time()
+
+    return dict(index)
+
+
+def _query_file_index(
+    goal: str,
+    workspace_root: Path,
+    max_results: int = 12,
+) -> List[Dict[str, Any]]:
+    """Score index entries by term relevance and return top matches."""
+    index = _build_workspace_file_index(workspace_root)
+    terms = _chat_extract_terms(goal)
+    if not terms:
+        return list(index.values())[:max_results]
+
+    scored: List[tuple] = []
+    for rel, entry in index.items():
+        score = 0.0
+        rel_lower = rel.lower()
+        names_lower = " ".join(entry.get("top_level_names", [])).lower()
+        doc_lower = (entry.get("docstring") or "").lower()
+        imports_lower = " ".join(entry.get("imports", [])).lower()
+        for term in terms:
+            t = term.lower()
+            if t in rel_lower:
+                score += 3.0
+            if t in names_lower:
+                score += 2.0
+            if t in doc_lower:
+                score += 1.0
+            if t in imports_lower:
+                score += 1.0
+        if score > 0:
+            scored.append((score, entry))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [entry for _, entry in scored[:max_results]]
 
 
 def _ollama_model_estimated_vram_gb(model: str, host: str) -> Optional[float]:
@@ -582,14 +745,9 @@ def _local_ollama_helper_status(main_llm: Any) -> Dict[str, Any]:
         status["reason"] = "ollama_cli_missing"
         return status
 
-    small_capacity = _estimate_small_ollama_worker_capacity(
-        small_model=small_model,
-        host=host,
-        max_vram_gb=max_vram_gb,
-        max_small_workers=max_small_workers,
-    )
-    status["small_model_estimated_vram_gb"] = small_capacity.get("estimated_vram_gb")
-    status["small_model_workers_available"] = small_capacity.get("workers_available", 0)
+    small_est = _ollama_model_estimated_vram_gb(model=small_model, host=host)
+    status["small_model_estimated_vram_gb"] = small_est
+    status["small_model_workers_available"] = 1 if small_est and small_est < max_vram_gb else 0
 
     estimated = _ollama_model_estimated_vram_gb(model=model, host=host)
     status["estimated_vram_gb"] = estimated
@@ -605,230 +763,319 @@ def _local_ollama_helper_status(main_llm: Any) -> Dict[str, Any]:
     return status
 
 
-def _run_local_ollama_small_swarm_planner(
+def _run_understanding_agent(
+    file_entry: Dict[str, Any],
     goal: str,
+    host: str,
+    small_model: str,
     workspace_root: Path,
-    search_hits: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    import concurrent.futures
+) -> Optional[Dict[str, Any]]:
+    """Read one file, send to 3b model for understanding, return structured analysis."""
+    import requests as _requests
 
-    settings = _get_local_ollama_settings()
-    small_model = settings["small_model"]
-    host = settings["host"]
-    max_vram_gb = settings["max_vram_gb"]
-    max_small_workers = settings["max_small_workers"]
+    rel_path = file_entry.get("rel_path", "")
+    abs_path = file_entry.get("abs_path", "")
+    line_count = int(file_entry.get("line_count") or 0)
+    target = Path(abs_path) if abs_path else _resolve_code_agent_target(workspace_root, rel_path)
+    if target is None or not target.exists():
+        return None
 
-    capacity = _estimate_small_ollama_worker_capacity(
-        small_model=small_model,
-        host=host,
-        max_vram_gb=max_vram_gb,
-        max_small_workers=max_small_workers,
-    )
-    workers = int(capacity.get("workers_available") or 0)
-    est = capacity.get("estimated_vram_gb")
-    if workers < 1:
-        return {
-            "ok": False,
-            "reason": "insufficient_vram_for_small_swarm",
-            "estimated_vram_gb": est,
-            "model": small_model,
-            "worker_count": 0,
-            "notes": ["No 3b worker slots available under current VRAM budget."],
-        }
-
-    roles = ["reader", "fixer", "verifier"][:workers]
-    plans: List[Dict[str, Any]] = []
-
-    def _invoke(role: str) -> Dict[str, Any]:
-        role_goal = (
-            f"{goal}\n\n"
-            f"Sub-agent role: {role}. "
-            "Focus on small, precise code reading/fixing tasks with minimal edits."
-        )
-        plan = _run_local_ollama_code_planner(
-            goal=role_goal,
-            workspace_root=workspace_root,
-            search_hits=search_hits,
-            model_override=small_model,
-            max_edits=4,
-            timeout_seconds=75,
-        )
-        plan["role"] = role
-        return plan
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_invoke, role) for role in roles]
-        for fut in concurrent.futures.as_completed(futures):
-            try:
-                plans.append(fut.result())
-            except Exception as exc:
-                plans.append({"ok": False, "reason": "swarm_worker_failed", "notes": [str(exc)]})
-
-    successful = [p for p in plans if p.get("ok") and isinstance((p.get("plan") or {}), dict)]
-    if not successful:
-        return {
-            "ok": False,
-            "reason": "swarm_no_valid_plan",
-            "estimated_vram_gb": est,
-            "model": small_model,
-            "worker_count": workers,
-            "notes": [str((plans[0] or {}).get("reason") or "no successful 3b plan")],
-        }
-
-    def _plan_score(plan_obj: Dict[str, Any]) -> float:
-        plan = plan_obj.get("plan") or {}
-        edits = plan.get("edits") if isinstance(plan.get("edits"), list) else []
-        notes = plan.get("notes") if isinstance(plan.get("notes"), list) else []
-        return float(len(edits) * 2 - len(notes) * 0.1)
-
-    chosen = max(successful, key=_plan_score)
-    return {
-        "ok": True,
-        "reason": "ok",
-        "planner_backend": "local_ollama_3b_swarm",
-        "plan": chosen.get("plan"),
-        "estimated_vram_gb": est,
-        "model": small_model,
-        "worker_count": workers,
-        "successful_workers": len(successful),
-    }
-
-
-def _build_ollama_code_context(
-    workspace_root: Path,
-    search_hits: List[Dict[str, Any]],
-    max_files: int = 4,
-    max_chars_per_file: int = 1500,
-) -> str:
-    sections: List[str] = []
-    for hit in search_hits[:max_files]:
-        rel_path = str(hit.get("path") or "").strip()
-        line_no = int(hit.get("line") or 1)
-        target = _resolve_code_agent_target(workspace_root, rel_path)
-        if target is None or not target.exists() or not target.is_file():
-            continue
-        try:
-            lines = target.read_text(encoding="utf-8", errors="ignore").splitlines()
-        except Exception:
-            continue
-
-        start = max(0, line_no - 20)
-        end = min(len(lines), line_no + 20)
-        excerpt = "\n".join(lines[start:end]).strip()
-        if len(excerpt) > max_chars_per_file:
-            excerpt = excerpt[:max_chars_per_file] + "\n..."
-
-        sections.append(
-            f"FILE: {rel_path}\n"
-            f"FOCUS_LINE: {line_no}\n"
-            f"SNIPPET:\n{excerpt}\n"
-        )
-
-    return "\n".join(sections)
-
-
-def _run_local_ollama_code_planner(
-    goal: str,
-    workspace_root: Path,
-    search_hits: List[Dict[str, Any]],
-    model_override: Optional[str] = None,
-    max_edits: int = 8,
-    timeout_seconds: int = 120,
-) -> Dict[str, Any]:
-    import shutil
-    import subprocess
-
-    settings = _get_local_ollama_settings()
-    model = str(model_override or settings["model"] or "").strip()
-    host = settings["host"]
-    max_vram_gb = settings["max_vram_gb"]
-
-    if not shutil.which("ollama"):
-        return {"ok": False, "reason": "ollama_cli_missing", "notes": ["`ollama` CLI is not available on PATH."]}
-
-    estimated_vram_gb = _ollama_model_estimated_vram_gb(model=model, host=host)
-    if estimated_vram_gb is None:
-        return {
-            "ok": False,
-            "reason": "model_not_found_or_unreachable",
-            "notes": [f"Ollama model '{model}' not found/reachable at {host}."],
-        }
-    if estimated_vram_gb >= max_vram_gb:
-        return {
-            "ok": False,
-            "reason": "vram_limit_exceeded",
-            "estimated_vram_gb": estimated_vram_gb,
-            "notes": [
-                f"Model '{model}' rejected: estimated VRAM {estimated_vram_gb:.2f}GB must be < {max_vram_gb:.2f}GB."
-            ],
-        }
-
-    evidence = _build_ollama_code_context(workspace_root=workspace_root, search_hits=search_hits)
-    strict_prompt = (
-        "You are a STRICT local code-fix planner. Read the provided code evidence and output JSON only.\n"
-        "Goal:\n"
-        f"{goal}\n\n"
-        "Hard constraints:\n"
-        "1) Return ONLY valid JSON object (no markdown, no commentary).\n"
-        "2) Use this exact schema:\n"
-        "{\n"
-        "  \"summary\": \"short outcome summary\",\n"
-        "  \"edits\": [\n"
-        "    {\"path\": \"relative/path\", \"find\": \"exact existing text\", \"replace\": \"replacement text\", \"reason\": \"short reason\"}\n"
-        "  ],\n"
-        "  \"notes\": [\"optional notes\"]\n"
-        "}\n"
-        f"3) Max {max_edits} edits.\n"
-        "4) Only edit existing files listed in evidence.\n"
-        "5) `find` must be exact text from evidence snippets.\n"
-        "6) If insufficient evidence, return edits as empty list and explain in notes.\n"
-        "7) Preserve behavior unless directly fixing the requested issue.\n\n"
-        "Code evidence:\n"
-        f"{evidence or 'No evidence available.'}\n"
-    )
-
-    env = os.environ.copy()
-    env["OLLAMA_HOST"] = host
     try:
-        proc = subprocess.run(
-            ["ollama", "run", model],
-            input=strict_prompt,
-            capture_output=True,
-            text=True,
-            timeout=max(10, int(timeout_seconds)),
-            env=env,
+        text = target.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
+    except Exception:
+        return None
+
+    # Build focused excerpt: small files whole, large files keyword-windowed
+    if len(lines) <= 120:
+        excerpt = text
+    else:
+        terms = _chat_extract_terms(goal)
+        sections = lines[:30]  # header
+        # Find keyword-matched windows
+        for i, line in enumerate(lines):
+            low = line.lower()
+            if any(t in low for t in terms):
+                start = max(0, i - 5)
+                end = min(len(lines), i + 15)
+                sections.append(f"\n... (line {start + 1}) ...")
+                sections.extend(lines[start:end])
+                break
+        sections.append(f"\n... (line {max(0, len(lines) - 10) + 1}) ...")
+        sections.extend(lines[-10:])
+        excerpt = "\n".join(sections)
+
+    if len(excerpt) > 3000:
+        excerpt = excerpt[:3000] + "\n..."
+
+    prompt = (
+        "You are a code reader. Read this file and answer about it.\n"
+        f"FILE: {rel_path} ({line_count} lines, showing relevant sections)\n"
+        "---\n"
+        f"{excerpt}\n"
+        "---\n"
+        f'PROBLEM: "{goal}"\n'
+        "Answer JSON only:\n"
+        '{"purpose":"1-2 sentences","relevant_sections":[{"lines":"145-162","what":"description","code_snippet":"exact 3 lines"}],'
+        '"key_observations":["..."],"suggested_fix_location":"Line 152: ..."}'
+    )
+
+    for attempt in range(2):
+        if attempt == 1:
+            # Simplified fallback prompt
+            prompt = (
+                f"Read this file and list relevant function names and line numbers for: {goal}\n"
+                f"FILE: {rel_path}\n---\n{excerpt[:1500]}\n---\n"
+                'Return JSON: {"purpose":"...","relevant_sections":[],"key_observations":["..."],"suggested_fix_location":"..."}'
+            )
+        try:
+            resp = _requests.post(
+                f"{host.rstrip('/')}/api/generate",
+                json={
+                    "model": small_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": 512, "temperature": 0.1},
+                },
+                timeout=60,
+            )
+            if resp.status_code != 200:
+                continue
+            body = resp.json()
+            raw = body.get("response", "")
+            parsed = _extract_json_object(raw)
+            if isinstance(parsed, dict):
+                parsed["file"] = rel_path
+                _ollama_offload_model(small_model, host)
+                return parsed
+        except Exception:
+            pass
+
+    _ollama_offload_model(small_model, host)
+    return None
+
+
+def _run_understanding_phase(
+    goal: str,
+    relevant_files: List[Dict[str, Any]],
+    host: str,
+    small_model: str,
+    workspace_root: Path,
+    max_files: int = 4,
+) -> List[Dict[str, Any]]:
+    """Run understanding agents sequentially on top files, return list of analyses."""
+    results: List[Dict[str, Any]] = []
+    for entry in relevant_files[:max_files]:
+        understanding = _run_understanding_agent(
+            file_entry=entry,
+            goal=goal,
+            host=host,
+            small_model=small_model,
+            workspace_root=workspace_root,
         )
-    except Exception as exc:
-        _ollama_offload_model(model, host)
-        return {"ok": False, "reason": "ollama_run_failed", "notes": [str(exc)]}
+        if understanding:
+            results.append(understanding)
+    return results
 
-    # Offload model from VRAM to free memory for training
-    _ollama_offload_model(model, host)
 
-    output = (proc.stdout or "").strip()
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
+def _build_agent_plan(
+    goal: str,
+    file_understandings: List[Dict[str, Any]],
+    file_index_hits: List[Dict[str, Any]],
+    workspace_root: Path,
+    llm: Any,
+) -> Dict[str, Any]:
+    """Synthesize understanding into an exact edit plan using primary LLM or 7b fallback."""
+    understanding_text = json.dumps(file_understandings, indent=1, default=str)[:2500]
+    index_summary_lines = []
+    for entry in file_index_hits[:12]:
+        names = ", ".join(entry.get("top_level_names", [])[:8])
+        purpose = (entry.get("docstring") or "")[:80]
+        index_summary_lines.append(f"  {entry.get('rel_path')} — names: [{names}] — {purpose}")
+    index_summary = "\n".join(index_summary_lines)
+
+    prompt = (
+        "You are Aria planning a code fix.\n"
+        f"PROBLEM: {goal}\n\n"
+        "FILE UNDERSTANDING (from reader agents):\n"
+        f"{understanding_text}\n\n"
+        "AVAILABLE FILES (from index):\n"
+        f"{index_summary}\n\n"
+        "Create a precise fix plan with EXACT find/replace text from the understanding snippets.\n"
+        "Return JSON: {\"complexity\":\"simple|moderate|complex\",\"summary\":\"...\","
+        "\"steps\":[{\"file\":\"...\",\"find\":\"exact old text\",\"replace\":\"new text\","
+        "\"line_range\":\"150-152\",\"reason\":\"...\",\"confidence\":\"high|medium|low\"}],"
+        "\"notes\":[]}\n"
+        "Max 6 steps. find text must be EXACT from understanding snippets.\n"
+    )
+
+    # Try primary LLM first
+    plan_text = None
+    planner_backend = "none"
+    if llm:
+        try:
+            planning_payload: Dict[str, Any] = {"text": None, "error": None}
+
+            def _llm_call() -> None:
+                try:
+                    from .llm.prompts import SYSTEM_PROMPT
+                    resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1400)
+                    planning_payload["text"] = (getattr(resp, "text", "") or "").strip()
+                except Exception:
+                    try:
+                        resp = llm.generate(prompt, max_tokens=1400)
+                        planning_payload["text"] = (getattr(resp, "text", "") or "").strip()
+                    except Exception as exc:
+                        planning_payload["error"] = str(exc)
+
+            t = threading.Thread(target=_llm_call, daemon=True)
+            t.start()
+            t.join(timeout=45.0)
+
+            if not t.is_alive() and not planning_payload.get("error"):
+                plan_text = planning_payload.get("text")
+                planner_backend = "primary_llm"
+        except Exception:
+            pass
+
+    # Fallback to 7b via Ollama
+    if not plan_text:
+        import requests as _requests
+
+        settings = _get_local_ollama_settings()
+        model_7b = settings["model"]
+        ollama_host = settings["host"]
+        try:
+            resp = _requests.post(
+                f"{ollama_host.rstrip('/')}/api/generate",
+                json={
+                    "model": model_7b,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": 1024, "temperature": 0.2},
+                },
+                timeout=120,
+            )
+            if resp.status_code == 200:
+                body = resp.json()
+                plan_text = body.get("response", "")
+                planner_backend = "local_ollama_7b"
+            _ollama_offload_model(model_7b, ollama_host)
+        except Exception:
+            _ollama_offload_model(settings["model"], settings["host"])
+
+    if not plan_text:
         return {
             "ok": False,
-            "reason": "ollama_nonzero_exit",
-            "notes": [stderr[:300] if stderr else "ollama run returned non-zero exit"],
+            "reason": "planning_failed",
+            "plan": {"complexity": "unknown", "summary": "No planner available.", "steps": [], "notes": ["Both primary LLM and local 7b failed."]},
+            "planner_backend": planner_backend,
+            "execution_strategy": "none",
         }
 
-    parsed = _extract_json_object(output)
+    parsed = _extract_json_object(plan_text)
     if not isinstance(parsed, dict):
         return {
             "ok": False,
-            "reason": "invalid_json_output",
-            "notes": [output[:300]],
+            "reason": "invalid_plan_json",
+            "plan": {"complexity": "unknown", "summary": "Plan was not valid JSON.", "steps": [], "notes": [plan_text[:300]]},
+            "planner_backend": planner_backend,
+            "execution_strategy": "none",
         }
+
+    steps = parsed.get("steps") if isinstance(parsed.get("steps"), list) else []
+    all_high = all(str(s.get("confidence", "")).lower() == "high" for s in steps if isinstance(s, dict))
+    strategy = "direct" if (all_high and len(steps) <= 2 and steps) else "delegate_7b"
 
     return {
         "ok": True,
         "reason": "ok",
         "plan": parsed,
-        "estimated_vram_gb": estimated_vram_gb,
-        "model": model,
+        "planner_backend": planner_backend,
+        "execution_strategy": strategy,
     }
+
+
+def _run_execution_agent(
+    step: Dict[str, Any],
+    host: str,
+    model: str,
+    workspace_root: Path,
+) -> Optional[Dict[str, Any]]:
+    """Execute a single plan step. Use plan directly if find text matches, else delegate to 7b."""
+    import requests as _requests
+
+    rel_path = str(step.get("file") or "").strip()
+    find_text = str(step.get("find") or "")
+    replace_text = str(step.get("replace") or "")
+    reason = str(step.get("reason") or "")
+
+    if not rel_path or not find_text:
+        return None
+
+    target = _resolve_code_agent_target(workspace_root, rel_path)
+    if target is None or not target.exists():
+        return None
+
+    try:
+        content = target.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    # If plan's find text exists verbatim — use it directly (no model call)
+    if find_text in content:
+        return {"path": rel_path, "find": find_text, "replace": replace_text, "reason": reason}
+
+    # Find text didn't match — delegate to 7b for correction
+    line_range = str(step.get("line_range") or "")
+    lines = content.splitlines()
+    start_line, end_line = 0, len(lines)
+    if line_range:
+        parts = line_range.split("-")
+        try:
+            start_line = max(0, int(parts[0]) - 1)
+            end_line = min(len(lines), int(parts[-1]))
+        except Exception:
+            pass
+    # Expand context window around target lines
+    ctx_start = max(0, start_line - 5)
+    ctx_end = min(len(lines), end_line + 5)
+    context_lines = lines[ctx_start:ctx_end]
+    context_text = "\n".join(f"{ctx_start + i + 1}: {l}" for i, l in enumerate(context_lines))
+
+    prompt = (
+        "Apply ONE change to this file.\n"
+        f"FILE: {rel_path}\n"
+        f"CURRENT (lines {ctx_start + 1}-{ctx_end}):\n"
+        f"{context_text}\n\n"
+        f'CHANGE: Replace "{find_text[:200]}" with "{replace_text[:200]}"\n'
+        f"REASON: {reason}\n"
+        'Return JSON: {"path":"...","find":"exact old text from CURRENT","replace":"new text","reason":"..."}'
+    )
+
+    try:
+        resp = _requests.post(
+            f"{host.rstrip('/')}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"num_predict": 512, "temperature": 0.1},
+            },
+            timeout=60,
+        )
+        _ollama_offload_model(model, host)
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        raw = body.get("response", "")
+        parsed = _extract_json_object(raw)
+        if isinstance(parsed, dict) and parsed.get("find"):
+            return parsed
+    except Exception:
+        _ollama_offload_model(model, host)
+
+    return None
 
 
 def _resolve_code_agent_target(workspace_root: Path, rel_path: str) -> Optional[Path]:
@@ -955,173 +1202,118 @@ def _run_code_agent_task(
     notebook_path: str,
     allow_write: bool,
 ) -> None:
-    _code_agent_task_update(task_id, status="running", started_at=time.time())
+    """4-phase code agent pipeline: Index → Understand → Plan → Execute."""
+    _code_agent_task_update(task_id, status="running", started_at=time.time(), phase="index")
+    timings: Dict[str, float] = {}
     try:
         workspace_root = _chat_workspace_root(notebook_path)
-        search_hits = _chat_search_workspace(goal, workspace_root=workspace_root, max_hits=8)
+        settings = _get_local_ollama_settings()
+        host = settings["host"]
+        small_model = settings["small_model"]
+        model_7b = settings["model"]
 
         llm = get_aria()._get_llm()
-        parsed_plan: Dict[str, Any] = {}
-        llm_used = False
-        planner_backend = "none"
-        main_llm_backend = str(getattr(llm, "name", "") or "none").strip().lower()
-        local_ollama_used = False
-        local_ollama_details: Dict[str, Any] = {}
-
         if llm:
             try:
                 if hasattr(llm, "is_available") and not llm.is_available():
                     llm = None
-                    main_llm_backend = "none"
             except Exception:
                 llm = None
-                main_llm_backend = "none"
 
-        if llm and _is_remote_primary_llm(llm):
-            simple_goal = _is_simple_code_agent_goal(goal, search_hits)
-            local_plan: Dict[str, Any]
-            if simple_goal:
-                local_plan = _run_local_ollama_small_swarm_planner(
-                    goal=goal,
-                    workspace_root=workspace_root,
-                    search_hits=search_hits,
-                )
-                if not local_plan.get("ok"):
-                    local_plan = _run_local_ollama_code_planner(
-                        goal=goal,
-                        workspace_root=workspace_root,
-                        search_hits=search_hits,
-                    )
-            else:
-                local_plan = _run_local_ollama_code_planner(
-                    goal=goal,
-                    workspace_root=workspace_root,
-                    search_hits=search_hits,
-                )
+        # --- Phase 1: Index ---
+        t0 = time.time()
+        _code_agent_task_update(task_id, phase="index")
+        relevant_files = _query_file_index(goal, workspace_root, max_results=12)
+        timings["index"] = time.time() - t0
 
-            local_ollama_details = {
-                "ok": bool(local_plan.get("ok")),
-                "reason": str(local_plan.get("reason") or "unknown"),
-                "model": local_plan.get("model") or _get_local_ollama_settings().get("model"),
-                "estimated_vram_gb": local_plan.get("estimated_vram_gb"),
-                "worker_count": local_plan.get("worker_count"),
-                "successful_workers": local_plan.get("successful_workers"),
-                "policy": "simple_3b_swarm_then_7b" if simple_goal else "complex_7b",
-            }
-            if local_plan.get("ok") and isinstance(local_plan.get("plan"), dict):
-                parsed_plan = dict(local_plan.get("plan") or {})
-                llm_used = True
-                local_ollama_used = True
-                planner_backend = str(local_plan.get("planner_backend") or "local_ollama")
-
-        if llm and not parsed_plan:
-            llm_used = True
-            planner_backend = "primary_llm"
-            evidence = []
-            for hit in search_hits[:8]:
-                evidence.append(
-                    f"- {hit.get('path')}:{hit.get('line')} | {hit.get('snippet')}"
-                )
-            prompt = (
-                "You are Aria's codebase autofix sub-agent. "
-                "Propose targeted edits that improve architecture/design and reliability.\n"
-                "Goal:\n"
-                f"{goal}\n\n"
-                "Workspace evidence:\n"
-                + ("\n".join(evidence) if evidence else "- No direct evidence hits.")
-                + "\n\n"
-                "Return STRICT JSON only with schema:\n"
-                "{\n"
-                "  \"summary\": \"short outcome summary\",\n"
-                "  \"edits\": [\n"
-                "    {\"path\": \"relative/path/to/file.ext\", \"find\": \"exact old text\", \"replace\": \"new text\", \"reason\": \"why\"}\n"
-                "  ],\n"
-                "  \"notes\": [\"optional notes\"]\n"
-                "}\n"
-                "Constraints: max 8 edits, only existing files within workspace, preserve behavior unless fixing issue."
+        # --- Phase 2: Understand ---
+        t0 = time.time()
+        _code_agent_task_update(task_id, phase="understand")
+        understandings: List[Dict[str, Any]] = []
+        if relevant_files:
+            understandings = _run_understanding_phase(
+                goal=goal,
+                relevant_files=relevant_files,
+                host=host,
+                small_model=small_model,
+                workspace_root=workspace_root,
+                max_files=4,
             )
+        timings["understand"] = time.time() - t0
 
-            planning_payload: Dict[str, Any] = {"text": None, "error": None}
+        # --- Phase 3: Plan ---
+        t0 = time.time()
+        _code_agent_task_update(task_id, phase="plan")
+        plan_result = _build_agent_plan(
+            goal=goal,
+            file_understandings=understandings,
+            file_index_hits=relevant_files,
+            workspace_root=workspace_root,
+            llm=llm,
+        )
+        timings["plan"] = time.time() - t0
 
-            def _llm_planning_call() -> None:
-                try:
-                    try:
-                        from .llm.prompts import SYSTEM_PROMPT
+        plan = plan_result.get("plan") or {}
+        planner_backend = plan_result.get("planner_backend", "none")
+        strategy = plan_result.get("execution_strategy", "none")
+        steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
 
-                        resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1400)
-                    except Exception:
-                        resp = llm.generate(prompt, max_tokens=1400)
-                    planning_payload["text"] = (getattr(resp, "text", "") or "").strip()
-                except Exception as exc:
-                    planning_payload["error"] = str(exc)
+        # --- Phase 4: Execute ---
+        t0 = time.time()
+        _code_agent_task_update(task_id, phase="execute")
+        edits: List[Dict[str, Any]] = []
 
-            planner = threading.Thread(target=_llm_planning_call, daemon=True)
-            planner.start()
-            planner.join(timeout=45.0)
+        if strategy == "direct":
+            # High-confidence plan — convert steps directly to edit dicts
+            for step in steps:
+                if isinstance(step, dict) and step.get("find"):
+                    edits.append({
+                        "path": step.get("file", ""),
+                        "find": step.get("find", ""),
+                        "replace": step.get("replace", ""),
+                        "reason": step.get("reason", ""),
+                    })
+        elif strategy == "delegate_7b":
+            # For each step: try direct match first, then delegate to 7b
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                edit = _run_execution_agent(
+                    step=step,
+                    host=host,
+                    model=model_7b,
+                    workspace_root=workspace_root,
+                )
+                if edit:
+                    edits.append(edit)
 
-            if planner.is_alive():
-                parsed_plan = {
-                    "summary": "LLM planning timed out after 45s; no autonomous edits applied.",
-                    "edits": [],
-                    "notes": ["LLM planner timeout"],
-                }
-            elif planning_payload.get("error"):
-                parsed_plan = {
-                    "summary": "LLM planning failed; no autonomous edits applied.",
-                    "edits": [],
-                    "notes": [str(planning_payload.get("error"))[:300]],
-                }
-            else:
-                raw_text = str(planning_payload.get("text") or "")
-                parsed = _extract_json_object(raw_text)
-                if isinstance(parsed, dict):
-                    parsed_plan = parsed
-                else:
-                    parsed_plan = {
-                        "summary": "LLM response was not valid JSON; no edits proposed.",
-                        "edits": [],
-                        "notes": [raw_text[:300]],
-                    }
-        elif not parsed_plan:
-            parsed_plan = {
-                "summary": "LLM unavailable for autonomous code edits; generated diagnostic evidence only.",
-                "edits": [],
-                "notes": ["Configure/reconnect LLM backend to enable autonomous patch proposals."],
-            }
+        edit_result = _apply_code_agent_edits(
+            edits, workspace_root=workspace_root, allow_write=allow_write,
+        )
+        timings["execute"] = time.time() - t0
 
-        if local_ollama_details and not local_ollama_used:
-            notes = parsed_plan.get("notes") if isinstance(parsed_plan.get("notes"), list) else []
-            notes = list(notes)
-            reason = local_ollama_details.get("reason")
-            est = local_ollama_details.get("estimated_vram_gb")
-            if est is not None:
-                notes.append(f"Local Ollama helper not used: {reason} (estimated_vram_gb={est}).")
-            else:
-                notes.append(f"Local Ollama helper not used: {reason}.")
-            parsed_plan["notes"] = notes[:8]
-
-        edits = parsed_plan.get("edits") if isinstance(parsed_plan.get("edits"), list) else []
-        edit_result = _apply_code_agent_edits(edits, workspace_root=workspace_root, allow_write=allow_write)
+        # Force-rebuild index after edits
+        if edit_result.get("applied"):
+            _build_workspace_file_index(workspace_root, force=True)
 
         _code_agent_task_update(
             task_id,
             status="completed",
             finished_at=time.time(),
-            llm_used=llm_used,
+            phase="done",
             planner_backend=planner_backend,
-            main_llm_backend=main_llm_backend,
-            local_ollama_used=local_ollama_used,
-            local_ollama=local_ollama_details,
-            summary=str(parsed_plan.get("summary") or "").strip(),
-            notes=parsed_plan.get("notes") if isinstance(parsed_plan.get("notes"), list) else [],
+            execution_strategy=strategy,
+            main_llm_backend=str(getattr(llm, "name", "") or "none").strip().lower() if llm else "none",
+            local_ollama_used=strategy in ("direct", "delegate_7b"),
+            summary=str(plan.get("summary") or "").strip(),
+            notes=plan.get("notes") if isinstance(plan.get("notes"), list) else [],
+            understanding_count=len(understandings),
+            index_hits=len(relevant_files),
+            plan_steps=len(steps),
+            timings=timings,
             search_hits=[
-                {
-                    "path": hit.get("path"),
-                    "abs_path": hit.get("abs_path"),
-                    "line": hit.get("line"),
-                    "score": hit.get("score"),
-                }
-                for hit in search_hits
+                {"path": f.get("rel_path"), "abs_path": f.get("abs_path")}
+                for f in relevant_files[:8]
             ],
             proposed_edits=edit_result.get("proposed", []),
             applied_edits=edit_result.get("applied", []),
@@ -1132,8 +1324,10 @@ def _run_code_agent_task(
             task_id,
             status="failed",
             finished_at=time.time(),
+            phase="error",
             summary="Codebase agent task failed before completion.",
             notes=[str(exc), traceback.format_exc()[:1200]],
+            timings=timings,
         )
 
 
@@ -1405,6 +1599,9 @@ def _normalize_start_mode(mode: Any) -> str:
         "evolution": "evolve",
         "novelty_search": "novelty",
         "compact": "compact_synthesis",
+        "sparse": "sparse_morph",
+        "sparse_morphology": "sparse_morph",
+        "sparse_morphological": "sparse_morph",
         "refine": "refine_fingerprint",
         "fingerprint_refine": "refine_fingerprint",
     }
@@ -1431,6 +1628,27 @@ def _apply_compact_synthesis_bias(config: RunConfig) -> Dict[str, Any]:
     _set_if_diff("residual_prob", max(float(config.residual_prob), 0.8))
     _set_if_diff("math_space_weight", min(float(config.math_space_weight), 1.8))
     _set_if_diff("n_programs", max(1, min(int(config.n_programs), 80)))
+
+    return changes
+
+
+def _apply_sparse_morph_bias(config: RunConfig) -> Dict[str, Any]:
+    """Apply sparse-focused morphological defaults and report changed fields."""
+    changes: Dict[str, Any] = {}
+
+    def _set_if_diff(field_name: str, new_value: Any) -> None:
+        old_value = getattr(config, field_name)
+        if old_value == new_value:
+            return
+        setattr(config, field_name, new_value)
+        changes[field_name] = {"from": old_value, "to": new_value}
+
+    _set_if_diff("model_source", "morphological_box")
+    _set_if_diff("morph_focus_sparse", True)
+    _set_if_diff("n_layers", max(1, min(int(config.n_layers), 4)))
+    _set_if_diff("max_depth", max(2, min(int(config.max_depth), 6)))
+    _set_if_diff("max_ops", max(4, min(int(config.max_ops), 10)))
+    _set_if_diff("n_programs", max(120, int(config.n_programs)))
 
     return changes
 
@@ -1796,6 +2014,331 @@ def _compute_recommendation(program: dict, leaderboard_entry: Optional[dict]) ->
         "action": "investigate",
         "rationale": "Screening-tier candidate; needs deeper investigation to confirm potential.",
         "confidence": "medium",
+    }
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
+def _promotion_evidence_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    seen_runs = int(((entry.get("cross_run_stability") or {}).get("seen_runs") or 0))
+    baseline_ratio = _safe_float(entry.get("validation_baseline_ratio"))
+    std = _safe_float(entry.get("validation_multi_seed_std"))
+
+    checks = {
+        "baselineEvidence": baseline_ratio is not None,
+        "baselineBeat": baseline_ratio is not None and baseline_ratio < 1.0,
+        "multiSeedStd": std is not None,
+        "boundedStd": std is not None and std <= 0.12,
+        "ckaArtifactBacked": entry.get("cka_source") == "artifact",
+        "repeatObserved": seen_runs >= 3,
+    }
+    evidence_count = sum(1 for ok in checks.values() if ok)
+    total_checks = len(checks)
+    completeness = evidence_count / total_checks if total_checks else 0.0
+
+    std_signal = 0.0
+    if std is not None:
+        if std <= 0.05:
+            std_signal = 1.0
+        elif std <= 0.12:
+            std_signal = 0.65
+        elif std <= 0.2:
+            std_signal = 0.35
+        else:
+            std_signal = 0.1
+
+    if seen_runs >= 5:
+        repeat_signal = 1.0
+    elif seen_runs >= 3:
+        repeat_signal = 0.65
+    elif seen_runs >= 2:
+        repeat_signal = 0.4
+    elif seen_runs >= 1:
+        repeat_signal = 0.2
+    else:
+        repeat_signal = 0.0
+
+    margin_signal = 0.0
+    if baseline_ratio is not None:
+        margin = 1.0 - baseline_ratio
+        if margin >= 0.1:
+            margin_signal = 1.0
+        elif margin > 0:
+            margin_signal = 0.7
+        else:
+            margin_signal = 0.15
+
+    score = round((completeness * 0.5 + std_signal * 0.2 + repeat_signal * 0.2 + margin_signal * 0.1) * 100)
+    missing = [name for name, ok in checks.items() if not ok]
+
+    return {
+        "score": score,
+        "seen_runs": seen_runs,
+        "std": std,
+        "evidence_count": evidence_count,
+        "total_checks": total_checks,
+        "missing": missing,
+    }
+
+
+def _decision_gate_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    checks = {
+        "screeningEvidence": entry.get("screening_loss_ratio") is not None and entry.get("screening_novelty") is not None,
+        "investigationEvidence": entry.get("investigation_loss_ratio") is not None and entry.get("investigation_robustness") is not None,
+        "robustnessFloor": entry.get("investigation_robustness") is not None and float(entry.get("investigation_robustness") or 0.0) >= 0.5,
+        "validationEvidence": (
+            entry.get("validation_loss_ratio") is not None
+            and entry.get("validation_baseline_ratio") is not None
+            and entry.get("validation_multi_seed_std") is not None
+        ),
+        "baselineBeatsReference": entry.get("validation_baseline_ratio") is not None and float(entry.get("validation_baseline_ratio") or 0.0) < 1.0,
+        "consistencyBounded": entry.get("validation_multi_seed_std") is not None and float(entry.get("validation_multi_seed_std") or 1.0) <= 0.12,
+    }
+    decision_ready = all(checks.values())
+    missing = [name for name, ok in checks.items() if not ok]
+    return {
+        "decision_ready": decision_ready,
+        "missing": missing,
+    }
+
+
+def _build_scale_up_templates_for_result(result_id: Optional[str]) -> List[Dict[str, Any]]:
+    normalized = str(result_id or "").strip()
+    if not normalized:
+        return []
+
+    return [
+        {
+            "template_id": "multi_seed_stress",
+            "title": "Multi-seed stress validation",
+            "description": "Run deeper multi-seed validation to confirm consistency and variance bounds.",
+            "start_payload": {
+                "mode": "validation",
+                "result_ids": [normalized],
+                "validation_steps": 12000,
+                "validation_n_seeds": 7,
+                "validation_batch_size": 8,
+                "validation_seq_len": 512,
+            },
+        },
+        {
+            "template_id": "robustness_recheck",
+            "title": "Robustness re-check",
+            "description": "Re-run investigation-level robustness checks before heavier scale-up spend.",
+            "start_payload": {
+                "mode": "investigation",
+                "result_ids": [normalized],
+                "investigation_steps": 3500,
+                "investigation_batch_size": 4,
+                "n_training_programs": 4,
+            },
+        },
+        {
+            "template_id": "efficiency_scale_up",
+            "title": "Scale-up + efficiency profile",
+            "description": "Run scale-up training with one-shot pruning baseline to profile efficiency/quality trade-offs.",
+            "start_payload": {
+                "mode": "scale_up",
+                "result_ids": [normalized],
+                "scale_up_steps": 8000,
+                "scale_up_batch_size": 8,
+                "scale_up_seq_len": 512,
+                "one_shot_pruning_baseline": True,
+                "one_shot_pruning_method": "wanda",
+                "one_shot_pruning_sparsity": 0.5,
+            },
+        },
+    ]
+
+
+def _build_reproducibility_workflow(
+    repro_packet: Dict[str, Any],
+    scale_up_templates: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    packet = repro_packet or {}
+    ready_count = int(packet.get("ready_count") or 0)
+    total_checks = int(packet.get("total_checks") or 6)
+    missing = {str(item) for item in (packet.get("missing") or []) if item}
+
+    template_by_id = {
+        str(template.get("template_id")): template
+        for template in (scale_up_templates or [])
+        if isinstance(template, dict) and template.get("template_id")
+    }
+
+    def _payload(template_id: str) -> Optional[Dict[str, Any]]:
+        template = template_by_id.get(template_id)
+        if not template:
+            return None
+        payload = template.get("start_payload")
+        return dict(payload) if isinstance(payload, dict) else None
+
+    checks = [
+        ("result_id", "Result identifier captured", None, "Program result must be persisted before repro closure."),
+        ("graph_fingerprint", "Fingerprint captured", None, "Graph fingerprint is required for cross-run traceability."),
+        ("arch_spec", "Architecture spec recorded", "robustness_recheck", "Re-run robustness check if architecture metadata is incomplete."),
+        ("baseline_ratio", "Baseline ratio measured", "multi_seed_stress", "Run multi-seed validation to compute baseline ratio."),
+        ("multi_seed_std", "Multi-seed variance measured", "multi_seed_stress", "Run multi-seed validation to measure stability variance."),
+        ("cka_artifact", "Artifact-backed CKA recorded", "efficiency_scale_up", "After run completion, stamp CKA artifact integrity in artifact references."),
+    ]
+
+    steps: List[Dict[str, Any]] = []
+    for check_id, label, template_id, guidance in checks:
+        is_complete = check_id not in missing
+        step: Dict[str, Any] = {
+            "check_id": check_id,
+            "label": label,
+            "status": "complete" if is_complete else "missing",
+            "guidance": guidance,
+        }
+        if not is_complete and template_id:
+            payload = _payload(template_id)
+            if payload:
+                step["action_label"] = "Run template"
+                step["start_payload"] = payload
+        steps.append(step)
+
+    next_actions = [
+        {
+            "check_id": step.get("check_id"),
+            "label": step.get("label"),
+            "action_label": step.get("action_label"),
+            "start_payload": step.get("start_payload"),
+            "guidance": step.get("guidance"),
+        }
+        for step in steps
+        if step.get("status") == "missing"
+    ][:3]
+
+    return {
+        "status": "ready" if ready_count >= total_checks else "in_progress",
+        "ready_count": ready_count,
+        "total_checks": total_checks,
+        "progress_label": f"{ready_count}/{total_checks}",
+        "remaining": max(0, total_checks - ready_count),
+        "steps": steps,
+        "next_actions": next_actions,
+    }
+
+
+def _compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) -> Dict[str, Any]:
+    leaderboard_entries = nb.get_leaderboard(tier="breakthrough", limit=20, sort_by="composite_score")
+    if not leaderboard_entries:
+        return {
+            "breakthrough_count": 0,
+            "decision_ready_count": 0,
+            "high_confidence_count": 0,
+            "full_repro_packet_count": 0,
+            "artifact_cka_count": 0,
+            "epic_switch_recommendation": {
+                "action": "stay_current_epic",
+                "reason": "No breakthrough-tier candidates are available yet.",
+            },
+            "top_candidates": [],
+            "scale_up_templates": [],
+            "reproducibility_workflow": None,
+        }
+
+    stability = _compute_cross_run_stability(nb, nb.get_top_programs(20, sort_by="loss_ratio"))
+    stability_by_result = {
+        c.get("result_id"): c
+        for c in stability.get("candidates", [])
+        if c.get("result_id")
+    }
+
+    evaluated: List[Dict[str, Any]] = []
+    for entry in leaderboard_entries:
+        row = dict(entry)
+        row["cross_run_stability"] = stability_by_result.get(
+            row.get("result_id"),
+            {
+                "trend": "unknown",
+                "seen_runs": 0,
+                "latest_rank": None,
+                "previous_rank": None,
+                "rank_delta": None,
+            },
+        )
+        row["reproducibility_packet"] = analytics.reproducibility_packet_status(row)
+        promotion = _promotion_evidence_for_entry(row)
+        gate = _decision_gate_for_entry(row)
+        scale_up_templates = _build_scale_up_templates_for_result(row.get("result_id"))
+        reproducibility_workflow = _build_reproducibility_workflow(
+            row["reproducibility_packet"],
+            scale_up_templates,
+        )
+        evaluated.append({
+            "result_id": row.get("result_id"),
+            "architecture_family": row.get("architecture_family"),
+            "composite_score": row.get("composite_score"),
+            "promotion_confidence_score": promotion["score"],
+            "seen_runs": promotion["seen_runs"],
+            "decision_ready": gate["decision_ready"],
+            "decision_missing": gate["missing"],
+            "repro_packet": row["reproducibility_packet"],
+            "cka_source": row.get("cka_source"),
+            "scale_up_templates": scale_up_templates,
+            "reproducibility_workflow": reproducibility_workflow,
+        })
+
+    breakthrough_count = len(evaluated)
+    decision_ready_count = sum(1 for row in evaluated if row.get("decision_ready"))
+    high_confidence_count = sum(1 for row in evaluated if int(row.get("promotion_confidence_score") or 0) >= 75)
+    full_repro_packet_count = sum(1 for row in evaluated if (row.get("repro_packet") or {}).get("status") == "ready")
+    artifact_cka_count = sum(1 for row in evaluated if row.get("cka_source") == "artifact")
+
+    switch_ready = any(
+        row.get("decision_ready")
+        and int(row.get("promotion_confidence_score") or 0) >= 75
+        and (row.get("repro_packet") or {}).get("status") == "ready"
+        and row.get("cka_source") == "artifact"
+        for row in evaluated
+    )
+
+    if switch_ready:
+        recommendation = {
+            "action": "switch_to_scale_up_epic",
+            "reason": "At least one breakthrough candidate meets decision, confidence, repro, and artifact-backed CKA gates.",
+        }
+    else:
+        recommendation = {
+            "action": "stay_current_epic",
+            "reason": "Breakthrough evidence is still incomplete; continue hardening reproducibility and validation before switching epics.",
+        }
+
+    top_candidates = sorted(
+        evaluated,
+        key=lambda row: (
+            int(bool(row.get("decision_ready"))),
+            int(row.get("promotion_confidence_score") or 0),
+            float(row.get("composite_score") or 0.0),
+        ),
+        reverse=True,
+    )[:3]
+    scale_up_templates = top_candidates[0].get("scale_up_templates", []) if top_candidates else []
+
+    return {
+        "breakthrough_count": breakthrough_count,
+        "decision_ready_count": decision_ready_count,
+        "high_confidence_count": high_confidence_count,
+        "full_repro_packet_count": full_repro_packet_count,
+        "artifact_cka_count": artifact_cka_count,
+        "epic_switch_recommendation": recommendation,
+        "top_candidates": top_candidates,
+        "scale_up_templates": scale_up_templates,
+        "reproducibility_workflow": (
+            top_candidates[0].get("reproducibility_workflow")
+            if top_candidates
+            else None
+        ),
     }
 
 
@@ -2549,12 +3092,14 @@ def create_app(
             analytics = ExperimentAnalytics(nb)
             top_programs = nb.get_top_programs(10)
             _annotate_qkv_usage(top_programs, analytics)
+            production_readiness = _compute_breakthrough_production_readiness(nb, analytics)
 
             data = {
                 "aria": aria.get_status(db_summary=summary),
                 "summary": summary,
                 "recent_experiments": recent_experiments,
                 "top_programs": top_programs,
+                "production_readiness": production_readiness,
                 "insights": _deduplicate_insights(nb.get_insights(limit=50)),
                 "recent_entries": _normalize_entries(nb.get_entries(limit=20)),
                 "is_running": runner.is_running,
@@ -3354,8 +3899,12 @@ def create_app(
 
         config = RunConfig.from_dict(body) if body else RunConfig()
         compact_changes: Dict[str, Any] = {}
+        sparse_morph_changes: Dict[str, Any] = {}
         if mode == "compact_synthesis":
             compact_changes = _apply_compact_synthesis_bias(config)
+            mode = "single"
+        if mode == "sparse_morph":
+            sparse_morph_changes = _apply_sparse_morph_bias(config)
             mode = "single"
 
         config, prescreen = runner.prescreen_run_config(
@@ -3475,6 +4024,7 @@ def create_app(
                 "config": config.to_dict(),
                 "prescreen": prescreen,
                 "compact_synthesis_bias": compact_changes,
+                "sparse_morph_bias": sparse_morph_changes,
                 "scale_up_resolution": scale_up_resolution,
                 "refine_resolution": refine_resolution,
                 "aria_message": runner.progress.aria_message,
@@ -3490,7 +4040,26 @@ def create_app(
             return jsonify({"error": str(e)}), 400
         except Exception as e:
             logger.error(f"Error starting experiment: {e}\n{traceback.format_exc()}")
-            return jsonify({"error": str(e)}), 500
+            error_text = str(e)
+            auto_repair_task: Optional[Dict[str, Any]] = None
+            if _should_autospawn_self_repair(error_text):
+                try:
+                    auto_repair_task = _spawn_code_agent_task(
+                        goal=(
+                            "Experiment start failed with runtime/code error. "
+                            f"mode={mode}, error={error_text}. "
+                            "Identify root cause, apply safe code/config fixes, and report validation."
+                        ),
+                        notebook_path=notebook_path,
+                        allow_write=True,
+                    )
+                except Exception as spawn_err:
+                    logger.warning("Auto self-repair spawn failed: %s", spawn_err)
+            return jsonify({
+                "error": error_text,
+                "auto_repair_started": bool(auto_repair_task),
+                "auto_repair_task": auto_repair_task,
+            }), 500
 
     @app.route("/api/experiments/stop", methods=["POST"])
     def api_stop_experiment():
@@ -3955,6 +4524,23 @@ def create_app(
                         suggested_config["mode"] = normalized_mode
                     if hypothesis:
                         suggested_config["hypothesis"] = hypothesis
+                    # Modes that require result_ids — resolve them automatically
+                    if normalized_mode in ("investigation", "validation") and not suggested_config.get("result_ids"):
+                        _tier = "screening" if normalized_mode == "investigation" else "investigation"
+                        _tier_rows = nb.conn.execute(
+                            f"SELECT result_id FROM leaderboard "
+                            f"WHERE tier = ? AND {_tier}_passed = 1 "
+                            f"ORDER BY {_tier}_loss_ratio ASC LIMIT 20",
+                            (_tier,),
+                        ).fetchall()
+                        _rids = [r["result_id"] for r in _tier_rows if r["result_id"]]
+                        if _rids:
+                            suggested_config["result_ids"] = _rids
+                        else:
+                            # No actionable candidates — downgrade to continuous
+                            normalized_mode = "continuous"
+                            suggested_config["mode"] = "continuous"
+                            action_key = "continuous"
                     return jsonify({
                         "briefing": ai_briefing["briefing_text"],
                         "action": action_key or normalized_mode or "continuous",
@@ -4116,6 +4702,7 @@ def create_app(
             action = None
             action_label = None
             action_rationale = None
+            screening_result_ids = []
 
             if breakthrough > 0:
                 action = "export_breakthrough"
@@ -4143,27 +4730,43 @@ def create_app(
                     "SELECT COUNT(*) FROM leaderboard "
                     "WHERE tier = 'investigation' AND investigation_passed = 0"
                 ).fetchone()[0]
-                action = "investigate"
-                action_label = (
-                    f"Investigate {screening} Screening "
-                    f"Survivor{'s' if screening != 1 else ''}"
-                )
-                rationale_parts = [
-                    f"{screening} candidate{'s' if screening != 1 else ''} passed "
-                    f"screening and "
-                    f"{'are' if screening != 1 else 'is'} awaiting deeper investigation"
-                ]
-                if inv_failed > 0:
-                    rationale_parts.append(
-                        f"({inv_failed} prior investigation"
-                        f"{'s' if inv_failed != 1 else ''} "
-                        f"failed — fresh candidates may outperform)"
+                # Fetch actual result_ids for screening survivors
+                screening_rows = nb.conn.execute(
+                    "SELECT result_id FROM leaderboard "
+                    "WHERE tier = 'screening' AND screening_passed = 1 "
+                    "ORDER BY screening_loss_ratio ASC LIMIT 20"
+                ).fetchall()
+                screening_result_ids = [r["result_id"] for r in screening_rows if r["result_id"]]
+                if not screening_result_ids:
+                    # No actionable screening survivors — fall through to default
+                    action = "continuous"
+                    action_label = "Continue Research"
+                    action_rationale = (
+                        "Screening survivors exist but lack actionable result IDs. "
+                        "Continue generating new architectures."
                     )
-                if avg_recent_s1 is not None:
-                    rationale_parts.append(
-                        f"with recent {avg_recent_s1 * 100:.0f}% hit rate"
+                else:
+                    action = "investigate"
+                    action_label = (
+                        f"Investigate {len(screening_result_ids)} Screening "
+                        f"Survivor{'s' if len(screening_result_ids) != 1 else ''}"
                     )
-                action_rationale = ", ".join(rationale_parts) + "."
+                    rationale_parts = [
+                        f"{len(screening_result_ids)} candidate{'s' if len(screening_result_ids) != 1 else ''} passed "
+                        f"screening and "
+                        f"{'are' if len(screening_result_ids) != 1 else 'is'} awaiting deeper investigation"
+                    ]
+                    if inv_failed > 0:
+                        rationale_parts.append(
+                            f"({inv_failed} prior investigation"
+                            f"{'s' if inv_failed != 1 else ''} "
+                            f"failed — fresh candidates may outperform)"
+                        )
+                    if avg_recent_s1 is not None:
+                        rationale_parts.append(
+                            f"with recent {avg_recent_s1 * 100:.0f}% hit rate"
+                        )
+                    action_rationale = ", ".join(rationale_parts) + "."
             elif total_exp == 0:
                 action = "start_first"
                 action_label = "Run First Experiment"
@@ -4211,6 +4814,12 @@ def create_app(
                     "math_space_weight": 1.8,
                     "residual_prob": 0.85,
                     "n_programs": 80,
+                }
+            elif action == "investigate" and screening_result_ids:
+                det_config = {
+                    "mode": "investigation",
+                    "model_source": "mixed",
+                    "result_ids": screening_result_ids,
                 }
             else:
                 det_config = (
@@ -4552,13 +5161,16 @@ def create_app(
             spawn_agent = bool(body.get("spawn_agent", False))
             allow_code_writes = bool(body.get("allow_code_writes", True))
             explicit_detailed = _chat_requests_detailed_response(question)
-            brief_response = (
+            summary_requested = _chat_requests_summary_response(question)
+            brief_response_requested = (
                 bool(body.get("brief_response", False))
                 or _chat_requests_brief_response(question)
             )
+            concise_default_mode = not explicit_detailed and not summary_requested
+            brief_response = bool(brief_response_requested or concise_default_mode)
             self_fix_now = _chat_requests_self_fix_now(question)
             fix_request = spawn_agent or _chat_requests_codebase_fix(question) or self_fix_now
-            execution_first_mode = (fix_request and not explicit_detailed) or self_fix_now
+            execution_first_mode = bool(fix_request)
             fallback_reason: Optional[str] = None
             local_agent_result: Dict[str, Any] = {"tools_used": [], "summary": "", "code_hits": []}
             code_agent_task: Optional[Dict[str, Any]] = None
@@ -4713,20 +5325,42 @@ def create_app(
                     if brief_response:
                         prompt_question = (
                             f"{question}\n\n"
-                            "Response style requirement: keep answer concise (max 4 short bullets). "
-                            "No long preamble."
+                            "MANDATORY: max 2-3 sentences of text. "
+                            "You MUST include at least one ```action block. "
+                            "If the user describes a problem, spawn_agent to fix it. "
+                            "If config/grammar needs tuning, emit adjust_config or adjust_grammar. "
+                            "TEXT WITHOUT ACTIONS IS A FAILURE."
+                        )
+                    if not summary_requested:
+                        prompt_question = (
+                            f"{prompt_question}\n\n"
+                            "Do NOT provide a summary. Emit action blocks. "
+                            "Prefer spawn_agent for complex issues (uses local Ollama, saves money)."
                         )
                     prompt = CHAT_PROMPT.format(
                         context=context,
                         history="\n".join(history_lines) if history_lines else "(none)",
                         question=prompt_question,
                     )
-                    max_tokens = 512 if brief_response else 2048
+                    max_tokens = 384 if brief_response else 1024
                     resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=max_tokens)
                     aria._track_cost(resp)
                     text = (resp.text or "").strip()
                     if text:
                         reply_text, actions = _parse_chat_actions(text)
+                        # Auto-spawn agent if LLM failed to include actions on an actionable question
+                        if not actions and not code_agent_task and _chat_question_is_actionable(question):
+                            try:
+                                code_agent_task = _spawn_code_agent_task(
+                                    goal=f"User asked: {question[:300]}. Aria's analysis: {reply_text[:500]}. Investigate and fix.",
+                                    notebook_path=notebook_path,
+                                    allow_write=allow_code_writes,
+                                )
+                                reply_text = reply_text.rstrip() + "\n\nI'm spawning a code agent to act on this."
+                            except Exception:
+                                pass  # Non-fatal — LLM response still useful
+                        if concise_default_mode and not explicit_detailed and not summary_requested:
+                            reply_text = _format_simple_answer_action_plan(reply_text)
                         if code_agent_task:
                             task_id = code_agent_task.get("task_id")
                             reply_text = (
@@ -4819,27 +5453,34 @@ def create_app(
 
             strategy = aria.plan_strategy(context) or ""
             suggestion = aria.suggest_experiment(context) or {}
-            evidence_lines = [
-                "- LLM chat backend is unavailable; using deterministic analysis.",
-            ]
-            if strategy:
-                evidence_lines.append(f"- Current strategy signal: {strategy}")
             reasoning = suggestion.get("reasoning") if isinstance(suggestion, dict) else None
-            recommendation_lines = []
-            if reasoning:
-                recommendation_lines.append(f"- {reasoning}")
-            else:
-                recommendation_lines.append("- Use the current Strategy Advisor recommendation to stay aligned with latest metrics.")
-            next_action = "- Run one suggested experiment, then ask again to refresh with new evidence."
 
-            fallback_reply = (
-                "Evidence:\n"
-                + "\n".join(evidence_lines)
-                + "\n\nRecommendation:\n"
-                + "\n".join(recommendation_lines)
-                + "\n\nNext Action:\n"
-                + next_action
-            )
+            if summary_requested:
+                evidence_lines = [
+                    "- LLM chat backend is unavailable; using deterministic analysis.",
+                ]
+                if strategy:
+                    evidence_lines.append(f"- Current strategy signal: {strategy}")
+                recommendation_lines = []
+                if reasoning:
+                    recommendation_lines.append(f"- {reasoning}")
+                else:
+                    recommendation_lines.append("- Use the current Strategy Advisor recommendation to stay aligned with latest metrics.")
+                next_action = "- Run one suggested experiment, then ask again to refresh with new evidence."
+                fallback_reply = (
+                    "Evidence:\n"
+                    + "\n".join(evidence_lines)
+                    + "\n\nRecommendation:\n"
+                    + "\n".join(recommendation_lines)
+                    + "\n\nNext Action:\n"
+                    + next_action
+                )
+            else:
+                fallback_reasoning = reasoning or "Run a fix-oriented request so I can execute actions directly (settings/code/experiment)."
+                fallback_reply = _format_simple_answer_action_plan(
+                    f"{fallback_reasoning}. "
+                    "Ask with a fix intent (e.g., fix what needs fixing and apply changes) to keep execution-first mode active."
+                )
             if code_agent_task:
                 task_id = code_agent_task.get("task_id")
                 fallback_reply = (
@@ -5402,10 +6043,23 @@ def create_app(
     return app
 
 
+class _SseLogFilter(logging.Filter):
+    """Suppress noisy werkzeug logs for the SSE /api/events endpoint."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "GET /api/events" in msg:
+            return False
+        return True
+
+
 def _setup_logging(log_dir: Optional[str] = None):
     """Configure logging with console and file handlers."""
     root = logging.getLogger()
     root.setLevel(logging.INFO)
+
+    # Suppress SSE endpoint spam from werkzeug
+    logging.getLogger("werkzeug").addFilter(_SseLogFilter())
 
     fmt = logging.Formatter(
         "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",

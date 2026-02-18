@@ -621,7 +621,7 @@ class Aria:
         try:
             from .llm.prompts import SYSTEM_PROMPT, BRIEFING_PROMPT
             prompt = BRIEFING_PROMPT.format(context=context)
-            resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1024)
+            resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
             self._track_cost(resp)
             if resp.text and resp.text.strip():
                 raw_text = resp.text.strip()

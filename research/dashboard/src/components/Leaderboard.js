@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
+import { reliabilityColor } from '../utils/colors';
+import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
 import { leaderboardEntryScore, leaderboardEntryScoreBreakdown } from '../utils/scores';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -32,66 +34,6 @@ const COMPRESSION_FACTORS = {
   compressed_attention: 0.7,
 };
 
-const QKV_OPS = new Set(['local_window_attn', 'sliding_window_mask', 'multi_head_mix']);
-
-function qkvUsageDescriptor(entry) {
-  const usage = entry?.qkv_usage;
-  if (usage === 'qkv_free') {
-    return {
-      label: 'QKV-free',
-      detail: 'Non-attention token mixing path (SSM/conv/frequency/functional).',
-      tone: 'high',
-    };
-  }
-  if (usage === 'q_eq_k_eq_v') {
-    return {
-      label: 'Q=K=V',
-      detail: 'Shared-projection attention variant (reduced attention parameterization).',
-      tone: 'medium',
-    };
-  }
-  if (usage === 'full_qkv') {
-    return {
-      label: 'Full QKV',
-      detail: 'Standard Q/K/V attention primitives are present.',
-      tone: 'medium',
-    };
-  }
-  const qkvFree = detectQkvFree(entry);
-  if (qkvFree === true) {
-    return {
-      label: 'QKV-free*',
-      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
-      tone: 'high',
-    };
-  }
-  if (qkvFree === false) {
-    return {
-      label: 'Uses QKV*',
-      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
-      tone: 'medium',
-    };
-  }
-  return {
-    label: 'QKV unknown',
-    detail: 'Insufficient graph/payload info to classify QKV usage.',
-    tone: 'low',
-  };
-}
-
-/** Detect whether an entry uses QKV-based attention from its graph_json. Returns true/false/null. */
-function detectQkvFree(entry) {
-  const raw = entry._graph_json || entry.graph_json;
-  if (!raw) return null;
-  try {
-    const graph = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    const nodes = graph.nodes || {};
-    const ops = Object.values(nodes).map(n => n.op_name || n.op).filter(Boolean);
-    return !ops.some(op => QKV_OPS.has(op));
-  } catch {
-    return null;
-  }
-}
 
 function parseArchSpec(value) {
   if (!value || typeof value !== 'string') return null;
@@ -179,12 +121,6 @@ function qualityFlags(entry) {
   const qkv = qkvUsageDescriptor(entry);
   flags.push({ label: qkv.label, tone: qkv.tone, detail: qkv.detail });
   return flags;
-}
-
-function reliabilityColor(level) {
-  if (level === 'high') return 'var(--accent-green)';
-  if (level === 'medium') return 'var(--accent-yellow)';
-  return 'var(--accent-red)';
 }
 
 function decisionGate(entry) {
@@ -567,34 +503,27 @@ function Leaderboard({
           {rawEntries.length} entries
         </span>
       </div>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        Ranked candidates that survived screening, investigation, or validation. Higher-tier rows have stronger evidence
-        that the architecture is robust, novel, and competitive with transformer baselines.
-      </p>
-      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-        Curated decision view: use this tab for promote/investigate/validate decisions. For broad survivor browsing,
-        use Candidates (All).
-      </p>
-      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
-        Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Source: /api/leaderboard
-      </p>
-      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
-        Glossary: S.Loss = screening loss ratio, I.Loss = investigation loss ratio, V.Loss = validation loss ratio, V.Base {'<'} 1 means better than baseline.
-      </p>
-      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-        Decision gate: rows are <strong>Decision-Ready</strong> only when screening+investigation+validation metrics are present, robustness ≥ 0.50, baseline ratio {'<'} 1.00, and multi-seed std ≤ 0.12.
-      </p>
-      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-        Metric quality chips show source and reliability: <strong>artifact-backed</strong> vs <strong>heuristic</strong>, with reliability bands from available validation depth and confidence.
-      </p>
-      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-        Cross-run stability (window {stabilityWindow}): stable {stabilitySummary.stable || 0}, up {stabilitySummary.up || 0}, down {stabilitySummary.down || 0}, new {stabilitySummary.new || 0}.
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+        Ranked candidates with tiered evidence — click any row for details.
+        <span style={{ marginLeft: 8, fontSize: 11 }}>
+          Updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'}
+          {' · '}Stability (window {stabilityWindow}): {stabilitySummary.stable || 0} stable, {stabilitySummary.up || 0} up, {stabilitySummary.down || 0} down, {stabilitySummary.new || 0} new
+        </span>
       </p>
       {!!queuedSet.size && (
-        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-          Progression queue currently has {queuedSet.size} candidate{queuedSet.size === 1 ? '' : 's'} pinned for batch actions.
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+          Progression queue: {queuedSet.size} candidate{queuedSet.size === 1 ? '' : 's'} pinned.
         </p>
       )}
+      <details style={{ marginBottom: 10, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+        <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)' }}>Glossary &amp; notes</summary>
+        <div style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid var(--border)' }}>
+          <p style={{ margin: '4px 0' }}>Use this tab for promote/investigate/validate decisions. For broad survivor browsing, use Candidates (All).</p>
+          <p style={{ margin: '4px 0' }}>S.Loss = screening loss ratio, I.Loss = investigation loss ratio, V.Loss = validation loss ratio, V.Base {'<'} 1 means better than baseline.</p>
+          <p style={{ margin: '4px 0' }}>Decision gate: rows are <strong>Decision-Ready</strong> only when screening+investigation+validation metrics are present, robustness ≥ 0.50, baseline ratio {'<'} 1.00, and multi-seed std ≤ 0.12.</p>
+          <p style={{ margin: '4px 0' }}>Metric quality chips show source and reliability: <strong>artifact-backed</strong> vs <strong>heuristic</strong>, with reliability bands from available validation depth and confidence.</p>
+        </div>
+      </details>
 
       {/* Tier tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>

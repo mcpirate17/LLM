@@ -668,7 +668,7 @@ function ControlPanel({
             </div>
           )}
 
-          {/* Mode selector */}
+          {/* Mode selector — primary modes */}
           <div className="control-row">
             <label className="control-label">Mode</label>
             <div className="mode-selector">
@@ -684,17 +684,25 @@ function ControlPanel({
               >
                 Continuous Research
               </button>
+            </div>
+          </div>
+          {/* Pipeline modes — collapsed by default */}
+          <details style={{ marginTop: -4 }}>
+            <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer', padding: '2px 0' }}>
+              Pipeline modes{['evolve','novelty','scale_up','investigation','validation'].includes(mode) ? ` (${mode.replace('_',' ')})` : ''}
+            </summary>
+            <div className="mode-selector" style={{ marginTop: 4 }}>
               <button
                 className={`mode-btn ${mode === 'evolve' ? 'active' : ''}`}
                 onClick={() => setMode('evolve')}
               >
-                Evolution Search
+                Evolution
               </button>
               <button
                 className={`mode-btn ${mode === 'novelty' ? 'active' : ''}`}
                 onClick={() => setMode('novelty')}
               >
-                Novelty Search
+                Novelty
               </button>
               <button
                 className={`mode-btn ${mode === 'scale_up' ? 'active' : ''}`}
@@ -715,7 +723,7 @@ function ControlPanel({
                 Validation
               </button>
             </div>
-          </div>
+          </details>
 
           {/* Model Source selector (for single/continuous modes) */}
           {(mode === 'single' || mode === 'continuous') && (
@@ -1054,6 +1062,8 @@ function ControlPanel({
           </button>
 
           {showAdvanced && (
+            <>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 8, marginBottom: 4 }}>Training &amp; Scale</div>
             <div className="config-grid">
               <div className="config-item">
                 <label>Stage 1 Steps</label>
@@ -1136,10 +1146,9 @@ function ControlPanel({
                   </div>
                 </>
               )}
-              {/* Automation settings (always visible in advanced) */}
-              <div className="config-item" style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 4 }}>
-                <label style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Automation</label>
-              </div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Automation</div>
+            <div className="config-grid">
               <div className="config-item" style={{ gridColumn: '1 / -1' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input
@@ -1190,10 +1199,9 @@ function ControlPanel({
                   />
                 </div>
               )}
-              {/* Auto-escalation settings */}
-              <div className="config-item" style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 4 }}>
-                <label style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Auto-Escalation Pipeline</label>
-              </div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Auto-Escalation Pipeline</div>
+            <div className="config-grid">
               <div className="config-item" style={{ gridColumn: '1 / -1' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input
@@ -1255,6 +1263,7 @@ function ControlPanel({
                 </>
               )}
             </div>
+            </>
           )}
 
           {/* Validate + Ask Aria row */}

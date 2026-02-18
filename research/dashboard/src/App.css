@@ -18,9 +18,14 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg-primary);
   color: var(--text-primary);
   line-height: 1.5;
@@ -69,6 +74,11 @@ body {
   font-size: 13px;
 }
 .refresh-btn:hover { border-color: var(--accent-blue); }
+.refresh-btn[aria-pressed="true"] {
+  background: rgba(88, 166, 255, 0.15);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
 
 /* ── Nav ── */
 .tab-nav {
@@ -77,6 +87,10 @@ body {
   padding: 0 24px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
 }
 
 .tab {
@@ -174,7 +188,9 @@ body {
   font-weight: 600;
 }
 .badge.pass { background: rgba(63, 185, 80, 0.15); color: var(--accent-green); }
+.badge.pass::before { content: "\2713 "; }
 .badge.fail { background: rgba(248, 81, 73, 0.15); color: var(--accent-red); }
+.badge.fail::before { content: "\2717 "; }
 .badge.running { background: rgba(88, 166, 255, 0.15); color: var(--accent-blue); }
 .badge.novel { background: rgba(188, 140, 255, 0.15); color: var(--accent-purple); }
 
@@ -281,6 +297,11 @@ body {
   padding: 4px 0;
 }
 .advanced-toggle:hover { color: var(--text-secondary); }
+
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: '\25B6'; display: inline-block; margin-right: 6px; font-size: 10px; transition: transform 0.15s; color: var(--text-muted); }
+details[open] > summary::before { transform: rotate(90deg); }
 
 .start-btn {
   padding: 10px 16px;
@@ -520,8 +541,11 @@ body {
   border: 1px solid var(--border);
 }
 .sys-badge.pass { background: rgba(63, 185, 80, 0.12); color: var(--accent-green); border-color: var(--accent-green); }
+.sys-badge.pass::before { content: "\2713 "; }
 .sys-badge.fail { background: rgba(248, 81, 73, 0.12); color: var(--accent-red); border-color: var(--accent-red); }
+.sys-badge.fail::before { content: "\2717 "; }
 .sys-badge.warn { background: rgba(210, 153, 34, 0.12); color: var(--accent-yellow); border-color: var(--accent-yellow); }
+.sys-badge.warn::before { content: "\26A0 "; }
 .sys-badge.info { background: rgba(88, 166, 255, 0.12); color: var(--accent-blue); border-color: var(--accent-blue); }
 
 /* ── Control Actions Row ── */
@@ -554,7 +578,9 @@ body {
   border: 1px solid var(--border);
 }
 .validation-result.pass { background: rgba(63, 185, 80, 0.08); border-color: var(--accent-green); }
+.validation-result.pass::before { content: "\2713 "; font-weight: 700; color: var(--accent-green); }
 .validation-result.fail { background: rgba(248, 81, 73, 0.08); border-color: var(--accent-red); }
+.validation-result.fail::before { content: "\2717 "; font-weight: 700; color: var(--accent-red); }
 .validation-errors { margin-top: 6px; }
 .validation-error { color: var(--accent-red); font-size: 11px; padding: 2px 0; }
 

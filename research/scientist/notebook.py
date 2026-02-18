@@ -1071,8 +1071,25 @@ class LabNotebook:
     def log_learning_event(self, event_type: str, description: str,
                            old_weights: Optional[Dict] = None,
                            new_weights: Optional[Dict] = None,
-                           evidence: Optional[str] = None) -> None:
-        """Log a grammar weight change or learning decision."""
+                           evidence: Optional[str] = None,
+                           **event_data: Any) -> None:
+        """Log a grammar weight change or learning decision.
+
+        Backward-compatible with callers that pass extra structured keyword
+        fields (e.g. ``changes=...``, ``excluded_ops=...``).
+        """
+        if old_weights is None and "old_weights" in event_data:
+            old_weights = event_data.pop("old_weights")
+        if new_weights is None and "new_weights" in event_data:
+            new_weights = event_data.pop("new_weights")
+
+        if event_data:
+            serialized_extra = json.dumps(event_data, sort_keys=True, default=str)
+            if evidence:
+                evidence = f"{evidence}\n\nmeta={serialized_extra}"
+            else:
+                evidence = serialized_extra
+
         self.conn.execute(
             """INSERT INTO learning_log
                (timestamp, event_type, description, old_weights,

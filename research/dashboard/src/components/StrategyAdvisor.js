@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useEventBus } from '../hooks/useEventBus';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -223,7 +224,7 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   };
 }
 
-function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRunning, autonomousMode, onStartAutonomous, onStopAutonomous, onStrategyChange, onNavigateEvidence }) {
+function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRunning, autonomousMode, onStartAutonomous, onStopAutonomous, onStrategyChange, onNavigateEvidence, onOpenAdvancedPanel }) {
   const [leaderboard, setLeaderboard] = useState(null);
   const [mathCoverage, setMathCoverage] = useState(null);
   const [learningTrend, setLearningTrend] = useState(null);
@@ -235,7 +236,6 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
   const [showLimits, setShowLimits] = useState(false);
   const [autoMaxExperiments, setAutoMaxExperiments] = useState(20);
   const [autoMaxMinutes, setAutoMaxMinutes] = useState(60);
-  const eventSourceRef = useRef(null);
 
   const fetchData = useCallback(async (justCompletedId) => {
     try {
@@ -273,25 +273,12 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
     setAnalyzing(false);
   }, []);
 
-  // SSE listener: auto-refresh when experiment completes
-  useEffect(() => {
-    const es = new EventSource(`${API_BASE}/api/events`);
-    eventSourceRef.current = es;
-    es.addEventListener('experiment_completed', (event) => {
-      setAnalyzing(true);
-      let expId = null;
-      try {
-        const data = JSON.parse(event.data || '{}');
-        expId = data.experiment_id || null;
-      } catch { /* ignore parse errors */ }
-      // Small delay to let backend finalize
-      setTimeout(() => fetchData(expId), 2000);
-    });
-    es.onerror = () => {
-      // SSE connection lost — don't crash, just reconnect will happen automatically
-    };
-    return () => es.close();
-  }, [fetchData]);
+  // SSE listener: auto-refresh when experiment completes (via shared EventBus)
+  useEventBus('experiment_completed', useCallback((data) => {
+    setAnalyzing(true);
+    const expId = data.experiment_id || null;
+    setTimeout(() => fetchData(expId), 2000);
+  }, [fetchData]));
 
   // Re-fetch briefing when LLM is configured (dispatched by ControlPanel)
   useEffect(() => {
@@ -362,6 +349,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
         model_source: suggestedConfig.model_source || 'mixed',
         source: 'aria_briefing',
         hypothesis: suggestedConfig.hypothesis || undefined,
+        result_ids: suggestedConfig.result_ids || undefined,
         n_programs: suggestedConfig.n_programs,
         model_dim: suggestedConfig.model_dim,
         max_depth: suggestedConfig.max_depth,
@@ -677,7 +665,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
                         onChange={e => setAutoMaxExperiments(Math.max(1, Math.min(100, parseInt(e.target.value) || 20)))}
                         style={{
                           width: 48, marginLeft: 4, background: 'var(--bg-primary)',
-                          border: '1px solid var(--border-color)', borderRadius: 4,
+                          border: '1px solid var(--border)', borderRadius: 4,
                           color: 'var(--text-primary)', fontSize: 11, padding: '2px 4px',
                         }}
                       />
@@ -689,7 +677,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
                         onChange={e => setAutoMaxMinutes(Math.max(5, Math.min(480, parseInt(e.target.value) || 60)))}
                         style={{
                           width: 48, marginLeft: 4, background: 'var(--bg-primary)',
-                          border: '1px solid var(--border-color)', borderRadius: 4,
+                          border: '1px solid var(--border)', borderRadius: 4,
                           color: 'var(--text-primary)', fontSize: 11, padding: '2px 4px',
                         }}
                       />
@@ -708,7 +696,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
           padding: '8px 10px',
           borderRadius: 6,
           background: 'var(--bg-tertiary)',
-          border: '1px solid var(--border-color)',
+          border: '1px solid var(--border)',
         }}>
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4 }}>
             Why this was chosen
@@ -729,7 +717,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
                 borderRadius: 4,
                 background: 'var(--bg-primary)',
                 color: 'var(--text-secondary)',
-                border: '1px solid var(--border-color)',
+                border: '1px solid var(--border)',
                 cursor: onNavigateEvidence && item.tab ? 'pointer' : 'default',
               }}
               >
@@ -746,23 +734,20 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
           <button
             className="refresh-btn"
             style={{ fontSize: 10, padding: '2px 8px' }}
-            onClick={() => {
-              const details = document.querySelector('.overview-left details');
-              if (details) { details.open = true; details.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
-            }}
+            onClick={() => { if (onOpenAdvancedPanel) onOpenAdvancedPanel(); }}
           >
             Configure LLM
           </button>
         </div>
       )}
 
-      <div className="strategy-pipeline">
+      <div className="strategy-pipeline" role="list" aria-label="Research pipeline">
         <PipelineBadge label="Screening" count={ts.screening} color={TIER_COLORS.screening} />
-        <span className="pipeline-arrow">&rarr;</span>
+        <span className="pipeline-arrow" aria-hidden="true">&rarr;</span>
         <PipelineBadge label="Investigation" count={ts.investigation} color={TIER_COLORS.investigation} />
-        <span className="pipeline-arrow">&rarr;</span>
+        <span className="pipeline-arrow" aria-hidden="true">&rarr;</span>
         <PipelineBadge label="Validation" count={ts.validation} color={TIER_COLORS.validation} />
-        <span className="pipeline-arrow">&rarr;</span>
+        <span className="pipeline-arrow" aria-hidden="true">&rarr;</span>
         <PipelineBadge label="Breakthrough" count={ts.breakthrough} color={TIER_COLORS.breakthrough} />
         {learningTrend && learningTrend.trend && learningTrend.trend !== 'insufficient_data' && (
           <span className="pipeline-arrow" style={{ marginLeft: 'auto' }} />

@@ -1,27 +1,9 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { useEventBus } from '../hooks/useEventBus';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const SESSION_ID_KEY = 'aria_chat_session_id_v2';
-const ANALYSIS_CADENCE_KEY = 'aria_chat_analysis_cadence_v1';
 const TOKEN_BUDGET = 4000; // ~4K tokens before compaction
-
-function getInitialAnalysisCadence() {
-  try {
-    const value = String(window.localStorage.getItem(ANALYSIS_CADENCE_KEY) || 'run-only').toLowerCase();
-    if (value === 'off' || value === 'run-only' || value === 'always') {
-      return value;
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return 'run-only';
-}
-
-function shouldAutoAnalyze(cadence, isRunning, autonomousMode) {
-  if (cadence === 'always') return true;
-  if (cadence === 'off') return false;
-  return Boolean(isRunning || autonomousMode);
-}
 
 function getSessionId() {
   try {
@@ -101,7 +83,7 @@ function renderLocalEvidence(message) {
       style={{
         marginTop: 6,
         paddingTop: 6,
-        borderTop: '1px solid var(--border-color)',
+        borderTop: '1px solid var(--border)',
         fontSize: 10,
         color: 'var(--text-muted)',
         display: 'flex',
@@ -236,7 +218,7 @@ function renderAgentTask(message) {
       style={{
         marginTop: 6,
         paddingTop: 6,
-        borderTop: '1px solid var(--border-color)',
+        borderTop: '1px solid var(--border)',
         display: 'flex',
         flexDirection: 'column',
         gap: 4,
@@ -320,9 +302,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
-  const [analysisCadence, setAnalysisCadence] = useState(() => getInitialAnalysisCadence());
   const [localHelper, setLocalHelper] = useState(null);
-  const eventSourceRef = useRef(null);
   const completedAgentTasksRef = useRef(new Set());
   const lastEvidenceSnapshotRef = useRef('');
   const staleNoticeKeyRef = useRef('');
@@ -487,54 +467,21 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         return;
       }
 
-      const [briefingRes, strategyRes, recRes] = await Promise.all([
-        fetch(`${API_BASE}/api/strategy/briefing`),
-        fetch(`${API_BASE}/api/aria/strategy`),
-        fetch(`${API_BASE}/api/aria/recommendation`),
-      ]);
+      const briefingRes = await fetch(`${API_BASE}/api/strategy/briefing`);
 
       const newMessages = [];
 
       if (briefingRes.ok) {
         const briefing = await briefingRes.json();
         if (briefing && !briefing.error && briefing.briefing) {
+          const consolidatedText = briefing.action_label
+            ? `${briefing.briefing}\n\nRecommended Action: ${briefing.action_label}${briefing.action_rationale ? ` — ${briefing.action_rationale}` : ''}`
+            : briefing.briefing;
           newMessages.push(buildMessage(
             `briefing-${Date.now()}`,
             'aria',
-            briefing.briefing,
+            consolidatedText,
             { label: briefing.ai_powered ? 'AI Briefing' : 'Fallback Briefing' },
-          ));
-          if (briefing.action_label) {
-            newMessages.push(buildMessage(
-              `action-${Date.now()}`,
-              'aria',
-              `${briefing.action_label}${briefing.action_rationale ? ` — ${briefing.action_rationale}` : ''}`,
-              { label: 'Recommended Action' },
-            ));
-          }
-        }
-      }
-
-      if (strategyRes.ok) {
-        const strategy = await strategyRes.json();
-        if (strategy?.strategy) {
-          newMessages.push(buildMessage(
-            `strategy-${Date.now()}`,
-            'aria',
-            strategy.strategy,
-            { label: 'Strategy' },
-          ));
-        }
-      }
-
-      if (recRes.ok) {
-        const rec = await recRes.json();
-        if (rec?.reasoning) {
-          newMessages.push(buildMessage(
-            `rec-${Date.now()}`,
-            'aria',
-            rec.reasoning,
-            { label: 'Experiment Recommendation' },
           ));
         }
       }
@@ -659,27 +606,12 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
       // Try loading from DB first
       loadHistory().then((hadMessages) => {
         if (!hadMessages) {
-          if (shouldAutoAnalyze(analysisCadence, isRunning, autonomousMode)) {
-            refreshAnalysis();
-          }
+          // Manual-only mode: do not auto-analyze on init.
         }
       });
     }
-    const interval = setInterval(() => {
-      if (shouldAutoAnalyze(analysisCadence, isRunning, autonomousMode)) {
-        refreshAnalysis();
-      }
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [refreshAnalysis, loadHistory, isRunning, autonomousMode, analysisCadence]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(ANALYSIS_CADENCE_KEY, analysisCadence);
-    } catch {
-      // ignore storage errors
-    }
-  }, [analysisCadence]);
+    return undefined;
+  }, [loadHistory]);
 
   useEffect(() => {
     refreshToolingStatus();
@@ -690,101 +622,107 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
   }, [refreshToolingStatus]);
 
   useEffect(() => {
-    const es = new EventSource(`${API_BASE}/api/events`);
-    eventSourceRef.current = es;
+    const handler = (event) => {
+      const detail = event?.detail || {};
+      const task = detail?.task || {};
+      const taskId = String(task.task_id || '').trim();
+      if (!taskId) return;
 
-    es.addEventListener('experiment_completed', (event) => {
-      let resultLine = '';
-      try {
-        const data = JSON.parse(event.data || '{}');
-        const mode = data.mode || data.results?.experiment_type || '';
-        const expId = (data.experiment_id || '').slice(0, 8);
-        const results = data.results || {};
-        const s1 = results.stage1_passed ?? results.n_stage1_passed ?? 0;
-        const gen = results.total_generated ?? results.n_programs_generated ?? 0;
-        const loss = results.best_loss_ratio;
-        const parts = [];
-        if (expId) parts.push(`[${expId}]`);
-        if (mode) parts.push(mode);
-        if (gen > 0) parts.push(`${s1}/${gen} S1 survivors (${(s1/gen*100).toFixed(1)}%)`);
-        if (loss != null) parts.push(`best loss ${loss.toFixed(4)}`);
-        if (parts.length > 0) resultLine = ` — ${parts.join(' · ')}`;
-      } catch { /* ignore parse errors */ }
-      addSystemMessage(`Experiment completed${resultLine}. Aria is reviewing the latest results.`);
-      setTimeout(() => refreshAnalysis(), 1500);
-    });
+      const source = String(detail?.source || 'start').replace(/_/g, ' ');
+      const helperState = localHelper
+        ? (localHelper.enabled
+          ? `local helper active (${localHelper.model || 'configured'})`
+          : `local helper blocked (${localHelperReasonLabel(localHelper.reason)})`)
+        : 'local helper status unknown';
 
-    es.addEventListener('experiment_started', () => {
-      addSystemMessage('Experiment started. Aria will post analysis when results are ready.');
-    });
-
-    es.addEventListener('aria_cycle_completed', (event) => {
-      try {
-        const data = JSON.parse(event.data || '{}');
-        const cycle = data.cycle_index || 0;
-        const mode = data.mode || 'synthesis';
-        const status = data.status || 'completed';
-        const s1 = data.stage1_survivors;
-        const deltaS1 = data.delta_stage1_survivors;
-        const reasoning = data.reasoning || '';
-        const parts = [`Cycle ${cycle}`, mode, status];
-        if (typeof s1 === 'number') parts.push(`S1 total ${s1}`);
-        if (typeof deltaS1 === 'number') parts.push(`ΔS1 +${deltaS1}`);
-        if (reasoning) parts.push(reasoning);
-        addSystemMessage(`Aria cycle summary: ${parts.join(' · ')}`);
-      } catch {
-        addSystemMessage('Aria completed a research cycle and is preparing the next step.');
-      }
-    });
-
-    es.addEventListener('mode_selected', (event) => {
-      try {
-        const data = JSON.parse(event.data || '{}');
-        const mode = data.mode || 'unknown';
-        const reasoning = data.reasoning || '';
-        addSystemMessage(`Aria selected mode: ${mode}${reasoning ? ` — ${reasoning}` : ''}`);
-      } catch {
-        addSystemMessage('Aria selected the next experiment mode.');
-      }
-    });
-
-    es.addEventListener('continuous_limit_reached', (event) => {
-      try {
-        const data = JSON.parse(event.data || '{}');
-        const reason = data.reason || 'limit reached';
-        addSystemMessage(`Autonomous session complete: ${reason}`);
-      } catch {
-        addSystemMessage('Autonomous session complete.');
-      }
-      if (onAutonomousEnd) onAutonomousEnd();
-    });
-
-    es.addEventListener('knowledge_extracted', (event) => {
-      try {
-        const data = JSON.parse(event.data || '{}');
-        const count = data.count || data.n_insights || 0;
-        if (count > 0) {
-          addSystemMessage(`Extracted ${count} insight${count === 1 ? '' : 's'} from latest results.`);
-        }
-      } catch { /* ignore */ }
-    });
-
-    es.onerror = () => {
-      // keep silent; browser will retry
+      addSystemMessage(
+        `Auto-repair agent started (${taskId}) after ${source} failure — ${helperState}.`,
+      );
     };
 
-    return () => es.close();
-  }, [addSystemMessage, refreshAnalysis, onAutonomousEnd]);
+    window.addEventListener('aria-auto-repair-started', handler);
+    return () => window.removeEventListener('aria-auto-repair-started', handler);
+  }, [addSystemMessage, localHelper]);
+
+  // Subscribe to SSE events via shared EventBus (instead of opening a dedicated EventSource)
+  useEventBus('experiment_completed', useCallback((data) => {
+    let resultLine = '';
+    try {
+      const mode = data.mode || data.results?.experiment_type || '';
+      const expId = (data.experiment_id || '').slice(0, 8);
+      const results = data.results || {};
+      const s1 = results.stage1_passed ?? results.n_stage1_passed ?? 0;
+      const gen = results.total_generated ?? results.n_programs_generated ?? 0;
+      const loss = results.best_loss_ratio;
+      const parts = [];
+      if (expId) parts.push(`[${expId}]`);
+      if (mode) parts.push(mode);
+      if (gen > 0) parts.push(`${s1}/${gen} S1 survivors (${(s1/gen*100).toFixed(1)}%)`);
+      if (loss != null) parts.push(`best loss ${loss.toFixed(4)}`);
+      if (parts.length > 0) resultLine = ` — ${parts.join(' · ')}`;
+    } catch { /* ignore parse errors */ }
+    addSystemMessage(`Experiment completed${resultLine}. Ask Aria for the next action when ready.`);
+  }, [addSystemMessage]));
+
+  useEventBus('experiment_started', useCallback(() => {
+    addSystemMessage('Experiment started. Ask Aria if you want immediate action guidance.');
+  }, [addSystemMessage]));
+
+  useEventBus('aria_cycle_completed', useCallback((data) => {
+    try {
+      const cycle = data.cycle_index || 0;
+      const mode = data.mode || 'synthesis';
+      const status = data.status || 'completed';
+      const s1 = data.stage1_survivors;
+      const deltaS1 = data.delta_stage1_survivors;
+      const reasoning = data.reasoning || '';
+      const parts = [`Cycle ${cycle}`, mode, status];
+      if (typeof s1 === 'number') parts.push(`S1 total ${s1}`);
+      if (typeof deltaS1 === 'number') parts.push(`ΔS1 +${deltaS1}`);
+      if (reasoning) parts.push(reasoning);
+      addSystemMessage(`Aria cycle summary: ${parts.join(' · ')}`);
+    } catch {
+      addSystemMessage('Aria completed a research cycle and is preparing the next step.');
+    }
+  }, [addSystemMessage]));
+
+  useEventBus('mode_selected', useCallback((data) => {
+    try {
+      const mode = data.mode || 'unknown';
+      const reasoning = data.reasoning || '';
+      addSystemMessage(`Aria selected mode: ${mode}${reasoning ? ` — ${reasoning}` : ''}`);
+    } catch {
+      addSystemMessage('Aria selected the next experiment mode.');
+    }
+  }, [addSystemMessage]));
+
+  useEventBus('continuous_limit_reached', useCallback((data) => {
+    try {
+      const reason = data.reason || 'limit reached';
+      addSystemMessage(`Autonomous session complete: ${reason}`);
+    } catch {
+      addSystemMessage('Autonomous session complete.');
+    }
+    if (onAutonomousEnd) onAutonomousEnd();
+  }, [addSystemMessage, onAutonomousEnd]));
+
+  useEventBus('knowledge_extracted', useCallback((data) => {
+    try {
+      const count = data.count || data.n_insights || 0;
+      if (count > 0) {
+        addSystemMessage(`Extracted ${count} insight${count === 1 ? '' : 's'} from latest results.`);
+      }
+    } catch { /* ignore */ }
+  }, [addSystemMessage]));
 
   // Re-fetch when LLM is configured (dispatched by ControlPanel)
   useEffect(() => {
     const handler = () => {
-      addSystemMessage('LLM configured. Aria is generating her first AI-powered analysis...');
-      setTimeout(() => refreshAnalysis(), 500);
+      addSystemMessage('LLM configured. Ask Aria when you want an action-oriented review.');
     };
     window.addEventListener('llm-configured', handler);
     return () => window.removeEventListener('llm-configured', handler);
-  }, [addSystemMessage, refreshAnalysis]);
+  }, [addSystemMessage]);
 
   const handleClear = useCallback(async () => {
     setMessages([]);
@@ -828,7 +766,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
                 textTransform: 'uppercase',
                 color: localHelper.enabled ? 'var(--accent-green, #4caf50)' : 'var(--text-muted)',
                 background: localHelper.enabled ? 'rgba(76, 175, 80, 0.12)' : 'var(--bg-primary)',
-                border: `1px solid ${localHelper.enabled ? 'var(--accent-green, #4caf50)' : 'var(--border-color)'}`,
+                border: `1px solid ${localHelper.enabled ? 'var(--accent-green, #4caf50)' : 'var(--border)'}`,
                 borderRadius: 4,
                 padding: '1px 5px',
               }}
@@ -838,23 +776,19 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
           )}
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          <select
-            value={analysisCadence}
-            onChange={(e) => setAnalysisCadence(String(e.target.value || 'run-only'))}
-            title="Auto-analysis cadence"
+          <span
+            title="Aria analyzes only on explicit request"
             style={{
               fontSize: 10,
               padding: '2px 6px',
               background: 'var(--bg-primary)',
-              border: '1px solid var(--border-color)',
+              border: '1px solid var(--border)',
               borderRadius: 4,
               color: 'var(--text-secondary)',
             }}
           >
-            <option value="off">Auto: Off</option>
-            <option value="run-only">Auto: Run-only</option>
-            <option value="always">Auto: Always</option>
-          </select>
+            Auto: Off (Manual only)
+          </span>
           {messages.length > 0 && (
             <button
               className="refresh-btn"
@@ -865,14 +799,14 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
             </button>
           )}
           <button className="refresh-btn" onClick={refreshAnalysis} disabled={loading}>
-            {loading ? 'Loading...' : 'Refresh'}
+            {loading ? 'Loading...' : 'Ask for Action'}
           </button>
         </div>
       </div>
 
       {isRunning && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-          Run active — Aria will append analysis after completion.
+          Run active — Aria will only respond when you explicitly ask.
         </div>
       )}
 
@@ -893,18 +827,30 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
               key={m.id}
               style={{
                 padding: '8px 10px',
-                background: m.isSummary ? 'rgba(137, 87, 229, 0.08)' : m.role === 'system' ? 'var(--bg-primary)' : 'var(--bg-tertiary)',
                 borderRadius: 6,
-                borderLeft: `2px solid ${m.isSummary ? 'var(--accent-purple)' : m.role === 'system' ? 'var(--text-muted)' : 'var(--accent-purple)'}`,
+                ...(m.role === 'user' ? {
+                  background: 'var(--bg-tertiary)',
+                  marginLeft: 32,
+                  borderRight: '2px solid var(--accent-blue)',
+                } : m.role === 'system' ? {
+                  background: 'var(--bg-primary)',
+                  textAlign: 'center',
+                  fontStyle: 'italic',
+                  borderLeft: 'none',
+                } : {
+                  background: m.isSummary ? 'rgba(137, 87, 229, 0.08)' : 'var(--bg-tertiary)',
+                  marginRight: 32,
+                  borderLeft: `2px solid ${m.isSummary ? 'var(--accent-purple)' : 'var(--accent-purple)'}`,
+                }),
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
+              <div style={{ display: 'flex', justifyContent: m.role === 'system' ? 'center' : 'space-between', gap: 8, marginBottom: 3 }}>
                 <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                  {m.isSummary ? 'Summary' : m.label || (m.role === 'system' ? 'System' : 'Aria')}
+                  {m.isSummary ? 'Summary' : m.label || (m.role === 'user' ? 'You' : m.role === 'system' ? 'System' : 'Aria')}
                 </span>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatTimestamp(m.timestamp)}</span>
+                {m.role !== 'system' && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatTimestamp(m.timestamp)}</span>}
               </div>
-              <div style={{ fontSize: 12, lineHeight: 1.45, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{m.text}</div>
+              <div style={{ fontSize: m.role === 'system' ? 11 : 12, lineHeight: 1.45, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{m.text}</div>
               {renderAgentTask(m)}
               {renderActions(m)}
               {renderLocalEvidence(m)}
@@ -925,10 +871,11 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
             }
           }}
           placeholder="Ask Aria about the latest results..."
+          aria-label="Message to Aria"
           style={{
             flex: 1,
             background: 'var(--bg-primary)',
-            border: '1px solid var(--border-color)',
+            border: '1px solid var(--border)',
             borderRadius: 6,
             color: 'var(--text-primary)',
             fontSize: 12,
@@ -939,6 +886,8 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
           className="refresh-btn"
           onClick={sendMessage}
           disabled={sending || !draft.trim()}
+          aria-label={sending ? 'Sending message, please wait' : 'Send message'}
+          aria-busy={sending}
         >
           {sending ? 'Sending…' : 'Send'}
         </button>

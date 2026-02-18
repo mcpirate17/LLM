@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { scoreColor } from '../utils/format';
+import { reliabilityColor } from '../utils/colors';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -145,11 +146,6 @@ function opReliability(stats) {
   return { label: 'Very Low', color: 'var(--accent-red)', order: 0, tip: 'Very low confidence: treat as exploratory only' };
 }
 
-function reliabilityColor(level) {
-  if (level === 'high') return 'var(--accent-green)';
-  if (level === 'medium') return 'var(--accent-yellow)';
-  return 'var(--accent-red)';
-}
 
 function opMetricChips(row) {
   const confidence = row.avg_novelty_confidence;
