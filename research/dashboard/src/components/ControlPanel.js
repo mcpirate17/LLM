@@ -171,6 +171,8 @@ function ControlPanel({
   progress,
   onStart,
   onStop,
+  onRestart,
+  restartExperimentId,
   onRefresh,
   autoRecommendation,
   prefillRequest,
@@ -564,6 +566,19 @@ function ControlPanel({
 
       {!isRunning ? (
         <>
+          {onRestart && (
+            <div style={{ marginBottom: 10 }}>
+              <button
+                className="refresh-btn"
+                onClick={() => onRestart()}
+                disabled={!restartExperimentId}
+                title={restartExperimentId ? `Restart ${restartExperimentId}` : 'No recent experiment to restart'}
+              >
+                Restart Last Experiment
+              </button>
+            </div>
+          )}
+
           {/* LLM Configuration */}
           <button
             className="advanced-toggle"

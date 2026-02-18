@@ -2101,11 +2101,13 @@ class LabNotebook:
         )
         self.conn.commit()
 
-    def get_hypothesis_chain(self, hypothesis_id: str) -> List[Dict]:
+    def get_hypothesis_chain(self, hypothesis_id: str,
+                             max_depth: int = 500) -> List[Dict]:
         """Trace lineage from root to all descendants."""
-        # Find root
+        # Find root (with cycle detection)
         current = hypothesis_id
-        while True:
+        visited = {current}
+        for _ in range(max_depth):
             row = self.conn.execute(
                 "SELECT * FROM hypotheses WHERE hypothesis_id = ?",
                 (current,),
@@ -2113,15 +2115,16 @@ class LabNotebook:
             if row is None:
                 break
             parent = row["parent_hypothesis_id"]
-            if parent is None:
+            if parent is None or parent in visited:
                 break
+            visited.add(parent)
             current = parent
 
-        # BFS from root
-        chain = []
+        # BFS from root (with max nodes limit)
+        chain: List[Dict] = []
         queue_ids = [current]
-        seen = set()
-        while queue_ids:
+        seen: set = set()
+        while queue_ids and len(chain) < max_depth:
             hid = queue_ids.pop(0)
             if hid in seen:
                 continue

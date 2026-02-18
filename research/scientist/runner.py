@@ -1153,6 +1153,33 @@ class ExperimentRunner:
         before_progress = self.progress.to_dict()
         cycle_error: Optional[str] = None
 
+        # Per-experiment watchdog: abort if a single cycle exceeds this limit.
+        # Modes like novelty/evolution can hang in generation loops; this is the
+        # last-resort safety net.  The watchdog sets _stop_event, which the inner
+        # loops check, causing a graceful exit rather than a hard kill.
+        max_cycle_seconds = int(
+            getattr(config, "max_cycle_seconds", 0) or 0
+        ) or 1800  # default 30 min
+        _watchdog_fired = False
+
+        def _cycle_watchdog():
+            nonlocal _watchdog_fired
+            _watchdog_fired = True
+            logger.error(
+                "WATCHDOG: Cycle %d (%s) exceeded %ds — setting stop event",
+                n_experiments, selected_mode, max_cycle_seconds,
+            )
+            self._emit_event("cycle_watchdog", {
+                "experiment_number": n_experiments,
+                "mode": selected_mode,
+                "timeout_seconds": max_cycle_seconds,
+            })
+            self._stop_event.set()
+
+        watchdog = threading.Timer(max_cycle_seconds, _cycle_watchdog)
+        watchdog.daemon = True
+        watchdog.start()
+
         try:
             self._set_aria_cycle_phase(
                 "running",
@@ -1162,8 +1189,8 @@ class ExperimentRunner:
                 note=f"Running {selected_mode} cycle {n_experiments}.",
             )
             logger.info(
-                "Cycle %d: starting %s run [%s]",
-                n_experiments, selected_mode, limit_str,
+                "Cycle %d: starting %s run [%s] (watchdog=%ds)",
+                n_experiments, selected_mode, limit_str, max_cycle_seconds,
             )
             if selected_mode in ("investigation", "validation"):
                 self._run_continuous_phase(
@@ -1193,6 +1220,16 @@ class ExperimentRunner:
                 "error": cycle_error,
             })
         finally:
+            watchdog.cancel()
+            # If watchdog fired, clear stop event so continuous mode can proceed
+            # to the next cycle (the current cycle is already aborted).
+            if _watchdog_fired:
+                self._stop_event.clear()
+                cycle_error = cycle_error or f"Watchdog timeout ({max_cycle_seconds}s)"
+                logger.warning(
+                    "Cycle %d: watchdog fired, stop event cleared for next cycle",
+                    n_experiments,
+                )
             if not self._stop_event.is_set():
                 self._set_aria_cycle_phase(
                     "analyzing",
@@ -1869,6 +1906,7 @@ class ExperimentRunner:
 
         except Exception as e:
             error = traceback.format_exc()
+            logger.error("Experiment failed (%s): %s\n%s", exp_id, e, error)
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -3024,6 +3062,7 @@ class ExperimentRunner:
             fitness_fn=fitness_fn,
             novelty_fn=novelty_fn,
             config=evo_config,
+            stop_check=self._stop_event.is_set,
         )
 
         results = {
@@ -3160,6 +3199,7 @@ class ExperimentRunner:
             fitness_fn=fitness_fn,
             fingerprint_fn=fingerprint_fn,
             config=ns_config,
+            stop_check=self._stop_event.is_set,
         )
 
         results = {
@@ -6241,6 +6281,7 @@ class ExperimentRunner:
 
         except Exception as e:
             error = traceback.format_exc()
+            logger.error("Investigation failed (%s): %s\n%s", exp_id, e, error)
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -6761,6 +6802,7 @@ class ExperimentRunner:
 
         except Exception as e:
             error = traceback.format_exc()
+            logger.error("Validation failed (%s): %s\n%s", exp_id, e, error)
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -7367,6 +7409,7 @@ class ExperimentRunner:
 
         except Exception as e:
             error = traceback.format_exc()
+            logger.error("Evolution failed (%s): %s\n%s", exp_id, e, error)
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -7490,6 +7533,7 @@ class ExperimentRunner:
                 fingerprint_fn=fingerprint_fn,
                 config=ns_config,
                 callback=gen_callback,
+                stop_check=self._stop_event.is_set,
             )
 
             # Record results
@@ -7581,6 +7625,7 @@ class ExperimentRunner:
 
         except Exception as e:
             error = traceback.format_exc()
+            logger.error("Novelty search failed (%s): %s\n%s", exp_id, e, error)
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -7934,6 +7979,8 @@ class ExperimentRunner:
             })
 
         except Exception as e:
+            error = traceback.format_exc()
+            logger.error("Scale-up failed (%s): %s\n%s", exp_id, e, error)
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"

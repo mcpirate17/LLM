@@ -349,6 +349,27 @@ function App() {
     }
   };
 
+  const handleRerunExperiment = async (experimentId) => {
+    if (!experimentId) {
+      setActionError('No recent experiment available to restart');
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/rerun`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setActionError(err.error || 'Failed to restart experiment');
+        return;
+      }
+      setActionError(null);
+      fetchDashboard();
+    } catch (err) {
+      setActionError('Failed to restart experiment: ' + err.message);
+    }
+  };
+
   const handleStartAutonomous = async (config) => {
     try {
       const res = await fetch(`${API_BASE}/api/experiments/start`, {
@@ -908,6 +929,8 @@ function App() {
                     progress={data?.progress}
                     onStart={handleStartExperiment}
                     onStop={handleStopExperiment}
+                    onRestart={() => handleRerunExperiment(data?.recent_experiments?.[0]?.experiment_id)}
+                    restartExperimentId={data?.recent_experiments?.[0]?.experiment_id}
                     onRefresh={fetchDashboard}
                     autoRecommendation={data?.last_recommendation}
                     prefillRequest={controlPanelPrefill}

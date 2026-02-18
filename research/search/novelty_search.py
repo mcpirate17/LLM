@@ -134,6 +134,7 @@ def novelty_search(
     config: Optional[NoveltySearchConfig] = None,
     seed: int = 42,
     callback: Optional[Callable[[int, List[Individual], BehaviorArchive], None]] = None,
+    stop_check: Optional[Callable[[], bool]] = None,
 ) -> NoveltySearchResult:
     """Run novelty search over computation graphs.
 
@@ -197,6 +198,7 @@ def novelty_search(
         config=evo_config,
         seed=seed,
         callback=gen_callback,
+        stop_check=stop_check,
     )
 
     result.best_individuals = final_population[:10]

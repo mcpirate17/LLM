@@ -58,6 +58,7 @@ def evolutionary_search(
     config: Optional[EvolutionConfig] = None,
     seed: int = 42,
     callback: Optional[Callable[[int, List[Individual]], None]] = None,
+    stop_check: Optional[Callable[[], bool]] = None,
 ) -> List[Individual]:
     """Run evolutionary search over computation graphs.
 
@@ -67,6 +68,7 @@ def evolutionary_search(
         config: Evolution configuration
         seed: Random seed
         callback: Called after each generation with (gen_num, population)
+        stop_check: Optional callable that returns True to abort early
 
     Returns:
         Final population sorted by combined score
@@ -117,6 +119,10 @@ def evolutionary_search(
 
     # Evolve
     for gen in range(config.n_generations):
+        if stop_check and stop_check():
+            logger.info("Evolution stopped early at gen %d by external signal", gen)
+            break
+
         new_population = []
 
         # Elitism: keep top individuals
@@ -129,6 +135,8 @@ def evolutionary_search(
         fill_attempts = 0
         fill_failures = 0
         while len(new_population) < config.population_size:
+            if stop_check and stop_check():
+                break
             fill_attempts += 1
             if fill_attempts > max_fill_attempts:
                 logger.warning(
