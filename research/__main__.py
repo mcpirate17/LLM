@@ -108,7 +108,7 @@ def _run_continuous(args):
 def _run_dashboard(args):
     """Start the web dashboard."""
     from research.scientist.api import run_server
-    run_server(notebook_path=args.db, port=args.port, debug=True)
+    run_server(notebook_path=args.db, port=args.port, debug=False)
 
 
 def _run_evolution(args):

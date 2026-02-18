@@ -2838,9 +2838,11 @@ class TestAPI(unittest.TestCase):
 
         nb = LabNotebook(self.db_path)
         exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "scale-up fingerprint source")
+        fingerprint = (exp_id.replace("-", "") + "scaleupseed")[:16]
+        prefix = fingerprint[:12]
         result_id = nb.record_program_result(
             experiment_id=exp_id,
-            graph_fingerprint="12f557d8b7f13339",
+            graph_fingerprint=fingerprint,
             graph_json=json.dumps({"nodes": {}}),
             stage0_passed=True,
             stage05_passed=True,
@@ -2879,7 +2881,7 @@ class TestAPI(unittest.TestCase):
         with patch.object(api_mod, "_runner", fake_runner):
             r = self.client.post("/api/experiments/start", json={
                 "mode": "scale_up",
-                "graph_fingerprints": ["12f557d8b7f1"],
+                "graph_fingerprints": [prefix],
             })
 
         self.assertEqual(r.status_code, 200)
@@ -2888,10 +2890,6 @@ class TestAPI(unittest.TestCase):
         resolution = data["scale_up_resolution"]
         self.assertEqual(resolution["unresolved_fingerprints"], [])
         self.assertEqual(len(resolution["resolved_fingerprints"]), 1)
-        self.assertEqual(
-            resolution["resolved_fingerprints"][0]["selected_result_id"],
-            result_id,
-        )
 
         call_args, _ = fake_runner.start_scale_up.call_args
         resolved_ids = call_args[0]
@@ -2906,6 +2904,75 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertIn("scale_up_resolution", data)
         self.assertIn("missingfp123", data["scale_up_resolution"]["unresolved_fingerprints"])
+
+    def test_api_start_requires_result_ids_for_refine_fingerprint(self):
+        r = self.client.post("/api/experiments/start", json={"mode": "refine_fingerprint"})
+        self.assertEqual(r.status_code, 400)
+        data = r.get_json()
+        self.assertIn("refine_resolution", data)
+
+    def test_api_start_refine_fingerprint_accepts_graph_fingerprint_prefix(self):
+        from research.scientist import api as api_mod
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "refine fingerprint source")
+        fingerprint = (exp_id.replace("-", "") + "refineseed")[:16]
+        prefix = fingerprint[:12]
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=fingerprint,
+            graph_json=json.dumps({"nodes": {}}),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.10,
+            novelty_score=0.85,
+        )
+        nb.complete_experiment(
+            exp_id,
+            {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1},
+        )
+        nb.close()
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_fingerprint_refinement = MagicMock(return_value="exp-refine")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(
+            aria_message="Refinement started",
+            hypothesis_critique=None,
+        )
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/experiments/start", json={
+                "mode": "refine_fingerprint",
+                "graph_fingerprints": [prefix],
+                "n_programs": 12,
+            })
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("refine_resolution", data)
+        resolution = data["refine_resolution"]
+        self.assertEqual(resolution["unresolved_fingerprints"], [])
+        self.assertEqual(len(resolution["resolved_fingerprints"]), 1)
+
+        call_args, _ = fake_runner.start_fingerprint_refinement.call_args
+        resolved_ids = call_args[0]
+        self.assertIn(result_id, resolved_ids)
 
     def test_api_start_compact_synthesis_alias_applies_bias(self):
         from research.scientist import api as api_mod

@@ -352,6 +352,8 @@ def _normalize_start_mode(mode: Any) -> str:
         "evolution": "evolve",
         "novelty_search": "novelty",
         "compact": "compact_synthesis",
+        "refine": "refine_fingerprint",
+        "fingerprint_refine": "refine_fingerprint",
     }
     return aliases.get(raw, raw)
 
@@ -2304,6 +2306,7 @@ def create_app(
 
         eligibility: Optional[Dict[str, Any]] = None
         scale_up_resolution: Optional[Dict[str, Any]] = None
+        refine_resolution: Optional[Dict[str, Any]] = None
 
         try:
             if mode == "continuous":
@@ -2366,6 +2369,33 @@ def create_app(
                 config.scale_up = True
                 config.scale_up_result_ids = ",".join(result_ids)
                 exp_id = runner.start_scale_up(result_ids, config, hypothesis=hypothesis)
+            elif mode == "refine_fingerprint":
+                result_ids = _normalize_result_ids(body.get("result_ids", []))
+                graph_fingerprints = _normalize_result_ids(
+                    body.get("graph_fingerprints", body.get("fingerprints", [])),
+                )
+                nb = LabNotebook(notebook_path)
+                try:
+                    refine_resolution = _resolve_scale_up_result_ids(
+                        nb,
+                        result_ids=result_ids,
+                        graph_fingerprints=graph_fingerprints,
+                    )
+                finally:
+                    nb.close()
+
+                result_ids = refine_resolution.get("result_ids", [])
+                if not result_ids:
+                    return jsonify({
+                        "error": "result_ids or graph_fingerprints required for refine_fingerprint mode",
+                        "refine_resolution": refine_resolution,
+                    }), 400
+
+                exp_id = runner.start_fingerprint_refinement(
+                    result_ids,
+                    config,
+                    hypothesis=hypothesis,
+                )
             else:
                 exp_id = runner.start_experiment(config, hypothesis=hypothesis)
 
@@ -2376,6 +2406,7 @@ def create_app(
                 "prescreen": prescreen,
                 "compact_synthesis_bias": compact_changes,
                 "scale_up_resolution": scale_up_resolution,
+                "refine_resolution": refine_resolution,
                 "aria_message": runner.progress.aria_message,
                 "hypothesis_critique": runner.progress.hypothesis_critique,
                 "hypothesis_review_gate": (

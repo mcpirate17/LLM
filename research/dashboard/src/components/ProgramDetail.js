@@ -1498,6 +1498,41 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
             {/* Investigate / Validate actions */}
             {program.stage1_passed && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="start-btn"
+                  disabled={actionStarting === 'refine'}
+                  onClick={async () => {
+                    setActionStarting('refine');
+                    try {
+                      setActionError(null);
+                      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          mode: 'refine_fingerprint',
+                          graph_fingerprints: [program.graph_fingerprint],
+                          n_programs: 24,
+                          model_source: 'fingerprint_refine',
+                          mutation_rate: 0.85,
+                        }),
+                      });
+                      if (!res.ok) {
+                        const err = await res.json();
+                        setActionError(err.error || 'Failed to start fingerprint refinement');
+                      } else {
+                        if (onActionComplete) onActionComplete();
+                        onClose();
+                      }
+                    } catch (e) {
+                      setActionError('Error: ' + e.message);
+                    }
+                    setActionStarting(null);
+                  }}
+                  style={{ padding: '6px 16px', fontSize: 12, background: 'var(--accent-yellow)', borderColor: 'var(--accent-yellow)' }}
+                  title="Generate local mutated variants around this architecture fingerprint"
+                >
+                  {actionStarting === 'refine' ? 'Starting...' : 'Refine Fingerprint'}
+                </button>
                 {resolvedEligibility.investigationEligible && (
                   <button
                     className="start-btn"

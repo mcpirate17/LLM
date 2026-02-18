@@ -18,6 +18,7 @@ import hashlib
 import json
 import copy
 import queue
+import random
 import re
 import threading
 import time
@@ -145,6 +146,8 @@ class RunConfig:
     # Model source
     model_source: str = "graph_synthesis"  # "graph_synthesis", "morphological_box", "mixed"
     morph_ratio: float = 0.5           # fraction of morphological candidates in mixed mode
+    refine_source_result_ids: str = ""  # comma-separated source result IDs for local fingerprint refinement
+    refine_mutations_per_source: int = 4
     # Training program variation
     use_synthesized_training: bool = False  # use random training programs
     n_training_programs: int = 3       # how many to try per candidate (investigation)
@@ -1105,6 +1108,11 @@ class ExperimentRunner:
             "confidence": mode_confidence,
             "experiment_number": n_experiments,
         })
+        logger.info(
+            "Cycle %d: mode=%s (confidence=%.2f) — %s",
+            n_experiments, selected_mode, mode_confidence,
+            mode_reasoning[:120] if mode_reasoning else "no reasoning",
+        )
 
         limit_info = []
         if config.max_experiments > 0:
@@ -1153,6 +1161,10 @@ class ExperimentRunner:
                 selected_mode=selected_mode,
                 note=f"Running {selected_mode} cycle {n_experiments}.",
             )
+            logger.info(
+                "Cycle %d: starting %s run [%s]",
+                n_experiments, selected_mode, limit_str,
+            )
             if selected_mode in ("investigation", "validation"):
                 self._run_continuous_phase(
                     selected_mode, cycle_config, nb, n_experiments,
@@ -1168,7 +1180,7 @@ class ExperimentRunner:
                     cycle_config, nb, n_experiments, limit_str, mode_reasoning)
         except Exception as e:
             cycle_error = str(e)
-            logger.warning(f"Continuous mode {selected_mode} failed: {e}")
+            logger.warning("Cycle %d FAILED (%s): %s", n_experiments, selected_mode, e)
             failed_exp_id = self._fail_active_cycle_experiment(
                 nb,
                 cycle_error,
@@ -1222,6 +1234,18 @@ class ExperimentRunner:
             if len(self._aria_cycle_history) > 50:
                 self._aria_cycle_history = self._aria_cycle_history[-50:]
         self._emit_event("aria_cycle_completed", summary)
+
+        delta_s1 = summary.get("delta_stage1_survivors", 0)
+        after = summary.get("after", {})
+        s0 = after.get("stage0_passed", 0)
+        s05 = after.get("stage05_passed", 0)
+        s1 = after.get("stage1_passed", 0)
+        best_loss = after.get("best_loss_ratio")
+        loss_str = f", best loss={best_loss:.4f}" if best_loss else ""
+        logger.info(
+            "Cycle %d done: S0=%d S0.5=%d S1=%d (ΔS1=%+d)%s",
+            n_experiments, s0, s05, s1, delta_s1, loss_str,
+        )
         return summary
 
     @staticmethod
@@ -1467,6 +1491,21 @@ class ExperimentRunner:
             note="Continuous session initialized.",
         )
 
+        limits = []
+        if config.max_experiments > 0:
+            limits.append(f"max_experiments={config.max_experiments}")
+        if config.max_time_minutes > 0:
+            limits.append(f"max_time={config.max_time_minutes}min")
+        if config.max_cost_dollars > 0:
+            limits.append(f"max_cost=${config.max_cost_dollars:.2f}")
+        logger.info(
+            "Starting continuous session: %d programs/cycle, dim=%d, "
+            "depth=%d, ops=%d, device=%s [%s]",
+            config.n_programs, config.model_dim, config.max_depth,
+            config.max_ops, config.device,
+            ", ".join(limits) if limits else "no limits",
+        )
+
         with self._lock:
             self._progress = LiveProgress(
                 status="generating",
@@ -1480,6 +1519,31 @@ class ExperimentRunner:
         )
         self._thread.start()
         return "continuous"
+
+    def start_fingerprint_refinement(
+        self,
+        result_ids: List[str],
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+    ) -> str:
+        """Start local mutation refinement around selected fingerprint sources."""
+        ids = [rid.strip() for rid in result_ids if str(rid).strip()]
+        if not ids:
+            raise ValueError("result_ids required for fingerprint refinement")
+
+        refine_config = RunConfig.from_dict(config.to_dict())
+        refine_config.model_source = "fingerprint_refine"
+        refine_config.refine_source_result_ids = ",".join(ids)
+        if refine_config.refine_mutations_per_source <= 0:
+            refine_config.refine_mutations_per_source = 1
+
+        if hypothesis is None:
+            hypothesis = (
+                f"Fingerprint refinement: locally mutate {len(ids)} selected architecture "
+                f"source(s) to search for improved nearby variants."
+            )
+
+        return self.start_experiment(refine_config, hypothesis=hypothesis)
 
     def start_resume(self, experiment_id: str, config: Optional[RunConfig] = None) -> str:
         """Resume an interrupted experiment from its last checkpoint.
@@ -2629,6 +2693,11 @@ class ExperimentRunner:
             hypothesis=hypothesis,
             hypothesis_metadata=hypothesis_metadata,
         )
+        logger.info(
+            "Experiment %s started (synthesis, %d programs) — hypothesis: %s",
+            exp_id[:8], config.n_programs,
+            (hypothesis or "none")[:150],
+        )
 
         if is_control:
             nb.log_learning_event(
@@ -2749,6 +2818,8 @@ class ExperimentRunner:
             aria_summary=summary, aria_mood=self.aria.state.mood,
             insights=insights, llm_analysis=llm_analysis,
         )
+        if summary:
+            logger.info("Aria summary: %s", summary[:200])
         nb.update_op_success_rates(exp_id)
         self._auto_recommend(results, config, hypothesis, nb)
 
@@ -4206,7 +4277,10 @@ class ExperimentRunner:
         t_start = time.time()
 
         # Generate graphs
-        graphs = batch_generate(config.n_programs, grammar)
+        if config.model_source == "fingerprint_refine":
+            graphs = self._generate_refinement_graphs(exp_id, config, nb, grammar)
+        else:
+            graphs = batch_generate(config.n_programs, grammar)
         results["total"] = len(graphs)
         op_distribution = self._compute_generated_op_distribution(graphs)
         if op_distribution:
@@ -4234,6 +4308,12 @@ class ExperimentRunner:
             self._progress.total_programs = len(graphs)
             self._progress.status = "evaluating"
 
+        logger.info(
+            "Experiment %s: generated %d graphs (depth=%d, ops=%d, dim=%d, device=%s)",
+            exp_id[:8], len(graphs), grammar.max_depth, grammar.max_ops,
+            config.model_dim, config.device,
+        )
+
         nb.add_entry(ExperimentEntry(
             entry_type="observation",
             title=f"Generated {len(graphs)} computation graphs",
@@ -4244,6 +4324,8 @@ class ExperimentRunner:
 
         dev_str = config.device if torch.cuda.is_available() else "cpu"
         dev = torch.device(dev_str)
+
+        last_log_time = time.time()
 
         for i, graph in enumerate(graphs):
             if self._stop_event.is_set():
@@ -4274,7 +4356,11 @@ class ExperimentRunner:
             with self._lock:
                 self._progress.current_stage = "validating"
 
-            validation = validate_graph(graph)
+            validation = validate_graph(
+                graph,
+                max_ops=max(1, int(config.max_ops)),
+                max_depth=max(1, int(config.max_depth)),
+            )
             if not validation.valid:
                 program_metrics["stage_at_death"] = "stage0"
                 program_metrics["error_type"] = "validation_error"
@@ -4424,6 +4510,15 @@ class ExperimentRunner:
                     with self._lock:
                         self._progress.stage1_passed += 1
 
+                    logger.info(
+                        "  ★ S1 SURVIVOR [%d/%d] %s — loss_ratio=%.4f, "
+                        "params=%s, train_time=%.0fms",
+                        i + 1, len(graphs), graph.fingerprint()[:10],
+                        loss_ratio or 0,
+                        f"{sandbox_result.param_count:,}" if sandbox_result.param_count else "?",
+                        s1_result.get("total_train_time_ms") or 0,
+                    )
+
                     # Compare to baseline
                     if final_loss is not None:
                         try:
@@ -4548,18 +4643,134 @@ class ExperimentRunner:
                 "params": sandbox_result.param_count,
             })
 
+            # Periodic progress log (every 10 programs or 15 seconds)
+            now = time.time()
+            if (i + 1) % 10 == 0 or now - last_log_time >= 15:
+                best = results.get("best_loss_ratio")
+                best_str = f", best_loss={best:.4f}" if best else ""
+                logger.info(
+                    "  [%d/%d] S0=%d S0.5=%d S1=%d%s (%.1fs elapsed)",
+                    i + 1, len(graphs),
+                    results["stage0_passed"], results["stage05_passed"],
+                    results["stage1_passed"], best_str,
+                    now - t_start,
+                )
+                last_log_time = now
+
             # Cleanup
             del model
             if dev.type == "cuda":
                 torch.cuda.empty_cache()
             gc.collect()
 
+        elapsed = time.time() - t_start
         with self._lock:
-            self._progress.elapsed_seconds = time.time() - t_start
+            self._progress.elapsed_seconds = elapsed
             self._progress.status = "analyzing"
             self._progress.aria_message = self.aria.begin_analysis()
 
+        best = results.get("best_loss_ratio")
+        best_str = f", best loss={best:.4f}" if best else ""
+        logger.info(
+            "Experiment %s complete: %d programs → S0=%d → S0.5=%d → S1=%d "
+            "(%.1fs)%s",
+            exp_id[:8], results["total"],
+            results["stage0_passed"], results["stage05_passed"],
+            results["stage1_passed"], elapsed, best_str,
+        )
+
         return results
+
+    def _generate_refinement_graphs(
+        self,
+        exp_id: str,
+        config: RunConfig,
+        nb: LabNotebook,
+        grammar: GrammarConfig,
+    ) -> List:
+        """Generate local mutations around selected source result IDs."""
+        source_ids = [
+            rid.strip() for rid in str(config.refine_source_result_ids or "").split(",")
+            if rid.strip()
+        ]
+        target_n = max(1, int(config.n_programs))
+        if not source_ids:
+            logger.warning("Refinement mode requested without source IDs; falling back to synthesis generation")
+            return batch_generate(target_n, grammar)
+
+        source_pairs: List[Tuple[str, Any]] = []
+        for source_id in source_ids:
+            source = nb.get_program_detail(source_id)
+            if not source:
+                continue
+            graph_json_str = source.get("graph_json")
+            if not graph_json_str:
+                continue
+            try:
+                parent_graph = graph_from_json(graph_json_str)
+            except Exception:
+                continue
+            source_pairs.append((source_id, parent_graph))
+
+        if not source_pairs:
+            logger.warning(
+                "Refinement mode had %d source IDs but no reconstructable graphs; falling back to synthesis",
+                len(source_ids),
+            )
+            return batch_generate(target_n, grammar)
+
+        try:
+            from ..search.evolution import _mutate_graph
+        except Exception as e:
+            logger.warning("Mutation helper unavailable (%s); falling back to synthesis generation", e)
+            return batch_generate(target_n, grammar)
+
+        seed = self._stable_seed("fingerprint_refine", exp_id, ",".join(source_ids))
+        rng = random.Random(seed)
+        per_source = max(1, int(config.refine_mutations_per_source or 1))
+        mutated_graphs: List[Any] = []
+
+        while len(mutated_graphs) < target_n:
+            added_this_round = 0
+            for source_id, parent_graph in source_pairs:
+                for _ in range(per_source):
+                    if len(mutated_graphs) >= target_n:
+                        break
+                    try:
+                        child = _mutate_graph(parent_graph, grammar, rng)
+                    except Exception:
+                        continue
+                    validation = validate_graph(
+                        child,
+                        max_ops=max(1, int(config.max_ops)),
+                        max_depth=max(1, int(config.max_depth)),
+                    )
+                    if not validation.valid:
+                        continue
+
+                    child.metadata.setdefault("refinement", {})
+                    child.metadata["refinement"]["source_result_id"] = source_id
+                    child.metadata["refinement"]["seed_fingerprint"] = parent_graph.fingerprint()
+                    mutated_graphs.append(child)
+                    added_this_round += 1
+
+                if len(mutated_graphs) >= target_n:
+                    break
+
+            if added_this_round == 0:
+                break
+
+        if len(mutated_graphs) < target_n:
+            fallback = batch_generate(target_n - len(mutated_graphs), grammar)
+            mutated_graphs.extend(fallback)
+
+        logger.info(
+            "Experiment %s: generated %d refinement graphs from %d source fingerprint(s)",
+            exp_id[:8],
+            len(mutated_graphs),
+            len(source_pairs),
+        )
+        return mutated_graphs
 
     def _resolve_baseline_recipe(
         self,
@@ -4707,6 +4918,15 @@ class ExperimentRunner:
                     "grad_norm": grad_norm,
                     "step_time_ms": step_time_ms,
                 })
+
+                # Log training progress at start, midpoint, and end
+                total_steps = config.stage1_steps
+                if step == 0 or step == total_steps // 2 or step == total_steps - 1:
+                    logger.debug(
+                        "    train step %d/%d: loss=%.4f, grad_norm=%.3f, "
+                        "step_time=%.1fms",
+                        step + 1, total_steps, loss_val, grad_norm, step_time_ms,
+                    )
 
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
@@ -5197,7 +5417,11 @@ class ExperimentRunner:
         for graph in graphs:
             if self._stop_event.is_set():
                 break
-            validation = validate_graph(graph)
+            validation = validate_graph(
+                graph,
+                max_ops=max(1, int(config.max_ops)),
+                max_depth=max(1, int(config.max_depth)),
+            )
             if not validation.valid:
                 continue
             try:

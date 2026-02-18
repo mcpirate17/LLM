@@ -10,6 +10,7 @@ Uses evolutionary algorithms to search the space of synthesized programs:
 
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -17,6 +18,8 @@ from typing import Callable, Dict, List, Optional
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
 from ..synthesis.primitives import get_primitive
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -76,13 +79,29 @@ def evolutionary_search(
 
     # Initialize population
     population = []
+    init_failures = 0
     for i in range(config.population_size):
         try:
             graph = generate_layer_graph(grammar, seed=seed + i * 137)
             ind = Individual(graph=graph, generation=0)
             population.append(ind)
-        except (ValueError, RuntimeError):
-            continue
+        except (ValueError, RuntimeError) as e:
+            init_failures += 1
+            if init_failures <= 3:
+                logger.debug("Initial population gen failed (%d): %s", init_failures, e)
+
+    if not population:
+        logger.error(
+            "Evolution aborted: failed to generate any initial individuals "
+            "(%d attempts all failed)", config.population_size,
+        )
+        return []
+
+    if init_failures > 0:
+        logger.info(
+            "Initial population: %d/%d succeeded (%d failures)",
+            len(population), config.population_size, init_failures,
+        )
 
     # Evaluate initial population
     _evaluate_population(population, fitness_fn, novelty_fn, config)
@@ -105,8 +124,21 @@ def evolutionary_search(
                         x.novelty * config.novelty_weight, reverse=True)
         new_population.extend(population[:config.elitism])
 
-        # Fill rest with offspring
+        # Fill rest with offspring (with max attempts to prevent infinite loop)
+        max_fill_attempts = config.population_size * 10
+        fill_attempts = 0
+        fill_failures = 0
         while len(new_population) < config.population_size:
+            fill_attempts += 1
+            if fill_attempts > max_fill_attempts:
+                logger.warning(
+                    "Gen %d: hit max fill attempts (%d) with %d/%d individuals "
+                    "(%d failures). Proceeding with smaller population.",
+                    gen, max_fill_attempts, len(new_population),
+                    config.population_size, fill_failures,
+                )
+                break
+
             if rng.random() < config.crossover_rate and len(population) >= 2:
                 # Crossover
                 p1 = _tournament_select(population, config.tournament_size, rng)
@@ -120,7 +152,7 @@ def evolutionary_search(
                     )
                     new_population.append(child)
                 except (ValueError, RuntimeError):
-                    pass
+                    fill_failures += 1
             else:
                 # Mutation
                 parent = _tournament_select(population, config.tournament_size, rng)
@@ -139,7 +171,14 @@ def evolutionary_search(
                         child = Individual(graph=graph, generation=gen + 1)
                         new_population.append(child)
                     except (ValueError, RuntimeError):
-                        pass
+                        fill_failures += 1
+
+        if not new_population:
+            logger.error(
+                "Gen %d: produced 0 individuals after %d attempts. "
+                "Aborting evolution early.", gen, fill_attempts,
+            )
+            break
 
         population = new_population
 
@@ -154,6 +193,14 @@ def evolutionary_search(
             rng=rng,
             generation=gen + 1,
         )
+
+        if gen % 5 == 0 or gen == config.n_generations - 1:
+            best = max(population, key=lambda x: x.fitness) if population else None
+            best_fit = f"{best.fitness:.4f}" if best else "N/A"
+            logger.info(
+                "Evolution gen %d/%d: pop=%d, best_fitness=%s",
+                gen + 1, config.n_generations, len(population), best_fit,
+            )
 
         if callback:
             callback(gen, population)
