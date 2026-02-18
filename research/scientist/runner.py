@@ -254,6 +254,79 @@ class ExperimentRunner:
             return None
         return best_loss_ratio / screening_loss_ratio
 
+    @staticmethod
+    def _is_cuda_assert_error(message: Any) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        return (
+            ("cuda" in text and "device-side assert" in text)
+            or "cudaerrorassert" in text
+            or "device side assert" in text
+        )
+
+    def _cuda_health_probe(self) -> Tuple[bool, Optional[str]]:
+        """Run a minimal CUDA op/sync probe to catch poisoned contexts early."""
+        try:
+            dev = torch.device("cuda")
+            probe = torch.zeros((4,), device=dev, dtype=torch.float32)
+            probe = probe + 1.0
+            _ = float(probe.sum().item())
+            torch.cuda.synchronize(dev)
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
+
+    def _recent_cuda_assert_signals(self, window: int = 5) -> Dict[str, Any]:
+        """Inspect recent cycle/database history for repeated CUDA assert failures."""
+        window = max(1, int(window))
+        signal_count = 0
+        experiment_ids: List[str] = []
+
+        with self._lock:
+            recent_cycles = list(self._aria_cycle_history[-window:])
+
+        for item in recent_cycles:
+            if self._is_cuda_assert_error(item.get("error")):
+                signal_count += 1
+                cycle_exp = str(item.get("experiment_id") or "").strip()
+                if cycle_exp:
+                    experiment_ids.append(cycle_exp)
+
+        nb = None
+        try:
+            nb = self._make_notebook()
+            recent_experiments = nb.get_recent_experiments(window)
+            for exp in recent_experiments:
+                msg = exp.get("aria_summary")
+                if self._is_cuda_assert_error(msg):
+                    signal_count += 1
+                    exp_id = str(exp.get("experiment_id") or "").strip()
+                    if exp_id:
+                        experiment_ids.append(exp_id)
+        except Exception:
+            pass
+        finally:
+            if nb is not None:
+                try:
+                    nb.close()
+                except Exception:
+                    pass
+
+        seen = set()
+        unique_ids: List[str] = []
+        for exp_id in experiment_ids:
+            if exp_id in seen:
+                continue
+            seen.add(exp_id)
+            unique_ids.append(exp_id)
+
+        return {
+            "count": signal_count,
+            "window": window,
+            "experiment_ids": unique_ids,
+        }
+
     def prescreen_run_config(
         self,
         config: RunConfig,
@@ -379,6 +452,44 @@ class ExperimentRunner:
                 risk_points=35,
                 adjusted=auto_harden,
             )
+
+        if str(screened.device).strip().lower() == "cuda" and torch.cuda.is_available():
+            probe_ok, probe_error = self._cuda_health_probe()
+            if not probe_ok:
+                if auto_harden:
+                    screened.device = "cpu"
+                _record_issue(
+                    key="device",
+                    severity="high",
+                    reason=(
+                        "CUDA preflight probe failed before launch; likely unstable or poisoned CUDA context. "
+                        "Falling back to CPU for this run."
+                    ),
+                    old_value="cuda",
+                    suggested_value="cpu",
+                    risk_points=45,
+                    adjusted=auto_harden,
+                )
+            else:
+                recent_cuda = self._recent_cuda_assert_signals(window=5)
+                recent_count = int(recent_cuda.get("count") or 0)
+                if recent_count >= 3:
+                    experiment_ids = [str(x)[:8] for x in (recent_cuda.get("experiment_ids") or []) if str(x)]
+                    exp_label = ", ".join(experiment_ids[:5]) if experiment_ids else "recent runs"
+                    if auto_harden:
+                        screened.device = "cpu"
+                    _record_issue(
+                        key="device",
+                        severity="high",
+                        reason=(
+                            f"Detected {recent_count} recent CUDA device-side assert failures "
+                            f"(e.g., {exp_label}); forcing CPU to avoid repeated 0/0 launch failures."
+                        ),
+                        old_value="cuda",
+                        suggested_value="cpu",
+                        risk_points=45,
+                        adjusted=auto_harden,
+                    )
 
         if mode_norm in {"continuous", "evolve", "novelty"}:
             _harden_min_int(
@@ -957,6 +1068,35 @@ class ExperimentRunner:
         selected_mode = mode_rec.get("mode", "synthesis")
         mode_reasoning = mode_rec.get("reasoning", "")
         mode_confidence = mode_rec.get("confidence", 0)
+        mode_config_overrides = mode_rec.get("config") or {}
+        cycle_config, override_report = self._config_with_overrides(config, mode_config_overrides)
+
+        if override_report.get("applied"):
+            self._emit_event("mode_config_applied", {
+                "mode": selected_mode,
+                "applied": override_report.get("applied"),
+                "ignored": override_report.get("ignored", {}),
+                "experiment_number": n_experiments,
+            })
+
+        prescreen_mode = "continuous"
+        if selected_mode == "evolution":
+            prescreen_mode = "evolve"
+        elif selected_mode == "novelty":
+            prescreen_mode = "novelty"
+
+        cycle_config, cycle_prescreen = self.prescreen_run_config(
+            cycle_config,
+            mode=prescreen_mode,
+            auto_harden=True,
+        )
+        if cycle_prescreen.get("issue_count", 0) > 0:
+            self._emit_event("cycle_prescreen", {
+                "mode": selected_mode,
+                "report": cycle_prescreen,
+                "experiment_number": n_experiments,
+            })
+
         effective_max_time_minutes = self._effective_max_time_minutes(config)
 
         self._emit_event("mode_selected", {
@@ -1015,17 +1155,17 @@ class ExperimentRunner:
             )
             if selected_mode in ("investigation", "validation"):
                 self._run_continuous_phase(
-                    selected_mode, config, nb, n_experiments,
+                    selected_mode, cycle_config, nb, n_experiments,
                     limit_str, mode_reasoning)
             elif selected_mode == "evolution":
                 self._run_continuous_evolution(
-                    config, nb, n_experiments, limit_str, mode_reasoning)
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
             elif selected_mode == "novelty":
                 self._run_continuous_novelty(
-                    config, nb, n_experiments, limit_str, mode_reasoning)
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
             else:
                 self._run_continuous_synthesis(
-                    config, nb, n_experiments, limit_str, mode_reasoning)
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
         except Exception as e:
             cycle_error = str(e)
             logger.warning(f"Continuous mode {selected_mode} failed: {e}")
@@ -1084,6 +1224,70 @@ class ExperimentRunner:
         self._emit_event("aria_cycle_completed", summary)
         return summary
 
+    @staticmethod
+    def _config_with_overrides(
+        base_config: RunConfig,
+        overrides: Dict[str, Any],
+    ) -> Tuple[RunConfig, Dict[str, Dict[str, Any]]]:
+        """Apply allowed per-cycle mode overrides to a cloned RunConfig."""
+        effective = RunConfig.from_dict(base_config.to_dict())
+        applied: Dict[str, Any] = {}
+        ignored: Dict[str, Any] = {}
+
+        for key, value in (overrides or {}).items():
+            if hasattr(effective, key):
+                setattr(effective, key, value)
+                applied[key] = value
+            else:
+                ignored[key] = value
+
+        return effective, {"applied": applied, "ignored": ignored}
+
+    def _compression_focus_override(
+        self,
+        recommendation: Dict[str, Any],
+        fallback_data: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Bias toward compact/compression runs when compression coverage is thin."""
+        mode = str(recommendation.get("mode") or "synthesis").strip().lower()
+        if mode in {"investigation", "validation"}:
+            return None
+
+        summary = fallback_data.get("compression_summary") or {}
+        n_tested = int(summary.get("n_tested") or 0)
+        compressed_test_share = float(fallback_data.get("compressed_test_share") or 0.0)
+        n_experiments = int(fallback_data.get("n_experiments_in_session") or 0)
+
+        if n_tested < 8:
+            return None
+        if compressed_test_share >= 0.20:
+            return None
+        if n_experiments % 3 != 0:
+            return None
+
+        compressed_survival = float(summary.get("compressed_survival_rate") or 0.0)
+        overall_survival = float(summary.get("overall_survival_rate") or 0.0)
+        return {
+            "mode": "synthesis",
+            "reasoning": (
+                "Compression examination injection: compressed coverage is under-target "
+                f"({compressed_test_share:.1%} of tested programs). Running a compact synthesis "
+                "cycle to improve quality-retention-per-byte evidence before further mode pivots. "
+                f"Compressed survival={compressed_survival:.1%}, overall survival={overall_survival:.1%}."
+            ),
+            "confidence": max(float(recommendation.get("confidence") or 0.0), 0.72),
+            "config": {
+                "n_programs": max(60, int(fallback_data.get("base_n_programs") or 60)),
+                "max_depth": 5,
+                "max_ops": 8,
+                "math_space_weight": 2.5,
+                "residual_prob": 0.82,
+                "model_source": "mixed",
+                "morph_ratio": 0.85,
+            },
+            "compression_focus": True,
+        }
+
     def get_events(self, timeout: float = 30.0):
         """Generator yielding events for SSE streaming."""
         deadline = time.time() + timeout
@@ -1102,6 +1306,12 @@ class ExperimentRunner:
         """Start an experiment in a background thread. Returns experiment ID."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
+
+        config, prescreen = self.prescreen_run_config(
+            config,
+            mode="single",
+            auto_harden=True,
+        )
 
         self._ensure_math_spaces()
         self._stop_event.clear()
@@ -1190,6 +1400,7 @@ class ExperimentRunner:
             "experiment_id": exp_id,
             "hypothesis": hypothesis,
             "config": config.to_dict(),
+            "prescreen": prescreen,
             "aria_greeting": self.aria.greet(),
             "hypothesis_critique": critique,
         })
@@ -1235,6 +1446,12 @@ class ExperimentRunner:
         """Start continuous experiment mode in background."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
+
+        config, _ = self.prescreen_run_config(
+            config,
+            mode="continuous",
+            auto_harden=True,
+        )
 
         self._ensure_math_spaces()
         self._stop_event.clear()
@@ -2227,6 +2444,7 @@ class ExperimentRunner:
                 "total_s1_survivors": total_s1,
                 "avg_novelty": avg_novelty,
                 "n_experiments_in_session": n_experiments,
+                "base_n_programs": config.n_programs,
                 "investigation_ready": investigation_ready,
                 "validation_ready": validation_ready,
                 "analytics_data": analytics_data,
@@ -2238,8 +2456,37 @@ class ExperimentRunner:
                 "optimizer_diversity": len(optimizer_counts),
             }
 
+            compression_coverage = analytics_data.get("compression_coverage") or {}
+            compression_totals = compression_coverage.get("totals") or {}
+            n_tested = int(compression_totals.get("n_tested") or 0)
+            n_compressed_tested = int(compression_totals.get("n_compressed_tested") or 0)
+            n_compressed_survived = int(compression_totals.get("n_compressed_survived") or 0)
+            n_survived = int(compression_totals.get("n_survived") or 0)
+            compressed_test_share = (
+                n_compressed_tested / n_tested if n_tested > 0 else 0.0
+            )
+            fallback_data["compressed_test_share"] = compressed_test_share
+            fallback_data["compression_summary"] = {
+                "n_tested": n_tested,
+                "n_compressed_tested": n_compressed_tested,
+                "n_compressed_survived": n_compressed_survived,
+                "n_survived": n_survived,
+                "compressed_survival_rate": (
+                    n_compressed_survived / n_compressed_tested
+                    if n_compressed_tested > 0
+                    else 0.0
+                ),
+                "overall_survival_rate": (
+                    n_survived / n_tested if n_tested > 0 else 0.0
+                ),
+            }
+
             rec = self.aria.recommend_next_mode(
                 context=context, fallback_data=fallback_data)
+
+            compression_override = self._compression_focus_override(rec, fallback_data)
+            if compression_override is not None:
+                rec = compression_override
 
             nb.add_entry(ExperimentEntry(
                 entry_type="decision",
@@ -4638,6 +4885,8 @@ class ExperimentRunner:
                 "op_success_rates": analytics.op_success_rates(),
                 "structural_correlations": analytics.structural_correlations(),
                 "failure_patterns": analytics.failure_patterns(),
+                "compression_coverage": analytics.compression_coverage(),
+                "sparse_coverage": analytics.sparse_coverage(),
                 "top_op_combinations": analytics.top_op_combinations(10),
                 "efficiency_frontier": analytics.efficiency_frontier(),
                 "grammar_weights": analytics.compute_grammar_weights(),

@@ -2659,6 +2659,7 @@ def create_app(
             compression_opportunities = _compute_compression_opportunities(compression_coverage)
             primitive_effectiveness = analytics.compression_primitive_effectiveness() or {}
             sparse_evidence = _compute_sparse_evidence(nb)
+            sparse_coverage_data = analytics.sparse_coverage() or {}
 
             # Optional: highlight a just-completed experiment
             just_completed_id = request.args.get("just_completed")
@@ -2812,6 +2813,7 @@ def create_app(
                         default_weights=dw,
                         top_programs=top_progs,
                         just_completed=just_completed_exp,
+                        sparse_coverage=sparse_coverage_data,
                     )
                 except Exception:
                     briefing_context = {

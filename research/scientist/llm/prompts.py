@@ -139,6 +139,7 @@ Decision criteria:
 4. If screening survivors have good loss ratios (< 0.6) -> investigation (deepen)
 5. If investigation survivors show robustness (> 0.5) -> validation (confirm)
 6. Periodically return to synthesis to avoid getting stuck
+7. If sparsity coverage is low (< 15% of tested programs use sparse ops) -> consider synthesis with sparse-focused config (model_source="morphological_box", use_synthesized_training=true) to explore sparse architectures and training (RigL, structured sparsity, block-sparse). Sparse architectures offer parameter efficiency — they deserve deliberate exploration, not just random chance.
 
 Return your response in this exact format:
 MODE: [one of: synthesis, evolution, novelty, investigation, validation]
@@ -307,6 +308,11 @@ Analyze the data below and produce TWO things:
 2. A SUGGESTED_ACTION with a concrete experiment configuration.
 
 {context}
+
+If sparsity coverage is shown and is low, consider recommending a sparse-focused experiment:
+- Set model_source="morphological_box" to increase chances of sparse weight storage options
+- Set use_synthesized_training=true to enable RigL dynamic sparse training
+- Mention the sparsity gap in your briefing and reasoning
 
 Return your response in this exact format:
 

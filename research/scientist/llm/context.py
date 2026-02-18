@@ -493,6 +493,50 @@ def build_mode_selection_context(
             avg_s1 = sum(s1_rates) / len(s1_rates) if s1_rates else 0
             sections.append(f"\nAverage op S1 rate: {avg_s1:.1%}")
 
+        compression = analytics_data.get("compression_coverage") or {}
+        totals = compression.get("totals") or {}
+        n_tested = int(totals.get("n_tested") or 0)
+        n_compressed_tested = int(totals.get("n_compressed_tested") or 0)
+        n_compressed_survived = int(totals.get("n_compressed_survived") or 0)
+        if n_tested > 0:
+            compressed_share = n_compressed_tested / n_tested
+            compressed_survival = (
+                n_compressed_survived / n_compressed_tested
+                if n_compressed_tested > 0
+                else 0.0
+            )
+            sections.append(
+                "\nCompression coverage: "
+                f"{n_compressed_tested}/{n_tested} tested ({compressed_share:.1%}), "
+                f"compressed survival={compressed_survival:.1%}"
+            )
+
+        # Sparsity coverage
+        sparse_summary = analytics_data.get("sparse_coverage") or {}
+        n_sparse_tested = int(sparse_summary.get("n_sparse_tested") or 0)
+        n_sparse_survived = int(sparse_summary.get("n_sparse_survived") or 0)
+        sparse_share = n_sparse_tested / n_tested if n_tested > 0 else 0.0
+        sparse_survival = (
+            n_sparse_survived / n_sparse_tested if n_sparse_tested > 0 else 0.0
+        )
+        avg_density = sparse_summary.get("avg_density")
+        if n_tested > 0:
+            lines = [
+                f"\nSparsity coverage: "
+                f"{n_sparse_tested}/{n_tested} tested ({sparse_share:.1%}), "
+                f"sparse survival={sparse_survival:.1%}"
+            ]
+            if avg_density is not None:
+                lines[0] += f", avg density={avg_density:.2f}"
+            rigl_count = int(sparse_summary.get("n_rigl_runs") or 0)
+            pruning_count = int(sparse_summary.get("n_pruning_runs") or 0)
+            if rigl_count > 0 or pruning_count > 0:
+                lines.append(
+                    f"  Sparse training: {rigl_count} RigL runs, "
+                    f"{pruning_count} pruning baselines"
+                )
+            sections.append("\n".join(lines))
+
     return "\n\n".join(sections)
 
 
@@ -765,6 +809,7 @@ def build_briefing_context(
     default_weights: Optional[Dict] = None,
     top_programs: Optional[List[Dict]] = None,
     just_completed: Optional[Dict] = None,
+    sparse_coverage: Optional[Dict] = None,
 ) -> str:
     """Build compact context for the Aria briefing prompt.
 
@@ -872,6 +917,23 @@ def build_briefing_context(
                 parts.append(f"novelty={novelty:.3f}")
             lines.append(f"  {', '.join(parts)}")
         sections.append("\n".join(lines))
+
+    # Sparsity coverage
+    if sparse_coverage:
+        n_sparse = int(sparse_coverage.get("n_sparse_tested") or 0)
+        n_survived = int(sparse_coverage.get("n_sparse_survived") or 0)
+        n_total = int(sparse_coverage.get("n_total_tested") or 0)
+        if n_total > 0:
+            share = n_sparse / n_total
+            survival = n_survived / n_sparse if n_sparse > 0 else 0.0
+            line = (
+                f"Sparsity: {n_sparse}/{n_total} programs use sparse ops "
+                f"({share:.1%}), sparse survival={survival:.1%}"
+            )
+            avg_d = sparse_coverage.get("avg_density")
+            if avg_d is not None:
+                line += f", avg density={avg_d:.2f}"
+            sections.append(line)
 
     return "\n\n".join(sections)
 

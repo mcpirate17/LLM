@@ -5078,6 +5078,55 @@ class TestInlinePhaseMethods(unittest.TestCase):
         self.assertGreater(report.get("risk_score", 0), 0)
         self.assertIn(report.get("risk_level"), {"medium", "high"})
 
+    def test_prescreen_falls_back_to_cpu_when_cuda_probe_fails(self):
+        """Prescreen should force CPU when CUDA context preflight fails."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "prescreen_cuda_probe.db"))
+        config = RunConfig(device="cuda")
+
+        with patch("research.scientist.runner.torch.cuda.is_available", return_value=True), \
+                patch.object(
+                    runner,
+                    "_cuda_health_probe",
+                    return_value=(False, "CUDA error: device-side assert triggered"),
+                ):
+            hardened, report = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+
+        self.assertEqual(hardened.device, "cpu")
+        reasons = " ".join(i.get("reason", "") for i in report.get("issues", []))
+        self.assertIn("CUDA preflight probe failed", reasons)
+
+    def test_prescreen_falls_back_to_cpu_on_recent_cuda_assert_streak(self):
+        """Prescreen should avoid repeated CUDA 0/0 runs after recent assert failures."""
+        from research.scientist.runner import ExperimentRunner, RunConfig
+
+        db_path = os.path.join(tempfile.mkdtemp(), "prescreen_cuda_streak.db")
+        runner = ExperimentRunner(db_path)
+        nb = LabNotebook(db_path)
+        try:
+            for idx in range(5):
+                exp_id = nb.start_experiment(
+                    experiment_type="synthesis",
+                    config={"device": "cuda", "n_programs": 1},
+                    hypothesis=f"cuda streak {idx}",
+                )
+                nb.fail_experiment(
+                    exp_id,
+                    "CUDA error: device-side assert triggered",
+                )
+        finally:
+            nb.close()
+
+        config = RunConfig(device="cuda")
+        with patch("research.scientist.runner.torch.cuda.is_available", return_value=True), \
+                patch.object(runner, "_cuda_health_probe", return_value=(True, None)):
+            hardened, report = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+
+        self.assertEqual(hardened.device, "cpu")
+        reasons = " ".join(i.get("reason", "") for i in report.get("issues", []))
+        self.assertIn("device-side assert", reasons)
+
     def test_corpus_mode_falls_back_to_random_when_missing_path(self):
         """Corpus mode should safely fall back to random token generation when corpus is unavailable."""
         import torch
@@ -6924,6 +6973,65 @@ class TestQuantizationUtils(unittest.TestCase):
         result = analytics.sparse_quant_codesign_summary()
         self.assertEqual(result["n_programs"], 0)
         self.assertEqual(result["programs"], [])
+
+
+class TestSandboxCudaDetection(unittest.TestCase):
+    """Tests for CUDA fatal error detection and health probing in sandbox."""
+
+    def test_is_cuda_fatal_device_side_assert(self):
+        from research.eval.sandbox import is_cuda_fatal
+
+        err = RuntimeError("CUDA error: device-side assert triggered")
+        self.assertTrue(is_cuda_fatal(err))
+
+    def test_is_cuda_fatal_illegal_memory(self):
+        from research.eval.sandbox import is_cuda_fatal
+
+        err = RuntimeError("CUDA error: an illegal memory access was encountered")
+        self.assertTrue(is_cuda_fatal(err))
+
+    def test_is_cuda_fatal_context_destroyed(self):
+        from research.eval.sandbox import is_cuda_fatal
+
+        err = RuntimeError("context is destroyed")
+        self.assertTrue(is_cuda_fatal(err))
+
+    def test_is_cuda_fatal_normal_error(self):
+        from research.eval.sandbox import is_cuda_fatal
+
+        err = RuntimeError("some normal runtime error")
+        self.assertFalse(is_cuda_fatal(err))
+
+    def test_is_cuda_fatal_oom_is_not_fatal(self):
+        """OOM is recoverable and should NOT be classified as fatal."""
+        from research.eval.sandbox import is_cuda_fatal
+
+        err = RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        self.assertFalse(is_cuda_fatal(err))
+
+    def test_safe_eval_categorizes_cuda_fatal(self):
+        """Mock a device-side assert to verify safe_eval returns cuda_fatal."""
+        import torch.nn as nn
+        from unittest.mock import patch
+        from research.eval.sandbox import safe_eval
+
+        model = nn.Linear(32, 32)
+        with patch.object(
+            nn.Module, "to",
+            side_effect=RuntimeError("CUDA error: device-side assert triggered"),
+        ):
+            result = safe_eval(model, device="cpu")
+        self.assertFalse(result.passed)
+        self.assertEqual(result.error_type, "cuda_fatal")
+        self.assertIn("device-side assert", result.error)
+
+    def test_sandbox_result_has_cuda_fatal_type(self):
+        """SandboxResult should be able to carry cuda_fatal error_type."""
+        from research.eval.sandbox import SandboxResult
+
+        r = SandboxResult(error_type="cuda_fatal", error="test")
+        d = r.to_dict()
+        self.assertEqual(d["error_type"], "cuda_fatal")
 
 
 if __name__ == "__main__":

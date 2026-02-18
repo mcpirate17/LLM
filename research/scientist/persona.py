@@ -1796,6 +1796,61 @@ class Aria:
                 "config": {},
             }
 
+        # Compression examination guardrail: keep compact tracks represented.
+        compression_coverage = analytics.get("compression_coverage") or {}
+        compression_totals = compression_coverage.get("totals") or {}
+        n_tested = int(compression_totals.get("n_tested") or 0)
+        n_compressed_tested = int(compression_totals.get("n_compressed_tested") or 0)
+        compressed_share = (
+            n_compressed_tested / n_tested if n_tested > 0 else 0.0
+        )
+        if n_tested >= 8 and compressed_share < 0.20 and n_experiments % 3 == 0:
+            return {
+                "mode": "synthesis",
+                "reasoning": (
+                    "Compression remains underrepresented in examined candidates "
+                    f"({compressed_share:.1%} coverage across {n_tested} tested). "
+                    "Scheduling a compact synthesis cycle to improve compression evidence "
+                    "and quality-retention-per-byte tracking."
+                ),
+                "confidence": 0.72,
+                "config": {
+                    "n_programs": 70,
+                    "max_depth": 5,
+                    "max_ops": 8,
+                    "math_space_weight": 2.5,
+                    "residual_prob": 0.82,
+                    "model_source": "mixed",
+                    "morph_ratio": 0.85,
+                },
+            }
+
+        # Sparsity exploration guardrail: ensure sparse architectures get tested.
+        sparse_coverage = analytics.get("sparse_coverage") or {}
+        n_sparse_tested = int(sparse_coverage.get("n_sparse_tested") or 0)
+        sparse_share = n_sparse_tested / n_tested if n_tested > 0 else 0.0
+        if n_tested >= 8 and sparse_share < 0.15 and n_experiments % 4 == 1:
+            return {
+                "mode": "synthesis",
+                "reasoning": (
+                    "Sparse architectures are underrepresented "
+                    f"({sparse_share:.1%} of {n_tested} tested programs). "
+                    "Scheduling a sparsity-focused synthesis cycle with morphological box "
+                    "rolls (for sparse weight storage) and synthesized training "
+                    "(for RigL dynamic sparse training)."
+                ),
+                "confidence": 0.70,
+                "config": {
+                    "n_programs": 60,
+                    "max_depth": 6,
+                    "max_ops": 10,
+                    "math_space_weight": 2.0,
+                    "model_source": "morphological_box",
+                    "use_synthesized_training": True,
+                    "one_shot_pruning_baseline": True,
+                },
+            }
+
         # --- Priority 2: Data-driven analysis to choose mode & config ---
 
         # Analyze op success rates for targeted grammar adjustments

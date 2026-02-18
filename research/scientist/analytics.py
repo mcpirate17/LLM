@@ -451,6 +451,65 @@ class ExperimentAnalytics:
             },
         }
 
+    def sparse_coverage(self) -> Dict:
+        """Summarize sparsity exploration coverage across tested programs.
+
+        Returns counts of programs using sparse ops, sparse weight storage,
+        RigL training, or one-shot pruning baselines, plus survival rates
+        and average density.
+        """
+        rows = self.nb.conn.execute("""
+            SELECT COUNT(*) AS n_total,
+                   SUM(CASE WHEN sparse_density_mean IS NOT NULL
+                            OR graph_json LIKE '%sparse%'
+                            OR graph_json LIKE '%block_sparse%'
+                       THEN 1 ELSE 0 END) AS n_sparse,
+                   SUM(CASE WHEN (sparse_density_mean IS NOT NULL
+                            OR graph_json LIKE '%sparse%'
+                            OR graph_json LIKE '%block_sparse%')
+                            AND stage1_passed = 1
+                       THEN 1 ELSE 0 END) AS n_sparse_survived,
+                   AVG(CASE WHEN sparse_density_mean IS NOT NULL
+                       THEN sparse_density_mean END) AS avg_density,
+                   SUM(CASE WHEN pruning_method IS NOT NULL
+                       THEN 1 ELSE 0 END) AS n_pruning,
+                   SUM(CASE WHEN stage1_passed = 1
+                       THEN 1 ELSE 0 END) AS n_total_survived
+            FROM program_results
+            WHERE loss_ratio IS NOT NULL OR stage0_passed IS NOT NULL
+        """).fetchone()
+
+        if not rows or not rows[0]:
+            return {}
+
+        n_total = int(rows[0] or 0)
+        n_sparse = int(rows[1] or 0)
+        n_sparse_survived = int(rows[2] or 0)
+        avg_density = float(rows[3]) if rows[3] is not None else None
+        n_pruning = int(rows[4] or 0)
+        n_total_survived = int(rows[5] or 0)
+
+        # Count RigL runs (optimizer recipe stored in training_program_json)
+        rigl_row = self.nb.conn.execute("""
+            SELECT COUNT(*) FROM program_results
+            WHERE training_program_json LIKE '%rigl%'
+        """).fetchone()
+        n_rigl = int(rigl_row[0]) if rigl_row else 0
+
+        return {
+            "n_total_tested": n_total,
+            "n_sparse_tested": n_sparse,
+            "n_sparse_survived": n_sparse_survived,
+            "n_total_survived": n_total_survived,
+            "avg_density": round(avg_density, 4) if avg_density is not None else None,
+            "n_pruning_runs": n_pruning,
+            "n_rigl_runs": n_rigl,
+            "sparse_share": round(n_sparse / n_total, 4) if n_total > 0 else 0.0,
+            "sparse_survival_rate": (
+                round(n_sparse_survived / n_sparse, 4) if n_sparse > 0 else 0.0
+            ),
+        }
+
     def reproducibility_packet_status(self, program: Dict) -> Dict:
         """Evaluate reproducibility packet completeness for a program."""
         arch_choices = self._extract_arch_choices(program.get("arch_spec_json"))

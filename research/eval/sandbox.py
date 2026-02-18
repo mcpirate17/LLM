@@ -4,6 +4,7 @@ Sandbox Execution
 Safe evaluation of synthesized programs with:
 - Timeout enforcement
 - OOM catching
+- CUDA fatal error detection (device-side assert, context corruption)
 - NaN/Inf detection
 - Gradient health checking
 - Memory tracking
@@ -21,6 +22,39 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Substrings in CUDA errors that indicate an unrecoverable (sticky) context
+_CUDA_FATAL_MARKERS = (
+    "device-side assert",
+    "cudaErrorAssert",
+    "CUDA error: an illegal memory access",
+    "CUDA error: unspecified launch failure",
+    "context is destroyed",
+)
+
+
+def is_cuda_fatal(error: BaseException) -> bool:
+    """Return True if the exception indicates a sticky/unrecoverable CUDA error."""
+    msg = str(error).lower()
+    return any(m.lower() in msg for m in _CUDA_FATAL_MARKERS)
+
+
+def cuda_health_check(device: str = "cuda") -> bool:
+    """Probe whether CUDA is still functional.
+
+    Attempts a tiny tensor allocation + sync on the given device.
+    Returns True if healthy, False if the CUDA context is dead.
+    """
+    if not torch.cuda.is_available():
+        return False
+    try:
+        dev = torch.device(device)
+        t = torch.zeros(1, device=dev)
+        del t
+        torch.cuda.synchronize(dev)
+        return True
+    except Exception:
+        return False
 
 
 @dataclass
@@ -212,9 +246,13 @@ def safe_eval(
         result.error = "CUDA out of memory"
         result.error_type = "oom"
     except Exception as e:
-        tb = traceback.format_exc().strip().split("\n")
-        result.error = "\n".join(tb[-3:])
-        result.error_type = type(e).__name__
+        if is_cuda_fatal(e):
+            result.error = f"Fatal CUDA error in stage {result.stage}: {e}"
+            result.error_type = "cuda_fatal"
+        else:
+            tb = traceback.format_exc().strip().split("\n")
+            result.error = "\n".join(tb[-3:])
+            result.error_type = type(e).__name__
     finally:
         # Reset timeout
         try:
@@ -224,9 +262,12 @@ def safe_eval(
         except (AttributeError, ValueError):
             pass
 
-        # Cleanup
+        # Cleanup — skip CUDA cache clear if context is dead
         if dev.type == "cuda":
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass  # CUDA context may be corrupted
         gc.collect()
 
     return result
