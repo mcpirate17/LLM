@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
 
 const RESULT_COLORS = {
@@ -9,13 +9,138 @@ const RESULT_COLORS = {
   'compile_error': 'var(--accent-orange)',
 };
 
+const EVENT_TYPE_ALIASES = {
+  program_evaluated: 'program',
+  experiment_started: 'start',
+  experiment_completed: 'complete',
+  experiment_failed: 'failed',
+  experiment_stopping: 'stopping',
+  evolution_started: 'evo_start',
+  evolution_generation: 'evo_gen',
+  evolution_completed: 'evo_complete',
+  novelty_started: 'nov_start',
+  novelty_generation: 'nov_gen',
+  novelty_completed: 'nov_complete',
+  scale_up_started: 'scaleup_start',
+  scale_up_progress: 'scaleup_progress',
+  scale_up_completed: 'scaleup_complete',
+  auto_scale_up_queued: 'auto_scaleup',
+  investigation_started: 'invest_start',
+  investigation_progress: 'invest_progress',
+  investigation_completed: 'invest_complete',
+  validation_started: 'validate_start',
+  validation_progress: 'validate_progress',
+  validation_completed: 'validate_complete',
+  breakthrough_detected: 'breakthrough',
+  auto_investigate_queued: 'auto_investigate',
+  auto_validate_queued: 'auto_validate',
+  auto_report_generated: 'auto_report',
+  aria_recommendation: 'recommendation',
+  hypothesis_recorded: 'hyp_recorded',
+  hypothesis_resolved: 'hyp_resolved',
+  decision_recorded: 'decision',
+  knowledge_extracted: 'knowledge',
+  campaign_created: 'campaign_created',
+  campaign_completed: 'campaign_completed',
+  continuous_limit_reached: 'limit_reached',
+  learning_event: 'learning',
+};
+
+const RENDERABLE_EVENT_TYPES = new Set([
+  'program',
+  'start',
+  'complete',
+  'failed',
+  'stopping',
+  'evo_start',
+  'evo_gen',
+  'evo_complete',
+  'nov_start',
+  'nov_gen',
+  'nov_complete',
+  'scaleup_start',
+  'scaleup_progress',
+  'scaleup_complete',
+  'auto_scaleup',
+  'mode_selected',
+  'invest_start',
+  'invest_progress',
+  'invest_complete',
+  'validate_start',
+  'validate_progress',
+  'validate_complete',
+  'breakthrough',
+  'auto_investigate',
+  'auto_validate',
+  'auto_report',
+  'recommendation',
+  'hyp_recorded',
+  'hyp_resolved',
+  'decision',
+  'knowledge',
+  'campaign_created',
+  'campaign_completed',
+  'limit_reached',
+  'learning',
+]);
+
+const GENERATION_EVENT_TYPES = new Set(['evo_gen', 'nov_gen']);
+
+function normalizeLiveFeedEvent(rawEvent) {
+  if (!rawEvent || typeof rawEvent !== 'object') return null;
+  const rawType = String(rawEvent.type || rawEvent.event_type || rawEvent.event || '').trim();
+  if (!rawType) return null;
+  const normalizedType = EVENT_TYPE_ALIASES[rawType] || rawType;
+  if (!RENDERABLE_EVENT_TYPES.has(normalizedType)) return null;
+  return {
+    ...rawEvent,
+    type: normalizedType,
+    ts: rawEvent.ts || Date.now(),
+  };
+}
+
+function annotateGenerationHistory(events) {
+  const generationState = new Map();
+  return events.map((event) => {
+    if (!GENERATION_EVENT_TYPES.has(event?.type)) {
+      return event;
+    }
+
+    const generation = Number(event?.generation);
+    if (!Number.isFinite(generation)) {
+      return event;
+    }
+
+    const runKey = `${event.type}:${event.experiment_id || 'unknown'}:${event.total_generations || 'unknown'}`;
+    const previous = generationState.get(runKey);
+
+    const annotated = { ...event };
+    if (previous == null) {
+      annotated._runStart = true;
+      if (generation > 1) {
+        annotated._missingPrefixFrom = 1;
+        annotated._missingPrefixTo = generation - 1;
+      }
+    } else if (generation - previous > 1) {
+      annotated._missingGapFrom = previous + 1;
+      annotated._missingGapTo = generation - 1;
+    }
+
+    generationState.set(runKey, generation);
+    return annotated;
+  });
+}
+
 function LiveFeed({ apiBase, experimentId = null }) {
   const [events, setEvents] = useState([]);
   const feedRef = useRef(null);
+  const displayEvents = useMemo(() => annotateGenerationHistory(events), [events]);
 
   // Helper to add an event with a mapped type
   const addEvent = useCallback((type) => (data) => {
-    setEvents(prev => [...prev.slice(-99), { type, ...data, ts: Date.now() }]);
+    const normalized = normalizeLiveFeedEvent({ type, ...data, ts: Date.now() });
+    if (!normalized) return;
+    setEvents(prev => [...prev.slice(-99), normalized]);
   }, []);
 
   // Subscribe to all SSE events via shared EventBus
@@ -64,7 +189,11 @@ function LiveFeed({ apiBase, experimentId = null }) {
       .then((r) => (r.ok ? r.json() : []))
       .then((history) => {
         if (!Array.isArray(history) || history.length === 0) return;
-        setEvents((prev) => [...history, ...prev].slice(-100));
+        const normalizedHistory = history
+          .map((event) => normalizeLiveFeedEvent(event))
+          .filter(Boolean);
+        if (normalizedHistory.length === 0) return;
+        setEvents((prev) => [...normalizedHistory, ...prev].slice(-100));
       })
       .catch(() => {});
   }, [apiBase, experimentId]);
@@ -101,7 +230,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
             {connected ? 'Waiting for experiment events...' : 'Unable to connect to event stream. Is the server running?'}
           </div>
         ) : (
-          events.map((evt, i) => (
+          displayEvents.map((evt, i) => (
             <div key={i} className={`feed-item feed-${evt.type}`}>
               {evt.type === 'program' && (
                 <>
@@ -152,10 +281,24 @@ function LiveFeed({ apiBase, experimentId = null }) {
               )}
               {evt.type === 'evo_gen' && (
                 <span className="feed-event-msg">
-                  Gen {evt.generation}/{evt.total_generations}:
-                  best={evt.best_fitness?.toFixed(3)},
-                  avg={evt.avg_fitness?.toFixed(3)},
-                  pop={evt.population_size}
+                  {evt._runStart && (
+                    <div style={{ color: 'var(--text-muted)' }}>
+                      Evolution run {(evt.experiment_id || '').slice(0, 8) || 'unknown'}
+                    </div>
+                  )}
+                  {(evt._missingPrefixTo || evt._missingGapTo) && (
+                    <div style={{ color: 'var(--accent-yellow)' }}>
+                      {evt._missingPrefixTo
+                        ? `Generations ${evt._missingPrefixFrom}-${evt._missingPrefixTo} are not in current feed history.`
+                        : `Generations ${evt._missingGapFrom}-${evt._missingGapTo} are not in current feed history.`}
+                    </div>
+                  )}
+                  <div>
+                    Gen {evt.generation}/{evt.total_generations}:
+                    best={evt.best_fitness?.toFixed(3)},
+                    avg={evt.avg_fitness?.toFixed(3)},
+                    pop={evt.population_size}
+                  </div>
                 </span>
               )}
               {evt.type === 'evo_complete' && (
@@ -172,10 +315,24 @@ function LiveFeed({ apiBase, experimentId = null }) {
               )}
               {evt.type === 'nov_gen' && (
                 <span className="feed-event-msg">
-                  Gen {evt.generation}/{evt.total_generations}:
-                  best_fit={evt.best_fitness?.toFixed(3)},
-                  archive={evt.archive_size},
-                  novelty={evt.best_novelty?.toFixed(3)}
+                  {evt._runStart && (
+                    <div style={{ color: 'var(--text-muted)' }}>
+                      Novelty run {(evt.experiment_id || '').slice(0, 8) || 'unknown'}
+                    </div>
+                  )}
+                  {(evt._missingPrefixTo || evt._missingGapTo) && (
+                    <div style={{ color: 'var(--accent-yellow)' }}>
+                      {evt._missingPrefixTo
+                        ? `Generations ${evt._missingPrefixFrom}-${evt._missingPrefixTo} are not in current feed history.`
+                        : `Generations ${evt._missingGapFrom}-${evt._missingGapTo} are not in current feed history.`}
+                    </div>
+                  )}
+                  <div>
+                    Gen {evt.generation}/{evt.total_generations}:
+                    best_fit={evt.best_fitness?.toFixed(3)},
+                    archive={evt.archive_size},
+                    novelty={evt.best_novelty?.toFixed(3)}
+                  </div>
                 </span>
               )}
               {evt.type === 'nov_complete' && (

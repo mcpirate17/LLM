@@ -1,6 +1,9 @@
 import React from 'react';
+import useRenderPerf from '../hooks/useRenderPerf';
 
 function SummaryCards({ summary, learningTrend }) {
+  useRenderPerf('SummaryCards');
+
   if (!summary) return null;
 
   const survRate = summary.survival_rate || 0;

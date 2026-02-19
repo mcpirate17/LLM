@@ -1120,6 +1120,36 @@ class LabNotebook:
             results.append(d)
         return results
 
+    def save_effective_weights(self, weights: Dict[str, float],
+                               s1_rate: float,
+                               experiment_id: Optional[str] = None) -> None:
+        """Save the final applied grammar weights and S1 outcome for EMA continuity."""
+        self.log_learning_event(
+            "effective_weights_snapshot",
+            f"Effective weights after {experiment_id or 'unknown'} (S1={s1_rate:.3f})",
+            new_weights=weights,
+            evidence=json.dumps({"s1_rate": s1_rate, "experiment_id": experiment_id}),
+        )
+
+    def load_last_effective_weights(self) -> Optional[tuple]:
+        """Load the most recent effective weights snapshot.
+
+        Returns (weights_dict, s1_rate) or None if no snapshot exists.
+        """
+        row = self.conn.execute(
+            "SELECT new_weights, evidence FROM learning_log "
+            "WHERE event_type='effective_weights_snapshot' "
+            "ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            weights = json.loads(row[0])
+            meta = json.loads(row[1]) if row[1] else {}
+            return (weights, meta.get("s1_rate", 0.0))
+        except (json.JSONDecodeError, TypeError):
+            return None
+
     # ── Metrics ──
 
     def log_metric(self, metric_name: str, value: float,

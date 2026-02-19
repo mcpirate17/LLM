@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
+import useRenderPerf from '../hooks/useRenderPerf';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const SESSION_ID_KEY = 'aria_chat_session_id_v2';
@@ -333,6 +334,8 @@ function messageDedupKey(message) {
 }
 
 function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
+  useRenderPerf('AriaChatPanel');
+
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -420,17 +423,21 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
   useEffect(() => {
     const interval = setInterval(async () => {
       const currentMessages = messagesRef.current || [];
-      const taskIds = [...new Set(
-        currentMessages
-          .map((m) => m?.agentTask?.task_id)
-          .filter(Boolean),
-      )];
+      const taskById = new Map();
+      for (const message of currentMessages) {
+        const task = message?.agentTask;
+        const taskId = task?.task_id;
+        if (!taskId || taskById.has(taskId)) continue;
+        taskById.set(taskId, task);
+      }
 
-      const pendingTaskIds = taskIds.filter((taskId) => {
-        const msg = currentMessages.find((m) => m?.agentTask?.task_id === taskId);
-        const status = String(msg?.agentTask?.status || '').toLowerCase();
-        return status !== 'completed' && status !== 'failed';
-      });
+      const pendingTaskIds = [];
+      for (const [taskId, task] of taskById.entries()) {
+        const status = String(task?.status || '').toLowerCase();
+        if (status !== 'completed' && status !== 'failed') {
+          pendingTaskIds.push(taskId);
+        }
+      }
 
       if (pendingTaskIds.length === 0) return;
 
@@ -441,16 +448,38 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
           if (!res.ok || !data?.task) return;
           const task = data.task;
 
-          setMessages((prev) => prev.map((msg) => {
-            if (msg?.agentTask?.task_id !== taskId) return msg;
-            return {
-              ...msg,
-              agentTask: {
-                ...(msg.agentTask || {}),
+          setMessages((prev) => {
+            let changed = false;
+            const next = prev.map((msg) => {
+              if (msg?.agentTask?.task_id !== taskId) return msg;
+              const previousTask = msg.agentTask || {};
+              const mergedTask = {
+                ...previousTask,
                 ...task,
-              },
-            };
-          }));
+              };
+
+              const unchanged =
+                previousTask.status === mergedTask.status
+                && previousTask.updated_at === mergedTask.updated_at
+                && previousTask.summary === mergedTask.summary
+                && previousTask.error === mergedTask.error
+                && previousTask.current_step === mergedTask.current_step
+                && previousTask.total_steps === mergedTask.total_steps
+                && JSON.stringify(previousTask.applied_edits || []) === JSON.stringify(mergedTask.applied_edits || [])
+                && JSON.stringify(previousTask.proposed_edits || []) === JSON.stringify(mergedTask.proposed_edits || []);
+
+              if (unchanged) {
+                return msg;
+              }
+
+              changed = true;
+              return {
+                ...msg,
+                agentTask: mergedTask,
+              };
+            });
+            return changed ? next : prev;
+          });
 
           const status = String(task.status || '').toLowerCase();
           if ((status === 'completed' || status === 'failed') && !completedAgentTasksRef.current.has(taskId)) {

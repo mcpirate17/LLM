@@ -1,8 +1,33 @@
 import React from 'react';
 import AriaAvatar from './AriaAvatar';
+import useRenderPerf from '../hooks/useRenderPerf';
+
+function sanitizeHypothesisText(rawText, maxLength = 220) {
+  if (!rawText) return '';
+
+  const text = String(rawText)
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+
+  const clipped = text.slice(0, maxLength).trim();
+  const boundary = clipped.lastIndexOf(' ');
+  if (boundary > Math.floor(maxLength * 0.55)) {
+    return `${clipped.slice(0, boundary).trim()}...`;
+  }
+  return `${clipped}...`;
+}
 
 function AriaStatus({ aria }) {
+  useRenderPerf('AriaStatus');
+
   if (!aria) return <div className="card aria-card"><p>Waiting for connection...</p></div>;
+
+  const summarizedHypothesis = sanitizeHypothesisText(aria.current_hypothesis);
 
   return (
     <div className="card aria-card">
@@ -26,9 +51,9 @@ function AriaStatus({ aria }) {
         </div>
       </div>
 
-      {aria.current_hypothesis && (
+      {summarizedHypothesis && (
         <div className="aria-hypothesis">
-          "{aria.current_hypothesis}"
+          "{summarizedHypothesis}"
         </div>
       )}
 

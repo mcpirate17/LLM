@@ -2283,6 +2283,63 @@ class TestAPI(unittest.TestCase):
         self.assertIn("population_size", evt)
         self.assertIn("ts", evt)
 
+    def test_api_live_feed_defaults_to_latest_experiment_stream(self):
+        nb = LabNotebook(self.db_path)
+        older_exp = "exp-livefeed-older"
+        newer_exp = "exp-livefeed-newer"
+
+        nb.add_entry(ExperimentEntry(
+            entry_type="live_feed",
+            experiment_id=older_exp,
+            title="Evolution generation 1/3",
+            content="Gen 1/3: best=0.900, avg=0.200, pop=50",
+            metadata={
+                "live_feed_type": "evo_gen",
+                "payload": {
+                    "experiment_id": older_exp,
+                    "generation": 1,
+                    "total_generations": 3,
+                    "best_fitness": 0.9,
+                    "avg_fitness": 0.2,
+                    "population_size": 50,
+                },
+            },
+        ))
+
+        nb.add_entry(ExperimentEntry(
+            entry_type="live_feed",
+            experiment_id=newer_exp,
+            title="Novelty generation 1/3",
+            content="Gen 1/3: best_fit=0.500, archive=10, novelty=0.600",
+            metadata={
+                "live_feed_type": "nov_gen",
+                "payload": {
+                    "experiment_id": newer_exp,
+                    "generation": 1,
+                    "total_generations": 3,
+                    "best_fitness": 0.5,
+                    "avg_fitness": 0.1,
+                    "archive_size": 10,
+                    "best_novelty": 0.6,
+                },
+            },
+        ))
+        nb.close()
+
+        r = self.client.get("/api/live-feed?n=200")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsInstance(data, list)
+        self.assertGreaterEqual(len(data), 1)
+
+        experiment_ids = {
+            e.get("experiment_id")
+            for e in data
+            if e.get("experiment_id")
+        }
+        self.assertIn(newer_exp, experiment_ids)
+        self.assertNotIn(older_exp, experiment_ids)
+
     def test_api_leaderboard(self):
         r = self.client.get("/api/leaderboard")
         self.assertEqual(r.status_code, 200)
@@ -2561,8 +2618,12 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertTrue(data.get("execution_first_mode"))
         self.assertTrue(data.get("brief_mode"))
-        self.assertIn("Spawned agent", data.get("reply", ""))
-        self.assertIsNotNone(data.get("agent_task"))
+        # Specific fix request: runs diagnosis and may spawn agent with enriched goal
+        reply = data.get("reply", "")
+        self.assertTrue(
+            "Diagnosed" in reply or "diagnostics" in reply or "agent" in reply.lower(),
+            f"Expected diagnosis-based reply, got: {reply}",
+        )
 
     def test_api_aria_chat_needed_to_fix_phrase_triggers_execution_first(self):
         r = self.client.post(
@@ -2575,7 +2636,11 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertTrue(data.get("execution_first_mode"))
-        self.assertIn("Spawned agent", data.get("reply", ""))
+        reply = data.get("reply", "")
+        self.assertTrue(
+            "Diagnosed" in reply or "diagnostics" in reply or "agent" in reply.lower(),
+            f"Expected diagnosis-based reply, got: {reply}",
+        )
 
     def test_api_aria_chat_summary_request_uses_summary_format(self):
         r = self.client.post(
@@ -4516,6 +4581,7 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/aria/agent/status/",
             "/api/aria/agent/spawn",
             "/api/aria/tools",
+            "/api/aria/diagnose",
         }
 
         for filepath in self.component_files:
@@ -4585,6 +4651,13 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("sanitizeBriefingText", content)
         self.assertIn("details sent to local agent", content)
 
+    def test_aria_status_sanitizes_hypothesis_summary(self):
+        status_path = os.path.join(self.component_dir, "AriaStatus.js")
+        content = self._read_file(status_path)
+        self.assertIn("sanitizeHypothesisText", content)
+        self.assertIn("summarizedHypothesis", content)
+        self.assertNotIn('{aria.current_hypothesis}', content)
+
     def test_tab_names_match_content(self):
         """All tab names in App.js should have corresponding content blocks."""
         app_content = self._read_file(self.app_js)
@@ -4639,6 +4712,15 @@ class TestDashboardConsistency(unittest.TestCase):
                 content,
                 f"LiveFeed.js missing handler for SSE event: {event}",
             )
+
+    def test_live_feed_filters_non_renderable_events_to_avoid_blank_rows(self):
+        livefeed_path = os.path.join(self.component_dir, "LiveFeed.js")
+        content = self._read_file(livefeed_path)
+        self.assertIn("RENDERABLE_EVENT_TYPES", content)
+        self.assertIn("normalizeLiveFeedEvent", content)
+        self.assertIn("if (!RENDERABLE_EVENT_TYPES.has(normalizedType)) return null;", content)
+        self.assertIn("annotateGenerationHistory", content)
+        self.assertIn("not in current feed history", content)
 
     def test_frontend_api_routes_exist_in_backend(self):
         """All frontend /api paths should map to a backend Flask route."""

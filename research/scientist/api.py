@@ -408,6 +408,9 @@ def _chat_requests_self_fix_now(question: str) -> bool:
         "fix yourself", "fix itself", "fix this yourself", "fix this itself",
         "spin off agents and fix", "spawn agents and fix", "check and fix yourself",
         "can you fix yourself", "fix your own codebase",
+        "fix what's wrong", "fix what is wrong", "fix whats wrong",
+        "what's wrong with you", "what is wrong with you",
+        "diagnose yourself", "diagnose and fix", "diagnose & fix",
     )
     return any(trigger in lowered for trigger in triggers)
 
@@ -441,6 +444,98 @@ def _chat_requests_detailed_response(question: str) -> bool:
         "why this happened", "show reasoning",
     )
     return any(trigger in lowered for trigger in triggers)
+
+
+def _diagnose_research_issues(analytics_data: Dict, nb) -> List[Dict[str, Any]]:
+    """Rule-based diagnosis using analytics data. Returns list of issues with fix actions."""
+    issues: List[Dict[str, Any]] = []
+    if not analytics_data:
+        return issues
+
+    # 1. Sparsity coverage < 15%
+    sparse_cov = analytics_data.get("sparse_coverage")
+    if isinstance(sparse_cov, (int, float)) and sparse_cov < 15:
+        issues.append({
+            "issue": f"Sparsity coverage at {sparse_cov:.1f}% (under 15% target)",
+            "action_type": "config_fix",
+            "config_fix": {"type": "adjust_config", "changes": {
+                "model_source": "morphological_box",
+                "use_synthesized_training": True,
+            }},
+        })
+
+    # 2. Compression coverage < 20%
+    comp_cov = analytics_data.get("compression_coverage")
+    if isinstance(comp_cov, (int, float)) and comp_cov < 20:
+        issues.append({
+            "issue": f"Compression coverage at {comp_cov:.1f}% (under 20% target)",
+            "action_type": "config_fix",
+            "config_fix": {"type": "adjust_config", "changes": {
+                "morph_ratio": 0.85,
+                "math_space_weight": 2.5,
+            }},
+        })
+
+    # 3. Zero S1 survivors in last 5 experiments
+    try:
+        recent_exps = nb.get_recent_experiments(5)
+        if recent_exps and all(
+            (exp.get("n_stage1_passed") or 0) == 0 for exp in recent_exps
+        ):
+            issues.append({
+                "issue": f"Zero S1 survivors in last {len(recent_exps)} experiments",
+                "action_type": "config_fix",
+                "config_fix": {"type": "adjust_config", "changes": {
+                    "max_depth": 2,
+                    "max_ops": 5,
+                    "residual_prob": 0.85,
+                }},
+            })
+    except Exception:
+        pass
+
+    # 4. Dominant failure pattern (zero_grad > 20 occurrences)
+    failure_patterns = analytics_data.get("failure_patterns")
+    if isinstance(failure_patterns, dict):
+        zero_grad_count = failure_patterns.get("zero_grad", 0)
+        if isinstance(zero_grad_count, (int, float)) and zero_grad_count > 20:
+            issues.append({
+                "issue": f"Dominant zero_grad failures ({int(zero_grad_count)} occurrences)",
+                "action_type": "config_fix",
+                "config_fix": {"type": "adjust_config", "changes": {
+                    "residual_prob": 0.9,
+                    "max_depth": 3,
+                }},
+            })
+
+    # 5. Grammar weight drift (any category > 3x default)
+    grammar_weights = analytics_data.get("grammar_weights")
+    default_weights = analytics_data.get("default_weights")
+    if isinstance(grammar_weights, dict) and isinstance(default_weights, dict):
+        drifted = {}
+        for cat, w in grammar_weights.items():
+            default_w = default_weights.get(cat)
+            if isinstance(w, (int, float)) and isinstance(default_w, (int, float)) and default_w > 0:
+                if w > 3 * default_w:
+                    drifted[cat] = round(default_w * 1.5, 2)
+        if drifted:
+            issues.append({
+                "issue": f"Grammar weight drift in {len(drifted)} categories (>3x default)",
+                "action_type": "grammar_fix",
+                "config_fix": {"type": "adjust_grammar", "weights": drifted},
+            })
+
+    # 6. Anti-patterns from negative results (info only)
+    neg_results = analytics_data.get("negative_results")
+    if isinstance(neg_results, list) and neg_results:
+        patterns = [str(r.get("pattern") or r) for r in neg_results[:3] if r]
+        if patterns:
+            issues.append({
+                "issue": f"Anti-patterns detected: {'; '.join(patterns)[:120]}",
+                "action_type": "info",
+            })
+
+    return issues
 
 
 def _format_simple_answer_action_plan(text: str) -> str:
@@ -3076,16 +3171,39 @@ def create_app(
         n = request.args.get("n", 100, type=int)
         nb = LabNotebook(notebook_path)
         try:
+            query_limit = max(n, 1000)
             entries = nb.get_entries(
                 experiment_id=exp_id,
                 entry_type="live_feed",
-                limit=n,
+                limit=query_limit,
             )
+
+            # Default behavior should show a coherent experiment stream.
+            # Without this, mixed cross-experiment rows can look like broken
+            # generation timelines (e.g., Gen 3 -> Gen 13 with unrelated runs).
+            if not exp_id:
+                latest_exp_id = next(
+                    (
+                        entry.get("experiment_id")
+                        for entry in entries
+                        if entry.get("experiment_id")
+                    ),
+                    None,
+                )
+                if latest_exp_id:
+                    entries = [
+                        entry
+                        for entry in entries
+                        if entry.get("experiment_id") == latest_exp_id
+                    ]
+
             events = []
             for entry in reversed(entries):
                 evt = _entry_to_live_feed_event(entry)
                 if evt is not None:
                     events.append(evt)
+            if len(events) > n:
+                events = events[-n:]
             return jsonify(events)
         except Exception as e:
             logger.error(f"Error in /api/live-feed: {e}")
@@ -5173,6 +5291,60 @@ def create_app(
             return jsonify({"error": "task not found"}), 404
         return jsonify({"ok": True, "task": task})
 
+    @app.route("/api/aria/diagnose", methods=["POST"])
+    def api_aria_diagnose():
+        """Run Aria's self-diagnosis: gather analytics, identify issues, apply fixes."""
+        runner = _get_runner(notebook_path)
+        nb = LabNotebook(notebook_path)
+        try:
+            analytics_data = {}
+            try:
+                analytics_data = runner._gather_analytics_data(nb)
+            except Exception as exc:
+                logger.debug(f"Analytics gather failed during diagnosis: {exc}")
+
+            diagnosed_issues = _diagnose_research_issues(analytics_data, nb)
+            actions_applied: List[Dict[str, Any]] = []
+
+            for issue in diagnosed_issues:
+                cfg_fix = issue.get("config_fix")
+                if cfg_fix and issue.get("action_type") in ("config_fix", "grammar_fix"):
+                    try:
+                        result = runner.execute_chat_action(cfg_fix, nb)
+                        if result.get("status") == "applied":
+                            applied_keys = list((result.get("changes") or result.get("weights") or {}).keys())
+                            actions_applied.append({
+                                "issue": issue["issue"],
+                                "action_type": issue["action_type"],
+                                "keys_applied": applied_keys,
+                            })
+                    except Exception as exc:
+                        logger.debug(f"Diagnosis config fix failed: {exc}")
+
+            return jsonify({
+                "ok": True,
+                "issues_found": len(diagnosed_issues),
+                "issues": [
+                    {
+                        "issue": i["issue"],
+                        "action_type": i.get("action_type", "info"),
+                        "fixed": i["issue"] in [a["issue"] for a in actions_applied],
+                    }
+                    for i in diagnosed_issues
+                ],
+                "actions_applied": actions_applied,
+                "summary": (
+                    f"Found {len(diagnosed_issues)} issue(s), applied {len(actions_applied)} fix(es)."
+                    if diagnosed_issues
+                    else "No issues found in current analytics."
+                ),
+            })
+        except Exception as e:
+            logger.error(f"Diagnosis failed: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/aria/chat", methods=["POST"])
     def api_aria_chat():
         """Interactive Aria chat response grounded in current research context."""
@@ -5224,23 +5396,67 @@ def create_app(
             if not question:
                 return jsonify({"error": "message is required"}), 400
 
-            if fix_request:
-                try:
-                    code_agent_task = _spawn_code_agent_task(
-                        goal=question,
-                        notebook_path=notebook_path,
-                        allow_write=allow_code_writes,
-                        session_id=session_id,
-                    )
-                except Exception as exc:
-                    logger.warning(f"Unable to spawn codebase agent from chat: {exc}")
-
             if execution_first_mode:
-                if code_agent_task:
+                # Diagnose → Act → Report instead of blindly spawning agents
+                analytics_data = {}
+                try:
+                    analytics_data = runner._gather_analytics_data(nb)
+                except Exception as exc:
+                    logger.debug(f"Analytics gather failed during diagnosis: {exc}")
+
+                diagnosed_issues = _diagnose_research_issues(analytics_data, nb)
+                actions_taken: List[str] = []
+                config_keys_applied: List[str] = []
+
+                # Apply config/grammar fixes directly
+                for issue in diagnosed_issues:
+                    cfg_fix = issue.get("config_fix")
+                    if cfg_fix and issue.get("action_type") in ("config_fix", "grammar_fix"):
+                        try:
+                            result = runner.execute_chat_action(cfg_fix, nb)
+                            if result.get("status") == "applied":
+                                applied = result.get("changes") or result.get("weights") or {}
+                                config_keys_applied.extend(applied.keys())
+                                actions_taken.append(issue["issue"])
+                        except Exception as exc:
+                            logger.debug(f"Config fix failed: {exc}")
+
+                # Decide whether to spawn an agent
+                is_vague = self_fix_now  # "fix yourself", "fix what's wrong", etc.
+                if not is_vague and fix_request:
+                    # Specific fix request — spawn agent with enriched goal
+                    diag_context = "; ".join(i["issue"] for i in diagnosed_issues) if diagnosed_issues else "No issues diagnosed"
+                    enriched_goal = f"{question}\n\nDiagnosis context: {diag_context}"
+                    try:
+                        code_agent_task = _spawn_code_agent_task(
+                            goal=enriched_goal,
+                            notebook_path=notebook_path,
+                            allow_write=allow_code_writes,
+                            session_id=session_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(f"Unable to spawn codebase agent from chat: {exc}")
+
+                # Build reply
+                if diagnosed_issues:
+                    reply_parts = []
+                    for issue in diagnosed_issues:
+                        if issue.get("action_type") == "info":
+                            reply_parts.append(issue["issue"] + ".")
+                        elif issue["issue"] in actions_taken:
+                            reply_parts.append(f"Diagnosed: {issue['issue']}. Applied config fix ({', '.join(issue.get('config_fix', {}).get('changes', issue.get('config_fix', {}).get('weights', {})).keys())}).")
+                        else:
+                            reply_parts.append(f"Diagnosed: {issue['issue']}.")
+                    if code_agent_task:
+                        task_id = code_agent_task.get("task_id")
+                        reply_parts.append(f"Agent `{task_id}` working on the code-level fix.")
+                    concise_reply = " ".join(reply_parts)
+                elif code_agent_task:
                     task_id = code_agent_task.get("task_id")
-                    concise_reply = f"Spawned agent `{task_id}` — will report back when done."
+                    concise_reply = f"No config issues found. Spawned agent `{task_id}` to investigate."
                 else:
-                    concise_reply = "Couldn't start agent right now. Retry in a few seconds."
+                    concise_reply = "Ran diagnostics — no actionable issues found in current analytics."
+
                 if session_id:
                     try:
                         nb.save_chat_message(
@@ -5254,12 +5470,12 @@ def create_app(
                 return jsonify({
                     "reply": concise_reply,
                     "ai_powered": False,
-                    "used_context": False,
+                    "used_context": True,
                     "fallback_reason": None,
                     "brief_mode": True,
                     "execution_first_mode": True,
                     "agent_task": code_agent_task,
-                    "actions_taken": [],
+                    "actions_taken": actions_taken,
                     "local_tools_used": [],
                     "local_code_hits": [],
                 })

@@ -679,7 +679,9 @@ class ExperimentAnalytics:
             se = math.sqrt(s1_rate * (1 - s1_rate) / n) if n > 0 and 0 < s1_rate < 1 else 0.0
             effect = abs(s1_rate - mean_s1)
             if se > 0 and effect < se:
-                weights[cat] = default_weights.get(cat, 1.0)
+                default = default_weights.get(cat, 1.0)
+                tentative = default * (relative ** 2)
+                weights[cat] = round(0.5 * tentative + 0.5 * default, 2)
                 continue
 
             amplified = relative ** 2
@@ -803,11 +805,20 @@ class ExperimentAnalytics:
         }
         return op_rates, diagnostics
 
-    def compute_grammar_weights(self) -> Optional[Dict[str, float]]:
+    def compute_grammar_weights(
+        self,
+        last_applied: Optional[Dict[str, float]] = None,
+        alpha: float = 0.6,
+    ) -> Optional[Dict[str, float]]:
         """Compute learned category weights from historical success data.
 
         Uses the aggregate op_success_rates table. For holdout validation
         of the learned weights, call ``holdout_validation()`` separately.
+
+        Args:
+            last_applied: Previous effective weights for EMA blending.
+                When None (first run, tests), no blending is applied.
+            alpha: EMA weight for new signal vs last_applied (default 0.6).
 
         Returns a dict of category -> weight, or None if insufficient data.
         """
@@ -839,6 +850,12 @@ class ExperimentAnalytics:
             return None
 
         learned = self._compute_weights_from_stats(cat_stats)
+        if learned and last_applied:
+            for cat in learned:
+                if cat in last_applied:
+                    learned[cat] = round(
+                        alpha * learned[cat] + (1 - alpha) * last_applied[cat], 2
+                    )
         self._last_grammar_weight_diagnostics = {
             "mode": weighting_mode,
             "insufficient_op_coverage": False,

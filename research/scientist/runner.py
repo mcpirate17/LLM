@@ -687,6 +687,21 @@ class ExperimentRunner:
             "last_transition_ts": time.time(),
         }
         self._grammar_weight_overrides: Dict[str, float] = {}
+        try:
+            row = self.notebook.conn.execute(
+                "SELECT evidence FROM learning_log "
+                "WHERE event_type='chat_grammar_overrides_applied' "
+                "ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                import json as _json
+                meta = _json.loads(row[0])
+                overrides = meta.get("overrides") if isinstance(meta, dict) else None
+                if isinstance(overrides, dict) and overrides:
+                    self._grammar_weight_overrides = overrides
+                    logger.info("Restored grammar weight overrides from DB: %s", overrides)
+        except Exception:
+            pass  # Non-critical: start with empty overrides
 
         self._recover_stale_experiments_on_startup()
 
@@ -1616,21 +1631,29 @@ class ExperimentRunner:
         if ".." in path:
             return {"status": "error", "error": "Path traversal (..) not allowed"}
 
-        # Safety: must be under research/
-        if not path.startswith("research/"):
-            # Also accept paths relative to project root that start with scientist/, etc.
-            if not any(path.startswith(p) for p in ("scientist/", "synthesis/", "eval/",
-                                                      "search/", "training/", "dashboard/")):
-                return {"status": "error", "error": "Path must be under research/"}
-            path = f"research/{path}"
+        # Safety: allow edits only within known project subpaths
+        allowed_prefixes = (
+            "research/",
+            "scientist/", "synthesis/", "eval/", "search/", "training/",
+            "dashboard/", "tests/", "tools/", "mathspaces/",
+        )
+        if not any(path.startswith(prefix) for prefix in allowed_prefixes):
+            return {"status": "error", "error": "Path must be under research/ or a known project folder"}
 
         # Safety: only .py and .js files
         if not (path.endswith(".py") or path.endswith(".js")):
             return {"status": "error", "error": "Only .py and .js files can be edited"}
 
-        # Resolve to absolute path
+        # Resolve to absolute path.
+        # project_root is typically <repo>/research when running from the package layout.
+        # If the incoming path already starts with research/, resolve from repo root;
+        # otherwise resolve from project_root directly.
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        abs_path = os.path.normpath(os.path.join(project_root, path))
+        repo_root = os.path.dirname(project_root)
+        if path.startswith("research/"):
+            abs_path = os.path.normpath(os.path.join(repo_root, path))
+        else:
+            abs_path = os.path.normpath(os.path.join(project_root, path))
 
         # Double-check resolved path is under project
         if not abs_path.startswith(project_root):
@@ -2254,6 +2277,13 @@ class ExperimentRunner:
 
             # Update op success rates after experiment
             nb.update_op_success_rates(exp_id)
+
+            # Save effective weights + S1 outcome for EMA continuity
+            applied_w = results.get("applied_grammar_weights")
+            total = results.get("total", 0)
+            if applied_w and total > 0:
+                s1_rate = results.get("stage1_passed", 0) / total
+                nb.save_effective_weights(applied_w, s1_rate, exp_id)
 
             # Auto-recommend next experiment
             self._auto_recommend(results, config, hypothesis, nb)
@@ -4770,7 +4800,11 @@ class ExperimentRunner:
             try:
                 from .analytics import ExperimentAnalytics
                 analytics = ExperimentAnalytics(nb)
-                grammar_weights = analytics.compute_grammar_weights()
+                last_effective = nb.load_last_effective_weights()
+                last_weights = last_effective[0] if last_effective else None
+                grammar_weights = analytics.compute_grammar_weights(
+                    last_applied=last_weights, alpha=0.6
+                )
             except Exception as e:
                 logger.warning("Failed computing learned grammar weights for %s: %s", exp_id, e)
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
+import useRenderPerf from '../hooks/useRenderPerf';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -49,6 +50,22 @@ function fallbackReasonLabel(reason) {
     return `LLM error: ${detail || 'unknown'}`;
   }
   return String(reason);
+}
+
+function sanitizeBriefingText(text) {
+  const raw = String(text || '');
+  if (!raw.trim()) return '';
+  return raw
+    .replace(/```(?!action\b)[\s\S]*?```/gi, '[details sent to local agent]')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function summarizeBriefingText(text, maxChars = 320) {
+  const cleaned = sanitizeBriefingText(text);
+  if (!cleaned) return '';
+  if (cleaned.length <= maxChars) return cleaned;
+  return `${cleaned.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
 /**
@@ -225,6 +242,8 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
 }
 
 function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRunning, autonomousMode, onStartAutonomous, onStopAutonomous, onStrategyChange, onNavigateEvidence, onOpenAdvancedPanel }) {
+  useRenderPerf('StrategyAdvisor');
+
   const [leaderboard, setLeaderboard] = useState(null);
   const [mathCoverage, setMathCoverage] = useState(null);
   const [learningTrend, setLearningTrend] = useState(null);
@@ -236,6 +255,8 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
   const [showLimits, setShowLimits] = useState(false);
   const [autoMaxExperiments, setAutoMaxExperiments] = useState(20);
   const [autoMaxMinutes, setAutoMaxMinutes] = useState(60);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagResult, setDiagResult] = useState(null);
 
   const fetchData = useCallback(async (justCompletedId) => {
     try {
@@ -319,6 +340,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
   const hasBriefing = briefing && briefing.briefing;
   const isAiPowered = briefing?.ai_powered === true;
   const suggestedConfig = briefing?.suggested_config;
+  const briefingSummary = hasBriefing ? summarizeBriefingText(briefing.briefing) : '';
 
   // Action button config: prefer suggested_config from briefing, fall back to strategy
   const briefingAction = briefing?.action;
@@ -335,6 +357,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
         ? ACTION_CONFIGS[briefingAction]
         : strategy.action);
   const isNavigateAction = !actionConfig || briefingAction === 'export_breakthrough' || briefingAction === 'monitor_validation';
+  const isActionable = Boolean(actionConfig) && !isNavigateAction;
 
   // Action button label
   const actionLabel = briefing?.action_label || strategy.title;
@@ -410,6 +433,27 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
         strategy,
       });
     }
+  };
+
+  const handleDiagnose = async () => {
+    setDiagnosing(true);
+    setDiagResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/aria/diagnose`, { method: 'POST' });
+      if (res.ok) {
+        const result = await res.json();
+        setDiagResult(result);
+        // Refresh briefing data after fixes applied
+        if (result.actions_applied && result.actions_applied.length > 0) {
+          setTimeout(() => fetchData(), 1500);
+        }
+      } else {
+        setDiagResult({ error: 'Diagnosis request failed' });
+      }
+    } catch {
+      setDiagResult({ error: 'Could not reach server' });
+    }
+    setDiagnosing(false);
   };
 
   // Navigate-action label for breakthrough/validation
@@ -517,7 +561,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
             Aria is analyzing the latest results...
           </div>
         ) : hasBriefing ? (
-          briefing.briefing
+          briefingSummary || 'No concise summary available.'
         ) : (
           <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
             No briefing data available. Run an experiment to get started.
@@ -539,6 +583,16 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
               padding: '1px 6px',
             }}>
               Recommended Action
+            </span>
+            <span style={{
+              fontSize: 9, fontWeight: 700, textTransform: 'uppercase',
+              color: isActionable ? 'var(--accent-green)' : 'var(--accent-yellow)',
+              background: isActionable ? 'rgba(63, 185, 80, 0.16)' : 'rgba(210, 153, 34, 0.16)',
+              border: `1px solid ${isActionable ? 'var(--accent-green)' : 'var(--accent-yellow)'}`,
+              borderRadius: 4,
+              padding: '1px 5px',
+            }}>
+              {isActionable ? 'Actionable' : 'Advice only'}
             </span>
             {briefing?.confidence != null && isAiPowered && (
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
@@ -725,6 +779,59 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Diagnose & Fix button */}
+      <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          className="strategy-apply-btn"
+          onClick={handleDiagnose}
+          disabled={diagnosing}
+          style={{
+            background: 'var(--accent-yellow)',
+            color: '#000',
+            fontWeight: 600,
+            fontSize: 12,
+            padding: '5px 12px',
+            opacity: diagnosing ? 0.7 : 1,
+          }}
+        >
+          {diagnosing ? 'Diagnosing...' : 'Diagnose & Fix'}
+        </button>
+        {diagResult && !diagResult.error && (
+          <span style={{ fontSize: 11, color: diagResult.actions_applied?.length > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+            {diagResult.summary}
+          </span>
+        )}
+        {diagResult?.error && (
+          <span style={{ fontSize: 11, color: 'var(--accent-red, #e74c3c)' }}>
+            {diagResult.error}
+          </span>
+        )}
+      </div>
+      {diagResult && diagResult.issues && diagResult.issues.length > 0 && (
+        <div style={{
+          marginTop: 6,
+          padding: '6px 10px',
+          borderRadius: 6,
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border)',
+          fontSize: 11,
+          lineHeight: 1.6,
+        }}>
+          {diagResult.issues.map((issue, i) => (
+            <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <span style={{ color: issue.fixed ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                {issue.fixed ? '\u2713' : '\u2022'}
+              </span>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                {issue.issue}
+                {issue.fixed && <span style={{ color: 'var(--accent-green)', marginLeft: 4 }}>(fixed)</span>}
+                {issue.action_type === 'info' && <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>(info)</span>}
+              </span>
+            </div>
+          ))}
         </div>
       )}
 

@@ -20,6 +20,8 @@ Provide 3-5 specific, actionable insights about:
 
 Be specific — reference actual pass rates, error types, and architectural patterns. Keep each insight to 1-2 sentences."""
 
+HYPOTHESIS_SYSTEM_PROMPT = """You are Dr. Aria Nexus, an AI research scientist. You are formulating a scientific hypothesis based on experimental data. Write in plain English like a scientist writing in a lab notebook. Never include code, commands, or technical implementation details — only the hypothesis and reasoning."""
+
 HYPOTHESIS_PROMPT = """\
 Based on the recent experimental history, formulate a specific, testable hypothesis for the next experiment.
 
@@ -31,7 +33,7 @@ Your hypothesis should:
 - Be falsifiable within one experiment run
 - Follow the format: "Hypothesis: [specific prediction] because [reasoning from data]"
 
-One hypothesis only, 2-3 sentences max."""
+One hypothesis only, 2-3 sentences max. Plain English with specific numbers only — no code."""
 
 SUMMARY_PROMPT = """\
 Write a concise experiment summary for the lab notebook.
@@ -70,7 +72,8 @@ Consider:
 - Whether to focus on exploitation (refining what works) or exploration (trying new combinations)
 - Specific parameter adjustments to try
 
-Give 3-4 concrete recommendations, each 1-2 sentences. Prioritize by expected impact."""
+Give 3-4 concrete recommendations, each 1-2 sentences. Prioritize by expected impact.
+Write as a scientific analysis. No code blocks, no Python, no shell commands. Reference specific numbers from the data."""
 
 SUGGESTION_PROMPT = """\
 Based on the full experimental data below, suggest a specific experiment configuration.
@@ -80,17 +83,19 @@ Based on the full experimental data below, suggest a specific experiment configu
 You must:
 - Identify the most promising direction based on op success rates, structural correlations, and past results
 - Suggest concrete parameter changes (n_programs, model_dim, max_depth, max_ops, math_space_weight, etc.)
-- If you detect code errors, bugs, or recurring failures in the data, mention them explicitly with file paths
+- If you detect recurring failures in the data, describe the pattern and what config change addresses it
 - Explain WHY each change is warranted by the data
 - Rate your confidence (0-1) in this recommendation
 
-Return your response in this exact format:
-REASONING: [2-3 sentences. If there are code bugs causing failures, say "error in <file.py>: <description>"]
+Return your response in EXACTLY this format (no other text, no code):
+REASONING: [2-3 sentences analyzing the data and recommending changes]
 CONFIDENCE: [0.0-1.0]
 CONFIG:
 ```json
 {{"n_programs": 50, "model_dim": 256, "max_depth": 10, "max_ops": 16, "math_space_weight": 2.0, "residual_prob": 0.7}}
-```"""
+```
+
+RULES: No Python code. No shell commands. No code blocks except the CONFIG json above. Describe findings in plain English."""
 
 VALIDATION_PROMPT = """\
 Evaluate whether the following hypothesis was confirmed or refuted by the experiment results.
@@ -297,34 +302,37 @@ TITLE: [concise campaign title, max 10 words]
 OBJECTIVE: [what are we trying to discover/prove, 1-2 sentences]
 SUCCESS_CRITERIA: [measurable criteria for "done", e.g. "find 3 architectures with loss_ratio < 0.4"]"""
 
+BRIEFING_SYSTEM_PROMPT = """You are Dr. Aria Nexus, an AI research scientist. You are writing a STATUS REPORT for a dashboard display panel. You are NOT executing code or taking actions — you are ANALYZING data and RECOMMENDING what experiment to run next. Your output is displayed as read-only text in a web UI. Write like a scientist reporting findings, not like an agent executing tasks. Never use phrases like "Let me", "I'll now", "Running", or "Fixing" — instead say "Recommend", "Data shows", "Next step should be". Never include code of any kind."""
+
 BRIEFING_PROMPT = """\
-You are the AI scientist. Be BRIEF and ACTION-ORIENTED. No essays.
+Produce exactly TWO things from this research data:
 
-Produce exactly TWO things:
+1. BRIEFING: 2-3 sentences MAX. Cite specific experiment IDs, S1 rates, loss ratios. State what the data shows and what experiment to run next.
 
-1. BRIEFING: 2-3 sentences MAX. Cite specific experiment IDs, S1 rates, loss ratios. What changed, what it means, what to do.
-
-2. SUGGESTED_ACTION: A concrete experiment to run RIGHT NOW.
+2. SUGGESTED_ACTION: The specific experiment configuration to recommend.
 
 {context}
 
 If sparsity coverage < 15%, RECOMMEND sparse-focused experiment (model_source="morphological_box", use_synthesized_training=true).
 
-Return EXACTLY this format:
+Return EXACTLY this format (no other text, no code, no markdown):
 
-BRIEFING: [2-3 sentences with specific numbers]
+BRIEFING: [2-3 sentences with specific numbers from the data]
 
 SUGGESTED_ACTION:
 MODE: [one of: continuous, evolve, novelty, investigation, validation, scale_up]
-HYPOTHESIS: [specific testable hypothesis]
-REASONING: [1 sentence]
+HYPOTHESIS: [specific testable hypothesis in plain English]
+REASONING: [1 sentence explaining why]
 CONFIDENCE: [0.0-1.0]
 CONFIG:
 ```json
 {{"n_programs": 50, "model_dim": 256, "max_depth": 10, "max_ops": 16, "math_space_weight": 2.0, "model_source": "mixed"}}
 ```
 
-Be specific. Reference experiment IDs and numbers. No generic advice. No filler text."""
+RULES:
+- Reference experiment IDs and specific numbers. No generic advice.
+- ZERO code blocks except the CONFIG json above. No Python. No shell commands.
+- You are REPORTING, not EXECUTING. Describe findings, recommend actions."""
 
 BREAKTHROUGH_ANNOUNCEMENT_PROMPT = """\
 A candidate has passed all three phases of validation and achieved breakthrough status.
@@ -350,6 +358,9 @@ RULES:
 4. If the user reports a problem: spawn_agent FIRST, explain SECOND.
 5. If you see stagnation, bad config, failing experiments: FIX IT with action blocks, don't just report it.
 6. NEVER say "you could try X" or "consider doing Y" — instead, DO X by emitting an action block.
+7. NEVER output pseudo-code execution snippets (e.g., python blocks with fake function calls). The ONLY allowed code fence is ```action with valid JSON.
+8. If no safe executable action is available, respond with exactly one short line prefixed by "advice_only:" and no code fences.
+9. Keep chat text summary-only. Detailed implementation plans belong to spawned local agents, not chat.
 
 Current research context:
 {context}
@@ -384,7 +395,7 @@ ACTION BLOCKS — include one or more in your response:
 ```
 
 For complex or multi-file investigations, ALWAYS use spawn_agent — it uses local Ollama models (cheap, fast) before falling back to the primary LLM. This saves money and is faster.
-Respond with actions first, brief explanation second. No fluff."""
+Respond with actions first, brief explanation second. No fluff. Never include fake executable Python/JS examples."""
 
 CHAT_COMPACTION_PROMPT = """\
 Summarize the following chat conversation between a user and Dr. Aria Nexus (AI research scientist).

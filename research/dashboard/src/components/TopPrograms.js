@@ -4,6 +4,7 @@ import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
 import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
 import { programScore, programScoreBreakdown } from '../utils/scores';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+import useRenderPerf from '../hooks/useRenderPerf';
 
 const TOP_PROGRAMS_SORT_KEY = 'aria_top_programs_sort_v1';
 
@@ -89,6 +90,8 @@ const COLUMNS_COMPACT = [
 ];
 
 function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAdd, onQueueRemove, queuedResultIds, eligibilityByResultId }) {
+  useRenderPerf(compact ? 'TopPrograms(compact)' : 'TopPrograms');
+
   const [sortKey, setSortKey] = useState(() => {
     try {
       if (typeof window === 'undefined') return 'score';

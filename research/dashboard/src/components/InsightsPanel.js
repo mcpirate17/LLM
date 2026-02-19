@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import { confidenceColor } from '../utils/colors';
+import useRenderPerf from '../hooks/useRenderPerf';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -194,6 +195,8 @@ function NegativeResultsSection() {
 }
 
 function InsightsPanel({ insights, compact }) {
+  useRenderPerf(compact ? 'InsightsPanel(compact)' : 'InsightsPanel');
+
   const [sortKey, setSortKey] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(INSIGHTS_SORT_PREFS_KEY) || '{}');

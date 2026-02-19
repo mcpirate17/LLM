@@ -277,12 +277,12 @@ class Aria:
         llm = self._get_llm()
         if llm and context and not self._continuous_mode:
             try:
-                from .llm.prompts import SYSTEM_PROMPT, HYPOTHESIS_PROMPT
+                from .llm.prompts import HYPOTHESIS_SYSTEM_PROMPT, HYPOTHESIS_PROMPT
                 prompt = HYPOTHESIS_PROMPT.format(context=context)
-                resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=256)
+                resp = llm.generate(prompt, system=HYPOTHESIS_SYSTEM_PROMPT, max_tokens=256)
                 self._track_cost(resp)
                 if resp.text.strip():
-                    hyp = resp.text.strip()
+                    hyp = self._sanitize_hypothesis(resp.text.strip()) or resp.text.strip()
                     self.state.current_hypothesis = hyp
                     if return_metadata:
                         return hyp, {
@@ -443,11 +443,12 @@ class Aria:
             return None
 
         try:
-            from .llm.prompts import SYSTEM_PROMPT, STRATEGY_PROMPT
+            from .llm.prompts import BRIEFING_SYSTEM_PROMPT, STRATEGY_PROMPT
             prompt = STRATEGY_PROMPT.format(context=context)
-            resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1024)
+            resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
             self._track_cost(resp)
-            return resp.text.strip() if resp.text.strip() else None
+            text = resp.text.strip() if resp.text.strip() else None
+            return self._strip_code_blocks(text) if text else None
         except Exception as e:
             logger.warning(f"LLM strategy failed: {e}")
             return None
@@ -461,9 +462,9 @@ class Aria:
         llm = self._get_llm()
         if llm and context:
             try:
-                from .llm.prompts import SYSTEM_PROMPT, SUGGESTION_PROMPT
+                from .llm.prompts import BRIEFING_SYSTEM_PROMPT, SUGGESTION_PROMPT
                 prompt = SUGGESTION_PROMPT.format(context=context)
-                resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1024)
+                resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
                 self._track_cost(resp)
                 if resp.text.strip():
                     return self._parse_suggestion(resp.text.strip())
@@ -503,6 +504,9 @@ class Aria:
 
         if not result["reasoning"]:
             result["reasoning"] = text[:200]
+
+        # Strip any code blocks from reasoning text
+        result["reasoning"] = self._strip_code_blocks(result["reasoning"])
 
         return result
 
@@ -625,9 +629,9 @@ class Aria:
             return None
 
         try:
-            from .llm.prompts import SYSTEM_PROMPT, BRIEFING_PROMPT
+            from .llm.prompts import BRIEFING_SYSTEM_PROMPT, BRIEFING_PROMPT
             prompt = BRIEFING_PROMPT.format(context=context)
-            resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
+            resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=512)
             self._track_cost(resp)
             if resp.text and resp.text.strip():
                 raw_text = resp.text.strip()
@@ -715,6 +719,13 @@ class Aria:
 
         if not result.get("briefing_text") and action.get("reasoning"):
             result["briefing_text"] = action["reasoning"]
+
+        # Strip code blocks from text fields — LLM sometimes dumps Python/shell
+        result["briefing_text"] = self._strip_code_blocks(result.get("briefing_text") or "")
+        if action.get("hypothesis"):
+            action["hypothesis"] = self._strip_code_blocks(action["hypothesis"])
+        if action.get("reasoning"):
+            action["reasoning"] = self._strip_code_blocks(action["reasoning"])
 
         return result
 
@@ -1245,7 +1256,7 @@ class Aria:
             "energy": self.state.energy,
             "experiments_today": self.state.experiments_today,
             "discoveries_today": self.state.discoveries_today,
-            "current_hypothesis": self.state.current_hypothesis,
+            "current_hypothesis": self._sanitize_hypothesis(self.state.current_hypothesis),
             "research_focus": self.state.research_focus,
             "recent_insights": self.state.insights[-5:] if self.state.insights else [],
             "llm_enabled": self._get_llm() is not None,
@@ -1255,6 +1266,35 @@ class Aria:
             status["total_programs"] = db_summary.get("total_programs_evaluated", 0)
             status["stage1_survivors"] = db_summary.get("stage1_survivors", 0)
         return status
+
+    @staticmethod
+    def _sanitize_hypothesis(text: Optional[str]) -> Optional[str]:
+        """Strip code blocks and inline code from hypothesis text."""
+        if not text:
+            return text
+        import re as _re
+        cleaned = _re.sub(r"```[\s\S]*?```", "", text)
+        cleaned = _re.sub(r"`[^`]*`", "", cleaned)
+        cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+        # Truncate to reasonable length
+        if len(cleaned) > 300:
+            boundary = cleaned[:297].rfind(" ")
+            cleaned = cleaned[:boundary].rstrip(".,;:") + "..." if boundary > 150 else cleaned[:297] + "..."
+        return cleaned or None
+
+    @staticmethod
+    def _strip_code_blocks(text: str) -> str:
+        """Remove fenced code blocks and inline code from LLM output."""
+        if not text:
+            return text
+        # Remove fenced blocks (```python ... ```, ```shell ... ```, etc.)
+        # but preserve ```json blocks (used for CONFIG)
+        cleaned = re.sub(r"```(?!json\b)[a-z]*\s*\n[\s\S]*?```", "", text)
+        # Remove inline code
+        cleaned = re.sub(r"`[^`]*`", "", cleaned)
+        # Collapse whitespace
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
 
     def formulate_investigation_hypothesis(self, context: str = "") -> str:
         """Generate investigation hypothesis for promising candidates."""
