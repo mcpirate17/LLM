@@ -112,6 +112,50 @@ def _deduplicate_insights(insights: list) -> list:
     return list(seen.values())
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert values to JSON-serializable primitives for API/SSE payloads."""
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+
+    # Torch-like tensors
+    if hasattr(value, "detach") and callable(getattr(value, "detach")):
+        try:
+            tensor_like = value.detach()
+            if hasattr(tensor_like, "cpu") and callable(getattr(tensor_like, "cpu")):
+                tensor_like = tensor_like.cpu()
+            if hasattr(tensor_like, "tolist") and callable(getattr(tensor_like, "tolist")):
+                return _json_safe(tensor_like.tolist())
+            if hasattr(tensor_like, "item") and callable(getattr(tensor_like, "item")):
+                return _json_safe(tensor_like.item())
+            return str(tensor_like)
+        except Exception:
+            return str(value)
+
+    # NumPy-like arrays/scalars
+    if hasattr(value, "tolist") and callable(getattr(value, "tolist")):
+        try:
+            return _json_safe(value.tolist())
+        except Exception:
+            pass
+
+    if hasattr(value, "item") and callable(getattr(value, "item")):
+        try:
+            return _json_safe(value.item())
+        except Exception:
+            pass
+
+    return str(value)
+
+
 def _normalize_entry(entry: dict) -> dict:
     """Normalize notebook entry shape for UI consumers.
 
@@ -4351,7 +4395,7 @@ def create_app(
         def event_stream():
             while True:
                 for event in runner.get_events(timeout=sse_timeout):
-                    data = json.dumps(event["data"])
+                    data = json.dumps(_json_safe(event.get("data", {})))
                     yield f"event: {event['type']}\ndata: {data}\n\n"
                 # After timeout, check if client is still connected
                 yield f"event: keepalive\ndata: {{}}\n\n"
@@ -6274,11 +6318,21 @@ def create_app(
 
 
 class _SseLogFilter(logging.Filter):
-    """Suppress noisy werkzeug logs for the SSE /api/events endpoint."""
+    """Suppress noisy werkzeug logs for frequently-polled endpoints."""
+
+    _SUPPRESSED = (
+        "GET /api/events",
+        "GET /api/aria/cycle-status",
+        "GET /api/dashboard",
+        "GET /api/analytics/learning-trajectory",
+        "GET /api/leaderboard",
+        "GET /api/analytics/math-family-coverage",
+        "GET /static/",
+    )
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
-        if "GET /api/events" in msg:
+        if any(s in msg for s in self._SUPPRESSED):
             return False
         return True
 
@@ -6309,10 +6363,10 @@ def _setup_logging(log_dir: Optional[str] = None):
     try:
         from logging.handlers import RotatingFileHandler
         file_handler = RotatingFileHandler(
-            log_path, maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=3,
+            log_path, maxBytes=2 * 1024 * 1024,  # 2MB
+            backupCount=1,
         )
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(fmt)
         root.addHandler(file_handler)
         logger.info(f"Logging to {log_path}")
