@@ -13,7 +13,10 @@ import json
 import math
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import numpy as np
+from scipy.spatial.distance import cdist
 
 from ..synthesis.grammar import GrammarConfig
 from ..synthesis.primitives import get_primitive
@@ -565,7 +568,7 @@ class ExperimentAnalytics:
         """Analyze which graph properties correlate with Stage 1 success.
 
         Returns correlation-like scores for graph metrics vs success.
-        Single-pass accumulation for efficiency.
+        Vectorized via NumPy for high-performance orchestration.
         """
         rows = self.nb.conn.execute("""
             SELECT stage1_passed, graph_n_ops, graph_depth,
@@ -583,41 +586,23 @@ class ExperimentAnalytics:
                     "graph_n_unique_ops", "graph_uses_math_spaces",
                     "graph_uses_frequency_domain", "graph_has_gradient_path"]
 
-        # Single-pass: accumulate sums/counts per metric per group
-        acc = {m: {"s_sum": 0.0, "s_n": 0, "f_sum": 0.0, "f_n": 0,
-                    "all_sum": 0.0, "all_sq": 0.0, "all_n": 0}
-               for m in metrics}
+        data = np.array([[float(r[m] or 0) for m in metrics] for r in rows], dtype=np.float32)
+        passed = np.array([bool(r["stage1_passed"]) for r in rows], dtype=bool)
 
-        for r in rows:
-            passed = r["stage1_passed"]
-            for m in metrics:
-                val = r[m]
-                if val is None:
-                    continue
-                v = float(val)
-                a = acc[m]
-                a["all_sum"] += v
-                a["all_sq"] += v * v
-                a["all_n"] += 1
-                if passed:
-                    a["s_sum"] += v
-                    a["s_n"] += 1
-                else:
-                    a["f_sum"] += v
-                    a["f_n"] += 1
+        if not np.any(passed) or np.all(passed):
+            return {m: 0.0 for m in metrics}
+
+        success_data = data[passed]
+        fail_data = data[~passed]
+
+        avg_success = np.mean(success_data, axis=0)
+        avg_fail = np.mean(fail_data, axis=0)
+        std_all = np.std(data, axis=0)
 
         correlations = {}
-        for m in metrics:
-            a = acc[m]
-            if a["s_n"] == 0 or a["f_n"] == 0 or a["all_n"] == 0:
-                continue
-            avg_success = a["s_sum"] / a["s_n"]
-            avg_fail = a["f_sum"] / a["f_n"]
-            mean = a["all_sum"] / a["all_n"]
-            variance = a["all_sq"] / a["all_n"] - mean * mean
-            std = variance ** 0.5 if variance > 0 else 0.0
-            if std > 0:
-                correlations[m] = (avg_success - avg_fail) / std
+        for i, m in enumerate(metrics):
+            if std_all[i] > 1e-9:
+                correlations[m] = float((avg_success[i] - avg_fail[i]) / std_all[i])
             else:
                 correlations[m] = 0.0
 
@@ -805,6 +790,285 @@ class ExperimentAnalytics:
         }
         return op_rates, diagnostics
 
+    @staticmethod
+    def _wilson_interval(successes: int, total: int, z: float = 1.96) -> Tuple[float, float]:
+        """Wilson score interval for Bernoulli proportion."""
+        if total <= 0:
+            return (0.0, 0.0)
+        p = successes / total
+        z2 = z * z
+        denom = 1.0 + z2 / total
+        center = (p + z2 / (2.0 * total)) / denom
+        margin = z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * total)) / total) / denom
+        return (max(0.0, center - margin), min(1.0, center + margin))
+
+    @staticmethod
+    def _two_prop_pvalue(successes_a: int, total_a: int,
+                         successes_b: int, total_b: int) -> float:
+        """Two-sided z-test p-value for proportion difference."""
+        if total_a <= 0 or total_b <= 0:
+            return 1.0
+        p_a = successes_a / total_a
+        p_b = successes_b / total_b
+        pooled = (successes_a + successes_b) / max(total_a + total_b, 1)
+        if pooled <= 0.0 or pooled >= 1.0:
+            return 1.0
+        se = math.sqrt(pooled * (1.0 - pooled) * (1.0 / total_a + 1.0 / total_b))
+        if se <= 1e-12:
+            return 1.0
+        z = abs((p_a - p_b) / se)
+        # 2 * (1 - Phi(|z|)) expressed via erfc for determinism without scipy
+        return min(1.0, max(0.0, math.erfc(z / math.sqrt(2.0))))
+
+    @staticmethod
+    def _apply_fdr_bh(rows: List[Dict[str, Any]], p_key: str = "p_value",
+                      q_key: str = "q_value") -> List[Dict[str, Any]]:
+        """Apply Benjamini-Hochberg FDR correction in-place and return rows."""
+        indexed = []
+        for idx, row in enumerate(rows):
+            p = row.get(p_key)
+            if isinstance(p, (int, float)):
+                indexed.append((idx, float(p)))
+        m = len(indexed)
+        if m == 0:
+            return rows
+        ranked = sorted(indexed, key=lambda t: t[1])
+        q_vals = [1.0] * m
+        prev = 1.0
+        for i in range(m - 1, -1, -1):
+            rank = i + 1
+            p = ranked[i][1]
+            q = min(prev, p * m / rank)
+            q_vals[i] = q
+            prev = q
+        for i, (orig_idx, _p) in enumerate(ranked):
+            rows[orig_idx][q_key] = float(q_vals[i])
+        for row in rows:
+            row.setdefault(q_key, 1.0)
+        return rows
+
+    @staticmethod
+    def _depth_bucket(depth: Optional[int]) -> str:
+        if depth is None:
+            return "unknown"
+        d = int(depth)
+        if d <= 3:
+            return "shallow"
+        if d <= 6:
+            return "medium"
+        return "deep"
+
+    def _load_program_factor_rows(self) -> List[Dict[str, Any]]:
+        """Load per-program factors for attribution analysis."""
+        rows = self.nb.conn.execute(
+            """SELECT result_id, experiment_id, graph_json, stage1_passed,
+                      graph_depth, graph_uses_math_spaces
+               FROM program_results
+               WHERE graph_json IS NOT NULL"""
+        ).fetchall()
+        parsed: List[Dict[str, Any]] = []
+        for row in rows:
+            graph_json = row["graph_json"]
+            ops = self._extract_ops_fast(graph_json)
+            if ops is None:
+                ops = self._extract_ops_fallback(graph_json)
+            if not ops:
+                continue
+            op_set = set(ops)
+            families: Set[str] = set()
+            for op_name in op_set:
+                try:
+                    families.add(get_primitive(op_name).category.value)
+                except Exception:
+                    continue
+            parsed.append({
+                "result_id": row["result_id"],
+                "experiment_id": row["experiment_id"],
+                "stage1_passed": int(bool(row["stage1_passed"])),
+                "ops": op_set,
+                "families": families,
+                "math_space": bool(row["graph_uses_math_spaces"]),
+                "depth_bucket": self._depth_bucket(row["graph_depth"]),
+            })
+        parsed.sort(key=lambda r: (str(r["experiment_id"]), str(r["result_id"])))
+        return parsed
+
+    def _factor_success_stats(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Compute per-factor success rates, uncertainty, and p-values."""
+        total_n = len(rows)
+        if total_n <= 1:
+            return []
+        total_s = sum(r["stage1_passed"] for r in rows)
+
+        factors: Dict[Tuple[str, str], List[int]] = defaultdict(list)
+        for idx, row in enumerate(rows):
+            for op_name in row["ops"]:
+                factors[("op", op_name)].append(idx)
+            for fam in row["families"]:
+                factors[("family", fam)].append(idx)
+            factors[("math_space", "enabled" if row["math_space"] else "disabled")].append(idx)
+            factors[("depth_bucket", row["depth_bucket"])].append(idx)
+
+        out: List[Dict[str, Any]] = []
+        for (factor_type, factor_name), indices in sorted(factors.items()):
+            with_n = len(indices)
+            without_n = total_n - with_n
+            if with_n <= 0 or without_n <= 0:
+                continue
+            with_s = sum(rows[i]["stage1_passed"] for i in indices)
+            without_s = total_s - with_s
+            with_rate = with_s / with_n
+            without_rate = without_s / without_n
+            ci_low, ci_high = self._wilson_interval(with_s, with_n)
+            p_val = self._two_prop_pvalue(with_s, with_n, without_s, without_n)
+            out.append({
+                "factor_type": factor_type,
+                "factor_name": factor_name,
+                "n_with": with_n,
+                "n_without": without_n,
+                "success_with": with_s,
+                "success_without": without_s,
+                "rate_with": with_rate,
+                "rate_without": without_rate,
+                "delta_rate": with_rate - without_rate,
+                "ci_with_low": ci_low,
+                "ci_with_high": ci_high,
+                "p_value": p_val,
+            })
+        self._apply_fdr_bh(out, p_key="p_value", q_key="q_value")
+        out.sort(key=lambda r: (r["factor_type"], r["factor_name"]))
+        return out
+
+    def _matched_control_stats(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Matched-control comparisons for single-factor contrasts."""
+        comparisons: List[Dict[str, Any]] = []
+        if len(rows) < 4:
+            return comparisons
+
+        # Math-space effect, matched on depth bucket
+        for bucket in sorted({r["depth_bucket"] for r in rows}):
+            group_a = [r for r in rows if r["depth_bucket"] == bucket and r["math_space"]]
+            group_b = [r for r in rows if r["depth_bucket"] == bucket and not r["math_space"]]
+            if not group_a or not group_b:
+                continue
+            s_a = sum(r["stage1_passed"] for r in group_a)
+            s_b = sum(r["stage1_passed"] for r in group_b)
+            n_a = len(group_a)
+            n_b = len(group_b)
+            p_val = self._two_prop_pvalue(s_a, n_a, s_b, n_b)
+            delta = (s_a / n_a) - (s_b / n_b)
+            se = math.sqrt((s_a / n_a) * (1 - (s_a / n_a)) / n_a + (s_b / n_b) * (1 - (s_b / n_b)) / n_b)
+            comparisons.append({
+                "factor": "math_space",
+                "match_on": f"depth_bucket={bucket}",
+                "n_a": n_a,
+                "n_b": n_b,
+                "delta_rate": delta,
+                "ci_low": delta - 1.96 * se,
+                "ci_high": delta + 1.96 * se,
+                "p_value": p_val,
+            })
+
+        # Op family effect, matched on depth bucket and math-space
+        families = sorted({f for r in rows for f in r["families"]})
+        strata_keys = sorted({(r["depth_bucket"], r["math_space"]) for r in rows})
+        for family in families:
+            total_a = total_b = succ_a = succ_b = 0
+            for depth_bucket, math_space in strata_keys:
+                stratum = [r for r in rows if r["depth_bucket"] == depth_bucket and r["math_space"] == math_space]
+                if not stratum:
+                    continue
+                a = [r for r in stratum if family in r["families"]]
+                b = [r for r in stratum if family not in r["families"]]
+                if not a or not b:
+                    continue
+                total_a += len(a)
+                total_b += len(b)
+                succ_a += sum(r["stage1_passed"] for r in a)
+                succ_b += sum(r["stage1_passed"] for r in b)
+            if total_a <= 0 or total_b <= 0:
+                continue
+            rate_a = succ_a / total_a
+            rate_b = succ_b / total_b
+            delta = rate_a - rate_b
+            p_val = self._two_prop_pvalue(succ_a, total_a, succ_b, total_b)
+            se = math.sqrt(rate_a * (1 - rate_a) / total_a + rate_b * (1 - rate_b) / total_b)
+            comparisons.append({
+                "factor": f"family:{family}",
+                "match_on": "depth_bucket,math_space",
+                "n_a": total_a,
+                "n_b": total_b,
+                "delta_rate": delta,
+                "ci_low": delta - 1.96 * se,
+                "ci_high": delta + 1.96 * se,
+                "p_value": p_val,
+            })
+
+        self._apply_fdr_bh(comparisons, p_key="p_value", q_key="q_value")
+        comparisons.sort(key=lambda r: (r["factor"], r["match_on"]))
+        return comparisons
+
+    def grammar_weight_attribution_report(self) -> Dict[str, Any]:
+        """Attribution report separating correlation from stronger evidence."""
+        rows = self._load_program_factor_rows()
+        factor_stats = self._factor_success_stats(rows)
+        matched_controls = self._matched_control_stats(rows)
+
+        def _is_interpretable_factor(signal: Dict[str, Any]) -> bool:
+            factor_name = str(signal.get("factor_name") or "").strip().lower()
+            return bool(factor_name and factor_name not in {"unknown", "none", "null", "nan"})
+
+        strong_correlational = [
+            s for s in factor_stats
+            if s["n_with"] >= 20
+            and s["delta_rate"] > 0.05
+            and s.get("q_value", 1.0) <= 0.10
+            and s["ci_with_low"] > s["rate_without"]
+        ]
+        strong_correlational_interpretable = [
+            s for s in strong_correlational if _is_interpretable_factor(s)
+        ]
+        matched_positive = [
+            m for m in matched_controls
+            if m["n_a"] >= 12
+            and m["n_b"] >= 12
+            and m["delta_rate"] > 0.05
+            and m.get("q_value", 1.0) <= 0.10
+            and m["ci_low"] > 0.0
+        ]
+
+        correlational_ok = bool(strong_correlational_interpretable or matched_positive)
+        top_signal = None
+        if strong_correlational_interpretable:
+            top_signal = sorted(
+                strong_correlational_interpretable,
+                key=lambda s: (s["q_value"], -s["delta_rate"], -s["n_with"]),
+            )[0]
+        elif matched_positive:
+            top_signal = sorted(
+                matched_positive,
+                key=lambda m: (m["q_value"], -m["delta_rate"], -(m["n_a"] + m["n_b"])),
+            )[0]
+
+        uncertainty = {
+            "n_programs": len(rows),
+            "n_factors_tested": len(factor_stats),
+            "n_matched_tests": len(matched_controls),
+            "fdr_method": "benjamini_hochberg",
+            "correlational_signal_count": len(strong_correlational),
+            "interpretable_correlational_signal_count": len(strong_correlational_interpretable),
+            "matched_signal_count": len(matched_positive),
+        }
+
+        return {
+            "factors": factor_stats,
+            "matched_controls": matched_controls,
+            "strong_correlational_evidence": correlational_ok,
+            "top_signal": top_signal,
+            "uncertainty": uncertainty,
+            "requires_ablation": correlational_ok,
+        }
+
     def compute_grammar_weights(
         self,
         last_applied: Optional[Dict[str, float]] = None,
@@ -879,6 +1143,20 @@ class ExperimentAnalytics:
             diagnostics["fingerprint_cap"] = float(self.FINGERPRINT_WEIGHT_CAP)
         return diagnostics
 
+    def grammar_weight_audit_info(self) -> Dict[str, Any]:
+        """Return reproducible query info for grammar weight learning."""
+        return {
+            "query": (
+                "SELECT result_id, graph_fingerprint, graph_json, stage1_passed, "
+                "novelty_score, novelty_confidence FROM program_results "
+                "WHERE graph_json IS NOT NULL"
+            ),
+            "params": [],
+            "fingerprint_cap": float(self.FINGERPRINT_WEIGHT_CAP),
+            "weighting_mode": "fingerprint_capped",
+            "source": "program_results",
+        }
+
     def holdout_validation(self, holdout_fraction: float = 0.2) -> Optional[Dict]:
         """Evaluate grammar quality on holdout experiments.
 
@@ -921,629 +1199,244 @@ class ExperimentAnalytics:
     def experiment_clusters(self, n_clusters: int = 3) -> Optional[Dict]:
         """Cluster completed experiments by outcome profile.
 
-        Uses deterministic k-means style clustering over normalized experiment
-        features (S1 pass rate, best novelty, best loss ratio, duration), with
-        model selection across candidate k values and consensus-based stability.
-        Returns cluster summaries with compact quality diagnostics.
+        Uses high-performance NumPy vectorization for k-means clustering,
+        silhouette scores, and model selection.
         """
         rows = self.nb.conn.execute("""
-            SELECT experiment_id,
-                   n_programs_generated,
-                   n_stage1_passed,
-                   best_novelty_score,
-                   best_loss_ratio,
-                   duration_seconds
+            SELECT experiment_id, n_programs_generated, n_stage1_passed,
+                   best_novelty_score, best_loss_ratio, duration_seconds
             FROM experiments
-            WHERE status = 'completed'
-              AND n_programs_generated > 0
+            WHERE status = 'completed' AND n_programs_generated > 0
         """).fetchall()
 
-        if len(rows) < 3:
-            return None
+        if len(rows) < 3: return None
 
         experiments = []
         for row in rows:
             total = row["n_programs_generated"] or 0
-            s1 = row["n_stage1_passed"] or 0
-            if total <= 0:
-                continue
+            if total <= 0: continue
             experiments.append({
                 "experiment_id": row["experiment_id"],
-                "s1_rate": s1 / max(total, 1),
+                "s1_rate": (row["n_stage1_passed"] or 0) / total,
                 "best_novelty": float(row["best_novelty_score"] or 0.0),
                 "best_loss_ratio": float(row["best_loss_ratio"] or 1.0),
                 "duration_seconds": float(row["duration_seconds"] or 0.0),
             })
 
-        if len(experiments) < 3:
-            return None
+        if len(experiments) < 3: return None
 
         exp_ids = [e["experiment_id"] for e in experiments]
-        signatures_by_exp: Dict[str, Dict[str, float]] = {
-            exp_id: {
-                "compile_fail_rate": 0.0,
-                "train_fail_rate": 0.0,
-                "stage1_fail_rate": 0.0,
-                "error_diversity": 0.0,
-            }
-            for exp_id in exp_ids
-        }
-
-        if exp_ids:
-            placeholders = ",".join("?" * len(exp_ids))
-            failure_rows = self.nb.conn.execute(f"""
-                SELECT experiment_id,
-                       COUNT(*) as n_total,
-                       SUM(CASE WHEN COALESCE(stage0_passed, 0) = 0 THEN 1 ELSE 0 END) as n_compile_fail,
-                       SUM(CASE WHEN COALESCE(stage0_passed, 0) = 1 AND COALESCE(stage05_passed, 0) = 0 THEN 1 ELSE 0 END) as n_train_fail,
-                       SUM(CASE WHEN COALESCE(stage05_passed, 0) = 1 AND COALESCE(stage1_passed, 0) = 0 THEN 1 ELSE 0 END) as n_stage1_fail
-                FROM program_results
-                WHERE experiment_id IN ({placeholders})
-                GROUP BY experiment_id
-            """, tuple(exp_ids)).fetchall()
-
-            error_rows = self.nb.conn.execute(f"""
-                SELECT experiment_id,
-                       error_type,
-                       COUNT(*) as n
-                FROM program_results
-                WHERE experiment_id IN ({placeholders})
-                  AND error_type IS NOT NULL
-                  AND TRIM(error_type) != ''
-                GROUP BY experiment_id, error_type
-            """, tuple(exp_ids)).fetchall()
-
-            error_counts_by_exp: Dict[str, Dict[str, int]] = defaultdict(dict)
-            for row in error_rows:
-                error_counts_by_exp[row["experiment_id"]][row["error_type"]] = int(row["n"] or 0)
-
-            for row in failure_rows:
-                exp_id = row["experiment_id"]
-                n_total = float(row["n_total"] or 0)
-                if n_total <= 0:
-                    continue
-                signatures_by_exp[exp_id] = {
-                    "compile_fail_rate": float(row["n_compile_fail"] or 0) / n_total,
-                    "train_fail_rate": float(row["n_train_fail"] or 0) / n_total,
-                    "stage1_fail_rate": float(row["n_stage1_fail"] or 0) / n_total,
-                    "error_diversity": 0.0,
-                }
-
-                err_counts = error_counts_by_exp.get(exp_id, {})
-                total_err = float(sum(err_counts.values()))
-                if total_err > 0 and len(err_counts) > 1:
-                    entropy = 0.0
-                    for count in err_counts.values():
-                        p = count / total_err
-                        if p > 0:
-                            entropy -= p * math.log(p)
-                    max_entropy = math.log(len(err_counts))
-                    if max_entropy > 0:
-                        signatures_by_exp[exp_id]["error_diversity"] = entropy / max_entropy
+        placeholders = ",".join("?" * len(exp_ids))
+        
+        # Load failures and errors
+        failure_rows = self.nb.conn.execute(f"""
+            SELECT experiment_id, COUNT(*) as n_total,
+                   SUM(CASE WHEN COALESCE(stage0_passed, 0) = 0 THEN 1 ELSE 0 END) as n_compile_fail,
+                   SUM(CASE WHEN COALESCE(stage0_passed, 0) = 1 AND COALESCE(stage05_passed, 0) = 0 THEN 1 ELSE 0 END) as n_train_fail,
+                   SUM(CASE WHEN COALESCE(stage05_passed, 0) = 1 AND COALESCE(stage1_passed, 0) = 0 THEN 1 ELSE 0 END) as n_stage1_fail
+            FROM program_results WHERE experiment_id IN ({placeholders}) GROUP BY experiment_id
+        """, tuple(exp_ids)).fetchall()
+        
+        fail_map = {r["experiment_id"]: r for r in failure_rows}
+        
+        error_rows = self.nb.conn.execute(f"""
+            SELECT experiment_id, error_type, COUNT(*) as n
+            FROM program_results WHERE experiment_id IN ({placeholders})
+            AND error_type IS NOT NULL AND TRIM(error_type) != '' GROUP BY experiment_id, error_type
+        """, tuple(exp_ids)).fetchall()
+        
+        error_map = defaultdict(dict)
+        for r in error_rows: error_map[r["experiment_id"]][r["error_type"]] = int(r["n"] or 0)
 
         for e in experiments:
-            sig = signatures_by_exp.get(e["experiment_id"], {})
-            e["compile_fail_rate"] = float(sig.get("compile_fail_rate", 0.0))
-            e["train_fail_rate"] = float(sig.get("train_fail_rate", 0.0))
-            e["stage1_fail_rate"] = float(sig.get("stage1_fail_rate", 0.0))
-            e["error_diversity"] = float(sig.get("error_diversity", 0.0))
-
-        trajectory_by_exp: Dict[str, Dict[str, float]] = {
-            exp_id: {
-                "stage1_momentum": 0.0,
-                "novelty_momentum": 0.0,
-                "loss_improvement_momentum": 0.0,
-                "outcome_volatility": 0.0,
-                "outcome_peak_timing": 0.0,
-                "recovery_lag": 0.0,
-                "stage1_transition_timing": 0.0,
-                "primary_change_point_timing": 0.0,
-                "stage1_transition_density": 0.0,
-                "change_point_confidence": 0.0,
-                "windowed_change_dispersion": 0.0,
-                "window_change_localization": 0.0,
-                "transition_gap_entropy": 0.0,
-            }
-            for exp_id in exp_ids
-        }
-
-        if exp_ids:
-            placeholders = ",".join("?" * len(exp_ids))
-            seq_rows = self.nb.conn.execute(f"""
-                SELECT experiment_id,
-                       timestamp,
-                       stage1_passed,
-                       loss_ratio,
-                       novelty_score
-                FROM program_results
-                WHERE experiment_id IN ({placeholders})
-                ORDER BY experiment_id ASC, timestamp ASC
-            """, tuple(exp_ids)).fetchall()
-
-            per_exp_seq: Dict[str, List[Tuple[float, float, float]]] = defaultdict(list)
-            for row in seq_rows:
-                stage1 = float(row["stage1_passed"] or 0.0)
-                novelty = float(row["novelty_score"] or 0.0)
-                loss_ratio = float(row["loss_ratio"] or 1.0)
-                per_exp_seq[row["experiment_id"]].append((stage1, novelty, loss_ratio))
-
-            def _window_means(values: List[float]) -> Tuple[float, float]:
-                if not values:
-                    return 0.0, 0.0
-                window = max(1, len(values) // 3)
-                early = values[:window]
-                late = values[-window:]
-                return (sum(early) / len(early), sum(late) / len(late))
-
-            for exp_id, seq in per_exp_seq.items():
-                if len(seq) < 2:
-                    continue
-
-                stage1_values = [item[0] for item in seq]
-                novelty_values = [item[1] for item in seq]
-                loss_values = [item[2] for item in seq]
-
-                early_s1, late_s1 = _window_means(stage1_values)
-                early_nov, late_nov = _window_means(novelty_values)
-                early_loss, late_loss = _window_means(loss_values)
-
-                outcome_proxy = [
-                    (0.5 * s1) + (0.3 * nov) + (0.2 * (1.0 / (1.0 + max(lr, 1e-9))))
-                    for s1, nov, lr in seq
-                ]
-                proxy_mean = sum(outcome_proxy) / len(outcome_proxy)
-                proxy_var = sum((x - proxy_mean) ** 2 for x in outcome_proxy) / len(outcome_proxy)
-                peak_idx = max(range(len(outcome_proxy)), key=lambda idx: outcome_proxy[idx])
-                trough_idx = min(range(len(outcome_proxy)), key=lambda idx: outcome_proxy[idx])
-                normalizer = max(len(outcome_proxy) - 1, 1)
-                peak_timing = peak_idx / normalizer
-
-                transition_positions: List[int] = []
-                for idx in range(1, len(stage1_values)):
-                    if stage1_values[idx] != stage1_values[idx - 1]:
-                        transition_positions.append(idx)
-
-                first_transition_idx = transition_positions[0] if transition_positions else None
-                stage1_transition_timing = (
-                    (first_transition_idx / normalizer) if first_transition_idx is not None else 0.0
-                )
-                stage1_transition_density = (
-                    len(transition_positions) / normalizer if normalizer > 0 else 0.0
-                )
-
-                if len(transition_positions) >= 2:
-                    transition_gaps = [
-                        transition_positions[i] - transition_positions[i - 1]
-                        for i in range(1, len(transition_positions))
-                    ]
-                    total_gap = float(sum(transition_gaps))
-                    if total_gap > 0:
-                        gap_entropy = 0.0
-                        for gap in transition_gaps:
-                            p = gap / total_gap
-                            if p > 0:
-                                gap_entropy -= p * math.log(p)
-                        max_entropy = math.log(len(transition_gaps)) if len(transition_gaps) > 1 else 0.0
-                        transition_gap_entropy = (gap_entropy / max_entropy) if max_entropy > 0 else 0.0
-                    else:
-                        transition_gap_entropy = 0.0
-                else:
-                    transition_gap_entropy = 0.0
-
-                if len(outcome_proxy) > 1:
-                    deltas = [
-                        abs(outcome_proxy[i] - outcome_proxy[i - 1])
-                        for i in range(1, len(outcome_proxy))
-                    ]
-                    cp_idx = 1 + max(range(len(deltas)), key=lambda idx: deltas[idx])
-                    primary_change_point_timing = cp_idx / normalizer
-                    max_delta = max(deltas) if deltas else 0.0
-                    total_delta = sum(deltas)
-                    change_point_confidence = max_delta / total_delta if total_delta > 1e-9 else 0.0
-                else:
-                    primary_change_point_timing = 0.0
-                    change_point_confidence = 0.0
-
-                if len(outcome_proxy) > 2:
-                    deltas = [
-                        abs(outcome_proxy[i] - outcome_proxy[i - 1])
-                        for i in range(1, len(outcome_proxy))
-                    ]
-                    n_deltas = len(deltas)
-                    seg = max(1, n_deltas // 3)
-                    window_slices = [
-                        deltas[:seg],
-                        deltas[seg:2 * seg],
-                        deltas[2 * seg:],
-                    ]
-                    window_means = [
-                        (sum(chunk) / len(chunk)) if chunk else 0.0
-                        for chunk in window_slices
-                    ]
-                    mean_change = sum(window_means) / len(window_means)
-                    variance = sum((w - mean_change) ** 2 for w in window_means) / len(window_means)
-                    windowed_change_dispersion = math.sqrt(max(variance, 0.0))
-                    total_window_change = sum(window_means)
-                    window_change_localization = (
-                        (max(window_means) / total_window_change)
-                        if total_window_change > 1e-9
-                        else 0.0
-                    )
-                else:
-                    windowed_change_dispersion = 0.0
-                    window_change_localization = 0.0
-
-                early_window = max(1, len(outcome_proxy) // 3)
-                early_baseline = sum(outcome_proxy[:early_window]) / early_window
-                recovery_idx = None
-                for idx in range(trough_idx + 1, len(outcome_proxy)):
-                    if outcome_proxy[idx] >= early_baseline:
-                        recovery_idx = idx
-                        break
-                if recovery_idx is None:
-                    recovery_lag = 1.0 if len(outcome_proxy) > 1 else 0.0
-                else:
-                    recovery_steps = recovery_idx - trough_idx
-                    recovery_lag = recovery_steps / normalizer
-
-                trajectory_by_exp[exp_id] = {
-                    "stage1_momentum": late_s1 - early_s1,
-                    "novelty_momentum": late_nov - early_nov,
-                    "loss_improvement_momentum": early_loss - late_loss,
-                    "outcome_volatility": math.sqrt(max(proxy_var, 0.0)),
-                    "outcome_peak_timing": peak_timing,
-                    "recovery_lag": recovery_lag,
-                    "stage1_transition_timing": stage1_transition_timing,
-                    "primary_change_point_timing": primary_change_point_timing,
-                    "stage1_transition_density": stage1_transition_density,
-                    "change_point_confidence": change_point_confidence,
-                    "windowed_change_dispersion": windowed_change_dispersion,
-                    "window_change_localization": window_change_localization,
-                    "transition_gap_entropy": transition_gap_entropy,
-                }
-
-        for e in experiments:
-            traj = trajectory_by_exp.get(e["experiment_id"], {})
-            e["stage1_momentum"] = float(traj.get("stage1_momentum", 0.0))
-            e["novelty_momentum"] = float(traj.get("novelty_momentum", 0.0))
-            e["loss_improvement_momentum"] = float(traj.get("loss_improvement_momentum", 0.0))
-            e["outcome_volatility"] = float(traj.get("outcome_volatility", 0.0))
-            e["outcome_peak_timing"] = float(traj.get("outcome_peak_timing", 0.0))
-            e["recovery_lag"] = float(traj.get("recovery_lag", 0.0))
-            e["stage1_transition_timing"] = float(traj.get("stage1_transition_timing", 0.0))
-            e["primary_change_point_timing"] = float(traj.get("primary_change_point_timing", 0.0))
-            e["stage1_transition_density"] = float(traj.get("stage1_transition_density", 0.0))
-            e["change_point_confidence"] = float(traj.get("change_point_confidence", 0.0))
-            e["windowed_change_dispersion"] = float(traj.get("windowed_change_dispersion", 0.0))
-            e["window_change_localization"] = float(traj.get("window_change_localization", 0.0))
-            e["transition_gap_entropy"] = float(traj.get("transition_gap_entropy", 0.0))
-
-        feature_keys = [
-            "s1_rate",
-            "best_novelty",
-            "best_loss_ratio",
-            "duration_seconds",
-            "compile_fail_rate",
-            "train_fail_rate",
-            "stage1_fail_rate",
-            "error_diversity",
-            "stage1_momentum",
-            "novelty_momentum",
-            "loss_improvement_momentum",
-            "outcome_volatility",
-            "outcome_peak_timing",
-            "recovery_lag",
-            "stage1_transition_timing",
-            "primary_change_point_timing",
-            "stage1_transition_density",
-            "change_point_confidence",
-            "windowed_change_dispersion",
-            "window_change_localization",
-            "transition_gap_entropy",
-        ]
-        mins = {k: min(e[k] for e in experiments) for k in feature_keys}
-        maxs = {k: max(e[k] for e in experiments) for k in feature_keys}
-
-        def _norm(v: float, k: str) -> float:
-            lo, hi = mins[k], maxs[k]
-            if hi <= lo:
-                return 0.0
-            return (v - lo) / (hi - lo)
-
-        points = []
-        for e in experiments:
-            # Lower loss_ratio is better, so invert after normalization.
-            loss_norm = 1.0 - _norm(e["best_loss_ratio"], "best_loss_ratio")
-            vec = [
-                _norm(e["s1_rate"], "s1_rate"),
-                _norm(e["best_novelty"], "best_novelty"),
-                loss_norm,
-                _norm(e["duration_seconds"], "duration_seconds"),
-                _norm(e["compile_fail_rate"], "compile_fail_rate"),
-                _norm(e["train_fail_rate"], "train_fail_rate"),
-                _norm(e["stage1_fail_rate"], "stage1_fail_rate"),
-                _norm(e["error_diversity"], "error_diversity"),
-                _norm(e["stage1_momentum"], "stage1_momentum"),
-                _norm(e["novelty_momentum"], "novelty_momentum"),
-                _norm(e["loss_improvement_momentum"], "loss_improvement_momentum"),
-                _norm(e["outcome_volatility"], "outcome_volatility"),
-                _norm(e["outcome_peak_timing"], "outcome_peak_timing"),
-                _norm(e["recovery_lag"], "recovery_lag"),
-                _norm(e["stage1_transition_timing"], "stage1_transition_timing"),
-                _norm(e["primary_change_point_timing"], "primary_change_point_timing"),
-                _norm(e["stage1_transition_density"], "stage1_transition_density"),
-                _norm(e["change_point_confidence"], "change_point_confidence"),
-                _norm(e["windowed_change_dispersion"], "windowed_change_dispersion"),
-                _norm(e["window_change_localization"], "window_change_localization"),
-                _norm(e["transition_gap_entropy"], "transition_gap_entropy"),
-            ]
-            points.append((e, vec))
-
-        def _sq_dist(a: List[float], b: List[float]) -> float:
-            return sum((x - y) ** 2 for x, y in zip(a, b))
-
-        n_points = len(points)
-        max_k = min(max(2, n_clusters), min(6, n_points - 1))
-        if max_k < 2:
-            return None
-
-        distance_matrix: List[List[float]] = [[0.0] * n_points for _ in range(n_points)]
-        for i in range(n_points):
-            for j in range(i + 1, n_points):
-                d = math.sqrt(_sq_dist(points[i][1], points[j][1]))
-                distance_matrix[i][j] = d
-                distance_matrix[j][i] = d
-
-        dataset_signature = "|".join(sorted(p[0]["experiment_id"] for p in points))
-
-        def _init_centroids(k_value: int, salt: int) -> List[List[float]]:
-            seed_hex = hashlib.md5(f"{dataset_signature}:{salt}".encode()).hexdigest()
-            first_idx = int(seed_hex[:8], 16) % n_points
-            chosen_idxs = [first_idx]
-            centroids_local = [list(points[first_idx][1])]
-
-            while len(centroids_local) < k_value:
-                farthest_idx = max(
-                    range(n_points),
-                    key=lambda idx: min(_sq_dist(points[idx][1], c) for c in centroids_local),
-                )
-                if farthest_idx in chosen_idxs:
-                    remaining = [idx for idx in range(n_points) if idx not in chosen_idxs]
-                    if not remaining:
-                        break
-                    farthest_idx = remaining[0]
-                chosen_idxs.append(farthest_idx)
-                centroids_local.append(list(points[farthest_idx][1]))
-            return centroids_local
-
-        def _run_kmeans(k_value: int, salt: int) -> Dict:
-            centroids_local = _init_centroids(k_value, salt)
-            assignments_local: List[int] = [-1] * n_points
-
-            for _ in range(30):
-                changed = False
-                for i, (_, vec) in enumerate(points):
-                    nearest_idx = min(
-                        range(k_value), key=lambda ci: _sq_dist(vec, centroids_local[ci])
-                    )
-                    if assignments_local[i] != nearest_idx:
-                        assignments_local[i] = nearest_idx
-                        changed = True
-
-                new_centroids: List[List[float]] = []
-                for ci in range(k_value):
-                    members = [points[i][1] for i in range(n_points) if assignments_local[i] == ci]
-                    if not members:
-                        new_centroids.append(list(centroids_local[ci]))
-                        continue
-                    dim = len(members[0])
-                    new_centroids.append([
-                        sum(m[d] for m in members) / len(members) for d in range(dim)
-                    ])
-                centroids_local = new_centroids
-                if not changed:
-                    break
-
-            inertia = sum(
-                _sq_dist(points[i][1], centroids_local[assignments_local[i]])
-                for i in range(n_points)
-            )
-            return {
-                "assignments": assignments_local,
-                "centroids": centroids_local,
-                "inertia": inertia,
-            }
-
-        def _silhouette(assignments_local: List[int]) -> float:
-            unique_clusters = sorted(set(assignments_local))
-            if len(unique_clusters) < 2:
-                return 0.0
-
-            cluster_members = {
-                c: [i for i, a in enumerate(assignments_local) if a == c]
-                for c in unique_clusters
-            }
-            silhouettes: List[float] = []
-
-            for i in range(n_points):
-                c_i = assignments_local[i]
-                same_cluster = [j for j in cluster_members[c_i] if j != i]
-                if not same_cluster:
-                    silhouettes.append(0.0)
-                    continue
-
-                a_i = sum(distance_matrix[i][j] for j in same_cluster) / len(same_cluster)
-                b_i = float("inf")
-                for c in unique_clusters:
-                    if c == c_i or not cluster_members[c]:
-                        continue
-                    avg_dist = sum(distance_matrix[i][j] for j in cluster_members[c]) / len(cluster_members[c])
-                    if avg_dist < b_i:
-                        b_i = avg_dist
-
-                if not math.isfinite(b_i):
-                    silhouettes.append(0.0)
-                    continue
-                denom = max(a_i, b_i, 1e-9)
-                silhouettes.append((b_i - a_i) / denom)
-
-            return sum(silhouettes) / len(silhouettes) if silhouettes else 0.0
-
-        def _imbalance(assignments_local: List[int], k_value: int) -> float:
-            counts = [0] * k_value
-            for a in assignments_local:
-                counts[a] += 1
-            ideal = n_points / max(k_value, 1)
-            return sum(abs(c - ideal) for c in counts) / max(2.0 * n_points, 1.0)
-
-        runs_per_k = 4
-        candidates: List[Dict] = []
-        for k_value in range(2, max_k + 1):
-            runs = []
-            for salt in range(runs_per_k):
-                run = _run_kmeans(k_value, salt)
-                silhouette = _silhouette(run["assignments"])
-                imbalance = _imbalance(run["assignments"], k_value)
-                quality = silhouette - (0.15 * imbalance)
-                run.update({
-                    "silhouette": silhouette,
-                    "imbalance": imbalance,
-                    "quality": quality,
-                })
-                runs.append(run)
-
-            best_run = max(runs, key=lambda r: (r["quality"], -r["inertia"]))
-            candidates.append({
-                "k": k_value,
-                "best": best_run,
-                "runs": runs,
-                "score": best_run["quality"],
+            f = fail_map.get(e["experiment_id"], {"n_total": 1, "n_compile_fail": 0, "n_train_fail": 0, "n_stage1_fail": 0})
+            n = float(f["n_total"] or 1)
+            e.update({
+                "compile_fail_rate": f["n_compile_fail"] / n,
+                "train_fail_rate": f["n_train_fail"] / n,
+                "stage1_fail_rate": f["n_stage1_fail"] / n,
+                "error_diversity": 0.0
             })
+            errs = error_map.get(e["experiment_id"], {})
+            total_err = float(sum(errs.values()))
+            if total_err > 0 and len(errs) > 1:
+                probs = np.array(list(errs.values())) / total_err
+                e["error_diversity"] = -np.sum(probs * np.log(probs)) / np.log(len(errs))
+
+        # Load trajectories
+        seq_rows = self.nb.conn.execute(f"""
+            SELECT experiment_id, stage1_passed, loss_ratio, novelty_score
+            FROM program_results WHERE experiment_id IN ({placeholders})
+            ORDER BY experiment_id ASC, timestamp ASC
+        """, tuple(exp_ids)).fetchall()
+        
+        per_exp_seq = defaultdict(list)
+        for r in seq_rows:
+            per_exp_seq[r["experiment_id"]].append((float(r["stage1_passed"] or 0), float(r["novelty_score"] or 0), float(r["loss_ratio"] or 1.0)))
+
+        for e in experiments:
+            seq = np.array(per_exp_seq.get(e["experiment_id"], []), dtype=np.float32)
+            if len(seq) < 2:
+                e.update({k: 0.0 for k in ["stage1_momentum", "novelty_momentum", "loss_improvement_momentum", "outcome_volatility", "outcome_peak_timing", "recovery_lag", "stage1_transition_timing", "primary_change_point_timing", "stage1_transition_density", "change_point_confidence", "windowed_change_dispersion", "window_change_localization", "transition_gap_entropy"]})
+                continue
+            
+            # Vectorized momentum and statistics
+            window = max(1, len(seq) // 3)
+            e["stage1_momentum"] = np.mean(seq[-window:, 0]) - np.mean(seq[:window, 0])
+            e["novelty_momentum"] = np.mean(seq[-window:, 1]) - np.mean(seq[:window, 1])
+            e["loss_improvement_momentum"] = np.mean(seq[:window, 2]) - np.mean(seq[-window:, 2])
+            
+            proxy = 0.5 * seq[:, 0] + 0.3 * seq[:, 1] + 0.2 * (1.0 / (1.0 + np.maximum(seq[:, 2], 1e-9)))
+            e["outcome_volatility"] = np.std(proxy)
+            e["outcome_peak_timing"] = np.argmax(proxy) / max(len(seq) - 1, 1)
+            
+            # Transitions
+            transitions = np.where(seq[1:, 0] != seq[:-1, 0])[0] + 1
+            e["stage1_transition_timing"] = transitions[0] / (len(seq) - 1) if len(transitions) > 0 else 0.0
+            e["stage1_transition_density"] = len(transitions) / max(len(seq) - 1, 1)
+            if len(transitions) >= 2:
+                gaps = np.diff(transitions).astype(np.float32)
+                p = gaps / gaps.sum()
+                e["transition_gap_entropy"] = -np.sum(p * np.log(p + 1e-10)) / np.log(len(transitions))
+            else:
+                e["transition_gap_entropy"] = 0.0
+
+            deltas = np.abs(np.diff(proxy))
+            if len(deltas) > 0:
+                e["primary_change_point_timing"] = (np.argmax(deltas) + 1) / max(len(seq) - 1, 1)
+                e["change_point_confidence"] = np.max(deltas) / (np.sum(deltas) + 1e-10)
+                
+                # Windowed change dispersion and localization
+                n_deltas = len(deltas)
+                seg = max(1, n_deltas // 3)
+                window_means = [np.mean(deltas[i*seg : (i+1)*seg]) if i*seg < n_deltas else 0.0 for i in range(3)]
+                e["windowed_change_dispersion"] = np.std(window_means)
+                total_window_change = np.sum(window_means)
+                e["window_change_localization"] = np.max(window_means) / total_window_change if total_window_change > 1e-9 else 0.0
+            else:
+                e.update({"primary_change_point_timing": 0.0, "change_point_confidence": 0.0, 
+                          "windowed_change_dispersion": 0.0, "window_change_localization": 0.0})
+
+            # Recovery lag
+            early_baseline = np.mean(proxy[:window])
+            trough_idx = np.argmin(proxy)
+            recovery_idx = np.where(proxy[trough_idx+1:] >= early_baseline)[0]
+            e["recovery_lag"] = (recovery_idx[0] + 1) / (len(seq) - 1) if len(recovery_idx) > 0 else (1.0 if len(seq) > 1 else 0.0)
+
+        # Prepare for Vectorized K-Means
+        feature_keys = ["s1_rate", "best_novelty", "best_loss_ratio", "duration_seconds", "compile_fail_rate", "train_fail_rate", "stage1_fail_rate", "error_diversity", "stage1_momentum", "novelty_momentum", "loss_improvement_momentum", "outcome_volatility", "outcome_peak_timing", "recovery_lag", "stage1_transition_timing", "primary_change_point_timing", "stage1_transition_density", "change_point_confidence", "windowed_change_dispersion", "window_change_localization", "transition_gap_entropy"]
+        X = np.array([[e[k] for k in feature_keys] for e in experiments], dtype=np.float32)
+        # Normalize and invert loss_ratio
+        X_min, X_max = X.min(axis=0), X.max(axis=0)
+        X_range = X_max - X_min
+        X_norm = np.zeros_like(X)
+        mask = X_range > 1e-9
+        X_norm[:, mask] = (X[:, mask] - X_min[mask]) / X_range[mask]
+        X_norm[:, feature_keys.index("best_loss_ratio")] = 1.0 - X_norm[:, feature_keys.index("best_loss_ratio")]
+
+        def _vectorized_kmeans(k, salt):
+            # Exact match of original deterministic init
+            seed_hex = hashlib.md5(f"{dataset_signature}:{salt}".encode()).hexdigest()
+            first_idx = int(seed_hex[:8], 16) % len(X_norm)
+            centroids = [X_norm[first_idx]]
+            chosen_idxs = {first_idx}
+            
+            for _ in range(1, k):
+                # Farthest point initialization (K-Means++)
+                dists = np.min(cdist(X_norm, np.array(centroids)), axis=1)
+                # Filter out already chosen to be safe (though dist would be 0)
+                next_idx = np.argmax(dists)
+                centroids.append(X_norm[next_idx])
+                chosen_idxs.add(next_idx)
+            centroids = np.array(centroids)
+            
+            for _ in range(30):
+                dists = cdist(X_norm, centroids)
+                assignments = np.argmin(dists, axis=1)
+                new_centroids = np.array([X_norm[assignments == i].mean(axis=0) if np.any(assignments == i) else centroids[i] for i in range(k)])
+                if np.allclose(centroids, new_centroids): break
+                centroids = new_centroids
+            
+            inertia = np.sum(np.min(cdist(X_norm, centroids), axis=1)**2)
+            return assignments, centroids, inertia
+
+        def _vectorized_silhouette(assignments, dist_matrix):
+            unique = np.unique(assignments)
+            if len(unique) < 2: return 0.0
+            sil = []
+            for i in range(len(X_norm)):
+                c_i = assignments[i]
+                mask_same = (assignments == c_i)
+                mask_same[i] = False
+                if not np.any(mask_same):
+                    sil.append(0.0)
+                    continue
+                a_i = dist_matrix[i, mask_same].mean()
+                b_i = min(dist_matrix[i, assignments == c].mean() for c in unique if c != c_i)
+                sil.append((b_i - a_i) / max(a_i, b_i, 1e-9))
+            return np.mean(sil)
+
+        dataset_signature = "|".join(sorted(exp_ids))
+        dist_matrix = cdist(X_norm, X_norm)
+        max_k = min(max(2, n_clusters), len(X_norm) - 1)
+        if max_k < 2: return None
+
+        candidates = []
+        for k_val in range(2, max_k + 1):
+            runs = []
+            for salt in range(4):
+                assign, cents, inertia = _vectorized_kmeans(k_val, salt)
+                sil = _vectorized_silhouette(assign, dist_matrix)
+                counts = np.bincount(assign, minlength=k_val)
+                imbalance = np.sum(np.abs(counts - len(X_norm)/k_val)) / (2.0 * len(X_norm))
+                runs.append({"assignments": assign, "centroids": cents, "inertia": inertia, "silhouette": sil, "quality": sil - 0.15 * imbalance})
+            
+            best = max(runs, key=lambda r: (r["quality"], -r["inertia"]))
+            candidates.append({"k": k_val, "best": best, "runs": runs, "score": best["quality"]})
 
         selected = max(candidates, key=lambda c: (c["score"], -c["k"]))
-        k = selected["k"]
-        assignments = selected["best"]["assignments"]
-        centroids = selected["best"]["centroids"]
+        k, best_run = selected["k"], selected["best"]
+        assign, cents = best_run["assignments"], best_run["centroids"]
 
-        def _coassociation_agreement(a1: List[int], a2: List[int]) -> float:
-            pair_total = n_points * (n_points - 1) // 2
-            if pair_total <= 0:
-                return 1.0
-            agree = 0
-            for i in range(n_points):
-                for j in range(i + 1, n_points):
-                    same_1 = a1[i] == a1[j]
-                    same_2 = a2[i] == a2[j]
-                    if same_1 == same_2:
-                        agree += 1
-            return agree / pair_total
+        # Consensus and Stability
+        def _agreement(a1, a2):
+            m1 = (a1[:, None] == a1[None, :])
+            m2 = (a2[:, None] == a2[None, :])
+            return np.mean(m1 == m2)
 
-        selected_runs = selected["runs"]
-        consensus_scores: List[float] = []
-        for i in range(len(selected_runs)):
-            for j in range(i + 1, len(selected_runs)):
-                consensus_scores.append(
-                    _coassociation_agreement(
-                        selected_runs[i]["assignments"],
-                        selected_runs[j]["assignments"],
-                    )
-                )
-        consensus = sum(consensus_scores) / len(consensus_scores) if consensus_scores else 1.0
+        cons_scores = [_agreement(r1["assignments"], r2["assignments"]) for i, r1 in enumerate(selected["runs"]) for r2 in selected["runs"][i+1:]]
+        consensus = np.mean(cons_scores) if cons_scores else 1.0
+        
+        intra = np.mean([np.mean(dist_matrix[i, assign == assign[i]]) for i in range(len(X_norm))])
+        inter = np.min(cdist(cents, cents) + np.eye(k)*1e9)
+        stability = 0.6 * (inter / (inter + intra + 1e-9)) + 0.4 * consensus
 
+        # Summary and Description
         clusters = []
-        intra_dists: List[float] = []
         for ci in range(k):
-            members = [points[i] for i in range(len(points)) if assignments[i] == ci]
-            if not members:
-                continue
-
-            member_exps = [m[0] for m in members]
-            centroid = centroids[ci]
-            dists = [math.sqrt(_sq_dist(m[1], centroid)) for m in members]
-            intra_dists.extend(dists)
-
-            clusters.append({
-                "cluster_id": ci,
-                "size": len(member_exps),
-                "avg_s1_rate": round(sum(m["s1_rate"] for m in member_exps) / len(member_exps), 4),
-                "avg_best_novelty": round(sum(m["best_novelty"] for m in member_exps) / len(member_exps), 4),
-                "avg_best_loss_ratio": round(sum(m["best_loss_ratio"] for m in member_exps) / len(member_exps), 4),
-                "avg_duration_seconds": round(sum(m["duration_seconds"] for m in member_exps) / len(member_exps), 2),
-                "avg_compile_fail_rate": round(sum(m["compile_fail_rate"] for m in member_exps) / len(member_exps), 4),
-                "avg_train_fail_rate": round(sum(m["train_fail_rate"] for m in member_exps) / len(member_exps), 4),
-                "avg_stage1_fail_rate": round(sum(m["stage1_fail_rate"] for m in member_exps) / len(member_exps), 4),
-                "avg_error_diversity": round(sum(m["error_diversity"] for m in member_exps) / len(member_exps), 4),
-                "avg_stage1_momentum": round(sum(m["stage1_momentum"] for m in member_exps) / len(member_exps), 4),
-                "avg_novelty_momentum": round(sum(m["novelty_momentum"] for m in member_exps) / len(member_exps), 4),
-                "avg_loss_improvement_momentum": round(sum(m["loss_improvement_momentum"] for m in member_exps) / len(member_exps), 4),
-                "avg_outcome_volatility": round(sum(m["outcome_volatility"] for m in member_exps) / len(member_exps), 4),
-                "avg_outcome_peak_timing": round(sum(m["outcome_peak_timing"] for m in member_exps) / len(member_exps), 4),
-                "avg_recovery_lag": round(sum(m["recovery_lag"] for m in member_exps) / len(member_exps), 4),
-                "avg_stage1_transition_timing": round(sum(m["stage1_transition_timing"] for m in member_exps) / len(member_exps), 4),
-                "avg_primary_change_point_timing": round(sum(m["primary_change_point_timing"] for m in member_exps) / len(member_exps), 4),
-                "avg_stage1_transition_density": round(sum(m["stage1_transition_density"] for m in member_exps) / len(member_exps), 4),
-                "avg_change_point_confidence": round(sum(m["change_point_confidence"] for m in member_exps) / len(member_exps), 4),
-                "avg_windowed_change_dispersion": round(sum(m["windowed_change_dispersion"] for m in member_exps) / len(member_exps), 4),
-                "avg_window_change_localization": round(sum(m["window_change_localization"] for m in member_exps) / len(member_exps), 4),
-                "avg_transition_gap_entropy": round(sum(m["transition_gap_entropy"] for m in member_exps) / len(member_exps), 4),
-                "experiment_ids": [m["experiment_id"] for m in member_exps[:10]],
-            })
+            members = [experiments[i] for i in range(len(experiments)) if assign[i] == ci]
+            if not members: continue
+            summary = {k: round(float(np.mean([m[k] for m in members])), 4) for k in feature_keys if k != "duration_seconds"}
+            summary["avg_duration_seconds"] = round(float(np.mean([m["duration_seconds"] for m in members])), 2)
+            summary.update({"cluster_id": ci, "size": len(members), "experiment_ids": [m["experiment_id"] for m in members[:10]]})
+            # Map avg_s1_rate, etc back to required keys
+            for fk in ["s1_rate", "best_novelty", "best_loss_ratio"]:
+                summary[f"avg_{fk}"] = summary.pop(fk)
+            for fk in feature_keys:
+                if fk not in ["s1_rate", "best_novelty", "best_loss_ratio", "duration_seconds"] and fk in summary:
+                    summary[f"avg_{fk}"] = summary.pop(fk)
+            clusters.append(summary)
 
         clusters.sort(key=lambda c: c["avg_s1_rate"], reverse=True)
-
-        # Generate plain-language descriptions with relative ranking
         self._describe_clusters(clusters)
 
-        inter_centroid = []
-        for i in range(len(centroids)):
-            for j in range(i + 1, len(centroids)):
-                inter_centroid.append(math.sqrt(_sq_dist(centroids[i], centroids[j])))
-
-        avg_intra = sum(intra_dists) / len(intra_dists) if intra_dists else 0.0
-        min_inter = min(inter_centroid) if inter_centroid else 0.0
-        separation = min_inter / (min_inter + avg_intra + 1e-9)
-        stability = (0.6 * separation) + (0.4 * consensus)
-
-        ordered_candidate_scores = sorted(candidates, key=lambda c: c["score"], reverse=True)
-        selected_margin = 0.0
-        if len(ordered_candidate_scores) > 1:
-            selected_margin = ordered_candidate_scores[0]["score"] - ordered_candidate_scores[1]["score"]
-
         return {
-            "n_experiments": len(points),
-            "n_clusters": len(clusters),
-            "feature_keys": [
-                "s1_rate",
-                "best_novelty",
-                "best_loss_inverse",
-                "duration_seconds",
-                "compile_fail_rate",
-                "train_fail_rate",
-                "stage1_fail_rate",
-                "error_diversity",
-                "stage1_momentum",
-                "novelty_momentum",
-                "loss_improvement_momentum",
-                "outcome_volatility",
-                "outcome_peak_timing",
-                "recovery_lag",
-                "stage1_transition_timing",
-                "primary_change_point_timing",
-                "stage1_transition_density",
-                "change_point_confidence",
-                "windowed_change_dispersion",
-                "window_change_localization",
-                "transition_gap_entropy",
-            ],
-            "stability_score": round(max(0.0, min(1.0, stability)), 4),
-            "model_selection": {
-                "candidate_ks": [c["k"] for c in candidates],
-                "selected_k": k,
-                "silhouette": round(selected["best"]["silhouette"], 4),
-                "consensus": round(max(0.0, min(1.0, consensus)), 4),
-                "selection_margin": round(selected_margin, 4),
-            },
-            "clusters": clusters,
+            "n_experiments": len(experiments), "n_clusters": len(clusters),
+            "feature_keys": feature_keys, "stability_score": round(float(np.clip(stability, 0, 1)), 4),
+            "model_selection": {"candidate_ks": [c["k"] for c in candidates], "selected_k": k, 
+                                "silhouette": round(float(best_run["silhouette"]), 4), "consensus": round(float(consensus), 4),
+                                "selection_margin": round(float(sorted(candidates, key=lambda c: -c["score"])[0]["score"] - sorted(candidates, key=lambda c: -c["score"])[1]["score"]), 4) if len(candidates) > 1 else 0.0},
+            "clusters": clusters
         }
 
     @staticmethod
@@ -2894,6 +2787,7 @@ class ExperimentAnalytics:
         """
         result: Dict = {
             "failed_ops": [],
+            "weak_ops": [],
             "dominant_errors": [],
             "anti_patterns": [],
             "refuted_hypotheses": [],
@@ -2920,6 +2814,30 @@ class ExperimentAnalytics:
                         else "learning"
                     ),
                     "confidence": round(min(0.95, 0.4 + n_used / 100), 2),
+                })
+
+        # 1b. Weak ops: nonzero but poor S1 rate (soft penalty candidates).
+        # These shouldn't be hard-excluded but should be selected less often.
+        mean_s1 = 0.0
+        s1_vals = [s.get("s1_rate", 0) for s in op_rates.values()
+                   if s.get("n_used", 0) >= min_usage]
+        if s1_vals:
+            mean_s1 = sum(s1_vals) / len(s1_vals)
+        weak_threshold = max(mean_s1 * 0.5, 0.20)
+        for op_name, stats in sorted(
+            op_rates.items(), key=lambda x: x[1].get("s1_rate", 0)
+        ):
+            n_used = stats.get("n_used", 0)
+            s1_rate = stats.get("s1_rate", 0)
+            if n_used >= min_usage and 0 < s1_rate <= weak_threshold:
+                # Soft penalty: linearly scale from 0.2 (at s1=0) to 1.0 (at threshold)
+                penalty = round(max(0.2, s1_rate / weak_threshold), 2)
+                result["weak_ops"].append({
+                    "op_name": op_name,
+                    "n_used": n_used,
+                    "s1_rate": round(s1_rate, 3),
+                    "penalty_weight": penalty,
+                    "threshold": round(weak_threshold, 3),
                 })
 
         # 2. Dominant error types (top 10 by count)
@@ -2979,6 +2897,7 @@ class ExperimentAnalytics:
 
         # 5. Summary text
         n_ops = len(result["failed_ops"])
+        n_weak = len(result["weak_ops"])
         n_errs = len(result["dominant_errors"])
         n_anti = len(result["anti_patterns"])
         n_ref = len(result["refuted_hypotheses"])
@@ -2986,6 +2905,9 @@ class ExperimentAnalytics:
         if n_ops:
             op_names = ", ".join(o["op_name"] for o in result["failed_ops"][:5])
             parts.append(f"{n_ops} ops with 0% S1 rate ({op_names})")
+        if n_weak:
+            weak_names = ", ".join(o["op_name"] for o in result["weak_ops"][:5])
+            parts.append(f"{n_weak} weak ops soft-penalized ({weak_names})")
         if n_errs:
             parts.append(
                 f"{n_errs} error types, top: {result['dominant_errors'][0]['error_type']}"
@@ -2996,6 +2918,139 @@ class ExperimentAnalytics:
         if n_ref:
             parts.append(f"{n_ref} refuted hypotheses")
         result["summary"] = "; ".join(parts) if parts else "No negative results to report yet."
+
+        return result
+
+    def decision_outcome_analysis(self, lookback: int = 30) -> Dict:
+        """Analyze which selection decisions led to successful vs failed experiments.
+
+        Joins mode_selection decisions with subsequent experiment outcomes to
+        compute per-mode success rates.  Returns a dict with per-mode stats and
+        a ``mode_penalties`` dict mapping mode names to penalty multipliers
+        (< 1.0 for consistently failing modes).
+        """
+        result: Dict = {
+            "mode_stats": {},
+            "mode_penalties": {},
+            "total_decisions": 0,
+            "analysis_window": lookback,
+        }
+
+        try:
+            # Get recent mode_selection decisions with their chosen mode
+            rows = self.nb.conn.execute(
+                """SELECT decision_id, timestamp, chosen_experiments_json
+                   FROM selection_decisions
+                   WHERE context = 'mode_selection'
+                   ORDER BY timestamp DESC
+                   LIMIT ?""",
+                (lookback,),
+            ).fetchall()
+        except Exception:
+            return result
+
+        if not rows:
+            return result
+
+        # For each decision, find the experiment that started shortly after
+        # and check its outcome
+        mode_outcomes: Dict[str, Dict] = {}  # mode -> {total, s1_any, s1_total}
+        for row in rows:
+            chosen_json = row["chosen_experiments_json"]
+            if not chosen_json:
+                continue
+            try:
+                chosen = json.loads(chosen_json) if isinstance(chosen_json, str) else chosen_json
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not chosen:
+                continue
+            mode = chosen[0].get("mode", "synthesis") if isinstance(chosen[0], dict) else "synthesis"
+            decision_ts = row["timestamp"]
+
+            # Find the next completed experiment after this decision
+            exp_row = self.nb.conn.execute(
+                """SELECT experiment_type, n_stage1_passed, n_programs_generated,
+                          best_loss_ratio, best_novelty_score
+                   FROM experiments
+                   WHERE timestamp >= ? AND status = 'completed'
+                   ORDER BY timestamp ASC
+                   LIMIT 1""",
+                (decision_ts,),
+            ).fetchone()
+
+            if exp_row is None:
+                continue
+
+            if mode not in mode_outcomes:
+                mode_outcomes[mode] = {"total": 0, "s1_any": 0, "s1_total": 0,
+                                       "programs_total": 0}
+            stats = mode_outcomes[mode]
+            stats["total"] += 1
+            s1 = exp_row["n_stage1_passed"] or 0
+            stats["s1_total"] += s1
+            stats["programs_total"] += exp_row["n_programs_generated"] or 0
+            if s1 > 0:
+                stats["s1_any"] += 1
+
+        result["total_decisions"] = sum(s["total"] for s in mode_outcomes.values())
+
+        # Compute per-mode statistics and penalties
+        overall_success_rate = 0.0
+        total_with_s1 = sum(s["s1_any"] for s in mode_outcomes.values())
+        total_decisions = result["total_decisions"]
+        if total_decisions > 0:
+            overall_success_rate = total_with_s1 / total_decisions
+
+        for mode, stats in mode_outcomes.items():
+            n = stats["total"]
+            success_rate = stats["s1_any"] / n if n > 0 else 0
+            s1_per_program = (stats["s1_total"] / stats["programs_total"]
+                              if stats["programs_total"] > 0 else 0)
+            result["mode_stats"][mode] = {
+                "n_decisions": n,
+                "success_rate": round(success_rate, 3),
+                "s1_per_program": round(s1_per_program, 4),
+                "s1_total": stats["s1_total"],
+                "consecutive_failures": 0,  # filled below
+            }
+
+            # Count consecutive recent failures for this mode
+            consec = 0
+            for row2 in rows:
+                chosen2 = row2["chosen_experiments_json"]
+                try:
+                    c2 = json.loads(chosen2) if isinstance(chosen2, str) else chosen2
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not c2 or not isinstance(c2[0], dict):
+                    continue
+                if c2[0].get("mode") != mode:
+                    continue
+                exp2 = self.nb.conn.execute(
+                    """SELECT n_stage1_passed FROM experiments
+                       WHERE timestamp >= ? AND status = 'completed'
+                       ORDER BY timestamp ASC LIMIT 1""",
+                    (row2["timestamp"],),
+                ).fetchone()
+                if exp2 and (exp2["n_stage1_passed"] or 0) == 0:
+                    consec += 1
+                else:
+                    break
+            result["mode_stats"][mode]["consecutive_failures"] = consec
+
+            # Penalty: reduce weight for modes that consistently fail.
+            # Minimum 5 decisions before penalizing to avoid noise.
+            # Penalty scales from 1.0 (at or above average) to 0.3 (at 0% success).
+            if n >= 5 and overall_success_rate > 0:
+                relative = success_rate / max(overall_success_rate, 0.01)
+                penalty = round(max(0.3, min(1.0, relative)), 2)
+            else:
+                penalty = 1.0
+            # Extra penalty for recent consecutive failures (3+ in a row)
+            if consec >= 3:
+                penalty = round(max(0.3, penalty * 0.7), 2)
+            result["mode_penalties"][mode] = penalty
 
         return result
 
@@ -3022,41 +3077,26 @@ class ExperimentAnalytics:
 
         programs = [dict(r) for r in rows]
 
-        # Extract ops list from graph_json
-        for p in programs:
-            ops = []
-            try:
-                if p.get("graph_json"):
-                    graph = json.loads(p["graph_json"])
-                    nodes = graph.get("nodes")
-                    if isinstance(nodes, dict):
-                        node_iter = nodes.values()
-                    elif isinstance(nodes, list):
-                        node_iter = nodes
-                    else:
-                        node_iter = []
-                    for n in node_iter:
-                        op = n.get("op") or n.get("op_name") if isinstance(n, dict) else None
-                        if op and op not in ("input", "output"):
-                            ops.append(op)
-            except (json.JSONDecodeError, TypeError):
-                pass
-            p["ops"] = ops
-            p.pop("graph_json", None)
-
-        # Find Pareto frontier: not dominated in (loss, flops)
+        # Find Pareto frontier: minimize (loss, flops) in O(n log n)
+        programs.sort(key=lambda r: (r["flops_forward"], r["final_loss"]))
         frontier = []
+        best_loss = float("inf")
         for p in programs:
-            dominated = False
-            for q in programs:
-                if (q["final_loss"] <= p["final_loss"]
-                        and q["flops_forward"] <= p["flops_forward"]
-                        and (q["final_loss"] < p["final_loss"]
-                             or q["flops_forward"] < p["flops_forward"])):
-                    dominated = True
-                    break
-            if not dominated:
+            loss = p["final_loss"]
+            if loss < best_loss:
                 frontier.append(p)
+                best_loss = loss
+
+        # Extract ops list only for the final frontier programs
+        for p in frontier:
+            ops = None
+            graph_json = p.get("graph_json")
+            if graph_json:
+                ops = self._extract_ops_fast(graph_json)
+                if ops is None:
+                    ops = self._extract_ops_fallback(graph_json)
+            p["ops"] = ops or []
+            p.pop("graph_json", None)
 
         return frontier
 
@@ -3316,3 +3356,417 @@ class ExperimentAnalytics:
     def get_current_grammar_weights(self) -> Dict[str, float]:
         """Get the default grammar weights for comparison."""
         return dict(GrammarConfig().category_weights)
+
+
+class RefinementAnalyzer:
+    """Data-driven refinement advisor that examines programs against population success data.
+
+    Produces concrete recommendations (swap/add/remove ops) with evidence,
+    behavioral gap analysis, and grammar hints for smarter mutations.
+    """
+
+    # Behavioral gap → improvement op suggestions
+    _GAP_HINTS: Dict[str, List[str]] = {
+        "fp_isotropy": ["rmsnorm", "layer_norm", "batch_norm"],
+        "fp_interaction_locality": ["softmax_attention", "state_space", "fourier_mixing"],
+        "fp_sensitivity_uniformity": ["residual", "skip_connection", "highway_gate"],
+        "fp_rank_ratio": ["low_rank_proj", "linear_proj", "bottleneck_proj"],
+        "fp_interaction_sparsity": ["topk_gate", "threshold_gate", "sparse_linear"],
+        "fp_intrinsic_dim": ["grouped_linear", "low_rank_proj", "bottleneck_proj"],
+    }
+
+    # Human-readable metric labels
+    _METRIC_LABELS: Dict[str, str] = {
+        "fp_isotropy": "Isotropy",
+        "fp_interaction_locality": "Interaction Locality",
+        "fp_interaction_sparsity": "Interaction Sparsity",
+        "fp_interaction_symmetry": "Interaction Symmetry",
+        "fp_interaction_hierarchy": "Interaction Hierarchy",
+        "fp_intrinsic_dim": "Intrinsic Dimensionality",
+        "fp_rank_ratio": "Rank Ratio",
+        "fp_jacobian_spectral_norm": "Jacobian Spectral Norm",
+        "fp_jacobian_effective_rank": "Jacobian Effective Rank",
+        "fp_sensitivity_uniformity": "Sensitivity Uniformity",
+    }
+
+    # Fingerprint metrics to analyze
+    _FP_METRICS = [
+        "fp_isotropy", "fp_interaction_locality", "fp_interaction_sparsity",
+        "fp_interaction_symmetry", "fp_interaction_hierarchy", "fp_intrinsic_dim",
+        "fp_rank_ratio", "fp_sensitivity_uniformity",
+    ]
+
+    def __init__(self, analytics: ExperimentAnalytics):
+        self.analytics = analytics
+        self.nb = analytics.nb
+
+    def analyze_program_for_refinement(
+        self, result_id: str, program_row: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Analyze a program against population data and produce refinement recommendations."""
+        graph_json = program_row.get("graph_json")
+        if isinstance(graph_json, dict):
+            graph_json = json.dumps(graph_json)
+        program_ops = ExperimentAnalytics._extract_ops_fast(graph_json or "") or []
+
+        # Map ops to categories
+        op_categories: Dict[str, str] = {}
+        for op_name in program_ops:
+            try:
+                prim = get_primitive(op_name)
+                op_categories[op_name] = prim.category.value
+            except Exception:
+                op_categories[op_name] = "unknown"
+
+        # Fetch population op stats
+        op_stats_rows = self.nb.get_op_success_rates()
+        pop_s1_rates: Dict[str, float] = {}
+        pop_s0_rates: Dict[str, float] = {}
+        pop_n_used: Dict[str, int] = {}
+        pop_categories: Dict[str, str] = {}
+
+        for row in op_stats_rows:
+            op = str(row.get("op_name", ""))
+            n_used = int(row.get("n_used") or 0)
+            n_s1 = int(row.get("n_stage1_passed") or 0)
+            n_s0 = int(row.get("n_stage0_passed") or 0)
+            pop_n_used[op] = n_used
+            pop_s1_rates[op] = n_s1 / n_used if n_used > 0 else 0.0
+            pop_s0_rates[op] = n_s0 / n_used if n_used > 0 else 0.0
+            try:
+                prim = get_primitive(op)
+                pop_categories[op] = prim.category.value
+            except Exception:
+                pop_categories[op] = "unknown"
+
+        # Compute mean S1 rate across ops with sufficient data
+        qualified_rates = [
+            pop_s1_rates[op] for op, n in pop_n_used.items() if n >= 5
+        ]
+        mean_s1_rate = (
+            sum(qualified_rates) / len(qualified_rates) if qualified_rates else 0.0
+        )
+
+        n_programs_total = sum(pop_n_used.values()) // max(1, len(pop_n_used)) if pop_n_used else 0
+        n_stage1_passed = sum(
+            int(r.get("n_stage1_passed") or 0) for r in op_stats_rows
+        ) // max(1, len(op_stats_rows)) if op_stats_rows else 0
+
+        if not program_ops and not op_stats_rows:
+            return self._empty_analysis(result_id, "no_data")
+
+        # Per-op health cards
+        op_health = self._build_op_health(
+            program_ops, op_categories, pop_s1_rates, pop_s0_rates,
+            pop_n_used, pop_categories, mean_s1_rate,
+        )
+
+        # Recommended additions
+        recommended_additions = self._build_recommended_additions(
+            program_ops, pop_s1_rates, pop_n_used, pop_categories, mean_s1_rate,
+        )
+
+        # Behavioral gap analysis
+        behavioral_gaps = self._build_behavioral_gaps(program_row)
+
+        # Build recipe
+        recipe = self._build_recipe(
+            op_health, behavioral_gaps, program_row, mean_s1_rate,
+        )
+
+        analysis_quality = "full" if qualified_rates else ("partial" if op_stats_rows else "no_data")
+
+        return {
+            "result_id": result_id,
+            "graph_fingerprint": program_row.get("graph_fingerprint", ""),
+            "program_ops": program_ops,
+            "op_health": op_health,
+            "recommended_additions": recommended_additions,
+            "behavioral_gaps": behavioral_gaps,
+            "recipe": recipe,
+            "population_stats": {
+                "n_programs_total": n_programs_total,
+                "n_stage1_passed": n_stage1_passed,
+                "mean_s1_rate": round(mean_s1_rate, 4),
+            },
+            "analysis_quality": analysis_quality,
+        }
+
+    def _build_op_health(
+        self,
+        program_ops: List[str],
+        op_categories: Dict[str, str],
+        pop_s1_rates: Dict[str, float],
+        pop_s0_rates: Dict[str, float],
+        pop_n_used: Dict[str, int],
+        pop_categories: Dict[str, str],
+        mean_s1_rate: float,
+    ) -> List[Dict[str, Any]]:
+        """Build per-op health cards with recommendations."""
+        cards: List[Dict[str, Any]] = []
+        program_op_set = set(program_ops)
+
+        for op_name in program_ops:
+            n = pop_n_used.get(op_name, 0)
+            s1 = pop_s1_rates.get(op_name, 0.0)
+            s0 = pop_s0_rates.get(op_name, 0.0)
+            cat = op_categories.get(op_name, "unknown")
+
+            # Classify health
+            if n < 5:
+                health = "untested"
+                recommendation = "investigate"
+            elif s0 < 0.5 and n >= 5:
+                health = "risky"
+                recommendation = "swap"
+            elif s1 < mean_s1_rate * 0.5 and n >= 10:
+                health = "weak"
+                recommendation = "swap"
+            elif s1 >= mean_s1_rate * 1.2 and n >= 5:
+                health = "strong"
+                recommendation = "keep"
+            else:
+                health = "neutral"
+                recommendation = "keep"
+
+            # Find swap candidates: same category, higher S1, not in program
+            swap_candidates: List[Dict[str, Any]] = []
+            if recommendation in ("swap", "investigate"):
+                same_cat_ops = [
+                    (op, pop_s1_rates[op])
+                    for op, c in pop_categories.items()
+                    if c == cat and op not in program_op_set
+                    and pop_n_used.get(op, 0) >= 5
+                    and pop_s1_rates.get(op, 0.0) > s1
+                ]
+                same_cat_ops.sort(key=lambda x: x[1], reverse=True)
+                swap_candidates = [
+                    {"op_name": op, "s1_rate": round(rate, 4)}
+                    for op, rate in same_cat_ops[:3]
+                ]
+
+            cards.append({
+                "op_name": op_name,
+                "category": cat,
+                "global_s1_rate": round(s1, 4),
+                "global_s0_rate": round(s0, 4),
+                "n_used": n,
+                "health": health,
+                "recommendation": recommendation,
+                "swap_candidates": swap_candidates,
+            })
+
+        return cards
+
+    def _build_recommended_additions(
+        self,
+        program_ops: List[str],
+        pop_s1_rates: Dict[str, float],
+        pop_n_used: Dict[str, int],
+        pop_categories: Dict[str, str],
+        mean_s1_rate: float,
+    ) -> List[Dict[str, Any]]:
+        """Find high-performing ops not in this program."""
+        program_op_set = set(program_ops)
+        candidates: List[Dict[str, Any]] = []
+
+        for op_name, s1 in pop_s1_rates.items():
+            if op_name in program_op_set:
+                continue
+            n = pop_n_used.get(op_name, 0)
+            if n < 5 or s1 < mean_s1_rate:
+                continue
+            freq_score = s1 * math.log1p(n)
+            candidates.append({
+                "op_name": op_name,
+                "category": pop_categories.get(op_name, "unknown"),
+                "global_s1_rate": round(s1, 4),
+                "top_performer_frequency": n,
+                "score": freq_score,
+                "rationale": f"S1 rate {s1:.1%} across {n} uses, above population mean",
+            })
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        for c in candidates:
+            del c["score"]
+        return candidates[:5]
+
+    def _build_behavioral_gaps(
+        self, program_row: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Compare program fingerprint metrics to population S1 survivor means."""
+        gaps: List[Dict[str, Any]] = []
+
+        # Fetch S1 survivor stats from recent experiments
+        try:
+            rows = self.nb.conn.execute(
+                """SELECT {} FROM program_results
+                   WHERE stage1_passed = 1""".format(
+                    ", ".join(self._FP_METRICS)
+                )
+            ).fetchall()
+        except Exception:
+            return gaps
+
+        if len(rows) < 3:
+            return gaps
+
+        # Compute population means and stds
+        pop_stats: Dict[str, Tuple[float, float]] = {}
+        for metric in self._FP_METRICS:
+            values = [
+                float(r[metric]) for r in rows
+                if r[metric] is not None
+                and not math.isnan(float(r[metric]))
+                and not math.isinf(float(r[metric]))
+            ]
+            if len(values) >= 3:
+                mean_val = sum(values) / len(values)
+                std_val = (sum((v - mean_val) ** 2 for v in values) / len(values)) ** 0.5
+                pop_stats[metric] = (mean_val, max(std_val, 1e-8))
+
+        for metric, (pop_mean, pop_std) in pop_stats.items():
+            prog_val = program_row.get(metric)
+            if prog_val is None:
+                continue
+            try:
+                prog_val = float(prog_val)
+                if math.isnan(prog_val) or math.isinf(prog_val):
+                    continue
+            except (TypeError, ValueError):
+                continue
+
+            z_score = (prog_val - pop_mean) / pop_std
+            abs_z = abs(z_score)
+            if abs_z < 1.0:
+                continue
+
+            severity = "low" if abs_z < 1.5 else ("medium" if abs_z < 2.0 else "high")
+            improvement_ops = self._GAP_HINTS.get(metric, [])
+
+            gaps.append({
+                "metric": metric,
+                "label": self._METRIC_LABELS.get(metric, metric),
+                "program_value": round(prog_val, 4),
+                "population_mean": round(pop_mean, 4),
+                "population_std": round(pop_std, 4),
+                "z_score": round(z_score, 2),
+                "severity": severity,
+                "improvement_ops": improvement_ops,
+            })
+
+        gaps.sort(key=lambda g: abs(g["z_score"]), reverse=True)
+        return gaps
+
+    def _build_recipe(
+        self,
+        op_health: List[Dict[str, Any]],
+        behavioral_gaps: List[Dict[str, Any]],
+        program_row: Dict[str, Any],
+        mean_s1_rate: float,
+    ) -> Dict[str, Any]:
+        """Combine analysis into actionable recipe with grammar hints."""
+        risky_ops = [h for h in op_health if h["health"] == "risky" and h["n_used"] >= 8]
+        weak_ops = [h for h in op_health if h["health"] == "weak"]
+        significant_gaps = [g for g in behavioral_gaps if g["severity"] in ("medium", "high")]
+
+        # Determine exclude/boost ops
+        exclude_ops = [h["op_name"] for h in risky_ops]
+        boost_ops: Dict[str, float] = {}
+        for h in op_health:
+            if h["health"] == "strong":
+                boost_ops[h["op_name"]] = min(3.0, 1.5)
+            for sc in h.get("swap_candidates", []):
+                boost_ops[sc["op_name"]] = min(3.0, 2.0)
+
+        # Categories to boost from gap hints
+        add_categories: Dict[str, float] = {}
+        for gap in significant_gaps:
+            for op in gap.get("improvement_ops", []):
+                try:
+                    prim = get_primitive(op)
+                    cat = prim.category.value
+                    add_categories[cat] = max(add_categories.get(cat, 1.0), 1.5)
+                except Exception:
+                    pass
+
+        # Determine intent
+        loss_ratio = program_row.get("loss_ratio")
+        param_count = program_row.get("param_count") or program_row.get("graph_n_params_estimate")
+        has_reasonable_loss = isinstance(loss_ratio, (int, float)) and float(loss_ratio) < 1.1
+        has_high_params = isinstance(param_count, (int, float)) and float(param_count) > 100000
+
+        if risky_ops:
+            recommended_intent = "quality"
+            primary_target = f"Replace {len(risky_ops)} risky op(s) with proven alternatives"
+            confidence = "high" if len(risky_ops) >= 2 else "medium"
+        elif len(weak_ops) >= 2:
+            recommended_intent = "quality"
+            primary_target = f"Improve {len(weak_ops)} underperforming ops"
+            confidence = "medium"
+        elif significant_gaps:
+            recommended_intent = "novelty"
+            top_gap = significant_gaps[0]
+            primary_target = f"Address {top_gap['label']} gap (z={top_gap['z_score']:+.1f})"
+            confidence = "medium" if len(significant_gaps) >= 2 else "low"
+        elif has_high_params and has_reasonable_loss:
+            recommended_intent = "compression"
+            primary_target = "Reduce parameter count while maintaining quality"
+            confidence = "medium"
+        else:
+            recommended_intent = "balanced"
+            primary_target = "General improvement across all dimensions"
+            confidence = "low"
+
+        # Human summary
+        parts: List[str] = []
+        if risky_ops:
+            parts.append(f"{len(risky_ops)} risky op(s) should be replaced")
+        if weak_ops:
+            parts.append(f"{len(weak_ops)} weak op(s) could be improved")
+        if significant_gaps:
+            gap_names = [g["label"] for g in significant_gaps[:3]]
+            parts.append(f"behavioral gaps in {', '.join(gap_names)}")
+        if not parts:
+            parts.append("No major issues detected; balanced refinement recommended")
+        human_summary = "; ".join(parts) + "."
+
+        return {
+            "recommended_intent": recommended_intent,
+            "confidence": confidence,
+            "primary_target": primary_target,
+            "grammar_hints": {
+                "exclude_ops": exclude_ops,
+                "boost_ops": boost_ops,
+                "add_categories": add_categories,
+            },
+            "human_summary": human_summary,
+        }
+
+    def _empty_analysis(self, result_id: str, quality: str) -> Dict[str, Any]:
+        """Return empty analysis structure."""
+        return {
+            "result_id": result_id,
+            "graph_fingerprint": "",
+            "program_ops": [],
+            "op_health": [],
+            "recommended_additions": [],
+            "behavioral_gaps": [],
+            "recipe": {
+                "recommended_intent": "balanced",
+                "confidence": "low",
+                "primary_target": "Insufficient data for analysis",
+                "grammar_hints": {
+                    "exclude_ops": [],
+                    "boost_ops": {},
+                    "add_categories": {},
+                },
+                "human_summary": "Insufficient population data for analysis.",
+            },
+            "population_stats": {
+                "n_programs_total": 0,
+                "n_stage1_passed": 0,
+                "mean_s1_rate": 0.0,
+            },
+            "analysis_quality": quality,
+        }

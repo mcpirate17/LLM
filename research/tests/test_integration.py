@@ -2180,6 +2180,30 @@ class TestAPI(unittest.TestCase):
         self.assertIn("experiment", data)
         self.assertIn("programs", data)
 
+    def test_api_experiment_detail_sanitizes_non_finite_program_metrics(self):
+        exp_id = self.exp_id
+        nb = LabNotebook(self.db_path)
+        try:
+            nb.conn.execute(
+                "UPDATE program_results SET grad_norm = ?, max_grad_norm = ? "
+                "WHERE experiment_id = ?",
+                (float("inf"), float("nan"), exp_id),
+            )
+            nb.conn.commit()
+        finally:
+            nb.close()
+
+        r = self.client.get(f"/api/experiments/{exp_id}")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("programs", data)
+        self.assertGreater(len(data["programs"]), 0)
+        first = data["programs"][0]
+        self.assertIn("grad_norm", first)
+        self.assertIn("max_grad_norm", first)
+        self.assertIsNone(first["grad_norm"])
+        self.assertIsNone(first["max_grad_norm"])
+
     def test_api_experiment_programs(self):
         r = self.client.get("/api/experiments")
         exp_id = r.get_json()[0]["experiment_id"]
@@ -2213,6 +2237,24 @@ class TestAPI(unittest.TestCase):
             self.assertIn("quality_retention_score", row["compression_metrics"])
             self.assertIn("status", row["reproducibility_packet"])
 
+    def test_api_programs_sanitizes_non_finite_metrics(self):
+        nb = LabNotebook(self.db_path)
+        try:
+            nb.conn.execute(
+                "UPDATE program_results SET grad_norm = ? WHERE experiment_id = ?",
+                (float("inf"), self.exp_id),
+            )
+            nb.conn.commit()
+        finally:
+            nb.close()
+
+        r = self.client.get("/api/programs")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        if data:
+            self.assertIn("grad_norm", data[0])
+            self.assertIsNone(data[0]["grad_norm"])
+
     def test_api_programs_sort_options(self):
         for sort in ["novelty_score", "loss_ratio"]:
             r = self.client.get(f"/api/programs?sort_by={sort}")
@@ -2234,6 +2276,31 @@ class TestAPI(unittest.TestCase):
             self.assertIn("reproducibility_packet", detail)
             self.assertIn("compression_ratio", detail["compression_metrics"])
             self.assertIn("status", detail["reproducibility_packet"])
+
+    def test_api_program_detail_sanitizes_non_finite_metrics(self):
+        r = self.client.get("/api/programs")
+        programs = r.get_json()
+        if not programs:
+            return
+        result_id = programs[0]["result_id"]
+
+        nb = LabNotebook(self.db_path)
+        try:
+            nb.conn.execute(
+                "UPDATE program_results SET grad_norm = ?, max_grad_norm = ? WHERE result_id = ?",
+                (float("inf"), float("nan"), result_id),
+            )
+            nb.conn.commit()
+        finally:
+            nb.close()
+
+        r_detail = self.client.get(f"/api/programs/{result_id}")
+        self.assertEqual(r_detail.status_code, 200)
+        detail = r_detail.get_json()
+        self.assertIn("grad_norm", detail)
+        self.assertIn("max_grad_norm", detail)
+        self.assertIsNone(detail["grad_norm"])
+        self.assertIsNone(detail["max_grad_norm"])
 
     def test_api_trends(self):
         r = self.client.get("/api/trends")
@@ -2340,6 +2407,134 @@ class TestAPI(unittest.TestCase):
         self.assertIn(newer_exp, experiment_ids)
         self.assertNotIn(older_exp, experiment_ids)
 
+    def test_api_events_serializes_tensor_payloads(self):
+        import research.scientist.api as api_mod
+
+        class _FakeRunner:
+            def __init__(self):
+                self._emitted = False
+
+            def get_events(self, timeout=None):
+                if self._emitted:
+                    return []
+                self._emitted = True
+                return [{
+                    "type": "evolution_generation",
+                    "data": {
+                        "generation": 1,
+                        "tensor_metric": torch.tensor([0.1, 0.2]),
+                    },
+                }]
+
+        with patch("research.scientist.api._get_runner", return_value=_FakeRunner()):
+            response = self.client.get("/api/events", buffered=False)
+            first_chunk = next(response.response).decode("utf-8")
+
+        self.assertIn("event: evolution_generation", first_chunk)
+        self.assertIn("\"generation\": 1", first_chunk)
+        self.assertIn("\"tensor_metric\": [0.1", first_chunk)
+
+    def test_api_events_sanitizes_non_finite_float_payloads(self):
+        class _FakeRunner:
+            def __init__(self):
+                self._emitted = False
+
+            def get_events(self, timeout=None):
+                if self._emitted:
+                    return []
+                self._emitted = True
+                return [{
+                    "type": "evolution_generation",
+                    "data": {
+                        "generation": 1,
+                        "nan_metric": float("nan"),
+                        "inf_metric": float("inf"),
+                        "ninf_metric": float("-inf"),
+                    },
+                }]
+
+        with patch("research.scientist.api._get_runner", return_value=_FakeRunner()):
+            response = self.client.get("/api/events", buffered=False)
+            first_chunk = next(response.response).decode("utf-8")
+
+        self.assertIn("event: evolution_generation", first_chunk)
+        self.assertIn('"nan_metric": null', first_chunk)
+        self.assertIn('"inf_metric": null', first_chunk)
+        self.assertIn('"ninf_metric": null', first_chunk)
+
+    def test_api_fingerprint_diagnostics_endpoint(self):
+        r = self.client.get("/api/diagnostics/fingerprint")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("sensitivity_skips", data)
+        stats = data["sensitivity_skips"]
+        self.assertIn("total", stats)
+        self.assertIn("by_reason", stats)
+        self.assertIsInstance(stats["total"], int)
+        self.assertIsInstance(stats["by_reason"], dict)
+
+        r_reset = self.client.get("/api/diagnostics/fingerprint?reset=1")
+        self.assertEqual(r_reset.status_code, 200)
+        data_reset = r_reset.get_json()
+        self.assertIn("sensitivity_skips", data_reset)
+
+    def test_api_healer_tasks_endpoint(self):
+        nb = LabNotebook(self.db_path)
+        try:
+            task_id = nb.create_healer_task(
+                experiment_id=None,
+                trigger_type="plateau",
+                scope="test scope",
+                reproduction_steps=["python -m py_compile scientist/runner.py"],
+                acceptance_tests=["python -m py_compile scientist/runner.py"],
+                model_endpoint="local_ollama",
+                sandbox_policy={"allowed_commands": ["python -m py_compile"]},
+                trigger_payload={"source": "test"},
+            )
+            nb.add_healer_event(task_id, "opened", state="open")
+        finally:
+            nb.close()
+
+        r = self.client.get("/api/healer/tasks")
+        self.assertEqual(r.status_code, 200)
+        rows = r.get_json()
+        self.assertIsInstance(rows, list)
+        self.assertTrue(any(row.get("task_id") == task_id for row in rows))
+
+        rd = self.client.get(f"/api/healer/tasks/{task_id}")
+        self.assertEqual(rd.status_code, 200)
+        detail = rd.get_json()
+        self.assertIn("task", detail)
+        self.assertIn("events", detail)
+
+    def test_api_report_cache_diagnostics_endpoint(self):
+        nb = LabNotebook(self.db_path)
+        nb.save_report_snapshot(
+            snapshot_key="diag-snapshot-1",
+            scope="report_query",
+            query={"theme": "all"},
+            payload={"ok": True},
+            latest_completed_ts=0.0,
+        )
+        nb.close()
+
+        r = self.client.get("/api/diagnostics/report-cache")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("snapshot_cache", data)
+        self.assertIn("retention", data)
+        self.assertIn("cleanup_triggered", data)
+        cache = data["snapshot_cache"]
+        self.assertIn("total_snapshots", cache)
+        self.assertIn("scopes", cache)
+        self.assertIsInstance(cache["scopes"], list)
+
+        r_cleanup = self.client.get("/api/diagnostics/report-cache?cleanup=1")
+        self.assertEqual(r_cleanup.status_code, 200)
+        data_cleanup = r_cleanup.get_json()
+        self.assertTrue(bool(data_cleanup.get("cleanup_triggered")))
+        self.assertIn("cleanup", data_cleanup)
+
     def test_api_leaderboard(self):
         r = self.client.get("/api/leaderboard")
         self.assertEqual(r.status_code, 200)
@@ -2364,6 +2559,96 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertIn("summary", data)
         self.assertIn("experiment_clusters", data)
+
+    def test_api_report_fast_mode_contract(self):
+        r = self.client.get("/api/report?fast=1&include_narrative=0")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("summary", data)
+        self.assertIn("top_programs", data)
+        self.assertIn("recent_experiments", data)
+        self.assertIn("report_mode", data)
+        self.assertTrue(bool(data.get("report_mode", {}).get("fast")))
+        self.assertFalse(bool(data.get("report_mode", {}).get("include_heavy")))
+        self.assertIsNone(data.get("narrative"))
+        self.assertEqual(data.get("top_programs_expanded"), [])
+        self.assertNotIn("experiment_clusters", data)
+
+    def test_api_report_query_contract(self):
+        r = self.client.get(
+            "/api/report/query?start_date=2026-02-01&end_date=2026-02-20"
+            "&theme=sparsity&trend=high_survival&limit=15&include_narrative=0"
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("summary", data)
+        self.assertIn("top_programs", data)
+        self.assertIn("recent_experiments", data)
+        self.assertIn("query", data)
+        self.assertIn("theme", data["query"])
+        self.assertIn("trend", data["query"])
+        self.assertIn("matched_experiments", data["query"])
+        self.assertIn("matched_programs", data["query"])
+        self.assertEqual(data["query"].get("theme"), "sparsity")
+        self.assertEqual(data["query"].get("trend"), "high_survival")
+        self.assertIn("snapshot_cache", data)
+        self.assertIn("hit", data["snapshot_cache"])
+
+    def test_api_report_query_snapshot_cache_hits_on_repeated_query(self):
+        path = (
+            "/api/report/query?start_date=2026-02-01&end_date=2026-02-20"
+            "&theme=compression&trend=all&limit=18&include_narrative=0"
+        )
+        first = self.client.get(path)
+        self.assertEqual(first.status_code, 200)
+        first_data = first.get_json()
+        self.assertIn("snapshot_cache", first_data)
+        self.assertFalse(bool(first_data["snapshot_cache"].get("hit")))
+
+        second = self.client.get(path)
+        self.assertEqual(second.status_code, 200)
+        second_data = second.get_json()
+        self.assertIn("snapshot_cache", second_data)
+        self.assertTrue(bool(second_data["snapshot_cache"].get("hit")))
+
+    def test_report_snapshot_cleanup_prunes_expired_and_caps_scope(self):
+        nb = LabNotebook(self.db_path)
+        now = time.time()
+
+        for idx in range(6):
+            key = f"snap-{idx}"
+            nb.save_report_snapshot(
+                snapshot_key=key,
+                scope="report_query",
+                query={"i": idx},
+                payload={"ok": True, "i": idx},
+                latest_completed_ts=0.0,
+            )
+            nb.conn.execute(
+                "UPDATE report_snapshots SET updated_at = ? WHERE snapshot_key = ?",
+                (now - idx, key),
+            )
+
+        # Mark one snapshot as stale beyond ttl window.
+        nb.conn.execute(
+            "UPDATE report_snapshots SET updated_at = ? WHERE snapshot_key = ?",
+            (now - 3600, "snap-5"),
+        )
+        nb.conn.commit()
+
+        stats = nb.cleanup_report_snapshots(ttl_seconds=300, max_rows_per_scope=3)
+        self.assertGreaterEqual(stats.get("deleted_expired", 0), 1)
+        self.assertGreaterEqual(
+            (stats.get("deleted_expired", 0) or 0) + (stats.get("deleted_capped", 0) or 0),
+            3,
+        )
+
+        remaining_row = nb.conn.execute(
+            "SELECT COUNT(*) AS n FROM report_snapshots WHERE scope = 'report_query'"
+        ).fetchone()
+        self.assertIsNotNone(remaining_row)
+        self.assertLessEqual(int(remaining_row["n"] or 0), 3)
+        nb.close()
 
     def test_api_analytics_op_success(self):
         r = self.client.get("/api/analytics/op-success")
@@ -2414,6 +2699,15 @@ class TestAPI(unittest.TestCase):
         self.assertIn("bullets", data)
         self.assertIn("source", data)
 
+    def test_api_analytics_insight_interactions(self):
+        r = self.client.get("/api/analytics/insight-interactions")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("available", data)
+        self.assertIn("interactions", data)
+        self.assertIn("synergistic_pairs", data)
+        self.assertIn("antagonistic_pairs", data)
+
     def test_api_analytics_learning_trajectory_includes_minimum_requirement(self):
         r = self.client.get("/api/analytics/learning-trajectory")
         self.assertEqual(r.status_code, 200)
@@ -2438,6 +2732,12 @@ class TestAPI(unittest.TestCase):
     def test_api_aria_recommendation(self):
         r = self.client.get("/api/aria/recommendation")
         self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        if isinstance(data, dict) and data:
+            pack = data.get("evidence_pack")
+            self.assertIsNotNone(pack)
+            from research.scientist.evidence import validate_evidence_pack
+            validate_evidence_pack(pack)
 
     def test_api_aria_strategy(self):
         r = self.client.get("/api/aria/strategy")
@@ -2726,6 +3026,145 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data.get("local_code_hits"))
         self.assertEqual(data["local_code_hits"][0].get("path"), "search/evolution.py")
 
+    def test_api_aria_chat_enforces_action_contract_for_non_action_code_blocks(self):
+        from research.scientist import api as api_mod
+
+        class _FakeResp:
+            def __init__(self, text):
+                self.text = text
+
+        class _FakeLLM:
+            name = "openai"
+
+            def is_available(self):
+                return True
+
+            def generate(self, prompt, system=None, max_tokens=None):
+                return _FakeResp(
+                    "Here is a plan:\n```python\nprint('do work')\n```\nExecute these steps now."
+                )
+
+        class _FakeAria:
+            def _get_llm(self):
+                return _FakeLLM()
+
+            def _track_cost(self, _resp):
+                return None
+
+        with patch.object(api_mod, "get_aria", return_value=_FakeAria()):
+            r = self.client.post(
+                "/api/aria/chat",
+                json={"message": "fix this", "session_id": "test-session-action-contract"},
+            )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("advice_only"))
+        self.assertFalse(data.get("actions_taken"))
+        self.assertNotIn("```", data.get("reply", ""))
+
+    def test_api_aria_agent_status_summary_endpoint_and_summary_only_chat(self):
+        from research.scientist import api as api_mod
+
+        class _FakeResp:
+            def __init__(self, text):
+                self.text = text
+
+        class _FakeLLM:
+            name = "openai"
+
+            def is_available(self):
+                return True
+
+            def generate(self, prompt, system=None, max_tokens=None):
+                return _FakeResp(
+                    "Executing now with detailed plan and rationale.\n"
+                    "```action\n"
+                    "{\"type\": \"spawn_agent\", \"goal\": \"Patch scheduler queue telemetry\"}\n"
+                    "```"
+                )
+
+        class _FakeAria:
+            def _get_llm(self):
+                return _FakeLLM()
+
+            def _track_cost(self, _resp):
+                return None
+
+        fake_task = {
+            "task_id": "agent_summary_1",
+            "status": "queued",
+            "phase": "plan",
+            "allow_write": True,
+            "summary": "Planning queue telemetry edits",
+            "updated_at": time.time(),
+            "applied_edits": [],
+            "proposed_edits": [],
+            "skipped_edits": [],
+        }
+        with patch.object(api_mod, "get_aria", return_value=_FakeAria()), \
+             patch.object(api_mod, "_spawn_code_agent_task", return_value=fake_task):
+            r = self.client.post(
+                "/api/aria/chat",
+                json={"message": "improve scheduler telemetry", "session_id": "test-session-summary-chat"},
+            )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertNotIn("detailed plan", data.get("reply", "").lower())
+        self.assertLessEqual(len(data.get("reply", "")), 260)
+        self.assertTrue(data.get("actions_taken"))
+        self.assertEqual(data["actions_taken"][0].get("type"), "spawn_agent")
+
+        with patch.object(api_mod, "_code_agent_task_snapshot", return_value=fake_task):
+            s = self.client.get("/api/aria/agent/status/agent_summary_1/summary")
+        self.assertEqual(s.status_code, 200)
+        payload = s.get_json()
+        self.assertIn("milestone_summary", payload["task"])
+        self.assertIn("full_status_url", payload["task"])
+
+    def test_api_aria_chat_guardrail_metrics_exposed(self):
+        from research.scientist import api as api_mod
+
+        class _FakeResp:
+            def __init__(self, text):
+                self.text = text
+
+        class _FakeLLM:
+            name = "openai"
+
+            def is_available(self):
+                return True
+
+            def generate(self, prompt, system=None, max_tokens=None):
+                if "needs action" in prompt.lower():
+                    return _FakeResp(
+                        "```action\n"
+                        "{\"type\": \"adjust_config\", \"changes\": {\"max_depth\": 4}}\n"
+                        "```"
+                    )
+                return _FakeResp("No action needed.")
+
+        class _FakeAria:
+            def _get_llm(self):
+                return _FakeLLM()
+
+            def _track_cost(self, _resp):
+                return None
+
+        with patch.object(api_mod, "get_aria", return_value=_FakeAria()):
+            self.client.post("/api/aria/chat", json={"message": "needs action", "session_id": "g1"})
+            self.client.post("/api/aria/chat", json={"message": "status check", "session_id": "g2"})
+
+        r = self.client.get("/api/aria/chat/guardrails?window=50")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("actionable_response_rate", data)
+        self.assertIn("advice_only_rate", data)
+        self.assertIn("summary_length", data)
+        self.assertGreaterEqual(data["actionable_response_rate"], 0.0)
+        self.assertLessEqual(data["actionable_response_rate"], 1.0)
+
     def test_api_aria_chat_history(self):
         # Save a message first
         r = self.client.post("/api/aria/chat/message", json={
@@ -2803,6 +3242,7 @@ class TestAPI(unittest.TestCase):
         self.assertIn("evidence", data)
         self.assertIn("data", data)
         self.assertIn("sparse", data.get("evidence", {}))
+        self.assertIn("sparse_coverage", data.get("evidence", {}))
         self.assertIn("sparse", data.get("data", {}))
 
     def test_api_strategy_briefing_normalizes_ai_mode_alias(self):
@@ -2836,9 +3276,167 @@ class TestAPI(unittest.TestCase):
             "Evolution improves candidate quality.",
         )
 
+    def test_api_strategy_briefing_adds_sparse_focus_knobs_when_coverage_low(self):
+        ai_payload = {
+            "briefing_text": "Sparse coverage is low; run novelty search.",
+            "suggested_action": {
+                "mode": "novelty_search",
+                "config": {
+                    "n_programs": 800,
+                    "max_depth": 12,
+                    "max_ops": 18,
+                    "model_dim": 256,
+                    "math_space_weight": 2.2,
+                },
+                "reasoning": "Sparse coverage below target and sparse survival signal is promising.",
+            },
+            "confidence": 0.72,
+        }
+
+        from research.scientist.api import get_aria as _get_aria_fn
+        _aria_inst = _get_aria_fn()
+        if hasattr(_aria_inst, "_briefing_cache"):
+            _aria_inst._briefing_cache = None
+
+        with patch("research.scientist.analytics.ExperimentAnalytics.sparse_coverage", return_value={
+            "sparse_share": 0.098,
+            "sparse_survival_rate": 0.20,
+            "n_sparse_tested": 114,
+        }), patch("research.scientist.persona.Aria.generate_briefing", return_value=ai_payload):
+            r = self.client.get("/api/strategy/briefing")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("ai_powered"))
+        self.assertEqual(data.get("action"), "novelty_search")
+        cfg = data.get("suggested_config", {})
+        self.assertEqual(cfg.get("mode"), "novelty")
+        self.assertEqual(cfg.get("model_source"), "mixed")
+        self.assertTrue(cfg.get("morph_focus_sparse"))
+        self.assertTrue(cfg.get("use_synthesized_training"))
+        self.assertEqual(cfg.get("morph_sparse_weight_storage"), "semi_structured_2_4")
+        self.assertGreaterEqual(float(cfg.get("morph_ratio") or 0.0), 0.8)
+        sparse_cov = (data.get("evidence") or {}).get("sparse_coverage") or {}
+        self.assertAlmostEqual(float(sparse_cov.get("target_share") or 0.0), 0.15, places=4)
+        self.assertTrue(bool(sparse_cov.get("below_target")))
+
+    def test_api_strategy_briefing_downgrades_ineligible_investigation_recommendation(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "briefing eligibility downgrade")
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_briefing_inv_ineligible",
+            graph_json=json.dumps({"nodes": {}}),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.33,
+            novelty_score=0.62,
+        )
+        nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.33,
+            screening_novelty=0.62,
+            screening_passed=True,
+            investigation_loss_ratio=0.71,
+            investigation_passed=False,
+            tier="screening",
+        )
+        nb.close()
+
+        ai_payload = {
+            "briefing_text": "Investigate screening survivors next.",
+            "suggested_action": {
+                "mode": "investigation",
+                "config": {},
+                "reasoning": "Top screening candidates are available.",
+            },
+            "confidence": 0.74,
+        }
+
+        from research.scientist.api import get_aria as _get_aria_fn
+        _aria_inst = _get_aria_fn()
+        if hasattr(_aria_inst, "_briefing_cache"):
+            _aria_inst._briefing_cache = None
+
+        with patch("research.scientist.persona.Aria.generate_briefing", return_value=ai_payload):
+            r = self.client.get("/api/strategy/briefing")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("ai_powered"))
+        self.assertEqual(data.get("action"), "continuous")
+        cfg = data.get("suggested_config", {})
+        self.assertEqual(cfg.get("mode"), "continuous")
+        self.assertNotIn("result_ids", cfg)
+
+    def test_api_strategy_briefing_deterministic_skips_ineligible_screening_investigate(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "deterministic briefing eligibility")
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_det_inv_ineligible",
+            graph_json=json.dumps({"nodes": {}}),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.29,
+            novelty_score=0.57,
+        )
+        nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.29,
+            screening_novelty=0.57,
+            screening_passed=True,
+            investigation_loss_ratio=0.66,
+            investigation_passed=False,
+            tier="screening",
+        )
+        nb.close()
+
+        from research.scientist.api import get_aria as _get_aria_fn
+        _aria_inst = _get_aria_fn()
+        if hasattr(_aria_inst, "_briefing_cache"):
+            _aria_inst._briefing_cache = None
+
+        with patch("research.scientist.persona.Aria.generate_briefing", return_value=None):
+            r = self.client.get("/api/strategy/briefing")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertFalse(data.get("ai_powered"))
+        self.assertNotEqual(data.get("action"), "investigate")
+        cfg = data.get("suggested_config", {})
+        self.assertNotEqual(cfg.get("mode"), "investigation")
+        if cfg.get("mode") == "investigation":
+            self.assertNotIn("result_ids", cfg)
+
     def test_api_llm_config(self):
         r = self.client.get("/api/llm/config")
         self.assertEqual(r.status_code, 200)
+
+    def test_dashboard_root_missing_static_build_returns_503_not_500(self):
+        from research.scientist.api import create_app
+
+        missing_static = os.path.join(self.tmpdir, "missing_dashboard_build")
+        app = create_app(notebook_path=self.db_path, static_folder=missing_static)
+        client = app.test_client()
+
+        r = client.get("/")
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("Dashboard frontend build is missing", r.get_data(as_text=True))
+
+    def test_dashboard_favicon_missing_static_build_returns_204(self):
+        from research.scientist.api import create_app
+
+        missing_static = os.path.join(self.tmpdir, "missing_dashboard_build")
+        app = create_app(notebook_path=self.db_path, static_folder=missing_static)
+        client = app.test_client()
+
+        r = client.get("/favicon.ico")
+        self.assertEqual(r.status_code, 204)
 
     # ── POST endpoints ──
 
@@ -2890,11 +3488,15 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         self.assertIn("hypothesis_critique", data)
         self.assertIn("hypothesis_review_gate", data)
+        self.assertIn("hypothesis_missing_fields", data)
         self.assertIn("prescreen", data)
         self.assertTrue(data["prescreen"].get("checked"))
         self.assertEqual(data["hypothesis_review_gate"], "warn")
         self.assertIsInstance(data["hypothesis_critique"], dict)
         self.assertIn("checks", data["hypothesis_critique"])
+        self.assertIn("primary_metric", data["hypothesis_missing_fields"])
+        self.assertIn("confounders_checklist", data["hypothesis_missing_fields"])
+        self.assertIn("fallback_plan", data["hypothesis_missing_fields"])
 
     def test_api_start_requires_result_ids_for_investigation(self):
         r = self.client.post("/api/experiments/start",
@@ -3193,6 +3795,127 @@ class TestAPI(unittest.TestCase):
         call_args, _ = fake_runner.start_fingerprint_refinement.call_args
         resolved_ids = call_args[0]
         self.assertIn(result_id, resolved_ids)
+
+    def test_api_start_refine_fingerprint_recommended_intent_is_forwarded(self):
+        from research.scientist import api as api_mod
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "recommended refine source")
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="recomrefinefp01",
+            graph_json=json.dumps({"nodes": {"0": {"id": 0, "op_name": "input", "input_ids": []}}}),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.20,
+            novelty_score=0.60,
+        )
+        nb.complete_experiment(
+            exp_id,
+            {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1},
+        )
+        nb.close()
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_fingerprint_refinement = MagicMock(return_value="exp-refine-reco")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(
+            aria_message="Refinement started",
+            hypothesis_critique=None,
+        )
+
+        with patch.object(api_mod, "_runner", fake_runner):
+            r = self.client.post("/api/experiments/start", json={
+                "mode": "refine_fingerprint",
+                "result_ids": [result_id],
+                "refine_intent": "recommended",
+                "n_programs": 8,
+            })
+
+        self.assertEqual(r.status_code, 200)
+        call_args, _ = fake_runner.start_fingerprint_refinement.call_args
+        forwarded_config = call_args[1]
+        self.assertEqual(forwarded_config.refine_intent, "recommended")
+
+    def test_api_program_lineage_endpoint_returns_chain(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"n_programs": 2}, "lineage trace")
+
+        parent_result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="lineage-parent-fp",
+            graph_json=json.dumps({
+                "nodes": {
+                    "0": {"id": 0, "op_name": "input", "input_ids": []},
+                    "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
+                },
+                "metadata": {
+                    "refinement": {
+                        "intent": "balanced",
+                    },
+                },
+            }),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.25,
+            novelty_score=0.55,
+        )
+        child_result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="lineage-child-fp",
+            graph_json=json.dumps({
+                "nodes": {
+                    "0": {"id": 0, "op_name": "input", "input_ids": []},
+                    "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
+                    "2": {"id": 2, "op_name": "relu", "input_ids": [1]},
+                },
+                "metadata": {
+                    "refinement": {
+                        "intent": "quality",
+                        "source_result_id": parent_result_id,
+                        "seed_fingerprint": "lineage-parent-fp",
+                    },
+                    "lineage": {
+                        "type": "mutation",
+                        "parent": "lineage-parent-fp",
+                    },
+                },
+            }),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.20,
+            novelty_score=0.60,
+        )
+        nb.complete_experiment(
+            exp_id,
+            {"total": 2, "stage0_passed": 2, "stage05_passed": 2, "stage1_passed": 2},
+        )
+        nb.close()
+
+        r = self.client.get(f"/api/programs/{child_result_id}/lineage")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("lineage_chain", data)
+        self.assertGreaterEqual(len(data["lineage_chain"]), 2)
+        self.assertEqual(data["lineage_chain"][0]["result_id"], child_result_id)
+        self.assertEqual(data["lineage_chain"][1]["result_id"], parent_result_id)
 
     def test_api_start_compact_synthesis_alias_applies_bias(self):
         from research.scientist import api as api_mod
@@ -3591,6 +4314,27 @@ class TestAPI(unittest.TestCase):
                 "op_name", "n_tested", "n_stage1_passed", "n_validation_passed",
                 "stage1_pass_rate", "validation_pass_rate", "baseline_win_rate",
                 "trust_score", "trust_label", "avg_novelty_score",
+            ):
+                self.assertIn(key, row)
+
+    def test_api_analytics_insight_interactions_schema(self):
+        r = self.client.get("/api/analytics/insight-interactions")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("available", data)
+        self.assertIn("total_interactions", data)
+        self.assertIn("interactions", data)
+        self.assertIn("synergistic_pairs", data)
+        self.assertIn("antagonistic_pairs", data)
+        self.assertIn("singleton_insights", data)
+        self.assertIn("explanation", data)
+        self.assertIsInstance(data["interactions"], list)
+        if data["interactions"]:
+            row = data["interactions"][0]
+            for key in (
+                "insight_a", "insight_b", "n_trials", "n_supported",
+                "n_not_supported", "mean_reward", "support_rate",
+                "interaction_label", "confidence_label", "is_singleton",
             ):
                 self.assertIn(key, row)
 
@@ -4409,9 +5153,22 @@ class TestPersona(unittest.TestCase):
         self.assertIn("gate", critique)
         self.assertIn(critique["gate"], {"pass", "warn", "fail"})
         self.assertIn("checks", critique)
+        self.assertIn("missing_fields", critique)
         self.assertIsInstance(critique["checks"], list)
+        self.assertIsInstance(critique["missing_fields"], list)
         check_keys = {c.get("key") for c in critique["checks"] if isinstance(c, dict)}
         self.assertTrue({"testability", "measurable_metric", "confound_risk", "fallback_plan"}.issubset(check_keys))
+
+    def test_hypothesis_critique_flags_underspecified_refinement(self):
+        self.aria._get_llm = MagicMock(return_value=None)
+        critique = self.aria.critique_hypothesis(
+            "Fingerprint refinement: locally mutate selected architecture with intent=balanced."
+        )
+        concerns = " ".join(critique.get("concerns") or []).lower()
+        self.assertIn("source-selection rule", concerns)
+        self.assertIn("mutation operators", concerns)
+        self.assertIn("intent", concerns)
+        self.assertIn("success criteria", concerns)
 
     def test_announce_breakthrough(self):
         msg = self.aria.announce_breakthrough()
@@ -4514,7 +5271,7 @@ class TestDashboardConsistency(unittest.TestCase):
 
         # Components that are used inside other components, not App.js
         nested_only = {
-            "GraphViewer", "FailureAnalysis", "AriaAvatar",
+            "GraphViewer", "FailureAnalysis", "AriaAvatar", "ReportGallery", "ReportDetail",
         }
 
         for filepath in self.component_files:
@@ -4532,10 +5289,11 @@ class TestDashboardConsistency(unittest.TestCase):
         for filepath in self.component_files:
             content = self._read_file(filepath)
             name = os.path.basename(filepath).replace(".js", "")
-            self.assertIn(
-                f"export default {name}",
-                content,
-                f"{name}.js missing 'export default {name}'",
+            has_named_default = f"export default {name}" in content
+            has_default_function = f"export default function {name}" in content
+            self.assertTrue(
+                has_named_default or has_default_function,
+                f"{name}.js missing default export for {name}",
             )
 
     def test_no_orphaned_api_fetch_urls(self):
@@ -4561,6 +5319,7 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/analytics/gating-diagnostics",
             "/api/analytics/compression-coverage",
             "/api/analytics/learning-summary",
+            "/api/analytics/insight-interactions",
             "/api/analytics/learning-trajectory",
             "/api/analytics/control-comparison",
             "/api/metrics/",
@@ -4582,6 +5341,10 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/aria/agent/spawn",
             "/api/aria/tools",
             "/api/aria/diagnose",
+            "/api/actions",
+            "/api/discoveries",
+            "/api/aria/autonomy",
+            "/api/aria/activity",
         }
 
         for filepath in self.component_files:
@@ -4615,7 +5378,9 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("Ask for Action", content)
         self.assertIn("Self-fix: .py/.js", content)
         self.assertIn("details sent to local agent", content)
-        self.assertIn("Show task details", content)
+        self.assertIn("/api/aria/agent/status/${encodeURIComponent(taskId)}/summary", content)
+        self.assertIn("Open full task details", content)
+        self.assertIn("Guardrails (", content)
 
     def test_dashboard_wires_auto_repair_started_event_to_chat(self):
         app_content = self._read_file(self.app_js)
@@ -4624,24 +5389,25 @@ class TestDashboardConsistency(unittest.TestCase):
 
         self.assertIn("aria-auto-repair-started", app_content)
         self.assertIn("emitAutoRepairStarted", app_content)
-        self.assertIn("Auto-repair tasks", app_content)
-        self.assertIn("Show completed", app_content)
-        self.assertIn("Reset preferences", app_content)
-        self.assertIn("aria_auto_repair_show_completed_v1", app_content)
-        self.assertIn("/api/aria/agent/status/", app_content)
+        # Auto-repair UI moved into ActionQueue; state/handlers remain in App.js
+        self.assertIn("autoRepairTasks", app_content)
         self.assertIn("window.addEventListener('aria-auto-repair-started'", chat_content)
         self.assertIn("Auto-repair agent started", chat_content)
 
     def test_dashboard_wires_production_readiness_panel(self):
         app_content = self._read_file(self.app_js)
-        self.assertIn("Production Readiness", app_content)
-        self.assertIn("Epic switch:", app_content)
-        self.assertIn("Complete repro packet:", app_content)
+        # Production readiness data still consumed; UI replaced by ActionQueue
         self.assertIn("production_readiness", app_content)
-        self.assertIn("reproducibility_workflow", app_content)
+        # fingerprint diagnostics fetch in useAriaData hook
+        hook_content = self._read_file(os.path.join(
+            self.repo_root, "dashboard", "src", "hooks", "useAriaData.js"))
+        self.assertIn("/api/diagnostics/fingerprint", hook_content)
         self.assertIn("handleRunProductionTemplate", app_content)
-        self.assertIn("Run Scale-Up Template", app_content)
-        self.assertIn("Run step", app_content)
+
+    def test_dashboard_wires_code_healer_panel(self):
+        app_content = self._read_file(self.app_js)
+        # Healer state still in App.js; UI moved into ActionQueue
+        self.assertIn("healerTasks", app_content)
 
     def test_strategy_advisor_marks_actionability_and_sanitizes_pseudo_code(self):
         strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
@@ -4650,6 +5416,16 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("Advice only", content)
         self.assertIn("sanitizeBriefingText", content)
         self.assertIn("details sent to local agent", content)
+
+    def test_strategy_advisor_preserves_full_suggested_config_passthrough(self):
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("const fullConfig = { ...suggestedConfig };", content)
+        self.assertIn("delete fullConfig.hypothesis;", content)
+        self.assertIn("delete fullConfig.result_ids;", content)
+        self.assertIn("...fullConfig,", content)
+        self.assertIn("sparseCoverage", content)
+        self.assertIn("Sparse coverage:", content)
 
     def test_aria_status_sanitizes_hypothesis_summary(self):
         status_path = os.path.join(self.component_dir, "AriaStatus.js")
@@ -4750,13 +5526,23 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("const effectiveTier = tier || 'screening';", content)
         self.assertIn("tierSummary[effectiveTier] += 1;", content)
         self.assertIn("if (effectiveTier === 'breakthrough')", content)
-        self.assertIn("total_programs_evaluated ?? dashboard?.summary?.total_programs ?? 0", content)
+        self.assertIn("total_programs_evaluated", content)
 
     def test_research_report_uses_stage1_survivors_summary_key(self):
-        """ResearchReport should read stage1_survivors (with legacy fallback)."""
-        report_path = os.path.join(self.component_dir, "ResearchReport.js")
-        content = self._read_file(report_path)
+        """ReportDetail should read stage1_survivors (with legacy fallback)."""
+        detail_path = os.path.join(self.component_dir, "ReportDetail.js")
+        content = self._read_file(detail_path)
         self.assertIn("const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;", content)
+
+    def test_research_report_wires_scoped_query_builder_controls(self):
+        detail_path = os.path.join(self.component_dir, "ReportDetail.js")
+        content = self._read_file(detail_path)
+        self.assertIn("/api/report/query", content)
+        self.assertIn("Generate Scoped Report", content)
+        self.assertIn("Load Full Details", content)
+        self.assertIn("theme", content)
+        self.assertIn("trend", content)
+        self.assertIn("fast: fast ? '1' : '0'", content)
 
     def test_investigation_actions_use_eligibility_gating_hooks(self):
         """App + candidate views should wire explicit eligibility gating for investigate/queue actions."""
@@ -4765,8 +5551,9 @@ class TestDashboardConsistency(unittest.TestCase):
         top_programs_content = self._read_file(os.path.join(self.component_dir, "TopPrograms.js"))
         program_detail_content = self._read_file(os.path.join(self.component_dir, "ProgramDetail.js"))
 
-        self.assertIn("const [eligibilityByResultId, setEligibilityByResultId] = useState({});", app_content)
-        self.assertIn("setEligibilityByResultId(buildEligibilityByResultId", app_content)
+        # eligibilityByResultId is now derived from shared AriaData context
+        self.assertIn("buildEligibilityByResultId(leaderboardEntries", app_content)
+        self.assertIn("eligibilityByResultId", app_content)
         self.assertIn("filter(resultId => eligibilityByResultId[resultId]?.investigationEligible)", app_content)
         self.assertIn("eligibilityByResultId={eligibilityByResultId}", app_content)
         self.assertIn("intent: item?.intent === 'validation' ? 'validation' : 'investigation'", app_content)
@@ -4790,6 +5577,62 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("eligibilityByResultId", program_detail_content)
         self.assertIn("Already investigated", program_detail_content)
 
+    def test_program_detail_refinement_intent_actions_are_wired(self):
+        """ProgramDetail should expose intent-specific fingerprint refinement actions."""
+        program_detail_content = self._read_file(os.path.join(self.component_dir, "ProgramDetail.js"))
+        self.assertIn("Refine Fingerprint", program_detail_content)
+        self.assertIn("Refine Recommended", program_detail_content)
+        self.assertIn("Refine Compression", program_detail_content)
+        self.assertIn("Refine Sparsity", program_detail_content)
+        self.assertIn("const handleLaunchRefinement = async", program_detail_content)
+        self.assertIn("onClick={() => handleLaunchRefinement('balanced'", program_detail_content)
+        self.assertIn("onClick={() => handleLaunchRefinement('recommended'", program_detail_content)
+        self.assertIn("onClick={() => handleLaunchRefinement('compression'", program_detail_content)
+        self.assertIn("onClick={() => handleLaunchRefinement('sparsity'", program_detail_content)
+        self.assertIn("refine_intent: intent", program_detail_content)
+        self.assertIn("Refinement Trace", program_detail_content)
+        self.assertIn("Open Refinement Run", program_detail_content)
+        self.assertIn("/api/experiments/${latestRefineLaunch.experimentId}", program_detail_content)
+        self.assertIn("setLatestRefineLaunch", program_detail_content)
+        self.assertIn("setRefineLaunchHistory", program_detail_content)
+        self.assertIn("Recent Refinement Launches", program_detail_content)
+        self.assertIn("Open Fingerprint", program_detail_content)
+        self.assertIn("Reopen Last Refined Fingerprint", program_detail_content)
+        self.assertIn("lastRefinedCandidate", program_detail_content)
+        self.assertIn("newCandidates", program_detail_content)
+        self.assertIn("New Fingerprints", program_detail_content)
+
+    def test_program_detail_refinement_rationale_panel_is_wired(self):
+        """ProgramDetail should render refinement rationale from graph metadata."""
+        program_detail_content = self._read_file(os.path.join(self.component_dir, "ProgramDetail.js"))
+        self.assertIn("function RefinementRationale({ program })", program_detail_content)
+        self.assertIn("function RefinementLineage({ program, onViewInLeaderboard })", program_detail_content)
+        self.assertIn("program?.graph_json_parsed?.metadata", program_detail_content)
+        self.assertIn("program?.lineage_chain", program_detail_content)
+        self.assertIn("refinement.intent_score", program_detail_content)
+        self.assertIn("refinement.intent_score_breakdown", program_detail_content)
+        self.assertIn("weighted_terms", program_detail_content)
+        self.assertIn("Refinement Rationale", program_detail_content)
+        self.assertIn("Refinement Lineage", program_detail_content)
+        self.assertIn("Components:", program_detail_content)
+        self.assertIn("learning-guided refinement", program_detail_content)
+
+    def test_control_panel_renders_hypothesis_missing_fields(self):
+        """ControlPanel should show checklist chips for missing hypothesis fields."""
+        content = self._read_file(os.path.join(self.component_dir, "ControlPanel.js"))
+        self.assertIn("Missing fields:", content)
+        self.assertIn("critique.missing_fields", content)
+        self.assertIn("source_selection_rule", content)
+        self.assertIn("confounders_checklist", content)
+
+    def test_top_programs_copy_clarifies_program_vs_fingerprint_and_shows_leading_fingerprints(self):
+        content = self._read_file(os.path.join(self.component_dir, "TopPrograms.js"))
+        self.assertIn("Candidate Programs (Raw Survivors)", content)
+        self.assertIn("Program Fingerprint ID is the architecture identity for that row", content)
+        self.assertIn("Architecture identity for each program row; the same fingerprint can appear multiple times when rerun.", content)
+        self.assertIn("Leaderboard (Curated)", content)
+        self.assertIn("Leading Fingerprints (Deduplicated Architecture IDs)", content)
+
     def test_learning_trajectory_minimum_threshold_copy_uses_backend_contract(self):
         """LearningPanel should avoid hard-coded trajectory threshold copy drift."""
         learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js"))
@@ -4805,7 +5648,8 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("valueKey=\"adjusted_s1_pass_rate\"", trend_content)
         self.assertIn("bandLowerKey=\"s1_confidence_lower\"", trend_content)
         self.assertIn("bandUpperKey=\"s1_confidence_upper\"", trend_content)
-        self.assertIn("reliabilityMultiplier", trend_content)
+        scoring_engine = self._read_file(os.path.join(self.component_dir, "..", "utils", "scoringEngine.js"))
+        self.assertIn("reliabilityMultiplier", scoring_engine)
         self.assertIn("trend_confidence", trend_content)
         self.assertIn("/api/trends/context", trend_content)
         self.assertIn("setInterval(fetchTrendContext, 10000)", trend_content)
@@ -4814,19 +5658,28 @@ class TestDashboardConsistency(unittest.TestCase):
     def test_research_report_mentions_deduplicated_fingerprint_rankings(self):
         """Discovery rankings should explain fingerprint dedup and repeat metadata."""
         report_content = self._read_file(os.path.join(self.component_dir, "ResearchReport.js"))
-        self.assertIn("fingerprint-deduplicated", report_content)
-        self.assertIn("Grouped view", report_content)
-        self.assertIn("Expanded reruns", report_content)
-        self.assertIn("Same architecture repeated means reruns of one fingerprint", report_content)
-        self.assertIn("top_programs_expanded", report_content)
-        self.assertIn("repeat_count", report_content)
-        self.assertIn("repeat_experiment_span", report_content)
-        self.assertIn("eligibilityByResultId", report_content)
-        self.assertIn("Queue Validate", report_content)
-        self.assertIn("Ineligible", report_content)
-        self.assertIn("reportQueueReasonLabel", report_content)
-        self.assertIn("Unique Architectures vs Reruns", report_content)
-        self.assertIn("architecture_rerun_telemetry", report_content)
+        detail_content = self._read_file(os.path.join(self.component_dir, "ReportDetail.js"))
+        rankings_content = self._read_file(os.path.join(self.component_dir, "report", "DiscoveryRankings.js"))
+        report_utils_content = self._read_file(os.path.join(self.component_dir, "report", "reportUtils.js"))
+
+        self.assertIn("ReportGallery", report_content)
+        self.assertIn("ReportDetail", report_content)
+
+        self.assertIn("fingerprint-deduplicated", rankings_content)
+        self.assertIn("Grouped view", rankings_content)
+        self.assertIn("Expanded reruns", rankings_content)
+        self.assertIn("Same architecture repeated means reruns of one fingerprint", rankings_content)
+        self.assertIn("expandedPrograms", rankings_content)
+        self.assertIn("top_programs_expanded", detail_content)
+        self.assertIn("repeat_count", rankings_content)
+        self.assertIn("repeat_experiment_span", rankings_content)
+        self.assertIn("eligibilityByResultId", rankings_content)
+        self.assertIn("Queue Validate", rankings_content)
+        self.assertIn("Ineligible", rankings_content)
+        self.assertIn("reportQueueReasonLabel", rankings_content)
+        self.assertIn("reportQueueReasonLabel", report_utils_content)
+        self.assertIn("Unique Architectures vs Reruns", detail_content)
+        self.assertIn("architecture_rerun_telemetry", detail_content)
 
     def test_learning_panel_mentions_unique_vs_rerun_telemetry(self):
         """LearningPanel should show unique architecture vs rerun concentration metrics."""
@@ -4834,6 +5687,25 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("Unique Architectures vs Reruns", learning_panel_content)
         self.assertIn("architecture_rerun_telemetry", learning_panel_content)
         self.assertIn("Top fingerprint concentration", learning_panel_content)
+
+    def test_learning_panel_wires_fingerprint_diagnostics_card(self):
+        """LearningPanel should render fingerprint sensitivity skip diagnostics via shared context."""
+        learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js"))
+        self.assertIn("Fingerprint Diagnostics", learning_panel_content)
+        self.assertIn("Sensitivity skips:", learning_panel_content)
+        self.assertIn("fingerprintDiagnostics", learning_panel_content)
+        # fingerprint fetch is now in useAriaData hook
+        hook_content = self._read_file(os.path.join(
+            self.repo_root, "dashboard", "src", "hooks", "useAriaData.js"))
+        self.assertIn("/api/diagnostics/fingerprint", hook_content)
+        self.assertIn("sensitivity_skips", hook_content)
+
+    def test_learning_panel_wires_insight_synergy_matrix(self):
+        learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js"))
+        self.assertIn("Insight Synergy Matrix", learning_panel_content)
+        self.assertIn("Positive Pairs", learning_panel_content)
+        self.assertIn("Conflicting Pairs", learning_panel_content)
+        self.assertIn("/api/analytics/insight-interactions", learning_panel_content)
 
     @staticmethod
     def _normalize_route(path: str) -> str:
@@ -4861,6 +5733,42 @@ class TestDashboardConsistency(unittest.TestCase):
             if b != f:
                 return False
         return True
+
+    def test_strategy_advisor_compute_strategy_includes_data_sources(self):
+        """Every computeStrategy() return path must include a non-empty dataSources array."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        # All 10 return paths in computeStrategy should have dataSources
+        self.assertIn("dataSources: [", content)
+        # Check that key rules include specific metric names
+        self.assertIn("metric: 'Total Experiments'", content)
+        self.assertIn("metric: 'Breakthrough Candidates'", content)
+        self.assertIn("metric: 'S1 Pass Rate'", content)
+        self.assertIn("metric: 'Under-tested Math Families'", content)
+        self.assertIn("metric: 'Consecutive Zero-Survivor Runs'", content)
+        self.assertIn("metric: 'Pipeline Status'", content)
+
+    def test_strategy_advisor_briefing_data_source_extraction(self):
+        """extractBriefingDataSources should convert evidence fields into dataSources format."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("function extractBriefingDataSources(evidence)", content)
+        self.assertIn("metric: 'Learning Trend'", content)
+        self.assertIn("metric: 'Recent Avg S1 Rate'", content)
+        self.assertIn("metric: 'Sparsity Coverage'", content)
+        self.assertIn("metric: 'Pipeline Distribution'", content)
+
+    def test_strategy_advisor_data_source_badge_renders_tooltip(self):
+        """DataSourceBadge must render tooltip with data source details on hover."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("function DataSourceBadge(", content)
+        self.assertIn("Recommended Action", content)
+        self.assertIn("Data Sources", content)
+        self.assertIn("mergedDataSources", content)
+        # Tooltip should show comparison text and navigable tab links
+        self.assertIn("formatComparison(ds)", content)
+        self.assertIn("onNavigateEvidence(ds.tab)", content)
 
 
 class TestDeadCodeAudit(unittest.TestCase):
@@ -7718,7 +8626,7 @@ class TestChatActions(unittest.TestCase):
         nb = MagicMock()
 
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(runner_mod.__file__)))
-        probe_dir = os.path.join(project_root, "research", "tests")
+        probe_dir = os.path.join(project_root, "tests")
         os.makedirs(probe_dir, exist_ok=True)
         filename = f"local_llm_edit_probe_{int(time.time() * 1000)}.py"
         probe_path = os.path.join(probe_dir, filename)

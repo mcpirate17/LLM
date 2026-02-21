@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import GraphViewer from './GraphViewer';
 import { lossColor, noveltyColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+import apiService from '../services/apiService';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -118,11 +119,17 @@ function RadarChart({ program, size = 240 }) {
 
 function TrainingCurve({ resultId }) {
   const [curve, setCurve] = useState(null);
+  const MAX_POINTS = 500; // Cap points to prevent memory leaks
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/programs/${resultId}/training-curve`)
-      .then(r => r.json())
-      .then(d => setCurve(d))
+    apiService.getTrainingCurve(resultId)
+      .then(d => {
+        if (Array.isArray(d)) {
+          // If the data is massive, downsample or take recent window
+          const recentData = d.slice(-MAX_POINTS);
+          setCurve(recentData);
+        }
+      })
       .catch(() => {});
   }, [resultId]);
 
@@ -184,19 +191,70 @@ const TIER_LABELS = {
   breakthrough: 'Breakthrough',
 };
 
-function TierBadge({ tier }) {
+function decisionGate(entry) {
+  const checks = {
+    screeningEvidence: entry.screening_loss_ratio != null && entry.screening_novelty != null,
+    investigationEvidence: entry.investigation_loss_ratio != null && entry.investigation_robustness != null,
+    robustnessFloor: entry.investigation_robustness != null && entry.investigation_robustness >= 0.5,
+    validationEvidence: entry.validation_loss_ratio != null
+      && entry.validation_baseline_ratio != null
+      && entry.validation_multi_seed_std != null,
+    baselineBeatsReference: entry.validation_baseline_ratio != null && entry.validation_baseline_ratio < 1.0,
+    consistencyBounded: entry.validation_multi_seed_std != null && entry.validation_multi_seed_std <= 0.12,
+  };
+  const decisionReady = Object.values(checks).every(Boolean);
+  const missing = Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+  return {
+    decisionReady,
+    label: decisionReady ? 'Decision-Ready' : 'Exploratory',
+    color: decisionReady ? 'var(--accent-green)' : 'var(--accent-yellow)',
+    missing,
+    checks,
+  };
+}
+
+function TierBadge({ tier, entry }) {
   if (!tier) return null;
+
+  const gate = decisionGate(entry || {});
+  const checkLabels = {
+    screeningEvidence: 'Screening evidence',
+    investigationEvidence: 'Investigation evidence',
+    robustnessFloor: 'Robustness \u2265 0.50',
+    validationEvidence: 'Validation evidence',
+    baselineBeatsReference: 'Baseline < 1.0',
+    consistencyBounded: 'Multi-seed std \u2264 0.12',
+  };
+
+  const tooltipLines = ['Promotion criteria:'];
+  Object.entries(gate.checks).forEach(([name, ok]) => {
+    tooltipLines.push(`${ok ? '\u2713' : '\u2717'} ${checkLabels[name] || name}`);
+  });
+
+  if (tier !== 'breakthrough' && gate.missing.length > 0) {
+    tooltipLines.push('');
+    tooltipLines.push(`Missing for breakthrough: ${gate.missing.map(m => checkLabels[m] || m).join(', ')}`);
+  }
+
+  const tooltip = tooltipLines.join('\n');
+
   return (
-    <span style={{
-      padding: '2px 8px',
-      borderRadius: 4,
-      fontSize: 11,
-      fontWeight: 600,
-      color: TIER_COLORS[tier] || 'var(--text-muted)',
-      background: `${TIER_COLORS[tier] || 'var(--text-muted)'}22`,
-      border: `1px solid ${TIER_COLORS[tier] || 'var(--border)'}`,
-      textTransform: 'uppercase',
-    }}>
+    <span
+      title={tooltip}
+      style={{
+        padding: '2px 8px',
+        borderRadius: 4,
+        fontSize: 11,
+        fontWeight: 600,
+        color: TIER_COLORS[tier] || 'var(--text-muted)',
+        background: `${TIER_COLORS[tier] || 'var(--text-muted)'}22`,
+        border: `1px solid ${TIER_COLORS[tier] || 'var(--border)'}`,
+        textTransform: 'uppercase',
+        cursor: 'help',
+      }}
+    >
       {TIER_LABELS[tier] || tier}
     </span>
   );
@@ -278,6 +336,55 @@ function BenchmarkEvidenceSnapshot({ program, leaderboardEntry }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ExternalBenchmarkCard({ program }) {
+  const raw = program?.external_benchmarks || program?.benchmark_scores || program?.external_benchmark_scores;
+  const entries = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.entries(raw).map(([name, score]) => ({ name, score })) : [];
+  const normalized = entries
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+      return {
+        name: entry.name || entry.benchmark || entry.task || 'benchmark',
+        score: entry.score ?? entry.value ?? null,
+        unit: entry.unit || entry.metric || '',
+        source: entry.source || entry.provider || '',
+        date: entry.date || entry.timestamp || '',
+      };
+    })
+    .filter(Boolean);
+
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: 10,
+      background: 'var(--bg-tertiary)',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+    }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 6 }}>
+        External Benchmarks
+      </div>
+      {normalized.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          No external benchmark scores recorded yet. Recommended for early research: Open LLM Leaderboard v1
+          (MMLU, ARC, HellaSwag, TruthfulQA, Winogrande, GSM8K) via lm-eval harness.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {normalized.map((entry, idx) => (
+            <div key={`${entry.name}-${idx}`} style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              <strong>{entry.name}:</strong>{' '}
+              {entry.score != null ? entry.score : 'n/a'}
+              {entry.unit ? ` ${entry.unit}` : ''}
+              {entry.source ? <span style={{ color: 'var(--text-muted)' }}> · {entry.source}</span> : null}
+              {entry.date ? <span style={{ color: 'var(--text-muted)' }}> · {entry.date}</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -818,6 +925,306 @@ function GatingDiagnostics({ program }) {
   );
 }
 
+function RefinementRationale({ program }) {
+  const graphMetadata = program?.graph_json_parsed?.metadata;
+  const refinement = graphMetadata?.refinement;
+  if (!refinement || typeof refinement !== 'object') return null;
+
+  const intent = refinement.intent || 'balanced';
+  const intentScore = Number(refinement.intent_score);
+  const hasIntentScore = Number.isFinite(intentScore);
+  const sourceResultId = refinement.source_result_id;
+  const seedFingerprint = refinement.seed_fingerprint;
+  const fallback = Boolean(refinement.fallback);
+  const scoreBreakdown = refinement.intent_score_breakdown || {};
+  const weightedTerms = scoreBreakdown?.weighted_terms || {};
+  const weightedEntries = Object.entries(weightedTerms)
+    .filter(([, value]) => Number.isFinite(Number(value)))
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  const scoreBreakdownTooltip = weightedEntries.length > 0
+    ? weightedEntries.map(([name, value]) => `${name}: ${Number(value).toFixed(4)}`).join('\n')
+    : 'No score components available';
+
+  return (
+    <div style={{
+      padding: 12,
+      background: 'var(--bg-tertiary)',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+    }}>
+      <div style={{
+        fontSize: 12,
+        color: 'var(--text-secondary)',
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        marginBottom: 8,
+      }}>
+        Refinement Rationale
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
+        <div style={{ color: 'var(--text-muted)' }}>Intent</div>
+        <div style={{ fontWeight: 600 }}>{intent}</div>
+        <div style={{ color: 'var(--text-muted)' }}>Intent Score</div>
+        <div
+          style={{ fontWeight: 600, cursor: weightedEntries.length > 0 ? 'help' : 'default' }}
+          title={scoreBreakdownTooltip}
+        >
+          {hasIntentScore ? intentScore.toFixed(4) : '--'}
+        </div>
+        {sourceResultId && (
+          <>
+            <div style={{ color: 'var(--text-muted)' }}>Parent Result</div>
+            <div style={{ fontFamily: 'monospace' }}>{String(sourceResultId).slice(0, 12)}</div>
+          </>
+        )}
+        {seedFingerprint && (
+          <>
+            <div style={{ color: 'var(--text-muted)' }}>Parent Fingerprint</div>
+            <div style={{ fontFamily: 'monospace' }}>{seedFingerprint}</div>
+          </>
+        )}
+        <div style={{ color: 'var(--text-muted)' }}>Selection Path</div>
+        <div style={{ color: fallback ? 'var(--accent-yellow)' : 'var(--accent-green)' }}>
+          {fallback ? 'fallback generation' : 'learning-guided refinement'}
+        </div>
+      </div>
+      {weightedEntries.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+          Components:{' '}
+          {weightedEntries
+            .slice(0, 3)
+            .map(([name, value]) => `${name} ${Number(value).toFixed(3)}`)
+            .join(' · ')}
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+        Score combines learned op success and intent-specific objective weighting.
+      </div>
+    </div>
+  );
+}
+
+function RefinementLineage({ program, onViewInLeaderboard }) {
+  const lineage = Array.isArray(program?.lineage_chain) ? program.lineage_chain : [];
+  if (lineage.length === 0) return null;
+
+  const short = (value, n = 12) => {
+    const s = String(value || '').trim();
+    if (!s) return '--';
+    return s.length > n ? s.slice(0, n) : s;
+  };
+
+  return (
+    <div style={{
+      padding: 12,
+      background: 'var(--bg-tertiary)',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+    }}>
+      <div style={{
+        fontSize: 12,
+        color: 'var(--text-secondary)',
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        marginBottom: 8,
+      }}>
+        Refinement Lineage
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+        New refinements create new fingerprints. Lineage tracks each child back to its parent result so you can iteratively improve from a base fingerprint.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {lineage.map((entry, idx) => (
+          <div
+            key={`${entry?.result_id || 'lineage'}-${idx}`}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '36px 1fr auto',
+              gap: 8,
+              alignItems: 'center',
+              padding: '6px 8px',
+              borderRadius: 4,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 }}>
+              L{idx}
+            </span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                {short(entry?.graph_fingerprint, 20)}
+              </span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                result {short(entry?.result_id, 12)}
+                {entry?.refinement?.intent ? ` · intent ${entry.refinement.intent}` : ''}
+                {entry?.refinement?.analysis_driven && (
+                  <span
+                    style={{
+                      marginLeft: 4, padding: '1px 5px', borderRadius: 3, fontSize: 9,
+                      background: 'var(--accent-purple)', color: '#fff', fontWeight: 700,
+                    }}
+                    title={entry?.refinement?.analysis_recipe?.primary_target || 'Data-driven refinement'}
+                  >
+                    DATA-DRIVEN
+                  </span>
+                )}
+              </span>
+            </div>
+            {entry?.result_id && onViewInLeaderboard && (
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 10, padding: '2px 8px' }}
+                onClick={() => onViewInLeaderboard(entry.result_id)}
+              >
+                Open
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RefinementAdvisor({ analysis, loading, error, onLaunchRefinement, actionStarting }) {
+  if (loading) return <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12 }}>Analyzing program...</div>;
+  if (error) return <div style={{ fontSize: 12, color: 'var(--accent-red)', padding: 12 }}>Analysis error: {error}</div>;
+  if (!analysis || analysis.analysis_quality === 'no_data') return null;
+
+  const recipe = analysis.recipe || {};
+  const opHealth = analysis.op_health || [];
+  const additions = analysis.recommended_additions || [];
+  const gaps = (analysis.behavioral_gaps || []).filter(g => g.severity !== 'low');
+  const stats = analysis.population_stats || {};
+
+  const intentColors = { quality: 'var(--accent-red)', novelty: 'var(--accent-blue)', compression: '#1f7a4f', balanced: 'var(--accent-yellow)' };
+  const healthColors = { strong: 'var(--accent-green)', weak: 'var(--accent-red)', risky: 'var(--accent-yellow)', untested: 'var(--text-muted)', neutral: 'var(--text-secondary)' };
+
+  return (
+    <div style={{ padding: 12, background: 'var(--bg-tertiary)', borderRadius: 6, border: '1px solid var(--border)' }}>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
+        Refinement Advisor
+      </div>
+
+      {/* Recipe banner */}
+      <div style={{
+        padding: 10, borderRadius: 6, marginBottom: 10,
+        background: 'var(--bg-secondary)', border: `1px solid ${intentColors[recipe.recommended_intent] || 'var(--border)'}`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, textTransform: 'uppercase', padding: '2px 8px', borderRadius: 3,
+            background: intentColors[recipe.recommended_intent] || 'var(--border)', color: '#fff',
+          }}>
+            {recipe.recommended_intent || 'balanced'}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            confidence: {recipe.confidence || 'low'}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            {stats.n_stage1_passed || 0} S1 survivors analyzed
+          </span>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{recipe.human_summary}</div>
+      </div>
+
+      {/* Op health grid */}
+      {opHealth.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Op Health</div>
+          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+            {opHealth.map(op => (
+              <div
+                key={op.op_name}
+                style={{
+                  minWidth: 100, padding: '6px 8px', borderRadius: 4, fontSize: 11,
+                  background: 'var(--bg-secondary)', border: `1px solid ${healthColors[op.health] || 'var(--border)'}`,
+                }}
+                title={op.swap_candidates?.length
+                  ? `Swap candidates: ${op.swap_candidates.map(c => `${c.op_name} (${(c.s1_rate * 100).toFixed(0)}%)`).join(', ')}`
+                  : `${op.recommendation} — S1 rate: ${(op.global_s1_rate * 100).toFixed(1)}%`}
+              >
+                <div style={{ fontFamily: 'monospace', fontWeight: 600, marginBottom: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {op.op_name}
+                </div>
+                <div style={{ color: healthColors[op.health], fontWeight: 600 }}>
+                  {op.health}
+                </div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>
+                  S1: {(op.global_s1_rate * 100).toFixed(0)}% ({op.n_used} uses)
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  {op.recommendation}
+                  {op.swap_candidates?.length > 0 && ` (${op.swap_candidates.length} alt)`}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommended additions */}
+      {additions.length > 0 && (
+        <details style={{ marginBottom: 10 }}>
+          <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer', marginBottom: 4 }}>
+            Recommended Additions ({additions.length})
+          </summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+            {additions.map(a => (
+              <div key={a.op_name} style={{
+                display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
+                padding: '4px 8px', background: 'var(--bg-secondary)', borderRadius: 4,
+              }}>
+                <span style={{ fontFamily: 'monospace', fontWeight: 600, minWidth: 120 }}>{a.op_name}</span>
+                <span style={{ color: 'var(--accent-green)' }}>S1: {(a.global_s1_rate * 100).toFixed(0)}%</span>
+                <span style={{ color: 'var(--text-muted)' }}>{a.top_performer_frequency} uses</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>{a.rationale}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* Behavioral gaps */}
+      {gaps.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Behavioral Gaps</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            {gaps.map(g => (
+              <div key={g.metric} style={{
+                padding: '6px 8px', background: 'var(--bg-secondary)', borderRadius: 4, fontSize: 11,
+                borderLeft: `3px solid ${g.severity === 'high' ? 'var(--accent-red)' : 'var(--accent-yellow)'}`,
+              }}>
+                <div style={{ fontWeight: 600, marginBottom: 2 }}>{g.label}</div>
+                <div style={{ color: 'var(--text-muted)' }}>
+                  Program: {g.program_value?.toFixed(3)} vs Pop: {g.population_mean?.toFixed(3)} (z={g.z_score > 0 ? '+' : ''}{g.z_score?.toFixed(1)})
+                </div>
+                {g.improvement_ops?.length > 0 && (
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                    Try: {g.improvement_ops.join(', ')}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Action button */}
+      <button
+        className="start-btn"
+        disabled={actionStarting === 'refine_advisor'}
+        onClick={() => onLaunchRefinement(recipe.recommended_intent || 'balanced', 'refine_advisor', 'Failed to start analysis-driven refinement')}
+        style={{ padding: '6px 16px', fontSize: 12, background: 'var(--accent-purple)', borderColor: 'var(--accent-purple)' }}
+        title={recipe.primary_target || 'Refine using data-driven analysis'}
+      >
+        {actionStarting === 'refine_advisor' ? 'Starting...' : 'Refine with Recommendation'}
+      </button>
+    </div>
+  );
+}
+
 function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, eligibilityByResultId }) {
   const [program, setProgram] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -839,15 +1246,18 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
   const [decisionPacketOpen, setDecisionPacketOpen] = useState(true);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [manifestCopied, copyManifest] = useCopyToClipboard();
+  const [latestRefineLaunch, setLatestRefineLaunch] = useState(null);
+  const [refineLaunchHistory, setRefineLaunchHistory] = useState([]);
+  const [refineTrace, setRefineTrace] = useState(null);
+  const [refineTraceLoading, setRefineTraceLoading] = useState(false);
+  const [refineAnalysis, setRefineAnalysis] = useState(null);
+  const [refineAnalysisLoading, setRefineAnalysisLoading] = useState(false);
+  const [refineAnalysisError, setRefineAnalysisError] = useState(null);
 
   const fetchAndCopyManifest = () => {
     if (!resultId) return;
     setManifestLoading(true);
-    fetch(`${API_BASE}/api/reproducibility-manifest/${resultId}`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    apiService.getReproducibilityManifest(resultId)
       .then(d => {
         copyManifest(JSON.stringify(d, null, 2));
         setManifestLoading(false);
@@ -859,11 +1269,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     if (!resultId) return;
     setDecisionPacketLoading(true);
     setDecisionPacketError(null);
-    fetch(`${API_BASE}/api/decision-packet/${resultId}`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    apiService.getDecisionPacket(resultId)
       .then(d => { setDecisionPacket(d); setDecisionPacketLoading(false); })
       .catch(e => { setDecisionPacketError('Failed: ' + e.message); setDecisionPacketLoading(false); });
   };
@@ -872,30 +1278,29 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     if (!resultId) return;
     setLoading(true);
     setError(null);
+    setLatestRefineLaunch(null);
+    setRefineLaunchHistory([]);
+    setRefineTrace(null);
+    setRefineTraceLoading(false);
     setLinkedHypothesis(null);
     setLinkedDecision(null);
     setLinkedExperiment(null);
     setLinkedCampaign(null);
-    fetch(`${API_BASE}/api/programs/${resultId}`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    
+    apiService.getProgram(resultId)
       .then(d => {
         setProgram(d);
         setLoading(false);
         // Fetch linked hypothesis via experiment
         if (d?.experiment_id) {
-          fetch(`${API_BASE}/api/experiments/${d.experiment_id}`)
-            .then(r => r.ok ? r.json() : null)
+          apiService.getExperiment(d.experiment_id)
             .then(expData => {
               if (expData?.experiment) {
                 setLinkedExperiment(expData.experiment);
                 if (expData.experiment.campaign_id) {
                   setLinkedCampaign({ campaign_id: expData.experiment.campaign_id, title: expData.experiment.campaign_title || expData.experiment.campaign_id });
                   // Find hypothesis linked to this experiment
-                  fetch(`${API_BASE}/api/campaigns/${expData.experiment.campaign_id}/hypotheses`)
-                    .then(r => r.ok ? r.json() : [])
+                  apiService.getCampaignHypotheses(expData.experiment.campaign_id)
                     .then(hyps => {
                       const linked = (Array.isArray(hyps) ? hyps : []).find(
                         h => h.experiment_id === d.experiment_id
@@ -904,8 +1309,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                     })
                     .catch(() => {});
                   // Find decisions mentioning this result
-                  fetch(`${API_BASE}/api/campaigns/${expData.experiment.campaign_id}/decisions`)
-                    .then(r => r.ok ? r.json() : [])
+                  apiService.getCampaignDecisions(expData.experiment.campaign_id)
                     .then(decs => {
                       const linked = (Array.isArray(decs) ? decs : []).find(d => {
                         const evidenceIds = d.evidence_ids || [];
@@ -922,8 +1326,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
       })
       .catch(e => { setError('Failed to load program: ' + e.message); setLoading(false); });
     // Fetch leaderboard entry for this result
-    fetch(`${API_BASE}/api/leaderboard?limit=200`)
-      .then(r => r.ok ? r.json() : null)
+    apiService.getLeaderboard('?limit=200')
       .then(data => {
         if (data?.entries) {
           const entry = data.entries.find(e => e.result_id === resultId);
@@ -933,12 +1336,144 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
       .catch(() => {});
   }, [resultId]);
 
+  // Auto-fetch refinement analysis for S1 survivors
+  useEffect(() => {
+    if (!resultId || !program?.stage1_passed) return;
+    setRefineAnalysisLoading(true);
+    setRefineAnalysisError(null);
+    fetch(`${API_BASE}/api/programs/${encodeURIComponent(resultId)}/refine-analysis`)
+      .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d.error || 'Failed'))))
+      .then(data => { setRefineAnalysis(data); setRefineAnalysisLoading(false); })
+      .catch(e => { setRefineAnalysisError(e.message); setRefineAnalysisLoading(false); });
+  }, [resultId, program?.stage1_passed]);
+
+  useEffect(() => {
+    if (!latestRefineLaunch?.experimentId || !resultId) return;
+
+    let cancelled = false;
+    let intervalId = null;
+
+    const summarizeTrace = (payload) => {
+      const experiment = payload?.experiment || {};
+      const programs = Array.isArray(payload?.programs) ? payload.programs : [];
+
+      const withRefinementMeta = programs.map(row => {
+        let refinement = null;
+        try {
+          const raw = row?.graph_json;
+          if (raw && typeof raw === 'string') {
+            const parsed = JSON.parse(raw);
+            refinement = parsed?.metadata?.refinement || null;
+          }
+        } catch (_) {
+          refinement = null;
+        }
+        return { ...row, _refinement: refinement };
+      });
+
+      const lineage = withRefinementMeta.filter(
+        row => String(row?._refinement?.source_result_id || '') === String(resultId),
+      );
+      const scoped = lineage.length > 0 ? lineage : withRefinementMeta;
+
+      const finiteLosses = scoped
+        .map(row => Number(row?.loss_ratio))
+        .filter(value => Number.isFinite(value));
+      const bestLoss = finiteLosses.length > 0 ? Math.min(...finiteLosses) : null;
+      const stage1Survivors = scoped.filter(row => Boolean(row?.stage1_passed)).length;
+
+      const uniqueFingerprints = [];
+      const uniqueResultIds = [];
+      const newCandidates = [];
+      for (const row of scoped) {
+        const fp = String(row?.graph_fingerprint || '').trim();
+        const rid = String(row?.result_id || '').trim();
+        if (fp && fp !== String(program?.graph_fingerprint || '') && !uniqueFingerprints.includes(fp)) {
+          uniqueFingerprints.push(fp);
+        }
+        if (rid && rid !== String(resultId) && !uniqueResultIds.includes(rid)) {
+          uniqueResultIds.push(rid);
+        }
+        if (rid && fp && rid !== String(resultId) && !newCandidates.some(c => c.resultId === rid)) {
+          newCandidates.push({ resultId: rid, fingerprint: fp });
+        }
+      }
+
+      const status = String(experiment?.status || '').toLowerCase();
+      const completed = Boolean(experiment?.completed_at) || status === 'completed' || status === 'failed' || status === 'cancelled';
+
+      return {
+        status: status || 'running',
+        completed,
+        experiment,
+        totals: {
+          programs: programs.length,
+          scopedPrograms: scoped.length,
+          stage1Survivors,
+          bestLoss,
+        },
+        newFingerprints: uniqueFingerprints.slice(0, 6),
+        newResultIds: uniqueResultIds.slice(0, 6),
+        newCandidates: newCandidates.slice(0, 6),
+      };
+    };
+
+    const pollTrace = async () => {
+      if (cancelled) return;
+      setRefineTraceLoading(true);
+      try {
+        const response = await fetch(`${API_BASE}/api/experiments/${latestRefineLaunch.experimentId}`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        if (cancelled) return;
+        const tracePayload = summarizeTrace(payload);
+        setRefineTrace(tracePayload);
+        setRefineLaunchHistory(prev => prev.map(item => (
+          item.experimentId === latestRefineLaunch.experimentId
+            ? {
+                ...item,
+                status: tracePayload.status,
+                topCandidate: tracePayload.newCandidates?.[0] || null,
+              }
+            : item
+        )));
+        if (tracePayload.completed && intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setRefineTrace({ error: e?.message || 'Failed to load refinement trace' });
+        }
+      } finally {
+        if (!cancelled) {
+          setRefineTraceLoading(false);
+        }
+      }
+    };
+
+    pollTrace();
+    intervalId = setInterval(pollTrace, 4000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [latestRefineLaunch, resultId, program?.graph_fingerprint]);
+
   if (!resultId) return null;
 
   const fmt = (v, d = 4) => v != null ? Number(v).toFixed(d) : '--';
   const fmtMs = v => v != null ? `${Number(v).toFixed(1)}ms` : '--';
   const fmtMem = v => v != null ? `${Number(v).toFixed(1)}MB` : '--';
   const fmtInt = v => v != null ? Number(v).toLocaleString() : '--';
+  const shortId = (v, n = 12) => {
+    const s = String(v || '').trim();
+    if (!s) return '--';
+    return s.length > n ? s.slice(0, n) : s;
+  };
 
   const tier = typeof leaderboardEntry?.tier === 'string' ? leaderboardEntry.tier.toLowerCase() : '';
   const hasInvestigationEvidence = leaderboardEntry?.investigation_loss_ratio != null;
@@ -948,6 +1483,64 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     validationEligible: tier === 'investigation' && Boolean(leaderboardEntry?.investigation_passed) && !hasValidationEvidence,
   };
   const resolvedEligibility = eligibilityByResultId?.[resultId] || fallbackEligibility;
+  const lastRefinedCandidate =
+    refineTrace?.newCandidates?.[0]
+    || refineLaunchHistory.find(item => item?.topCandidate)?.topCandidate
+    || null;
+
+  const handleLaunchRefinement = async (intent, actionKey, failureLabel) => {
+    setActionStarting(actionKey);
+    try {
+      setActionError(null);
+      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'refine_fingerprint',
+          graph_fingerprints: [program.graph_fingerprint],
+          n_programs: 24,
+          model_source: 'fingerprint_refine',
+          refine_intent: intent,
+          mutation_rate: 0.85,
+          ...(refineAnalysis ? { refine_analysis_json: refineAnalysis } : {}),
+        }),
+      });
+
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActionError(payload.error || failureLabel);
+      } else {
+        const resolved = payload?.refine_resolution || {};
+        setLatestRefineLaunch({
+          experimentId: payload?.experiment_id,
+          intent,
+          startedAt: Date.now(),
+          sourceResultId: resultId,
+          sourceFingerprint: program?.graph_fingerprint,
+          resolvedResultIds: Array.isArray(resolved?.result_ids) ? resolved.result_ids : [],
+          resolvedFingerprints: Array.isArray(resolved?.resolved_fingerprints) ? resolved.resolved_fingerprints : [],
+          unresolvedFingerprints: Array.isArray(resolved?.unresolved_fingerprints) ? resolved.unresolved_fingerprints : [],
+        });
+        setRefineLaunchHistory(prev => {
+          const nextItem = {
+            experimentId: payload?.experiment_id,
+            intent,
+            startedAt: Date.now(),
+            sourceResultId: resultId,
+            sourceFingerprint: program?.graph_fingerprint,
+            status: 'running',
+            topCandidate: null,
+          };
+          const deduped = prev.filter(item => item.experimentId !== nextItem.experimentId);
+          return [nextItem, ...deduped].slice(0, 3);
+        });
+        if (onActionComplete) onActionComplete();
+      }
+    } catch (e) {
+      setActionError('Error: ' + e.message);
+    }
+    setActionStarting(null);
+  };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -976,7 +1569,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 )}
                 {leaderboardEntry && (
                   <>
-                    <TierBadge tier={leaderboardEntry.tier} />
+                    <TierBadge tier={leaderboardEntry.tier} entry={leaderboardEntry} />
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-green)' }}>
                       Score: {Number(leaderboardEntry.composite_score).toFixed(3)}
                     </span>
@@ -1058,7 +1651,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                     {leaderboardEntry && (
                       <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ color: 'var(--text-muted)', fontWeight: 600, minWidth: 90 }}>Leaderboard:</span>
-                        <TierBadge tier={leaderboardEntry.tier} />
+                        <TierBadge tier={leaderboardEntry.tier} entry={leaderboardEntry} />
                         <span style={{ fontWeight: 600, color: 'var(--accent-green)' }}>
                           {Number(leaderboardEntry.composite_score).toFixed(3)}
                         </span>
@@ -1225,6 +1818,133 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 {actionError}
               </div>
             )}
+            {latestRefineLaunch && (
+              <div style={{
+                padding: 10,
+                background: 'var(--bg-tertiary)',
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', color: 'var(--accent-purple)' }}>
+                  Refinement Trace
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'grid', gap: 4 }}>
+                  <div><strong>Intent:</strong> {latestRefineLaunch.intent}</div>
+                  <div><strong>Experiment:</strong> <span style={{ fontFamily: 'monospace' }}>{shortId(latestRefineLaunch.experimentId, 16)}</span></div>
+                  <div><strong>Source:</strong> <span style={{ fontFamily: 'monospace' }}>{shortId(latestRefineLaunch.sourceResultId, 12)}</span> · {shortId(latestRefineLaunch.sourceFingerprint, 18)}</div>
+                  <div><strong>Resolved IDs:</strong> {latestRefineLaunch.resolvedResultIds.length > 0 ? latestRefineLaunch.resolvedResultIds.map(v => shortId(v, 10)).join(', ') : 'none'}</div>
+                  {latestRefineLaunch.unresolvedFingerprints.length > 0 && (
+                    <div><strong>Unresolved fingerprints:</strong> {latestRefineLaunch.unresolvedFingerprints.join(', ')}</div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {latestRefineLaunch.experimentId && onSelectExperiment && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 11, padding: '3px 10px' }}
+                      onClick={() => { onClose(); onSelectExperiment(latestRefineLaunch.experimentId); }}
+                    >
+                      Open Refinement Run
+                    </button>
+                  )}
+                  {refineTrace?.newResultIds?.[0] && onViewInLeaderboard && (
+                    <button
+                      className="refresh-btn"
+                      style={{ fontSize: 11, padding: '3px 10px' }}
+                      onClick={() => { onClose(); onViewInLeaderboard(refineTrace.newResultIds[0]); }}
+                    >
+                      View Top Refined Result
+                    </button>
+                  )}
+                </div>
+                {refineTraceLoading && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Collecting live refinement outcomes…</div>
+                )}
+                {refineTrace?.error && (
+                  <div style={{ fontSize: 11, color: 'var(--accent-red)' }}>{refineTrace.error}</div>
+                )}
+                {refineTrace && !refineTrace.error && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                    <div><strong>Status:</strong> {refineTrace.status}</div>
+                    <div>
+                      <strong>Outcomes:</strong> {fmtInt(refineTrace.totals?.programs)} programs,
+                      {' '}{fmtInt(refineTrace.totals?.stage1Survivors)} S1 survivors,
+                      {' '}best loss {fmt(refineTrace.totals?.bestLoss)}
+                    </div>
+                    {refineTrace.newFingerprints?.length > 0 && (
+                      <div>
+                        <strong>New Fingerprints:</strong> {refineTrace.newFingerprints.map(fp => shortId(fp, 18)).join(', ')}
+                      </div>
+                    )}
+                    {refineTrace.newCandidates?.length > 0 && (
+                      <div>
+                        <strong>Open Fingerprint:</strong>{' '}
+                        {onViewInLeaderboard ? (
+                          <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                            {refineTrace.newCandidates.map(candidate => (
+                              <button
+                                key={candidate.resultId}
+                                className="refresh-btn"
+                                style={{ fontSize: 10, padding: '2px 8px', fontFamily: 'monospace' }}
+                                onClick={() => { onClose(); onViewInLeaderboard(candidate.resultId); }}
+                                title={`Open ${candidate.fingerprint}`}
+                              >
+                                {shortId(candidate.fingerprint, 18)}
+                              </button>
+                            ))}
+                          </span>
+                        ) : (
+                          refineTrace.newCandidates.map(candidate => shortId(candidate.fingerprint, 18)).join(', ')
+                        )}
+                      </div>
+                    )}
+                    {refineTrace.newResultIds?.length > 0 && (
+                      <div>
+                        <strong>New Result IDs:</strong> {refineTrace.newResultIds.map(rid => shortId(rid, 10)).join(', ')}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {refineLaunchHistory.length > 0 && (
+                  <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>
+                      Recent Refinement Launches
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {refineLaunchHistory.map(item => (
+                        <div key={item.experimentId} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11 }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>{item.intent}</span>
+                          <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)' }}>{shortId(item.experimentId, 12)}</span>
+                          <span style={{ color: 'var(--text-muted)' }}>{item.status || 'running'}</span>
+                          {onSelectExperiment && (
+                            <button
+                              className="refresh-btn"
+                              style={{ fontSize: 10, padding: '2px 8px' }}
+                              onClick={() => { onClose(); onSelectExperiment(item.experimentId); }}
+                            >
+                              Open Run
+                            </button>
+                          )}
+                          {item.topCandidate?.resultId && onViewInLeaderboard && (
+                            <button
+                              className="refresh-btn"
+                              style={{ fontSize: 10, padding: '2px 8px', fontFamily: 'monospace' }}
+                              onClick={() => { onClose(); onViewInLeaderboard(item.topCandidate.resultId); }}
+                              title={`Open ${item.topCandidate.fingerprint}`}
+                            >
+                              Open Fingerprint
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Metrics + Radar side by side */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -1260,6 +1980,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 </div>
 
                 <BenchmarkEvidenceSnapshot program={program} leaderboardEntry={leaderboardEntry} />
+                <ExternalBenchmarkCard program={program} />
 
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8, marginTop: 12 }}>
                   Sandbox Timing
@@ -1398,6 +2119,19 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
               </div>
             )}
 
+            <RefinementRationale program={program} />
+            <RefinementLineage program={program} onViewInLeaderboard={onViewInLeaderboard} />
+
+            {program.stage1_passed && (
+              <RefinementAdvisor
+                analysis={refineAnalysis}
+                loading={refineAnalysisLoading}
+                error={refineAnalysisError}
+                onLaunchRefinement={handleLaunchRefinement}
+                actionStarting={actionStarting}
+              />
+            )}
+
             {/* Scale Up Button (only for S1 survivors) */}
             {program.stage1_passed && (
               <div style={{
@@ -1501,38 +2235,49 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 <button
                   className="start-btn"
                   disabled={actionStarting === 'refine'}
-                  onClick={async () => {
-                    setActionStarting('refine');
-                    try {
-                      setActionError(null);
-                      const res = await fetch(`${API_BASE}/api/experiments/start`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          mode: 'refine_fingerprint',
-                          graph_fingerprints: [program.graph_fingerprint],
-                          n_programs: 24,
-                          model_source: 'fingerprint_refine',
-                          mutation_rate: 0.85,
-                        }),
-                      });
-                      if (!res.ok) {
-                        const err = await res.json();
-                        setActionError(err.error || 'Failed to start fingerprint refinement');
-                      } else {
-                        if (onActionComplete) onActionComplete();
-                        onClose();
-                      }
-                    } catch (e) {
-                      setActionError('Error: ' + e.message);
-                    }
-                    setActionStarting(null);
-                  }}
+                  onClick={() => handleLaunchRefinement('balanced', 'refine', 'Failed to start fingerprint refinement')}
                   style={{ padding: '6px 16px', fontSize: 12, background: 'var(--accent-yellow)', borderColor: 'var(--accent-yellow)' }}
-                  title="Generate local mutated variants around this architecture fingerprint"
+                  title="Generate local mutated variants around this architecture fingerprint (balanced objective)."
                 >
                   {actionStarting === 'refine' ? 'Starting...' : 'Refine Fingerprint'}
                 </button>
+                <button
+                  className="start-btn"
+                  disabled={actionStarting === 'refine_recommended'}
+                  onClick={() => handleLaunchRefinement('recommended', 'refine_recommended', 'Failed to start recommended refinement')}
+                  style={{ padding: '6px 14px', fontSize: 12, background: 'var(--accent-purple)', borderColor: 'var(--accent-purple)' }}
+                  title="Auto-select refinement intent from historical op success, source quality, novelty, and compression evidence."
+                >
+                  {actionStarting === 'refine_recommended' ? 'Starting...' : 'Refine Recommended'}
+                </button>
+                <button
+                  className="start-btn"
+                  disabled={actionStarting === 'refine_compression'}
+                  onClick={() => handleLaunchRefinement('compression', 'refine_compression', 'Failed to start compression refinement')}
+                  style={{ padding: '6px 14px', fontSize: 12, background: '#1f7a4f', borderColor: '#1f7a4f' }}
+                  title="Refine toward lower parameter/compute footprint while preserving quality."
+                >
+                  {actionStarting === 'refine_compression' ? 'Starting...' : 'Refine Compression'}
+                </button>
+                <button
+                  className="start-btn"
+                  disabled={actionStarting === 'refine_sparsity'}
+                  onClick={() => handleLaunchRefinement('sparsity', 'refine_sparsity', 'Failed to start sparsity refinement')}
+                  style={{ padding: '6px 14px', fontSize: 12, background: '#176f8c', borderColor: '#176f8c' }}
+                  title="Refine toward sparse/gated architectures using prior op success statistics."
+                >
+                  {actionStarting === 'refine_sparsity' ? 'Starting...' : 'Refine Sparsity'}
+                </button>
+                {lastRefinedCandidate?.resultId && onViewInLeaderboard && (
+                  <button
+                    className="refresh-btn"
+                    style={{ fontSize: 12, padding: '6px 12px', fontFamily: 'monospace' }}
+                    onClick={() => { onClose(); onViewInLeaderboard(lastRefinedCandidate.resultId); }}
+                    title={`Open ${lastRefinedCandidate.fingerprint || lastRefinedCandidate.resultId}`}
+                  >
+                    Reopen Last Refined Fingerprint
+                  </button>
+                )}
                 {resolvedEligibility.investigationEligible && (
                   <button
                     className="start-btn"

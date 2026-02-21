@@ -22,11 +22,14 @@ import os
 import queue
 import random
 import re
+import shlex
 import threading
 import time
 import traceback
+import uuid
+import functools
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
@@ -36,20 +39,35 @@ from ..synthesis.grammar import GrammarConfig, generate_layer_graph, batch_gener
 from ..synthesis.compiler import compile_model
 from ..synthesis.validator import validate_graph
 from ..synthesis.serializer import graph_to_json, graph_from_json, graph_summary
+from ..synthesis.primitives import get_primitive, list_primitives
 from ..eval.sandbox import safe_eval
 from ..eval.metrics import novelty_score
 from ..eval.flops import estimate_flops
 from ..eval.baseline import TransformerBaseline
 from ..eval.fingerprint import compute_fingerprint
-from ..eval.diagnostic_tasks import run_diagnostic_suite
+from ..eval.diagnostic_tasks import run_diagnostic_suite, DiagnosticSuiteResult
+from ..eval.regression_gate import RegressionGate
+from ..eval.perf_budget import evaluate_perf_budget_gate
 from ..eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
 from ..training.loss_synthesis import synthesize_loss
 from ..training.optimizer_synthesis import synthesize_optimizer
-from ..training.training_program import synthesize_training_program
+from ..training.training_program import synthesize_training_program, synthesize_training_program_batch
 from ..training.data_pipeline import CorpusConfig, CorpusTokenBatcher
 from ..training.checkpointing import CheckpointManager
+from ..orchestrator.executor import WorkerPoolOrchestrator
 from .persona import Aria, get_aria
 from .notebook import LabNotebook, ExperimentEntry
+from .evidence import (
+    build_evidence_pack,
+    validate_selection_decision_log,
+)
+from .preregistration import (
+    HypothesisPreregistration,
+    PreregistrationError,
+    validate_preregistration,
+)
+from ..healer import CodeHealer
+from ..healer.core import HealerTaskSpec
 from .llm.context import (build_experiment_context,
                           build_rich_context, build_investigation_context,
                           build_validation_context, build_mode_selection_context,
@@ -61,6 +79,115 @@ from .llm.context import (build_experiment_context,
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+def _rebuild_graph_with_overrides(candidate_graph, overrides: Dict[int, Dict[str, Any]]):
+    """Rebuild a graph with targeted node op/config overrides."""
+    rebuilt = type(candidate_graph)(candidate_graph.model_dim)
+    id_map: Dict[int, int] = {}
+    topo = candidate_graph.topological_order()
+    for old_id in topo:
+        node = candidate_graph.nodes[old_id]
+        if node.is_input:
+            id_map[old_id] = rebuilt.add_input()
+            continue
+        override = overrides.get(old_id, {})
+        op_name = override.get("op_name", node.op_name)
+        config = override.get("config", node.config)
+        new_inputs = [id_map[i] for i in node.input_ids]
+        try:
+            new_id = rebuilt.add_op(op_name, new_inputs, config=config)
+        except Exception:
+            return None
+        id_map[old_id] = new_id
+
+    if candidate_graph.output_node is None:
+        return None
+    out_old = candidate_graph.output_node.id
+    out_new = id_map.get(out_old)
+    if out_new is None:
+        return None
+    try:
+        rebuilt.set_output(out_new)
+    except Exception:
+        return None
+    rebuilt.metadata = dict(getattr(candidate_graph, "metadata", {}) or {})
+    return rebuilt
+
+
+def propose_ablation_suite(candidate_graph, hypothesis) -> List[Any]:
+    """Generate counterfactual ablations by replacing suspected components."""
+    if candidate_graph is None:
+        return []
+    hyp = str(hypothesis or "").lower()
+    ops = list_primitives()
+    replacement_by_signature: Dict[Tuple[int, str], List[str]] = {}
+    for op in ops:
+        key = (op.n_inputs, op.shape_rule)
+        replacement_by_signature.setdefault(key, []).append(op.name)
+    for key in replacement_by_signature:
+        replacement_by_signature[key] = sorted(set(replacement_by_signature[key]))
+
+    target_nodes: List[int] = []
+    for nid in candidate_graph.topological_order():
+        node = candidate_graph.nodes[nid]
+        if node.is_input:
+            continue
+        try:
+            prim = get_primitive(node.op_name)
+            category = prim.category.value
+        except Exception:
+            category = ""
+        if node.op_name in hyp or category in hyp:
+            target_nodes.append(nid)
+        elif ("math space" in hyp or "math_space" in hyp) and category == "math_space":
+            target_nodes.append(nid)
+
+    if not target_nodes:
+        non_input = [nid for nid in candidate_graph.topological_order()
+                     if not candidate_graph.nodes[nid].is_input]
+        target_nodes = non_input[-2:] if len(non_input) >= 2 else non_input
+
+    ablations: List[Any] = []
+    seen: Set[str] = set()
+    for nid in target_nodes[:4]:
+        node = candidate_graph.nodes[nid]
+        try:
+            prim = get_primitive(node.op_name)
+        except Exception:
+            continue
+        key = (prim.n_inputs, prim.shape_rule)
+        candidates = [name for name in replacement_by_signature.get(key, []) if name != node.op_name]
+        if not candidates:
+            continue
+
+        # Prefer a non-identical family replacement to produce a meaningful counterfactual.
+        replacement = candidates[0]
+        for name in candidates:
+            try:
+                if get_primitive(name).category != prim.category:
+                    replacement = name
+                    break
+            except Exception:
+                continue
+        rebuilt = _rebuild_graph_with_overrides(
+            candidate_graph,
+            {nid: {"op_name": replacement, "config": dict(node.config or {})}},
+        )
+        if rebuilt is None:
+            continue
+        try:
+            fp = rebuilt.fingerprint()
+        except Exception:
+            continue
+        if fp in seen:
+            continue
+        seen.add(fp)
+        ablations.append(rebuilt)
+        if len(ablations) >= 4:
+            break
+
+    return ablations
 
 
 @dataclass
@@ -98,9 +225,9 @@ class RunConfig:
     tokenizer_mode: str = "byte"  # "byte" | "whitespace"
     corpus_max_chars: int = 200000
     # HYDRA data loader settings (data_mode="hydra")
-    hydra_data_dir: str = "/home/tim/Projects/LLM/HYDRA/data"
+    hydra_data_dir: str = "../HYDRA/data"
     hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name
-    hydra_project_root: str = "/home/tim/Projects/LLM/HYDRA"
+    hydra_project_root: str = "../HYDRA"
     # Synthesis grammar
     max_depth: int = 10
     max_ops: int = 16
@@ -152,6 +279,9 @@ class RunConfig:
     morph_sparse_weight_storage: str = ""  # optional explicit sparse storage choice
     refine_source_result_ids: str = ""  # comma-separated source result IDs for local fingerprint refinement
     refine_mutations_per_source: int = 4
+    refine_intent: str = "balanced"  # balanced|quality|compression|sparsity|novelty
+    refine_pool_multiplier: int = 3
+    refine_analysis_json: str = ""  # serialized RefinementAnalyzer output for data-driven refinement
     # Training program variation
     use_synthesized_training: bool = False  # use random training programs
     n_training_programs: int = 3       # how many to try per candidate (investigation)
@@ -173,6 +303,25 @@ class RunConfig:
     auto_validate_max_baseline_ratio: float = 0.90
     auto_validate_min_novelty_confidence: float = 0.50
     auto_validate_top_n: int = 3
+    require_preregistration: bool = True
+    auto_preregister: bool = True
+    auto_novelty_calibration: bool = True
+    novelty_calibration_runs: int = 6
+    allow_heuristic_novelty_promotion: bool = False
+    heuristic_novelty_justification: str = ""
+    # Evidence-based selection policy
+    selection_quality_weight: float = 0.40
+    selection_novelty_weight: float = 0.25
+    selection_efficiency_weight: float = 0.20
+    selection_feasibility_weight: float = 0.15
+    selection_policy: str = "ucb"  # "ucb" | "epsilon_greedy"
+    selection_epsilon: float = 0.20
+    selection_ucb_c: float = 1.20
+    selection_family_bonus_weight: float = 0.20
+    safety_plateau_window: int = 8
+    safety_plateau_min_delta: float = 0.01
+    switch_epic_breakthrough_confidence_min: float = 0.75
+    switch_epic_stagnation_cycles: int = 6
     # Checkpoint/resume
     checkpoint_dir: str = "checkpoints"
     checkpoint_interval: int = 1  # save continuous checkpoint every N experiments
@@ -244,6 +393,17 @@ class ExperimentRunner:
         "token_merging": 0.65,
         "moe_topk": 0.8,
     }
+
+    @staticmethod
+    @functools.lru_cache(maxsize=1024)
+    def _cached_json_load(json_str: str) -> Any:
+        """Cached JSON decoding for high-frequency access patterns."""
+        if not json_str:
+            return None
+        try:
+            return json.loads(json_str)
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     @staticmethod
     def _investigation_loss_multiplier(
@@ -333,6 +493,38 @@ class ExperimentRunner:
             "window": window,
             "experiment_ids": unique_ids,
         }
+
+    def _build_model_from_source(
+        self,
+        model_source: str,
+        arch_spec_json_str: Optional[str],
+        graph_json_str: Optional[str],
+        config: RunConfig,
+        seq_len_override: Optional[int] = None,
+    ) -> Optional[nn.Module]:
+        """Reconstruct a model from either morphological spec or graph JSON."""
+        seq_len = seq_len_override if seq_len_override is not None else config.max_seq_len
+        if model_source == "morphological_box" and arch_spec_json_str:
+            from ..morphological_box import ArchSpec
+            from ..arch_builder import build_model, BuildConfig
+            spec_data = json.loads(arch_spec_json_str)
+            spec = ArchSpec(**spec_data)
+            build_cfg = BuildConfig(
+                dim=config.model_dim,
+                n_layers=config.n_layers,
+                vocab_size=config.vocab_size,
+                max_seq_len=seq_len,
+            )
+            return build_model(spec, build_cfg)
+        if graph_json_str:
+            graph = graph_from_json(graph_json_str)
+            layer_graphs = [graph] * config.n_layers
+            return compile_model(
+                layer_graphs,
+                vocab_size=config.vocab_size,
+                max_seq_len=seq_len,
+            )
+        return None
 
     def prescreen_run_config(
         self,
@@ -702,6 +894,12 @@ class ExperimentRunner:
                     logger.info("Restored grammar weight overrides from DB: %s", overrides)
         except Exception:
             pass  # Non-critical: start with empty overrides
+        self._last_stagnation_agent_cycle = -10
+        try:
+            self._healer = CodeHealer(self.notebook_path)
+        except Exception:
+            self._healer = None
+        self._last_healer_integrity_check = 0.0
 
         self._recover_stale_experiments_on_startup()
 
@@ -1095,10 +1293,62 @@ class ExperimentRunner:
             "delta_stage1_survivors": max(0, after_s1 - before_s1),
             "aria_message": str(after_progress.get("aria_message") or ""),
             "timestamp": time.time(),
+            "before": dict(before_progress or {}),
+            "after": dict(after_progress or {}),
         }
         if error:
             summary["error"] = str(error)
         return summary
+
+    def _evaluate_switch_epic_guardrails(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        cycle_index: int,
+    ) -> Dict[str, Any]:
+        """Evaluate explicit criteria for switching to a new epic/strategy."""
+        confidence_min = float(getattr(config, "switch_epic_breakthrough_confidence_min", 0.75) or 0.75)
+        stagnation_cycles = max(3, int(getattr(config, "switch_epic_stagnation_cycles", 6) or 6))
+
+        breakthroughs = nb.get_leaderboard(tier="breakthrough", limit=5, sort_by="composite_score")
+        qualified_breakthroughs = []
+        for row in breakthroughs:
+            conf = float(row.get("novelty_confidence") or 0.0)
+            if conf >= confidence_min:
+                qualified_breakthroughs.append({
+                    "result_id": row.get("result_id"),
+                    "composite_score": float(row.get("composite_score") or 0.0),
+                    "novelty_confidence": conf,
+                })
+
+        recent = list(self._aria_cycle_history[-stagnation_cycles:])
+        if recent:
+            recent = recent + [dict(self._last_cycle_summary or {})] if self._last_cycle_summary else recent
+            recent = recent[-stagnation_cycles:]
+        stagnated = bool(recent) and all(int(c.get("delta_stage1_survivors") or 0) == 0 for c in recent)
+
+        should_switch = bool(qualified_breakthroughs) or stagnated
+        reasons = []
+        if qualified_breakthroughs:
+            reasons.append("decision_ready_breakthrough_detected")
+        if stagnated:
+            reasons.append("stagnation_without_gate_advancement")
+
+        return {
+            "should_switch_epic": should_switch,
+            "reasons": reasons,
+            "criteria": {
+                "breakthrough_confidence_min": confidence_min,
+                "stagnation_cycles": stagnation_cycles,
+            },
+            "signals": {
+                "qualified_breakthrough_count": len(qualified_breakthroughs),
+                "qualified_breakthroughs": qualified_breakthroughs,
+                "stagnated_recent_cycles": stagnated,
+                "recent_cycle_count": len(recent),
+            },
+            "evaluated_at_cycle": int(cycle_index),
+        }
 
     def run_aria_cycle(
         self,
@@ -1319,6 +1569,18 @@ class ExperimentRunner:
             self._aria_cycle_history.append(summary)
             if len(self._aria_cycle_history) > 50:
                 self._aria_cycle_history = self._aria_cycle_history[-50:]
+        switch_guardrails = self._evaluate_switch_epic_guardrails(config, nb, n_experiments)
+        summary["switch_epic_guardrails"] = switch_guardrails
+        if switch_guardrails.get("should_switch_epic"):
+            self._emit_event("switch_epic_recommended", switch_guardrails)
+            try:
+                nb.log_learning_event(
+                    "switch_epic_recommended",
+                    f"Switch-epic criteria met at cycle {n_experiments}",
+                    evidence=json.dumps(switch_guardrails, sort_keys=True),
+                )
+            except Exception:
+                pass
         self._emit_event("aria_cycle_completed", summary)
 
         delta_s1 = summary.get("delta_stage1_survivors", 0)
@@ -1342,6 +1604,13 @@ class ExperimentRunner:
 
         # PROACTIVE: Detect recurring error patterns and auto-fix
         self._proactive_recurring_error_fix(n_experiments, nb)
+
+        # PROACTIVE: Spawn agent to investigate persistent S1 stagnation
+        self._proactive_stagnation_agent(n_experiments, nb)
+        self._maybe_trigger_integrity_healer(
+            nb=nb,
+            experiment_id=after_progress.get("experiment_id"),
+        )
 
         return summary
 
@@ -1394,6 +1663,15 @@ class ExperimentRunner:
             )
         except Exception as e:
             logger.debug("Proactive cycle repair failed to spawn: %s", e)
+        self._invoke_code_healer(
+            nb=nb,
+            trigger_type="repeated_exception",
+            experiment_id=getattr(self._progress, "experiment_id", None),
+            scope=f"Cycle failure in mode={mode}: {error[:240]}",
+            reproduction_steps=["python -m pytest tests/test_integration.py -k \"start_experiment\" -x --tb=short"],
+            acceptance_tests=["python -m pytest tests/test_integration.py -k \"start_experiment\" -x --tb=short"],
+            trigger_payload={"mode": mode, "cycle_index": cycle_index, "error": error[:1000]},
+        )
 
     def _proactive_stagnation_check(self, cycle_index: int, delta_s1: int,
                                     nb: LabNotebook):
@@ -1443,6 +1721,88 @@ class ExperimentRunner:
         logger.info(
             "Anti-stagnation triggered at cycle %d: %s",
             cycle_index, adjustments,
+        )
+
+    def _proactive_stagnation_agent(self, cycle_index: int, nb: LabNotebook):
+        """Spawn a code agent to investigate persistent S1 stagnation."""
+        history = getattr(self, "_aria_cycle_history", [])
+        window = 5
+        if len(history) < window:
+            return
+
+        recent = history[-window:]
+        all_zero = all(
+            h.get("delta_stage1_survivors", 0) == 0
+            for h in recent
+        )
+        if not all_zero:
+            return
+
+        # Rate-limit: skip if recently spawned
+        if cycle_index - self._last_stagnation_agent_cycle < 5:
+            return
+
+        try:
+            from .api import _spawn_code_agent_task
+            from .analytics import ExperimentAnalytics
+
+            analytics = ExperimentAnalytics(nb)
+            neg = analytics.negative_results_synthesis()
+            failed_ops = [op["op_name"] for op in neg.get("failed_ops", [])[:10]]
+            weights = analytics.compute_grammar_weights() or {}
+            trajectory = analytics.learning_trajectory()
+            s1_slope = trajectory.get("s1_slope", 0) if trajectory else 0
+
+            recent_s1 = [
+                h.get("after", {}).get("stage1_passed", 0)
+                for h in recent
+            ]
+
+            goal = (
+                f"STAGNATION: 0 new S1 survivors for {window} consecutive cycles "
+                f"(S1 counts: {recent_s1}, trend slope={s1_slope:.4f}). "
+                f"Current grammar weights: {json.dumps(weights, indent=None)}. "
+                f"Failed ops (0% S1 rate, >=5 uses): {failed_ops}. "
+                f"Read these files and propose a targeted fix:\n"
+                f"- synthesis/grammar.py: GrammarConfig.category_weights defaults and generate_layer_graph() — "
+                f"are failing categories over-weighted?\n"
+                f"- scientist/analytics.py: _compute_weights_from_stats() noise guard and weight formula — "
+                f"is the learning signal being suppressed?\n"
+                f"- morphological_box.py: dimension constraints in ArchSpec — "
+                f"is the config search space too narrow?\n"
+                f"- evaluator.py: stage1 pass criteria — is the bar set unreachably high?\n"
+                f"Identify the single most likely bottleneck and make a minimal, targeted change."
+            )
+
+            notebook_path = str(nb._db_path) if hasattr(nb, "_db_path") else ""
+            task = _spawn_code_agent_task(
+                goal=goal,
+                notebook_path=notebook_path,
+                allow_write=True,
+            )
+            task_id = task.get("task_id", "unknown")
+            self._last_stagnation_agent_cycle = cycle_index
+
+            nb.log_learning_event(
+                "proactive_stagnation_agent",
+                f"Spawned agent {task_id} for S1 stagnation ({window} flat cycles)",
+                task_id=task_id, s1_slope=s1_slope,
+                failed_ops=failed_ops, recent_s1=recent_s1,
+            )
+            logger.info(
+                "Stagnation agent spawned at cycle %d (task %s, slope=%.4f)",
+                cycle_index, task_id, s1_slope,
+            )
+        except Exception as e:
+            logger.debug("Stagnation agent spawn failed: %s", e)
+        self._invoke_code_healer(
+            nb=nb,
+            trigger_type="plateau",
+            experiment_id=getattr(self._progress, "experiment_id", None),
+            scope=f"Persistent stagnation at cycle {cycle_index}",
+            reproduction_steps=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
+            acceptance_tests=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
+            trigger_payload={"cycle_index": cycle_index, "window": window},
         )
 
     def _proactive_recurring_error_fix(self, cycle_index: int, nb: LabNotebook):
@@ -1513,6 +1873,84 @@ class ExperimentRunner:
             )
         except Exception as e:
             logger.debug("Failed to spawn recurring error fix agent: %s", e)
+        self._invoke_code_healer(
+            nb=nb,
+            trigger_type="repeated_exception",
+            experiment_id=getattr(self._progress, "experiment_id", None),
+            scope=f"Recurring error pattern {worst_error[0][:200]}",
+            reproduction_steps=["python -m pytest tests/test_integration.py -k \"error\" -x --tb=short"],
+            acceptance_tests=["python -m pytest tests/test_integration.py -k \"error\" -x --tb=short"],
+            trigger_payload={"error_pattern": worst_error[0], "occurrences": worst_error[1]},
+        )
+
+    def _invoke_code_healer(
+        self,
+        nb: LabNotebook,
+        trigger_type: str,
+        experiment_id: Optional[str],
+        scope: str,
+        reproduction_steps: Optional[List[str]] = None,
+        acceptance_tests: Optional[List[str]] = None,
+        trigger_payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Run Code Healer state machine and log output to SQLite."""
+        if self._healer is None:
+            return None
+        repro = reproduction_steps or []
+        tests = acceptance_tests or ["python -m pytest tests -k integration -x --tb=short"]
+        try:
+            result = self._healer.open_and_run(
+                HealerTaskSpec(
+                    experiment_id=experiment_id,
+                    trigger_type=trigger_type,
+                    scope=scope,
+                    reproduction_steps=repro,
+                    acceptance_tests=tests,
+                    trigger_payload=trigger_payload or {},
+                )
+            )
+            nb.log_learning_event(
+                "code_healer_invoked",
+                f"CodeHealer handled trigger={trigger_type} state={result.get('state')}",
+                trigger_type=trigger_type,
+                healer_result=result,
+            )
+            return result
+        except Exception as e:
+            nb.log_learning_event(
+                "code_healer_failed",
+                f"CodeHealer failed for trigger={trigger_type}: {e}",
+                trigger_type=trigger_type,
+                error=str(e),
+            )
+            return None
+
+    def _maybe_trigger_integrity_healer(self, nb: LabNotebook, experiment_id: Optional[str]) -> None:
+        """Run integrity checks periodically and invoke healer on failures."""
+        now = time.time()
+        if now - self._last_healer_integrity_check < 300:
+            return
+        self._last_healer_integrity_check = now
+        try:
+            from ..tools.novelty_integrity_check import run_integrity_check
+            report = run_integrity_check(nb, calibrate_if_missing=False, runs=4)
+            if report.get("ok"):
+                return
+            self._invoke_code_healer(
+                nb=nb,
+                trigger_type="integrity_failure",
+                experiment_id=experiment_id,
+                scope="Novelty integrity check failure.",
+                reproduction_steps=[
+                    f"python tools/novelty_integrity_check.py --db {shlex.quote(str(nb.db_path))}"
+                ],
+                acceptance_tests=[
+                    f"python tools/novelty_integrity_check.py --db {shlex.quote(str(nb.db_path))}"
+                ],
+                trigger_payload=report,
+            )
+        except Exception as e:
+            logger.debug("Integrity healer check failed to execute: %s", e)
 
     @staticmethod
     def _config_with_overrides(
@@ -1760,7 +2198,9 @@ class ExperimentRunner:
     # ── Start / Stop ──
 
     def start_experiment(self, config: RunConfig,
-                         hypothesis: Optional[str] = None) -> str:
+                         hypothesis: Optional[str] = None,
+                         preregistration: Optional[Dict[str, Any]] = None,
+                         exploratory: bool = False) -> str:
         """Start an experiment in a background thread. Returns experiment ID."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -1784,6 +2224,10 @@ class ExperimentRunner:
 
         # Pre-generate experiment ID
         nb = self._make_notebook()
+
+        # Populate refuted hypotheses cache for similarity gating
+        self._populate_refuted_cache(nb)
+
         hypothesis_metadata = {
             "source": "user_input" if hypothesis is not None else "unknown",
             "llm_used": False,
@@ -1837,11 +2281,15 @@ class ExperimentRunner:
             except Exception as e:
                 logger.warning(f"Hypothesis critique failed: {e}")
 
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="synthesis",
             config=config.to_dict(),
             hypothesis=hypothesis,
             hypothesis_metadata=hypothesis_metadata,
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by="start_experiment",
         )
         nb.close()
 
@@ -1971,13 +2419,269 @@ class ExperimentRunner:
         if refine_config.refine_mutations_per_source <= 0:
             refine_config.refine_mutations_per_source = 1
 
+        source_stage1_passed = 0
+        recent_synthesis_s1_rate = 0.0
+        source_rows: List[Dict[str, Any]] = []
+        recommendation: Optional[Dict[str, Any]] = None
+        try:
+            nb = self._make_notebook()
+            recent = self._recent_synthesis_health(nb, window=5)
+            recent_synthesis_s1_rate = float(recent.get("s1_rate") or 0.0)
+            for rid in ids:
+                row = nb.get_program_detail(rid)
+                if row and row.get("stage1_passed"):
+                    source_stage1_passed += 1
+                if isinstance(row, dict):
+                    source_rows.append(row)
+
+            requested_intent = str(refine_config.refine_intent or "balanced").strip().lower()
+            if requested_intent in {"recommended", "auto"}:
+                # Auto-run RefinementAnalyzer if no pre-computed analysis
+                if not refine_config.refine_analysis_json and source_rows:
+                    try:
+                        from .analytics import ExperimentAnalytics, RefinementAnalyzer
+                        analytics = ExperimentAnalytics(nb)
+                        analyzer = RefinementAnalyzer(analytics)
+                        primary_row = source_rows[0]
+                        primary_id = primary_row.get("result_id", ids[0])
+                        analysis = analyzer.analyze_program_for_refinement(primary_id, primary_row)
+                        recipe = analysis.get("recipe", {})
+                        resolved_intent = recipe.get("recommended_intent", "balanced")
+                        recommendation = {
+                            "intent": resolved_intent,
+                            "rationale": recipe.get("primary_target", ""),
+                            "evidence": recipe.get("grammar_hints", {}),
+                        }
+                        refine_config.refine_analysis_json = json.dumps(analysis)
+                    except Exception as e:
+                        logger.warning("RefinementAnalyzer failed, falling back: %s", e)
+                        resolved_intent, recommendation = self._recommend_refinement_intent(
+                            nb, source_rows,
+                        )
+                else:
+                    resolved_intent, recommendation = self._recommend_refinement_intent(
+                        nb,
+                        source_rows,
+                    )
+                refine_config.refine_intent = resolved_intent
+            nb.close()
+        except Exception:
+            recent_synthesis_s1_rate = 0.0
+
         if hypothesis is None:
+            intent_spec = self._refinement_intent_spec(refine_config.refine_intent)
+            source_rule = (
+                f"source_selection_rule=result_ids({len(ids)}) with "
+                f"stage1_survivor_sources={source_stage1_passed}/{len(ids)}"
+            )
+            mutation_plan = (
+                "mutation_mechanism=evolution_local_neighborhood("
+                f"operators=op_replace|config_tweak|edge_rewire, mutation_rate={refine_config.mutation_rate:.2f}, "
+                f"mutations_per_source={refine_config.refine_mutations_per_source}, "
+                f"pool_multiplier={max(1, int(refine_config.refine_pool_multiplier or 1))})"
+            )
+            baseline_s1 = f"recent_synthesis_s1_rate={recent_synthesis_s1_rate:.3f}"
+            success_criteria = (
+                "success_criteria=(stage0_pass_rate>=0.95 AND stage05_pass_rate>=0.70) "
+                "AND (delta_s1_rate>=+0.03_vs_recent OR best_loss_ratio<=0.98*parent_loss_ratio)"
+            )
+            fallback_plan = (
+                "fallback_plan=if(no_stage1_improvement OR no_stage1_sources) "
+                "queue_ablation_suite_and_novelty_mode"
+            )
+            recommendation_clause = ""
+            if recommendation:
+                recommendation_clause = (
+                    " recommended_intent="
+                    f"{recommendation.get('intent')}"
+                    f" rationale={recommendation.get('rationale')}"
+                    f" evidence={recommendation.get('evidence')}"
+                    ";"
+                )
             hypothesis = (
-                f"Fingerprint refinement: locally mutate {len(ids)} selected architecture "
-                f"source(s) to search for improved nearby variants."
+                "Fingerprint refinement hypothesis: "
+                f"{source_rule}; "
+                f"{mutation_plan}; "
+                f"intent={intent_spec['name']} weights={intent_spec['weights']} "
+                f"score={intent_spec['formula']}; "
+                f"{recommendation_clause} "
+                f"{baseline_s1}; "
+                f"{success_criteria}; "
+                f"{fallback_plan}."
             )
 
         return self.start_experiment(refine_config, hypothesis=hypothesis)
+
+    def _recommend_refinement_intent(
+        self,
+        nb: LabNotebook,
+        source_rows: List[Dict[str, Any]],
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Recommend refinement intent from historical quality/novelty/compression evidence."""
+        if not source_rows:
+            return "balanced", {
+                "intent": "balanced",
+                "rationale": "no_source_rows",
+                "evidence": {"source_count": 0},
+            }
+
+        op_success = self._op_success_lookup(nb)
+        sparse_hint_ops = ("sparse", "gate", "topk", "mask", "threshold", "skip", "mixture")
+
+        loss_values: List[float] = []
+        novelty_values: List[float] = []
+        param_values: List[float] = []
+        op_success_values: List[float] = []
+        sparse_ratios: List[float] = []
+
+        for row in source_rows:
+            loss = row.get("loss_ratio")
+            novelty = row.get("novelty_score")
+            params = row.get("param_count") or row.get("graph_n_params_estimate")
+
+            if isinstance(loss, (int, float)):
+                loss_values.append(float(loss))
+            if isinstance(novelty, (int, float)):
+                novelty_values.append(float(novelty))
+            if isinstance(params, (int, float)) and float(params) > 0:
+                param_values.append(float(params))
+
+            ops: List[str] = []
+            graph_json = row.get("graph_json")
+            if isinstance(graph_json, str) and graph_json.strip():
+                try:
+                    graph_data = json.loads(graph_json)
+                    nodes = graph_data.get("nodes", {}) if isinstance(graph_data, dict) else {}
+                    for nd in nodes.values():
+                        if not isinstance(nd, dict):
+                            continue
+                        op_name = str(nd.get("op_name") or "").strip().lower()
+                        if not op_name or op_name == "input":
+                            continue
+                        ops.append(op_name)
+                except Exception:
+                    ops = []
+
+            if ops:
+                scores = [float(op_success.get(op, 0.5)) for op in ops]
+                op_success_values.append(sum(scores) / len(scores))
+                sparse_ratio = sum(
+                    1.0 for op in ops if any(token in op for token in sparse_hint_ops)
+                ) / len(ops)
+                sparse_ratios.append(float(sparse_ratio))
+
+        mean_loss = (sum(loss_values) / len(loss_values)) if loss_values else None
+        mean_novelty = (sum(novelty_values) / len(novelty_values)) if novelty_values else None
+        mean_params = (sum(param_values) / len(param_values)) if param_values else None
+        mean_op_success = (
+            sum(op_success_values) / len(op_success_values)
+        ) if op_success_values else None
+        mean_sparse_ratio = (
+            sum(sparse_ratios) / len(sparse_ratios)
+        ) if sparse_ratios else None
+
+        intent = "balanced"
+        rationale = "mixed_signals"
+        if ((mean_loss is not None and mean_loss >= 0.75)
+                or (mean_op_success is not None and mean_op_success < 0.35)):
+            intent = "quality"
+            rationale = "weak_quality_signal"
+        elif (mean_params is not None and mean_params >= 5_000_000
+              and (mean_loss is None or mean_loss <= 0.95)):
+            intent = "compression"
+            rationale = "high_parameter_budget"
+        elif mean_novelty is not None and mean_novelty < 0.45:
+            intent = "novelty"
+            rationale = "low_novelty_signal"
+        elif (mean_sparse_ratio is not None and mean_sparse_ratio < 0.10
+              and mean_params is not None and mean_params >= 1_000_000):
+            intent = "sparsity"
+            rationale = "sparse_operator_gap"
+
+        recommendation = {
+            "intent": intent,
+            "rationale": rationale,
+            "evidence": {
+                "source_count": len(source_rows),
+                "mean_loss_ratio": mean_loss,
+                "mean_novelty": mean_novelty,
+                "mean_params": mean_params,
+                "mean_op_success": mean_op_success,
+                "mean_sparse_op_ratio": mean_sparse_ratio,
+            },
+        }
+        return intent, recommendation
+
+    def _recent_synthesis_health(self, nb: LabNotebook, window: int = 5) -> Dict[str, float]:
+        """Summarize recent synthesis outcomes for fallback decisions."""
+        experiments = nb.get_recent_experiments(max(window * 3, window))
+        rows = [
+            row for row in experiments
+            if str(row.get("experiment_type") or "") == "synthesis"
+            and str(row.get("status") or "") == "completed"
+        ][:window]
+        total_programs = sum(max(int(r.get("n_programs_generated") or 0), 0) for r in rows)
+        total_s1 = sum(max(int(r.get("n_stage1_passed") or 0), 0) for r in rows)
+        rate = (float(total_s1) / float(total_programs)) if total_programs > 0 else 0.0
+        return {
+            "window": float(len(rows)),
+            "total_programs": float(total_programs),
+            "total_s1": float(total_s1),
+            "s1_rate": float(rate),
+        }
+
+    def _refinement_intent_spec(self, intent: str) -> Dict[str, Any]:
+        """Canonical intent weighting description used in refinement hypotheses."""
+        mode = str(intent or "balanced").lower()
+        specs: Dict[str, Dict[str, Any]] = {
+            "quality": {
+                "name": "quality",
+                "weights": {
+                    "learned_quality": 0.60,
+                    "parent_quality": 0.25,
+                    "compression_proxy": 0.15,
+                },
+                "formula": "0.60*learned_quality + 0.25*parent_quality + 0.15*compression_proxy",
+            },
+            "compression": {
+                "name": "compression",
+                "weights": {
+                    "compression_proxy": 0.60,
+                    "learned_quality": 0.25,
+                    "parent_quality": 0.15,
+                },
+                "formula": "0.60*compression_proxy + 0.25*learned_quality + 0.15*parent_quality",
+            },
+            "sparsity": {
+                "name": "sparsity",
+                "weights": {
+                    "sparsity_proxy": 0.60,
+                    "learned_quality": 0.25,
+                    "compression_proxy": 0.15,
+                },
+                "formula": "0.60*sparsity_proxy + 0.25*learned_quality + 0.15*compression_proxy",
+            },
+            "novelty": {
+                "name": "novelty",
+                "weights": {
+                    "novelty_proxy": 0.55,
+                    "learned_quality": 0.25,
+                    "parent_novelty": 0.20,
+                },
+                "formula": "0.55*novelty_proxy + 0.25*learned_quality + 0.20*parent_novelty",
+            },
+            "balanced": {
+                "name": "balanced",
+                "weights": {
+                    "learned_quality": 0.35,
+                    "compression_proxy": 0.25,
+                    "novelty_proxy": 0.20,
+                    "parent_signal": 0.20,
+                },
+                "formula": "0.35*learned_quality + 0.25*compression_proxy + 0.20*novelty_proxy + 0.20*parent_signal",
+            },
+        }
+        return specs.get(mode, specs["balanced"])
 
     def start_resume(self, experiment_id: str, config: Optional[RunConfig] = None) -> str:
         """Resume an interrupted experiment from its last checkpoint.
@@ -2311,6 +3015,15 @@ class ExperimentRunner:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Experiment failed (%s): %s\n%s", exp_id, e, error)
+            self._invoke_code_healer(
+                nb=nb,
+                trigger_type="repeated_exception",
+                experiment_id=exp_id,
+                scope=f"Synthesis/experiment failure: {str(e)[:240]}",
+                reproduction_steps=["python -m pytest tests/test_integration.py -k \"start_experiment\" -x --tb=short"],
+                acceptance_tests=["python -m pytest tests/test_integration.py -k \"start_experiment\" -x --tb=short"],
+                trigger_payload={"mode": "synthesis", "error": str(e)},
+            )
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -2342,11 +3055,6 @@ class ExperimentRunner:
             cost = self.aria.total_cost
             if cost >= config.max_cost_dollars:
                 return f"Cost limit reached (${cost:.2f} / ${config.max_cost_dollars:.2f})"
-
-        # Plateau detection: auto-pause when no learning progress
-        plateau_reason = self._detect_plateau(n_experiments)
-        if plateau_reason:
-            return plateau_reason
 
         return None
 
@@ -2395,6 +3103,661 @@ class ExperimentRunner:
                 f"cycles (modes: {mode_str}). "
                 f"Pausing — try adjusting grammar weights, config, or hypothesis."
             )
+
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _norm_map(values: Dict[str, float], higher_is_better: bool = True) -> Dict[str, float]:
+        if not values:
+            return {}
+        vmin = min(values.values())
+        vmax = max(values.values())
+        if math.isclose(vmin, vmax):
+            return {k: 0.5 for k in values}
+        out: Dict[str, float] = {}
+        for k, v in values.items():
+            score = (v - vmin) / (vmax - vmin)
+            out[k] = score if higher_is_better else (1.0 - score)
+        return out
+
+    def _candidate_tokens(self, row: Dict[str, Any]) -> Set[str]:
+        """Extract lightweight semantic tokens for insight matching."""
+        tokens: Set[str] = set()
+        family = LabNotebook._classify_architecture_family(
+            row.get("graph_json"),
+            row.get("routing_mode"),
+        )
+        if family:
+            tokens.update(part for part in family.lower().replace("-", " ").split() if len(part) >= 3)
+
+        graph_json = row.get("graph_json")
+        if isinstance(graph_json, str) and graph_json:
+            try:
+                graph_data = json.loads(graph_json)
+                nodes = graph_data.get("nodes", {}) if isinstance(graph_data, dict) else {}
+                for nd in nodes.values():
+                    if not isinstance(nd, dict):
+                        continue
+                    op_name = str(nd.get("op_name") or "").strip().lower()
+                    if not op_name or op_name == "input":
+                        continue
+                    tokens.add(op_name)
+                    tokens.update(part for part in op_name.replace("-", "_").split("_") if len(part) >= 3)
+            except Exception:
+                pass
+        return tokens
+
+    def _resolve_pending_selection_insight_trials(self, nb: LabNotebook) -> None:
+        """Resolve pending insight-bundle trials once downstream outcomes are available."""
+        try:
+            trials = nb.get_pending_selection_insight_trials(limit=200)
+        except Exception:
+            return
+        if not trials:
+            return
+
+        leaderboard = nb.get_leaderboard(limit=2000)
+        by_result = {
+            str(row.get("result_id")): row for row in leaderboard if row.get("result_id")
+        }
+        for trial in trials:
+            context = str(trial.get("context") or "")
+            chosen_ids = trial.get("chosen_result_ids_json") or []
+            if not isinstance(chosen_ids, list) or not chosen_ids:
+                continue
+            entries = [by_result.get(str(rid)) for rid in chosen_ids]
+            if any(entry is None for entry in entries):
+                continue
+
+            rewards: List[float] = []
+            resolved = False
+            for entry in entries:
+                if context == "auto_investigate_screening":
+                    inv_pass = entry.get("investigation_passed")
+                    inv_loss = entry.get("investigation_loss_ratio")
+                    inv_rob = entry.get("investigation_robustness")
+                    if inv_pass is None and inv_loss is None:
+                        resolved = False
+                        rewards = []
+                        break
+                    passed = 1.0 if bool(inv_pass) else 0.0
+                    loss_term = max(0.0, 1.0 - self._to_float(inv_loss, default=1.0))
+                    rob_term = max(0.0, min(1.0, self._to_float(inv_rob, default=0.0)))
+                    rewards.append(max(0.0, min(1.0, 0.5 * passed + 0.3 * loss_term + 0.2 * rob_term)))
+                    resolved = True
+                elif context == "auto_validate_investigation":
+                    val_pass = entry.get("validation_passed")
+                    val_loss = entry.get("validation_loss_ratio")
+                    val_base = entry.get("validation_baseline_ratio")
+                    val_std = self._to_float(entry.get("validation_multi_seed_std"), default=0.2)
+                    if val_pass is None and val_loss is None and val_base is None:
+                        resolved = False
+                        rewards = []
+                        break
+                    passed = 1.0 if bool(val_pass) else 0.0
+                    if val_base is not None:
+                        loss_term = max(0.0, 1.0 - self._to_float(val_base, default=1.0))
+                    else:
+                        loss_term = max(0.0, 1.0 - self._to_float(val_loss, default=1.0))
+                    std_term = max(0.0, min(1.0, 1.0 - val_std))
+                    rewards.append(max(0.0, min(1.0, 0.5 * passed + 0.3 * loss_term + 0.2 * std_term)))
+                    resolved = True
+                else:
+                    rewards = []
+                    resolved = False
+                    break
+
+            if not resolved or not rewards:
+                continue
+
+            reward = float(sum(rewards) / len(rewards))
+            if reward >= 0.55:
+                outcome = "supported"
+            elif reward <= 0.45:
+                outcome = "not_supported"
+            else:
+                outcome = "inconclusive"
+            nb.resolve_selection_insight_trial(
+                trial_id=str(trial.get("trial_id")),
+                reward=reward,
+                outcome=outcome,
+                metadata={
+                    "context": context,
+                    "n_candidates": len(chosen_ids),
+                    "resolved_from": "leaderboard",
+                },
+            )
+
+    def _selection_supporting_insights(
+        self,
+        nb: LabNotebook,
+        candidates: List[Dict[str, Any]],
+    ) -> Tuple[Dict[str, List[str]], List[str]]:
+        """Match active insights to candidates and return per-result + global bundles."""
+        insights = nb.get_insights(limit=120)
+        if not insights:
+            return {}, []
+
+        by_result: Dict[str, List[str]] = {}
+        global_scores: Dict[str, float] = {}
+        for row in candidates:
+            rid = str(row.get("result_id") or "")
+            if not rid:
+                continue
+            tokens = self._candidate_tokens(row)
+            if not tokens:
+                continue
+            scored: List[Tuple[float, str]] = []
+            for insight in insights:
+                insight_id = str(insight.get("insight_id") or "")
+                content = str(insight.get("content") or "").lower()
+                if not insight_id or not content:
+                    continue
+                hit_count = sum(1 for token in tokens if token in content)
+                if hit_count <= 0:
+                    continue
+                confidence = self._to_float(insight.get("confidence"), default=0.5)
+                score = hit_count * max(0.1, confidence)
+                scored.append((score, insight_id))
+            if not scored:
+                continue
+            scored.sort(key=lambda item: item[0], reverse=True)
+            matched = [insight_id for _, insight_id in scored[:3]]
+            by_result[rid] = matched
+            for score, insight_id in scored[:5]:
+                global_scores[insight_id] = max(global_scores.get(insight_id, 0.0), score)
+
+        global_ids = [iid for iid, _ in sorted(global_scores.items(), key=lambda kv: kv[1], reverse=True)[:6]]
+        return by_result, global_ids
+
+    def _selection_safety_valve(self, nb: LabNotebook, config: RunConfig) -> Optional[Dict[str, Any]]:
+        """Trigger novelty/ablation-heavy fallback after repeated stagnation."""
+        window = max(3, int(config.safety_plateau_window))
+        recent = nb.get_recent_experiments(window)
+        if len(recent) < window:
+            return None
+        ordered = list(reversed(recent))
+        loss_vals = [self._to_float(e.get("best_loss_ratio"), default=float("nan")) for e in ordered]
+        loss_vals = [v for v in loss_vals if not math.isnan(v)]
+        n_stage1 = [int(e.get("n_stage1_passed") or 0) for e in ordered]
+        if not loss_vals:
+            return None
+
+        first_loss = loss_vals[0]
+        best_recent = min(loss_vals)
+        loss_gain = max(0.0, first_loss - best_recent)
+        no_survivor_progress = all(v <= 0 for v in n_stage1)
+        plateau = loss_gain < float(config.safety_plateau_min_delta) and no_survivor_progress
+        if not plateau:
+            return None
+
+        with self._lock:
+            recent_modes = [c.get("mode", "synthesis") for c in self._aria_cycle_history[-window:]]
+        novelty_share = (
+            sum(1 for m in recent_modes if m == "novelty") / max(1, len(recent_modes))
+        )
+        mode = "ablation_heavy" if novelty_share >= 0.5 else "novelty"
+        return {
+            "triggered": True,
+            "mode": mode,
+            "window": window,
+            "loss_gain": round(loss_gain, 6),
+            "min_required_gain": float(config.safety_plateau_min_delta),
+            "no_survivor_progress": no_survivor_progress,
+            "reason": (
+                f"No measurable progress over {window} experiments "
+                f"(loss gain={loss_gain:.4f}, S1 survivors unchanged)."
+            ),
+        }
+
+    def _ensure_novelty_calibration(
+        self,
+        nb: LabNotebook,
+        config: RunConfig,
+        fp: Optional[Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch or create baseline novelty calibration for the active reference version."""
+        if fp is None:
+            return None
+        reference_version = getattr(fp, "novelty_reference_version", None)
+        if not reference_version:
+            return None
+        row = nb.get_latest_novelty_calibration(reference_version=reference_version)
+        if row is not None:
+            return row
+        if not config.auto_novelty_calibration:
+            return None
+
+        try:
+            from ..eval.novelty_calibration import calibrate_baseline_transformer_novelty
+            calibration = calibrate_baseline_transformer_novelty(
+                n_runs=max(2, int(config.novelty_calibration_runs)),
+                seq_len=min(32, int(config.max_seq_len)),
+                model_dim=max(16, int(config.model_dim)),
+                vocab_size=max(256, min(4096, int(config.vocab_size))),
+                device="cpu",
+                seed=self._stable_seed("novelty_calibration", reference_version),
+            )
+            nb.record_novelty_calibration(
+                reference_version=calibration.get("reference_version") or reference_version,
+                cka_source=calibration.get("cka_source"),
+                cka_artifact_version=calibration.get("cka_artifact_version"),
+                probe_protocol_hash=calibration.get("probe_protocol_hash"),
+                n_runs=int(calibration.get("n_runs") or config.novelty_calibration_runs),
+                noise_floor_mean=calibration.get("noise_floor_mean"),
+                noise_floor_std=calibration.get("noise_floor_std"),
+                confidence_low=calibration.get("confidence_low"),
+                confidence_high=calibration.get("confidence_high"),
+                distribution=calibration.get("distribution") or {},
+                metadata=calibration.get("metadata") or {},
+            )
+            return nb.get_latest_novelty_calibration(reference_version=reference_version)
+        except Exception as e:
+            logger.debug("Novelty calibration failed for %s: %s", reference_version, e)
+            return None
+
+    def _resolve_novelty_promotion_validity(
+        self,
+        config: RunConfig,
+        valid_for_promotion: bool,
+        reason: str,
+    ) -> Tuple[bool, str, bool]:
+        """Apply explicit override policy for heuristic novelty promotions."""
+        valid = bool(valid_for_promotion)
+        resolved_reason = str(reason or "unknown")
+        requires_justification = not valid
+        if valid:
+            return True, resolved_reason, False
+        if config.allow_heuristic_novelty_promotion and str(config.heuristic_novelty_justification or "").strip():
+            return True, f"override:{resolved_reason}", True
+        return False, resolved_reason, requires_justification
+
+    @staticmethod
+    def _safe_build_evidence_pack(
+        nb: LabNotebook,
+        recommendation: Dict[str, Any],
+        decision_type: str,
+    ) -> Dict[str, Any]:
+        try:
+            return build_evidence_pack(
+                nb,
+                analytics=None,
+                recommendation=recommendation,
+                decision_type=decision_type,
+            )
+        except Exception:
+            return {
+                "hypothesis": "Insufficient metrics; gather more evidence before confident action.",
+                "supporting_metrics": [{
+                    "name": "evidence_unavailable",
+                    "value": 0.0,
+                    "baseline": 0.0,
+                    "delta_vs_baseline": 0.0,
+                }],
+                "uncertainty": {"note": "Evidence pack fallback due to sparse metrics."},
+                "confounders": ["Sparse or missing recent experiment metrics."],
+                "falsification": ["If next experiment still yields sparse metrics, block automation."],
+            }
+
+    def _build_default_preregistration(
+        self,
+        experiment_type: str,
+        config: Dict[str, Any],
+        hypothesis: Optional[str],
+        exploratory: bool = False,
+    ) -> Dict[str, Any]:
+        statement = str(hypothesis or f"{experiment_type} batch will improve prioritized objectives.")
+        primary_metrics = ["loss_ratio", "stage1_passed"]
+        if experiment_type in {"novelty", "evolution"}:
+            primary_metrics = ["novelty_score", "stage1_passed"]
+        if experiment_type in {"validation", "scale_up"}:
+            primary_metrics = ["baseline_loss_ratio", "loss_ratio", "novelty_confidence"]
+
+        prereg = HypothesisPreregistration(
+            hypothesis={
+                "statement": statement,
+                "variables": {
+                    "independent": ["architecture_family", "op_composition", "training_recipe"],
+                    "dependent": primary_metrics + ["throughput_tok_s", "stability_score"],
+                    "controls": ["model_dim", "n_layers", "stage1_steps", "batch_size"],
+                },
+                "expected_direction": {
+                    "loss_ratio": "decrease",
+                    "novelty_score": "increase",
+                    "throughput_tok_s": "increase",
+                    "stability_score": "increase",
+                },
+                "success_criteria": {
+                    "stage1_passed_min": 1,
+                    "best_loss_ratio_max": 0.95,
+                    "novelty_confidence_min": 0.5,
+                },
+            },
+            analysis_plan={
+                "primary_metrics": primary_metrics,
+                "secondary_metrics": [
+                    "compile_time_ms",
+                    "grad_norm_std",
+                    "throughput_tok_s",
+                    "flops_per_token",
+                    "novelty_confidence",
+                ],
+                "thresholds": {
+                    "loss_ratio": {"operator": "<", "value": 1.0},
+                    "novelty_confidence": {"operator": ">=", "value": 0.5},
+                    "stability_score": {"operator": ">=", "value": 0.5},
+                },
+                "baseline_comparison": {
+                    "method": "relative_loss_ratio",
+                    "source": "TransformerBaseline.compare",
+                    "delta_operator": "<",
+                    "delta_value": 1.0,
+                },
+            },
+            falsification_conditions=[
+                "No candidate passes Stage1.",
+                "Best loss_ratio does not beat baseline threshold.",
+                "Novelty only appears with heuristic fallback and no justification.",
+            ],
+            confounders_checklist=[
+                {"name": "unstable_seed_behavior", "checked": False},
+                {"name": "fallback_novelty_mode", "checked": False},
+                {"name": "noisy_throughput", "checked": False},
+                {"name": "compile_instability", "checked": False},
+            ],
+            exploratory=exploratory,
+        ).to_dict()
+        prereg["analysis_plan"]["config_snapshot"] = {
+            "n_programs": config.get("n_programs"),
+            "stage1_steps": config.get("stage1_steps"),
+            "model_dim": config.get("model_dim"),
+            "n_layers": config.get("n_layers"),
+        }
+        return prereg
+
+    def _ensure_preregistration(
+        self,
+        nb: LabNotebook,
+        experiment_type: str,
+        config: Dict[str, Any],
+        hypothesis: Optional[str],
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+        created_by: str = "runner",
+    ) -> str:
+        require_prereg = bool(config.get("require_preregistration", True))
+        auto_preregister = bool(config.get("auto_preregister", True))
+        payload = preregistration
+        if payload is None and auto_preregister:
+            payload = self._build_default_preregistration(
+                experiment_type=experiment_type,
+                config=config,
+                hypothesis=hypothesis,
+                exploratory=exploratory,
+            )
+        if require_prereg and payload is None:
+            raise PreregistrationError(
+                "Experiment blocked: preregistration required but missing."
+            )
+        if payload is None:
+            raise PreregistrationError(
+                "Experiment blocked: preregistration payload unavailable."
+            )
+        validate_preregistration(payload)
+        return nb.create_preregistration(
+            experiment_type=experiment_type,
+            preregistration=payload,
+            created_by=created_by,
+        )
+
+    def _start_preregistered_experiment(
+        self,
+        nb: LabNotebook,
+        experiment_type: str,
+        config: Dict[str, Any],
+        hypothesis: Optional[str] = None,
+        research_question: Optional[str] = None,
+        hypothesis_metadata: Optional[Dict[str, Any]] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+        created_by: str = "runner",
+    ) -> str:
+        prereg_id = self._ensure_preregistration(
+            nb=nb,
+            experiment_type=experiment_type,
+            config=config,
+            hypothesis=hypothesis,
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by=created_by,
+        )
+        meta = dict(hypothesis_metadata or {})
+        meta["preregistration_id"] = prereg_id
+        return nb.start_experiment(
+            experiment_type=experiment_type,
+            config=config,
+            hypothesis=hypothesis,
+            research_question=research_question,
+            hypothesis_metadata=meta,
+            preregistration_id=prereg_id,
+            require_preregistration=bool(config.get("require_preregistration", True)),
+        )
+
+    def _score_candidate_pool(
+        self,
+        candidates: List[Dict[str, Any]],
+        config: RunConfig,
+        nb: LabNotebook,
+        context: str,
+        experiment_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Multi-objective scoring + family uncertainty policy for candidate selection."""
+        if not candidates:
+            return {
+                "summary": {"candidate_count": 0},
+                "scored": [],
+                "selected": [],
+                "reason": "No candidates available.",
+                "policy": {"name": config.selection_policy, "exploration": False},
+            }
+
+        self._resolve_pending_selection_insight_trials(nb)
+
+        weights = {
+            "quality": float(config.selection_quality_weight),
+            "novelty": float(config.selection_novelty_weight),
+            "efficiency": float(config.selection_efficiency_weight),
+            "feasibility": float(config.selection_feasibility_weight),
+        }
+        weight_sum = sum(max(0.0, w) for w in weights.values()) or 1.0
+        for k in list(weights):
+            weights[k] = max(0.0, weights[k]) / weight_sum
+
+        quality_raw: Dict[str, float] = {}
+        novelty_raw: Dict[str, float] = {}
+        efficiency_raw: Dict[str, float] = {}
+        feasibility_raw: Dict[str, float] = {}
+        families: Dict[str, str] = {}
+        by_id: Dict[str, Dict[str, Any]] = {}
+
+        for row in candidates:
+            rid = str(row.get("result_id") or "")
+            if not rid:
+                continue
+            by_id[rid] = row
+            family = LabNotebook._classify_architecture_family(
+                row.get("graph_json"),
+                row.get("routing_mode"),
+            )
+            families[rid] = family
+
+            loss_ratio = self._to_float(row.get("loss_ratio"), default=1.0)
+            baseline_ratio = self._to_float(row.get("baseline_loss_ratio"), default=1.0)
+            quality_raw[rid] = max(0.0, (1.0 - loss_ratio) + max(0.0, 1.0 - baseline_ratio))
+
+            novelty_raw[rid] = self._to_float(row.get("novelty_score"), default=0.0)
+
+            throughput = self._to_float(row.get("throughput_tok_s"), default=0.0)
+            flops = self._to_float(row.get("flops_per_token"), default=0.0)
+            mem = self._to_float(row.get("peak_memory_mb"), default=0.0)
+            efficiency_raw[rid] = throughput - (0.35 * flops) - (0.15 * mem)
+
+            stage0 = 1.0 if int(row.get("stage0_passed") or 0) == 1 else 0.0
+            stage05 = 1.0 if int(row.get("stage05_passed") or 0) == 1 else 0.0
+            stage1 = 1.0 if int(row.get("stage1_passed") or 0) == 1 else 0.0
+            stability = self._to_float(row.get("stability_score"), default=0.0)
+            grad_penalty = 0.0
+            if int(row.get("has_nan_grad") or 0) == 1:
+                grad_penalty += 0.5
+            if int(row.get("has_zero_grad") or 0) == 1:
+                grad_penalty += 0.3
+            feasibility_raw[rid] = max(0.0, (0.2 * stage0 + 0.2 * stage05 + 0.3 * stage1 + 0.3 * stability) - grad_penalty)
+
+        qn = self._norm_map(quality_raw, higher_is_better=True)
+        nn = self._norm_map(novelty_raw, higher_is_better=True)
+        en = self._norm_map(efficiency_raw, higher_is_better=True)
+        fn = self._norm_map(feasibility_raw, higher_is_better=True)
+
+        family_stats = nb.get_selection_family_stats()
+        total_trials = sum(int(s.get("n_trials") or 0) for s in family_stats.values())
+        family_bonus_raw: Dict[str, float] = {}
+        family_uncertainty: Dict[str, float] = {}
+        for rid, fam in families.items():
+            stat = family_stats.get(fam, {})
+            n_trials = int(stat.get("n_trials") or 0)
+            mean_reward = self._to_float(stat.get("mean_reward"), default=0.0)
+            uncertainty = 1.0 / math.sqrt(n_trials + 1.0)
+            ucb = mean_reward + float(config.selection_ucb_c) * math.sqrt(
+                math.log(max(total_trials, 1) + 1.0) / (n_trials + 1.0)
+            )
+            family_uncertainty[rid] = uncertainty
+            family_bonus_raw[rid] = uncertainty if config.selection_policy == "epsilon_greedy" else ucb
+        family_bonus = self._norm_map(family_bonus_raw, higher_is_better=True)
+        unc_norm = self._norm_map(family_uncertainty, higher_is_better=True)
+        insight_by_result, supporting_insight_ids = self._selection_supporting_insights(nb, candidates)
+        interaction_rows = nb.get_selection_insight_interactions(limit=500)
+        interaction_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for row in interaction_rows:
+            key = (
+                str(row.get("insight_a") or ""),
+                str(row.get("insight_b") or ""),
+            )
+            interaction_map[key] = row
+        insight_interaction_raw: Dict[str, float] = {}
+        for rid in by_id:
+            matched = insight_by_result.get(rid) or []
+            rewards: List[float] = []
+            for insight_id in matched:
+                stat = interaction_map.get((insight_id, insight_id))
+                if stat and int(stat.get("n_trials") or 0) >= 2:
+                    rewards.append(self._to_float(stat.get("mean_reward"), default=0.5))
+            for i in range(len(matched)):
+                for j in range(i + 1, len(matched)):
+                    a, b = matched[i], matched[j]
+                    if a > b:
+                        a, b = b, a
+                    stat = interaction_map.get((a, b))
+                    if stat and int(stat.get("n_trials") or 0) >= 2:
+                        rewards.append(self._to_float(stat.get("mean_reward"), default=0.5))
+            if rewards:
+                insight_interaction_raw[rid] = float(sum(rewards) / len(rewards))
+            else:
+                insight_interaction_raw[rid] = 0.5
+        insight_interaction = self._norm_map(insight_interaction_raw, higher_is_better=True)
+
+        scored: List[Dict[str, Any]] = []
+        for rid in by_id:
+            base_score = (
+                weights["quality"] * qn.get(rid, 0.0)
+                + weights["novelty"] * nn.get(rid, 0.0)
+                + weights["efficiency"] * en.get(rid, 0.0)
+                + weights["feasibility"] * fn.get(rid, 0.0)
+            )
+            bonus = family_bonus.get(rid, 0.0)
+            total = (1.0 - float(config.selection_family_bonus_weight)) * base_score + (
+                float(config.selection_family_bonus_weight) * bonus
+            )
+            # Small additive term to prefer insight bundles with positive historical interactions.
+            interaction_term = (insight_interaction.get(rid, 0.5) - 0.5) * 0.12
+            total += interaction_term
+            scored.append({
+                "result_id": rid,
+                "family": families.get(rid, "Unknown"),
+                "score": round(total, 6),
+                "base_score": round(base_score, 6),
+                "components": {
+                    "quality": round(qn.get(rid, 0.0), 6),
+                    "novelty": round(nn.get(rid, 0.0), 6),
+                    "efficiency": round(en.get(rid, 0.0), 6),
+                    "feasibility": round(fn.get(rid, 0.0), 6),
+                    "insight_interaction": round(insight_interaction.get(rid, 0.5), 6),
+                },
+                "family_bonus": round(bonus, 6),
+                "family_uncertainty": round(unc_norm.get(rid, 0.0), 6),
+                "supporting_insight_ids": insight_by_result.get(rid, []),
+                "raw": {
+                    "loss_ratio": self._to_float(by_id[rid].get("loss_ratio"), default=1.0),
+                    "baseline_loss_ratio": self._to_float(by_id[rid].get("baseline_loss_ratio"), default=1.0),
+                    "novelty_score": self._to_float(by_id[rid].get("novelty_score"), default=0.0),
+                    "throughput_tok_s": self._to_float(by_id[rid].get("throughput_tok_s"), default=0.0),
+                    "flops_per_token": self._to_float(by_id[rid].get("flops_per_token"), default=0.0),
+                    "peak_memory_mb": self._to_float(by_id[rid].get("peak_memory_mb"), default=0.0),
+                    "stability_score": self._to_float(by_id[rid].get("stability_score"), default=0.0),
+                },
+            })
+
+        scored.sort(key=lambda x: (x["score"], x["base_score"], x["components"]["novelty"]), reverse=True)
+        seed = self._stable_seed(context, experiment_id or "none", len(scored), total_trials)
+        rng = random.Random(seed)
+        exploration = rng.random() < max(0.0, min(1.0, float(config.selection_epsilon)))
+
+        if exploration:
+            ranked = sorted(
+                scored,
+                key=lambda x: (x["family_uncertainty"], x["components"]["novelty"], x["base_score"]),
+                reverse=True,
+            )
+            reason = (
+                f"Explore: epsilon trigger in {context}; prioritized high-uncertainty families."
+            )
+        else:
+            ranked = scored
+            reason = f"Exploit: selected highest evidence-weighted scores in {context}."
+
+        summary = {
+            "candidate_count": len(scored),
+            "families": sorted({s["family"] for s in scored}),
+            "weights": weights,
+            "supporting_insight_ids": supporting_insight_ids,
+            "policy": config.selection_policy,
+            "epsilon": float(config.selection_epsilon),
+            "ucb_c": float(config.selection_ucb_c),
+            "exploration": exploration,
+            "seed": seed,
+        }
+        policy = {
+            "name": config.selection_policy,
+            "exploration": exploration,
+            "reason": reason,
+            "family_stats": family_stats,
+            "supporting_insight_ids": supporting_insight_ids,
+        }
+        return {
+            "summary": summary,
+            "scored": scored,
+            "selected": ranked,
+            "reason": reason,
+            "policy": policy,
+            "supporting_insight_ids": supporting_insight_ids,
+            "supporting_insights_by_result": insight_by_result,
+        }
 
     def _effective_max_time_minutes(self, config: RunConfig) -> int:
         """Resolve effective continuous-session time limit.
@@ -3053,6 +4416,45 @@ class ExperimentRunner:
             if compression_override is not None:
                 rec = compression_override
 
+            trigger = self._selection_safety_valve(nb, config)
+            if trigger and trigger.get("triggered"):
+                self._invoke_code_healer(
+                    nb=nb,
+                    trigger_type="plateau",
+                    experiment_id=None,
+                    scope=f"Safety valve plateau trigger: {trigger.get('reason')}",
+                    reproduction_steps=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
+                    acceptance_tests=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
+                    trigger_payload=trigger,
+                )
+                if trigger.get("mode") == "novelty":
+                    rec["mode"] = "novelty"
+                    rec["reasoning"] = (
+                        f"{rec.get('reasoning', '')} | Safety valve: {trigger.get('reason')}"
+                    ).strip(" |")
+                    rec.setdefault("config", {})
+                    rec["config"]["n_generations"] = max(4, int(config.n_generations))
+                    rec["config"]["population_size"] = max(12, int(config.population_size))
+                else:
+                    rec["mode"] = "synthesis"
+                    rec.setdefault("config", {})
+                    rec["config"]["ablation_heavy"] = True
+                    rec["config"]["n_programs"] = max(8, int(config.n_programs * 0.6))
+                    rec["reasoning"] = (
+                        f"{rec.get('reasoning', '')} | Safety valve(ablation-heavy): "
+                        f"{trigger.get('reason')}"
+                    ).strip(" |")
+                rec["safety_valve"] = trigger
+
+            evidence_pack = build_evidence_pack(
+                nb,
+                analytics=None,
+                recommendation=rec,
+                decision_type="mode_selection",
+                recent_experiments=recent,
+            )
+            rec["evidence_pack"] = evidence_pack
+
             nb.add_entry(ExperimentEntry(
                 entry_type="decision",
                 title=f"Mode Selection: {rec.get('mode', 'synthesis')}",
@@ -3061,8 +4463,53 @@ class ExperimentRunner:
                     "mode": rec.get("mode"),
                     "confidence": rec.get("confidence"),
                     "experiment_number": n_experiments,
+                    "evidence_pack": evidence_pack,
                 },
             ))
+
+            decision_log = {
+                "decision_id": str(uuid.uuid4())[:12],
+                "timestamp": time.time(),
+                "context": "mode_selection",
+                "experiment_id": None,
+                "candidate_pool_summary": {
+                    "recent_experiments": len(recent),
+                    "leaderboard_candidates": len(leaderboard),
+                    "total_s1_survivors": total_s1,
+                    "avg_novelty": round(avg_novelty, 6),
+                },
+                "score_breakdown": [{
+                    "mode": rec.get("mode"),
+                    "confidence": rec.get("confidence"),
+                    "quality_signal": total_s1,
+                    "novelty_signal": round(avg_novelty, 6),
+                }],
+                "policy": {
+                    "engine": "aria_rule_based_fallback",
+                    "safety_valve_triggered": bool(trigger),
+                    "safety_valve": trigger,
+                },
+                "reason": rec.get("reasoning", ""),
+                "chosen_experiments": [{
+                    "mode": rec.get("mode"),
+                    "config": rec.get("config", {}),
+                }],
+                "trigger": trigger,
+            }
+            try:
+                validate_selection_decision_log(decision_log)
+                nb.record_selection_decision(
+                    context="mode_selection",
+                    experiment_id=None,
+                    candidate_pool_summary=decision_log["candidate_pool_summary"],
+                    score_breakdown=decision_log["score_breakdown"],
+                    policy=decision_log["policy"],
+                    reason=decision_log["reason"],
+                    chosen_experiments=decision_log["chosen_experiments"],
+                    trigger=decision_log["trigger"],
+                )
+            except Exception as log_err:
+                logger.debug("Mode selection decision log failed: %s", log_err)
 
             return rec
         except Exception as e:
@@ -3088,6 +4535,9 @@ class ExperimentRunner:
         if config.max_cost_dollars > 0:
             context += (f"\n\nBudget: ${self.aria.total_cost:.2f} spent "
                         f"of ${config.max_cost_dollars:.2f}")
+
+        # Populate refuted hypotheses cache for similarity gating
+        self._populate_refuted_cache(nb)
 
         # Structured hypothesis (campaign-aware)
         structured_hyp = None
@@ -3188,11 +4638,13 @@ class ExperimentRunner:
             exp_config["control_experiment"] = True
             exp_config["use_learned_grammar_weights"] = False
 
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="synthesis",
             config=exp_config,
             hypothesis=hypothesis,
             hypothesis_metadata=hypothesis_metadata,
+            created_by="continuous_synthesis",
         )
         logger.info(
             "Experiment %s started (synthesis, %d programs) — hypothesis: %s",
@@ -3374,6 +4826,260 @@ class ExperimentRunner:
         except Exception as e:
             logger.debug("Failed persisting grammar weights to config: %s", e)
 
+    def _log_grammar_weight_application(
+        self,
+        nb: LabNotebook,
+        exp_id: str,
+        old_weights: Dict[str, float],
+        new_weights: Dict[str, float],
+        analytics: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Log grammar weight application with reproducible audit query."""
+        audit_info: Dict[str, Any] = {}
+        try:
+            if analytics is not None:
+                audit_info = analytics.grammar_weight_audit_info()
+        except Exception:
+            audit_info = {}
+        nb.log_learning_event(
+            "grammar_weights_applied",
+            f"Applied learned grammar weights for experiment {exp_id}",
+            old_weights=old_weights,
+            new_weights=new_weights,
+            evidence=json.dumps({"audit_query": audit_info}, sort_keys=True),
+        )
+        return audit_info
+
+    def _run_ablation_experiment(
+        self,
+        nb: LabNotebook,
+        config: RunConfig,
+        hypothesis: str,
+        ablation_graphs: List[Any],
+    ) -> Tuple[List[str], str]:
+        """Run Stage 0/0.5/1 evaluation on a generated ablation suite."""
+        if not ablation_graphs:
+            return ([], "inconclusive")
+
+        evaluable_graphs: List[Any] = []
+        dropped_invalid = 0
+        dropped_compile = 0
+        for graph in ablation_graphs:
+            validation = validate_graph(
+                graph,
+                max_ops=max(1, int(config.max_ops)),
+                max_depth=max(1, int(config.max_depth)),
+            )
+            if not validation.valid:
+                dropped_invalid += 1
+                continue
+            try:
+                compile_model(
+                    [graph],
+                    vocab_size=config.vocab_size,
+                    max_seq_len=config.max_seq_len,
+                )
+            except Exception:
+                dropped_compile += 1
+                continue
+            evaluable_graphs.append(graph)
+
+        if not evaluable_graphs:
+            evidence = {
+                "hypothesis": hypothesis,
+                "received": len(ablation_graphs),
+                "dropped_invalid": dropped_invalid,
+                "dropped_compile": dropped_compile,
+            }
+            nb.log_learning_event(
+                "ablation_skipped_no_evaluable_graphs",
+                f"Skipped ablation run: no evaluable graphs for {hypothesis}",
+                evidence=json.dumps(evidence, sort_keys=True),
+            )
+            return ([], "skipped_no_evaluable_graphs")
+
+        ab_cfg = config.to_dict()
+        ab_cfg["n_programs"] = len(evaluable_graphs)
+        ab_cfg["ablation_from_hypothesis"] = hypothesis
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
+            experiment_type="ablation",
+            config=ab_cfg,
+            hypothesis=f"Ablation: {hypothesis}",
+            exploratory=True,
+            created_by="ablation",
+        )
+
+        dev = torch.device(config.device if torch.cuda.is_available() else "cpu")
+        dev_str = str(dev)
+        stage0_pass = 0
+        stage05_pass = 0
+        stage1_pass = 0
+        result_ids: List[str] = []
+        for idx, graph in enumerate(evaluable_graphs):
+            try:
+                model = compile_model(
+                    [graph],
+                    vocab_size=config.vocab_size,
+                    max_seq_len=config.max_seq_len,
+                ).to(dev)
+            except Exception:
+                continue
+            s0 = safe_eval(
+                model,
+                batch_size=2,
+                seq_len=min(128, config.max_seq_len),
+                vocab_size=config.vocab_size,
+                device=dev_str,
+            )
+            s0_passed = bool(s0.passed)
+            s05_passed = bool(s0.stability_score >= 0.5) if s0_passed else False
+            if s0_passed:
+                stage0_pass += 1
+            if s05_passed:
+                stage05_pass += 1
+            s1_passed = False
+            final_loss = None
+            loss_ratio = None
+            if s05_passed:
+                s1 = self._micro_train(
+                    model,
+                    config,
+                    dev,
+                    seed=self._stable_seed(exp_id, idx, "ablation"),
+                )
+                s1_passed = bool(s1.get("passed", False))
+                final_loss = s1.get("final_loss")
+                loss_ratio = s1.get("loss_ratio")
+            if s1_passed:
+                stage1_pass += 1
+            rid = nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=graph.fingerprint(),
+                graph_json=graph_to_json(graph),
+                stage0_passed=s0_passed,
+                stage05_passed=s05_passed,
+                stage1_passed=s1_passed,
+                stage0_error=s0.error,
+                final_loss=final_loss,
+                loss_ratio=loss_ratio,
+                model_source="ablation",
+                perf_report_json=json.dumps(s1.get("perf_report", {})) if s1_passed else None,
+                kernel_timings_json=json.dumps(s1.get("kernel_timings_ms", {})) if s1_passed else None,
+                starvation_report_json=json.dumps(s1.get("starvation_report", {})) if s1_passed else None,
+            )
+            result_ids.append(rid)
+
+        total = len(result_ids)
+        outcome = "supported" if total > 0 and stage1_pass == 0 else "not_supported"
+        if total == 0:
+            outcome = "inconclusive"
+        nb.complete_experiment(
+            experiment_id=exp_id,
+            results={
+                "total": total,
+                "stage0_passed": stage0_pass,
+                "stage05_passed": stage05_pass,
+                "stage1_passed": stage1_pass,
+                "best_loss_ratio": None,
+                "best_novelty_score": None,
+            },
+            aria_summary=f"Ablation outcome: {outcome}",
+        )
+        return ([exp_id], outcome)
+
+    def _evaluate_grammar_update_gate(
+        self,
+        nb: LabNotebook,
+        analytics: Any,
+        config: RunConfig,
+    ) -> Dict[str, Any]:
+        """Require ablation support OR strong correlation with uncertainty+ablation plan."""
+        attribution = analytics.grammar_weight_attribution_report()
+        hypothesis_id = self._current_hypothesis_id
+        previous = nb.get_attribution_reports(hypothesis_id=hypothesis_id, limit=50)
+        has_ablation_support = any(r.get("outcome") == "supported" for r in previous)
+
+        supporting_experiments = [
+            e.get("experiment_id")
+            for e in nb.get_recent_experiments(5)
+            if e.get("experiment_id")
+        ]
+        strong_corr = bool(attribution.get("strong_correlational_evidence"))
+        top_signal = attribution.get("top_signal") or {}
+        factor_type = str(top_signal.get("factor_type") or "").strip().lower()
+        factor_name = str(top_signal.get("factor_name") or "").strip().lower()
+        top_signal_interpretable = bool(
+            factor_type
+            and factor_name
+            and factor_name not in {"unknown", "none", "null", "nan"}
+        )
+        hypothesis_text = (
+            f"signal={top_signal.get('factor_type')}:{top_signal.get('factor_name')}"
+            if top_signal_interpretable
+            else ""
+        )
+
+        ablation_experiments: List[str] = []
+        queued_plan: List[str] = []
+        ablation_outcome = "none"
+        if strong_corr and top_signal_interpretable:
+            row = nb.conn.execute(
+                """SELECT graph_json FROM program_results
+                   WHERE stage1_passed = 1 AND graph_json IS NOT NULL
+                   ORDER BY loss_ratio ASC NULLS LAST LIMIT 1"""
+            ).fetchone()
+            if row and row["graph_json"]:
+                try:
+                    base_graph = graph_from_json(row["graph_json"])
+                    suite = propose_ablation_suite(base_graph, hypothesis_text)
+                    queued_plan = [g.fingerprint() for g in suite]
+                    if suite:
+                        ablation_experiments, ablation_outcome = self._run_ablation_experiment(
+                            nb=nb,
+                            config=config,
+                            hypothesis=hypothesis_text,
+                            ablation_graphs=suite,
+                        )
+                except Exception as e:
+                    logger.debug("Ablation run failed: %s", e)
+        elif strong_corr:
+            ablation_outcome = "skipped_low_quality_signal"
+
+        gate_pass = bool(
+            has_ablation_support
+            or (strong_corr and bool(ablation_experiments))
+        )
+        if has_ablation_support:
+            outcome = "supported"
+        elif strong_corr and not top_signal_interpretable:
+            outcome = "blocked_low_quality_signal"
+        elif strong_corr and ablation_outcome == "skipped_no_evaluable_graphs":
+            outcome = "blocked_no_evaluable_ablation"
+        elif gate_pass:
+            outcome = "correlational_with_plan"
+        else:
+            outcome = "blocked_weak_evidence"
+        report = {
+            "gate_pass": gate_pass,
+            "has_ablation_support": has_ablation_support,
+            "strong_correlational_evidence": strong_corr,
+            "top_signal_interpretable": top_signal_interpretable,
+            "uncertainty": attribution.get("uncertainty", {}),
+            "top_signal": top_signal,
+            "queued_ablation_plan": queued_plan,
+            "ablation_outcome": ablation_outcome,
+            "attribution": attribution,
+        }
+        nb.record_attribution_report(
+            hypothesis_id=hypothesis_id,
+            supporting_experiments=supporting_experiments,
+            ablation_experiments=ablation_experiments,
+            outcome=outcome,
+            report=report,
+        )
+        return report
+
     @staticmethod
     def _compute_generated_op_distribution(graphs: List[Any]) -> Dict[str, float]:
         """Compute normalized op-name distribution across generated graphs."""
@@ -3467,7 +5173,8 @@ class ExperimentRunner:
         from ..search.evolution import evolutionary_search, EvolutionConfig
 
         hypothesis = f"Evolution search: {mode_reasoning}"
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="evolution",
             config=config.to_dict(),
             hypothesis=hypothesis,
@@ -3477,6 +5184,7 @@ class ExperimentRunner:
                 fallback_used=False,
                 used_context=False,
             ),
+            created_by="continuous_evolution",
         )
 
         with self._lock:
@@ -3604,7 +5312,8 @@ class ExperimentRunner:
         from ..search.novelty_search import novelty_search, NoveltySearchConfig
 
         hypothesis = f"Novelty search: {mode_reasoning}"
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="novelty",
             config=config.to_dict(),
             hypothesis=hypothesis,
@@ -3614,6 +5323,8 @@ class ExperimentRunner:
                 fallback_used=False,
                 used_context=False,
             ),
+            exploratory=True,
+            created_by="continuous_novelty",
         )
 
         with self._lock:
@@ -3851,13 +5562,13 @@ class ExperimentRunner:
             return
 
         # Build context for hypothesis formulation
-        inv_context = build_investigation_context(
-            [nb.get_program_detail(rid) or {} for rid in result_ids],
-            leaderboard,
-        )
+        inv_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+        inv_map = {d.get("result_id"): d for d in inv_details if d.get("result_id")}
+        inv_context = build_investigation_context(inv_details, leaderboard)
         hypothesis = self.aria.formulate_investigation_hypothesis(
             context=inv_context)
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="investigation",
             config=config.to_dict(),
             hypothesis=hypothesis,
@@ -3867,6 +5578,7 @@ class ExperimentRunner:
                 fallback_used=False,
                 used_context=True,
             ),
+            created_by="inline_investigation",
         )
 
         with self._lock:
@@ -3901,6 +5613,10 @@ class ExperimentRunner:
             inv_config.stage1_steps = config.investigation_steps
             inv_config.stage1_batch_size = config.investigation_batch_size
 
+            # Fetch all sources at once to avoid N+1 queries
+            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+
             for prog_idx, source_result_id in enumerate(result_ids):
                 if self._stop_event.is_set():
                     break
@@ -3928,7 +5644,7 @@ class ExperimentRunner:
                 })
 
                 # Fetch source program
-                source = nb.get_program_detail(source_result_id)
+                source = inv_map.get(source_result_id)
                 if source is None:
                     continue
 
@@ -3936,15 +5652,17 @@ class ExperimentRunner:
                 arch_spec_json_str = source.get("arch_spec_json")
                 model_source = source.get("model_source", "graph_synthesis")
 
-                # Generate training programs
-                training_programs = []
-                for tp_i in range(config.n_training_programs):
-                    tp = synthesize_training_program(
-                        n_steps=config.investigation_steps,
-                        max_seq_len=config.max_seq_len,
-                        seed=tp_i + prog_idx * 1000,
-                    )
-                    training_programs.append(tp)
+                # Generate training programs (queue-level scheduling telemetry)
+                training_programs, tp_sched = synthesize_training_program_batch(
+                    n_programs=config.n_training_programs,
+                    n_steps=config.investigation_steps,
+                    max_seq_len=config.max_seq_len,
+                    seed_offset=prog_idx * 1000,
+                )
+                results.setdefault("training_program_scheduling", []).append({
+                    "result_id": source_result_id,
+                    **tp_sched,
+                })
 
                 # Test each (model x training_program) pair
                 tp_results = []
@@ -3954,27 +5672,14 @@ class ExperimentRunner:
 
                     # Reconstruct model fresh for each training program
                     try:
-                        if model_source == "morphological_box" and arch_spec_json_str:
-                            from ..morphological_box import ArchSpec
-                            from ..arch_builder import build_model, BuildConfig
-                            spec_data = json.loads(arch_spec_json_str)
-                            spec = ArchSpec(**spec_data)
-                            build_cfg = BuildConfig(
-                                dim=config.model_dim,
-                                n_layers=config.n_layers,
-                                vocab_size=config.vocab_size,
-                                max_seq_len=config.max_seq_len,
-                            )
-                            model = build_model(spec, build_cfg)
-                        elif graph_json_str:
-                            graph = graph_from_json(graph_json_str)
-                            layer_graphs = [graph] * config.n_layers
-                            model = compile_model(
-                                layer_graphs,
-                                vocab_size=config.vocab_size,
-                                max_seq_len=config.max_seq_len,
-                            )
-                        else:
+                        model = self._build_model_from_source(
+                            model_source,
+                            arch_spec_json_str,
+                            graph_json_str,
+                            config,
+                            seq_len_override=config.max_seq_len,
+                        )
+                        if model is None:
                             continue
                     except Exception as e:
                         logger.debug(f"Model reconstruction failed: {e}")
@@ -4042,6 +5747,8 @@ class ExperimentRunner:
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
                     "best_training_program": best_tp.get("training_program") if best_tp else None,
+                    "training_program_scheduling_avg_ms": tp_sched.get("scheduling_avg_ms"),
+                    "training_program_scheduling_max_ms": tp_sched.get("scheduling_max_ms"),
                 }
                 results["investigation_results"].append(investigation_entry)
 
@@ -4089,12 +5796,20 @@ class ExperimentRunner:
                     loss_ratio=best_lr,
                     novelty_score=source.get("novelty_score"),
                     novelty_confidence=source.get("novelty_confidence"),
+                    novelty_raw_score=source.get("novelty_raw_score"),
+                    novelty_z_score=source.get("novelty_z_score"),
+                    novelty_reference_version=source.get("novelty_reference_version"),
+                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+                    novelty_validity_reason=source.get("novelty_validity_reason"),
+                    novelty_requires_justification=source.get("novelty_requires_justification"),
                     training_program_json=best_tp_json,
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
                 )
 
             # Complete experiment with LLM analysis
+            results["perf_report"] = self._build_experiment_perf_report(results)
+            results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb)
             summary = self.aria.experiment_summary(results, context=context)
@@ -4151,13 +5866,16 @@ class ExperimentRunner:
             return
 
         # Build context for hypothesis formulation
+        val_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+        val_map = {d.get("result_id"): d for d in val_details if d.get("result_id")}
         val_context = build_validation_context(
-            [nb.get_program_detail(rid) or {} for rid in result_ids],
+            val_details,
             [e for e in leaderboard if e.get("result_id") in result_ids],
         )
         hypothesis = self.aria.formulate_validation_hypothesis(
             context=val_context)
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="validation",
             config=self._validation_config_with_result_ids(
                 config,
@@ -4171,6 +5889,7 @@ class ExperimentRunner:
                 fallback_used=False,
                 used_context=True,
             ),
+            created_by="inline_validation",
         )
 
         with self._lock:
@@ -4206,6 +5925,10 @@ class ExperimentRunner:
             val_config.stage1_batch_size = config.validation_batch_size
             val_config.max_seq_len = config.validation_seq_len
 
+            # Fetch all sources at once to avoid N+1 queries
+            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+
             for prog_idx, source_result_id in enumerate(result_ids):
                 if self._stop_event.is_set():
                     break
@@ -4234,7 +5957,7 @@ class ExperimentRunner:
                 })
 
                 # Fetch source and leaderboard entry
-                source = nb.get_program_detail(source_result_id)
+                source = source_map.get(source_result_id)
                 if source is None:
                     continue
 
@@ -4259,27 +5982,14 @@ class ExperimentRunner:
 
                     # Reconstruct model fresh
                     try:
-                        if model_source == "morphological_box" and arch_spec_json_str:
-                            from ..morphological_box import ArchSpec
-                            from ..arch_builder import build_model, BuildConfig
-                            spec_data = json.loads(arch_spec_json_str)
-                            spec = ArchSpec(**spec_data)
-                            build_cfg = BuildConfig(
-                                dim=config.model_dim,
-                                n_layers=config.n_layers,
-                                vocab_size=config.vocab_size,
-                                max_seq_len=config.validation_seq_len,
-                            )
-                            model = build_model(spec, build_cfg)
-                        elif graph_json_str:
-                            graph = graph_from_json(graph_json_str)
-                            layer_graphs = [graph] * config.n_layers
-                            model = compile_model(
-                                layer_graphs,
-                                vocab_size=config.vocab_size,
-                                max_seq_len=config.validation_seq_len,
-                            )
-                        else:
+                        model = self._build_model_from_source(
+                            model_source,
+                            arch_spec_json_str,
+                            graph_json_str,
+                            config,
+                            seq_len_override=config.validation_seq_len,
+                        )
+                        if model is None:
                             continue
                     except Exception as e:
                         logger.debug(f"Model reconstruction failed: {e}")
@@ -4298,7 +6008,7 @@ class ExperimentRunner:
                     # Train (use best training program if available)
                     if best_tp_json:
                         try:
-                            tp_data = json.loads(best_tp_json)
+                            tp_data = self._cached_json_load(best_tp_json)
                             tp = synthesize_training_program(
                                 n_steps=config.validation_steps,
                                 max_seq_len=config.validation_seq_len,
@@ -4470,6 +6180,11 @@ class ExperimentRunner:
                 hp_ok = (sensitivity_result is not None
                          and sensitivity_result.get("hp_robustness", 0) >= 0.75)
                 nov_conf = source.get("novelty_confidence", 0) if source else 0
+                novelty_valid = False
+                if source:
+                    novelty_valid = bool(source.get("novelty_valid_for_promotion"))
+                    if not novelty_valid and source.get("cka_source") == "artifact":
+                        novelty_valid = True
                 is_breakthrough = (
                     val_baseline_ratio is not None
                     and val_baseline_ratio < 0.90
@@ -4479,6 +6194,7 @@ class ExperimentRunner:
                     and (ood_result is None or ood_ok)
                     and (sensitivity_result is None or hp_ok)
                     and nov_conf >= 0.5
+                    and novelty_valid
                 )
 
                 tier = "breakthrough" if is_breakthrough else "validation"
@@ -4527,6 +6243,12 @@ class ExperimentRunner:
                     baseline_loss_ratio=val_baseline_ratio,
                     novelty_score=source.get("novelty_score"),
                     novelty_confidence=source.get("novelty_confidence"),
+                    novelty_raw_score=source.get("novelty_raw_score"),
+                    novelty_z_score=source.get("novelty_z_score"),
+                    novelty_reference_version=source.get("novelty_reference_version"),
+                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+                    novelty_validity_reason=source.get("novelty_validity_reason"),
+                    novelty_requires_justification=source.get("novelty_requires_justification"),
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
                 )
@@ -4553,6 +6275,8 @@ class ExperimentRunner:
                     })
 
             # Complete experiment with LLM analysis
+            results["perf_report"] = self._build_experiment_perf_report(results)
+            results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb)
             summary = self.aria.experiment_summary(results, context=context)
@@ -4781,6 +6505,249 @@ class ExperimentRunner:
             return "stage1"
         return "survived"
 
+    def _process_orchestrator_results(self, orchestrator, nb, exp_id, results, config):
+        """Collect and record all available results from the orchestrator."""
+        job_results = orchestrator.get_results()
+        if not job_results:
+            return
+        with nb.batch():
+            for jr in job_results:
+                self._record_orchestrator_result(jr, nb, exp_id, results, config)
+
+    def _build_experiment_perf_report(
+        self,
+        results: Dict[str, Any],
+        queue_telemetry: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate per-program perf traces into one experiment-level JSON report."""
+        perf_traces = results.get("_perf_traces", []) or []
+        starvation = results.get("_gpu_starvation", []) or []
+        kernel_samples = results.get("_kernel_timing", []) or []
+
+        trace_totals: Dict[str, float] = {}
+        trace_counts: Dict[str, int] = {}
+        for trace_report in perf_traces:
+            summary = (trace_report or {}).get("summary_ms", {})
+            if not isinstance(summary, dict):
+                continue
+            for name, value in summary.items():
+                try:
+                    val = float(value)
+                except Exception:
+                    continue
+                trace_totals[name] = trace_totals.get(name, 0.0) + val
+                trace_counts[name] = trace_counts.get(name, 0) + 1
+
+        trace_avg_ms = {
+            name: round(trace_totals[name] / max(1, trace_counts[name]), 4)
+            for name in sorted(trace_totals.keys())
+        }
+
+        starvation_count = 0
+        starvation_total_ms = 0.0
+        starvation_max_ms = 0.0
+        for item in starvation:
+            if not isinstance(item, dict):
+                continue
+            starvation_count += int(item.get("count", 0) or 0)
+            starvation_total_ms += float(item.get("total_stall_ms", 0.0) or 0.0)
+            starvation_max_ms = max(starvation_max_ms, float(item.get("max_stall_ms", 0.0) or 0.0))
+
+        op_totals: Dict[str, Dict[str, float]] = {}
+        for sample in kernel_samples:
+            if not isinstance(sample, dict):
+                continue
+            
+            # Handle new format: mod_name -> ms (float)
+            if "top_ops" not in sample:
+                for op_name, ms in sample.items():
+                    if isinstance(ms, (int, float)):
+                        slot = op_totals.setdefault(op_name, {"cpu_ms": 0.0, "cuda_ms": 0.0, "calls": 0.0, "samples": 0.0})
+                        slot["cuda_ms"] += float(ms)
+                        slot["samples"] += 1.0
+                continue
+                
+            # Handle old format (top_ops)
+            for op in sample.get("top_ops", []) or []:
+                op_name = str(op.get("op", "unknown"))
+                slot = op_totals.setdefault(op_name, {"cpu_ms": 0.0, "cuda_ms": 0.0, "calls": 0.0, "samples": 0.0})
+                slot["cpu_ms"] += float(op.get("cpu_ms", 0.0) or 0.0)
+                slot["cuda_ms"] += float(op.get("cuda_ms", 0.0) or 0.0)
+                slot["calls"] += float(op.get("calls", 0.0) or 0.0)
+                slot["samples"] += 1.0
+
+        hotspot_ops = []
+        for op_name, agg in op_totals.items():
+            samples = max(1.0, agg["samples"])
+            hotspot_ops.append({
+                "op": op_name,
+                "avg_cpu_ms": round(agg["cpu_ms"] / samples, 4),
+                "avg_cuda_ms": round(agg["cuda_ms"] / samples, 4),
+                "avg_calls": round(agg["calls"] / samples, 2),
+            })
+        hotspot_ops.sort(key=lambda row: max(row["avg_cuda_ms"], row["avg_cpu_ms"]), reverse=True)
+
+        tp_sched_rows = results.get("training_program_scheduling", []) or []
+        tp_avg_ms = [float(r.get("scheduling_avg_ms", 0.0) or 0.0) for r in tp_sched_rows]
+        tp_max_ms = [float(r.get("scheduling_max_ms", 0.0) or 0.0) for r in tp_sched_rows]
+
+        return {
+            "generated_at": time.time(),
+            "programs_profiled": len(perf_traces),
+            "trace_avg_ms": trace_avg_ms,
+            "gpu_starvation": {
+                "event_count": starvation_count,
+                "total_stall_ms": round(starvation_total_ms, 4),
+                "max_stall_ms": round(starvation_max_ms, 4),
+            },
+            "kernel_hotspots": hotspot_ops[:10],
+            "queue_telemetry": queue_telemetry or {},
+            "training_program_scheduling": {
+                "n_sources": len(tp_sched_rows),
+                "avg_schedule_ms": round(sum(tp_avg_ms) / len(tp_avg_ms), 4) if tp_avg_ms else 0.0,
+                "max_schedule_ms": round(max(tp_max_ms), 4) if tp_max_ms else 0.0,
+            },
+        }
+
+    def _record_orchestrator_result(self, jr, nb, exp_id, results, config):
+        """Record a single result from the orchestrator into the notebook."""
+        s1_result = jr.s1_result
+        program_metrics = jr.payload["metrics"]
+        graph = jr.payload["graph"]
+        i = jr.index
+        
+        s1_passed = s1_result.get("passed", False)
+        loss_ratio = s1_result.get("loss_ratio")
+        final_loss = s1_result.get("final_loss")
+        throughput = s1_result.get("throughput")
+        training_curve = s1_result.get("training_curve")
+
+        # Training metrics
+        program_metrics["initial_loss"] = s1_result.get("initial_loss")
+        program_metrics["min_loss"] = s1_result.get("min_loss")
+        program_metrics["loss_improvement_rate"] = s1_result.get("loss_improvement_rate")
+        program_metrics["avg_step_time_ms"] = s1_result.get("avg_step_time_ms")
+        program_metrics["total_train_time_ms"] = s1_result.get("total_train_time_ms")
+        program_metrics["max_grad_norm"] = s1_result.get("max_grad_norm")
+        program_metrics["mean_grad_norm"] = s1_result.get("mean_grad_norm")
+        program_metrics["grad_norm_std"] = s1_result.get("grad_norm_std")
+        program_metrics["n_train_steps"] = s1_result.get("n_train_steps")
+        program_metrics["final_lr"] = s1_result.get("final_lr")
+        program_metrics.update({k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")})
+        
+        # Merge traces
+        perf_report = s1_result.get("perf_report", s1_result.get("perf_traces"))
+        if perf_report:
+            program_metrics["perf_report_json"] = json.dumps(perf_report)
+            results.setdefault("_perf_traces", []).append(perf_report)
+            
+        starvation_report = s1_result.get("starvation_report", s1_result.get("gpu_starvation"))
+        if starvation_report:
+            program_metrics["starvation_report_json"] = json.dumps(starvation_report)
+            results.setdefault("_gpu_starvation", []).append(starvation_report)
+            
+        kernel_timings = s1_result.get("kernel_timings_ms", s1_result.get("kernel_timing"))
+        if kernel_timings:
+            program_metrics["kernel_timings_json"] = json.dumps(kernel_timings)
+            results.setdefault("_kernel_timing", []).append(kernel_timings)
+            
+        if getattr(jr, "telemetry", None):
+            program_metrics["queue_telemetry_json"] = json.dumps(jr.telemetry)
+
+        if s1_passed:
+            results["stage1_passed"] += 1
+            with self._lock:
+                self._progress.stage1_passed += 1
+
+            logger.info(
+                "  ★ S1 SURVIVOR [%d] %s — loss_ratio=%.4f, params=%s",
+                i + 1, graph.fingerprint()[:10],
+                loss_ratio or 0,
+                f"{program_metrics.get('param_count', 0):,}",
+            )
+
+            # Compare to baseline (simplified for async - we do it here)
+            if final_loss is not None:
+                try:
+                    baseline = self._get_baseline()
+                    baseline_steps = int(s1_result.get("n_train_steps") or config.stage1_steps)
+                    baseline_recipe = self._resolve_baseline_recipe(s1_result, default_lr=config.stage1_lr)
+                    baseline_ratio = baseline.compare(
+                        final_loss,
+                        d_model=config.model_dim,
+                        seq_len=min(128, config.max_seq_len),
+                        n_steps=max(1, baseline_steps),
+                        vocab_size=config.vocab_size,
+                        batch_size=config.stage1_batch_size,
+                        lr=baseline_recipe["lr"],
+                        device=str(config.device),
+                        n_layers=config.n_layers,
+                    )
+                    program_metrics["baseline_loss_ratio"] = baseline_ratio
+                except Exception:
+                    pass
+
+            # Z12: Regression Gate - Run diagnostic suite for S1 survivors
+            # Note: We re-compile a small version or use the worker's model if we had access to it.
+            # For now, we compile a single layer version for speed.
+            try:
+                gate = RegressionGate()
+                # Use standard device for diagnostics
+                diag_dev = str(config.device) if torch.cuda.is_available() else "cpu"
+                
+                # Build a single-layer model for fast capability testing
+                diag_model = compile_model([graph], vocab_size=config.vocab_size, max_seq_len=64)
+                diag_result = run_diagnostic_suite(diag_model, device=diag_dev, n_steps=50)
+                
+                # Check against gate (using default absolute floor for now)
+                verdict = gate.check(diag_result)
+                program_metrics["diagnostic_score"] = diag_result.diagnostic_score
+                program_metrics["regression_gate_pass"] = int(verdict["pass"])
+                program_metrics["regression_gate_reason"] = verdict["reason"]
+                program_metrics["diagnostic_tasks_json"] = json.dumps(diag_result.to_dict())
+                
+                if not verdict["pass"]:
+                    logger.info("  ! Gated: %s failed regression gate: %s", graph.fingerprint()[:10], verdict["reason"])
+            except Exception as e:
+                logger.warning("Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e)
+
+        # Record result
+        rid = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=graph.fingerprint(),
+            graph_json=graph_to_json(graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=s1_passed,
+            final_loss=final_loss,
+            loss_ratio=loss_ratio,
+            throughput_tok_s=throughput,
+            training_curve=training_curve,
+            **program_metrics,
+        )
+        
+        # Update best metrics in experiment summary
+        if loss_ratio is not None:
+            if results["best_loss_ratio"] is None or loss_ratio < results["best_loss_ratio"]:
+                results["best_loss_ratio"] = loss_ratio
+        
+        try:
+            # We can't easily recompute global novelty here without all graphs,
+            # but we can take the individual score if it was computed.
+            nov = program_metrics.get("novelty_score")
+            if nov is not None:
+                if results["best_novelty_score"] is None or nov > results["best_novelty_score"]:
+                    results["best_novelty_score"] = nov
+        except Exception:
+            pass
+
+        self._emit_event("program_evaluated", {
+            "index": i, "fingerprint": graph.fingerprint()[:10],
+            "result": "pass" if s1_passed else "fail",
+            "loss_ratio": f"{loss_ratio:.4f}" if loss_ratio is not None else None,
+            "result_id": rid,
+        })
+
     def _execute_experiment(self, exp_id: str, config: RunConfig,
                             nb: LabNotebook,
                             use_learned_grammar: bool = True) -> Dict:
@@ -4795,8 +6762,9 @@ class ExperimentRunner:
         grammar_weights = None
         excluded_ops: set = set()
         champion_bias: Dict[str, float] = {}
+        analytics = None
+        grammar_gate: Optional[Dict[str, Any]] = None
         if use_learned_grammar:
-            analytics = None
             try:
                 from .analytics import ExperimentAnalytics
                 analytics = ExperimentAnalytics(nb)
@@ -4805,10 +6773,24 @@ class ExperimentRunner:
                 grammar_weights = analytics.compute_grammar_weights(
                     last_applied=last_weights, alpha=0.6
                 )
+                if grammar_weights:
+                    grammar_gate = self._evaluate_grammar_update_gate(
+                        nb=nb,
+                        analytics=analytics,
+                        config=config,
+                    )
+                    if not grammar_gate.get("gate_pass"):
+                        nb.log_learning_event(
+                            "grammar_weights_blocked",
+                            f"Blocked grammar weight update for {exp_id}: weak attribution evidence",
+                            evidence=json.dumps(grammar_gate, sort_keys=True),
+                        )
+                        grammar_weights = None
             except Exception as e:
                 logger.warning("Failed computing learned grammar weights for %s: %s", exp_id, e)
 
-            # Populate excluded_ops from negative results
+            # Populate excluded_ops and soft-penalty op_weights from negative results
+            op_weights: Dict[str, float] = {}
             try:
                 if analytics is not None:
                     neg = analytics.negative_results_synthesis()
@@ -4817,6 +6799,12 @@ class ExperimentRunner:
                                 and op_info.get("n_used", 0) >= 5
                                 and op_info.get("confidence", 0) >= 0.7):
                             excluded_ops.add(op_info["op_name"])
+                    # Soft-penalize weak ops (nonzero but poor S1 rate)
+                    for op_info in neg.get("weak_ops", []):
+                        op_name = op_info.get("op_name", "")
+                        penalty = op_info.get("penalty_weight", 1.0)
+                        if op_name and op_name not in excluded_ops:
+                            op_weights[op_name] = penalty
                     if excluded_ops:
                         nb.log_learning_event(
                             "excluded_ops_applied",
@@ -4824,8 +6812,15 @@ class ExperimentRunner:
                             f"{', '.join(sorted(excluded_ops))}",
                             excluded_ops=sorted(excluded_ops),
                         )
+                    if op_weights:
+                        nb.log_learning_event(
+                            "weak_ops_penalized",
+                            f"Soft-penalized {len(op_weights)} weak ops: "
+                            f"{', '.join(f'{k}={v:.2f}' for k, v in sorted(op_weights.items()))}",
+                            op_weights=op_weights,
+                        )
             except Exception as e:
-                logger.warning("Failed computing excluded ops for %s: %s", exp_id, e)
+                logger.warning("Failed computing excluded/weak ops for %s: %s", exp_id, e)
 
             # Champion bias pass: nudge category weights toward proven winners.
             # This biases the search toward high-performing projection/sparse patterns
@@ -4855,6 +6850,8 @@ class ExperimentRunner:
                             champion_bias["parameterized"] = max(champion_bias.get("parameterized", 1.0), 1.4)
                         if has_sparse:
                             champion_bias["parameterized"] = max(champion_bias.get("parameterized", 1.0), 1.5)
+                            # Z7: If sparse ops are reliable, nudge the grammar hard toward them
+                            champion_bias["_structured_sparsity_bias"] = 0.8
 
             except Exception as e:
                 logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
@@ -4865,23 +6862,31 @@ class ExperimentRunner:
             max_ops=config.max_ops,
             residual_prob=config.residual_prob,
             excluded_ops=excluded_ops,
+            op_weights=op_weights,
         )
+        old_weights = dict(grammar.category_weights)
 
         if grammar_weights:
             old_weights = dict(grammar.category_weights)
             grammar.category_weights.update(grammar_weights)
-            nb.log_learning_event(
-                "grammar_weights_applied",
-                f"Applied learned grammar weights for experiment {exp_id}",
-                old_weights=old_weights,
-                new_weights=dict(grammar.category_weights),
+            self._log_grammar_weight_application(
+                nb,
+                exp_id,
+                old_weights,
+                dict(grammar.category_weights),
+                analytics=analytics,
             )
             # Persist for observability
             results["applied_grammar_weights"] = dict(grammar.category_weights)
+            if grammar_gate:
+                results["grammar_weight_attribution"] = grammar_gate
 
         if champion_bias:
             before_bias = dict(grammar.category_weights)
             for category, multiplier in champion_bias.items():
+                if category == "_structured_sparsity_bias":
+                    grammar.structured_sparsity_bias = float(multiplier)
+                    continue
                 base = float(grammar.category_weights.get(category, 1.0))
                 grammar.category_weights[category] = round(max(0.5, min(8.0, base * multiplier)), 2)
             nb.log_learning_event(
@@ -4904,8 +6909,9 @@ class ExperimentRunner:
             )
             results["applied_grammar_weights"] = dict(grammar.category_weights)
             # Emit SSE so LiveFeed can show learning events
-            n_changed = sum(1 for k in grammar_weights
-                            if old_weights.get(k) != grammar_weights[k])
+            source_weights = grammar_weights or {}
+            n_changed = sum(1 for k in source_weights
+                            if old_weights.get(k) != source_weights[k])
             self._emit_event("learning_event", {
                 "event_type": "grammar_weights_applied",
                 "experiment_id": exp_id,
@@ -4966,6 +6972,26 @@ class ExperimentRunner:
         dev_str = config.device if torch.cuda.is_available() else "cpu"
         dev = torch.device(dev_str)
 
+        # Z12: Detect available GPUs for distributed search
+        if torch.cuda.is_available():
+            num_gpus = torch.cuda.device_count()
+            devices = [f"cuda:{i}" for i in range(num_gpus)]
+            # 2 workers per GPU usually helps overlap data loading
+            num_workers = num_gpus * 2
+        else:
+            devices = ["cpu"]
+            num_workers = 1
+
+        # Z6: Initialize asynchronous program orchestrator
+        orchestrator = WorkerPoolOrchestrator(
+            train_fn=lambda g, c, s, d: self._micro_train_wrapper(g, c, s, d),
+            num_workers=num_workers,
+            max_queue_size=config.n_programs,
+            devices=devices
+        )
+        candidate_batch_size = max(1, min(32, int(math.sqrt(max(1, config.n_programs)))))
+        results["candidate_batch_size"] = candidate_batch_size
+
         last_log_time = time.time()
 
         for i, graph in enumerate(graphs):
@@ -4979,8 +7005,6 @@ class ExperimentRunner:
 
             # Collect all metrics for this program
             program_metrics: Dict[str, Any] = {}
-
-            # Extract graph structural metrics
             program_metrics.update(self._extract_graph_metrics(graph))
 
             # Estimate FLOPs
@@ -4994,23 +7018,19 @@ class ExperimentRunner:
                 logger.debug("FLOP estimate failed for %s: %s", graph.fingerprint()[:10], e)
 
             # Validate
-            with self._lock:
-                self._progress.current_stage = "validating"
-
             validation = validate_graph(
                 graph,
                 max_ops=max(1, int(config.max_ops)),
                 max_depth=max(1, int(config.max_depth)),
             )
             if not validation.valid:
-                program_metrics["stage_at_death"] = "stage0"
-                program_metrics["error_type"] = "validation_error"
-                program_metrics["error_message"] = "; ".join(validation.errors)
-                nb.record_program_result(
+                rid = nb.record_program_result(
                     experiment_id=exp_id,
                     graph_fingerprint=graph.fingerprint(),
                     graph_json=graph_to_json(graph),
+                    stage0_passed=False, stage05_passed=False, stage1_passed=False,
                     stage0_error="; ".join(validation.errors),
+                    stage_at_death="stage0",
                     **program_metrics,
                 )
                 self._emit_event("program_evaluated", {
@@ -5019,324 +7039,83 @@ class ExperimentRunner:
                 })
                 continue
 
-            # Gradient flow pre-check: skip graphs with no parameterized ops
-            # (these always fail stage0 with zero_grad, ~47% of failures)
-            try:
-                has_learnable = any(
-                    node.op.has_params
-                    for node in graph.nodes.values()
-                    if not node.is_input
-                )
-            except Exception:
-                has_learnable = True  # if check fails, let it through
-            if not has_learnable:
-                program_metrics["stage_at_death"] = "stage0"
-                program_metrics["error_type"] = "zero_grad"
-                program_metrics["error_message"] = "No parameterized ops — gradient flow impossible"
-                # Still compute structural novelty for analytics
-                try:
-                    _nov = novelty_score(graph)
-                    _n_score = _nov.overall_novelty
-                except Exception:
-                    _n_score = None
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=graph.fingerprint(),
-                    graph_json=graph_to_json(graph),
-                    stage0_error="No parameterized ops",
-                    novelty_score=_n_score,
-                    **program_metrics,
-                )
-                self._emit_event("program_evaluated", {
-                    "index": i, "fingerprint": graph.fingerprint()[:10],
-                    "result": "no_params",
-                })
-                continue
-
-            # Compile
+            # Compile & Stage 0/0.5
             try:
                 layer_graphs = [graph] * config.n_layers
-                model = compile_model(
-                    layer_graphs,
-                    vocab_size=config.vocab_size,
-                    max_seq_len=config.max_seq_len,
-                )
-            except Exception as e:
-                program_metrics["stage_at_death"] = "stage0"
-                program_metrics["error_type"] = "compile_error"
-                program_metrics["error_message"] = str(e)
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=graph.fingerprint(),
-                    graph_json=graph_to_json(graph),
-                    stage0_error=str(e),
-                    **program_metrics,
-                )
-                self._emit_event("program_evaluated", {
-                    "index": i, "fingerprint": graph.fingerprint()[:10],
-                    "result": "compile_error",
-                })
-                continue
+                model = compile_model(layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
+                sandbox_result = safe_eval(model, batch_size=2, seq_len=min(128, config.max_seq_len),
+                                         vocab_size=config.vocab_size, device=dev_str)
+                program_metrics.update(self._extract_sandbox_metrics(sandbox_result))
+                program_metrics["param_count"] = sandbox_result.param_count
+                
+                s0_passed = sandbox_result.passed
+                s05_passed = sandbox_result.stability_score >= 0.5
+                
+                if s0_passed:
+                    results["stage0_passed"] += 1
+                    with self._lock: self._progress.stage0_passed += 1
+                if s05_passed:
+                    results["stage05_passed"] += 1
+                    with self._lock: self._progress.stage05_passed += 1
 
-            # Stage 0 + 0.5
-            with self._lock:
-                self._progress.current_stage = "stage0"
-
-            sandbox_result = safe_eval(
-                model, batch_size=2,
-                seq_len=min(128, config.max_seq_len),
-                vocab_size=config.vocab_size,
-                device=dev_str,
-            )
-
-            # Extract all sandbox metrics
-            program_metrics.update(self._extract_sandbox_metrics(sandbox_result))
-
-            s0_passed = sandbox_result.passed
-            s05_passed = sandbox_result.stability_score >= 0.5
-
-            program_metrics["param_count"] = sandbox_result.param_count
-
-            if s0_passed:
-                results["stage0_passed"] += 1
-                with self._lock:
-                    self._progress.stage0_passed += 1
-            if s05_passed:
-                results["stage05_passed"] += 1
-                with self._lock:
-                    self._progress.stage05_passed += 1
-
-            # Fingerprint (after S0 pass)
-            if s0_passed:
-                try:
-                    fp = compute_fingerprint(
-                        model,
-                        seq_len=min(64, config.max_seq_len),
-                        model_dim=config.model_dim,
-                        vocab_size=config.vocab_size,
-                        device=dev_str,
+                if not s0_passed or not s05_passed:
+                    nb.record_program_result(
+                        experiment_id=exp_id,
+                        graph_fingerprint=graph.fingerprint(),
+                        graph_json=graph_to_json(graph),
+                        stage0_passed=s0_passed, stage05_passed=s05_passed, stage1_passed=False,
+                        stage0_error=sandbox_result.error,
+                        stage_at_death="stage0" if not s0_passed else "stage05",
+                        **program_metrics,
                     )
-                    program_metrics["fingerprint_json"] = json.dumps(fp.to_dict())
-                    program_metrics["fp_interaction_locality"] = fp.interaction_locality
-                    program_metrics["fp_interaction_sparsity"] = fp.interaction_sparsity
-                    program_metrics["fp_interaction_symmetry"] = fp.interaction_symmetry
-                    program_metrics["fp_interaction_hierarchy"] = fp.interaction_hierarchy
-                    program_metrics["fp_intrinsic_dim"] = fp.intrinsic_dim
-                    program_metrics["fp_isotropy"] = fp.isotropy
-                    program_metrics["fp_rank_ratio"] = fp.rank_ratio
-                    program_metrics["fp_jacobian_spectral_norm"] = fp.jacobian_spectral_norm
-                    program_metrics["fp_jacobian_effective_rank"] = fp.jacobian_effective_rank
-                    program_metrics["fp_sensitivity_uniformity"] = fp.sensitivity_uniformity
-                    program_metrics["fp_cka_vs_transformer"] = fp.cka_vs_transformer
-                    program_metrics["fp_cka_vs_ssm"] = fp.cka_vs_ssm
-                    program_metrics["fp_cka_vs_conv"] = fp.cka_vs_conv
-                    program_metrics["cka_source"] = fp.cka_source
-                    program_metrics["cka_artifact_version"] = fp.cka_artifact_version
-                except Exception:
-                    pass
+                    self._emit_event("program_evaluated", {
+                        "index": i, "fingerprint": graph.fingerprint()[:10],
+                        "result": "fail_s0" if not s0_passed else "fail_s05",
+                    })
+                    continue
 
-            # Stage 1
-            s1_passed = False
-            loss_ratio = None
-            final_loss = None
-            throughput = None
-            training_curve = None
-
-            if s0_passed and s05_passed and not self._stop_event.is_set():
+                # Stage 1: Asynchronous Execution (Z6)
                 with self._lock:
-                    self._progress.current_stage = "stage1"
-
-                s1_result = self._micro_train(
-                    model,
-                    config,
-                    dev,
+                    self._progress.current_stage = "queuing_s1"
+                
+                orchestrator.submit(
+                    index=i,
+                    graph=graph,
+                    config=config,
                     seed=self._stable_seed(exp_id, i, "screening"),
+                    payload={
+                        "metrics": program_metrics,
+                        "graph": graph,
+                        "batch_id": i // candidate_batch_size,
+                        "queue_kind": "candidate_screening",
+                    }
                 )
-                s1_passed = s1_result.get("passed", False)
-                loss_ratio = s1_result.get("loss_ratio")
-                final_loss = s1_result.get("final_loss")
-                throughput = s1_result.get("throughput")
-                training_curve = s1_result.get("training_curve")
+                
+            except Exception as e:
+                logger.error("Error evaluating graph %d: %s", i, e)
+                continue
+            
+            # Periodically process available results to keep the dashboard updated
+            self._process_orchestrator_results(orchestrator, nb, exp_id, results, config)
 
-                # Training metrics
-                program_metrics["initial_loss"] = s1_result.get("initial_loss")
-                program_metrics["min_loss"] = s1_result.get("min_loss")
-                program_metrics["loss_improvement_rate"] = s1_result.get("loss_improvement_rate")
-                program_metrics["avg_step_time_ms"] = s1_result.get("avg_step_time_ms")
-                program_metrics["total_train_time_ms"] = s1_result.get("total_train_time_ms")
-                program_metrics["max_grad_norm"] = s1_result.get("max_grad_norm")
-                program_metrics["mean_grad_norm"] = s1_result.get("mean_grad_norm")
-                program_metrics["grad_norm_std"] = s1_result.get("grad_norm_std")
-                program_metrics["n_train_steps"] = s1_result.get("n_train_steps")
-                program_metrics["final_lr"] = s1_result.get("final_lr")
-                program_metrics["pruning_method"] = s1_result.get("pruning_method")
-                program_metrics["pruning_target_sparsity"] = s1_result.get("pruning_target_sparsity")
-                program_metrics["pruning_actual_sparsity"] = s1_result.get("pruning_actual_sparsity")
-                program_metrics["pruning_n_params_total"] = s1_result.get("pruning_n_params_total")
-                program_metrics["pruning_n_params_pruned"] = s1_result.get("pruning_n_params_pruned")
-                program_metrics["pruning_dense_eval_loss"] = s1_result.get("pruning_dense_eval_loss")
-                program_metrics["pruning_pruned_eval_loss"] = s1_result.get("pruning_pruned_eval_loss")
-                program_metrics["pruning_quality_retention"] = s1_result.get("pruning_quality_retention")
-                program_metrics["pruning_active_params_estimate"] = s1_result.get("pruning_active_params_estimate")
-                program_metrics["pruning_error"] = s1_result.get("pruning_error")
+        # Wait for remaining asynchronous Stage 1 evaluations
+        with self._lock:
+            self._progress.status = "finalizing_evaluations"
+            
+        while orchestrator.job_queue.unfinished_tasks > 0 or not orchestrator.result_queue.empty():
+            if self._stop_event.is_set():
+                break
+            self._process_orchestrator_results(orchestrator, nb, exp_id, results, config)
+            time.sleep(0.5)
 
-                if s1_passed:
-                    results["stage1_passed"] += 1
-                    with self._lock:
-                        self._progress.stage1_passed += 1
-
-                    logger.info(
-                        "  ★ S1 SURVIVOR [%d/%d] %s — loss_ratio=%.4f, "
-                        "params=%s, train_time=%.0fms",
-                        i + 1, len(graphs), graph.fingerprint()[:10],
-                        loss_ratio or 0,
-                        f"{sandbox_result.param_count:,}" if sandbox_result.param_count else "?",
-                        s1_result.get("total_train_time_ms") or 0,
-                    )
-
-                    # Compare to baseline
-                    if final_loss is not None:
-                        try:
-                            baseline = self._get_baseline()
-                            baseline_steps = int(s1_result.get("n_train_steps") or config.stage1_steps)
-                            baseline_recipe = self._resolve_baseline_recipe(
-                                s1_result, default_lr=config.stage1_lr)
-                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
-                            baseline_ratio = baseline.compare(
-                                final_loss,
-                                d_model=config.model_dim,
-                                seq_len=min(128, config.max_seq_len),
-                                n_steps=max(1, baseline_steps),
-                                vocab_size=config.vocab_size,
-                                batch_size=config.stage1_batch_size,
-                                lr=baseline_recipe["lr"],
-                                device=dev_str,
-                                n_layers=config.n_layers,
-                                optimizer_name=baseline_recipe["optimizer_name"],
-                                weight_decay=baseline_recipe["weight_decay"],
-                                momentum=baseline_recipe["momentum"],
-                                betas=baseline_recipe["betas"],
-                                data_fn=bl_data_fn,
-                                data_tag=bl_data_tag,
-                            )
-                            program_metrics["baseline_loss_ratio"] = baseline_ratio
-                        except Exception:
-                            pass
-
-            # Determine stage at death
-            program_metrics.update(self._extract_sparse_metrics(model))
-            program_metrics["stage_at_death"] = self._classify_stage_at_death(
-                s0_passed, s05_passed, s1_passed)
-
-            # Novelty — compute behavioral fingerprint for S1 survivors
-            with self._lock:
-                self._progress.current_stage = "novelty"
-
-            fp = None
-            if s1_passed and model is not None:
-                try:
-                    fp = compute_fingerprint(
-                        model,
-                        seq_len=min(64, config.max_seq_len),
-                        model_dim=config.model_dim,
-                        vocab_size=config.vocab_size,
-                        device=dev_str,
-                    )
-                except Exception:
-                    pass
-
-            # Diagnostic tasks — test specific architectural capabilities
-            if s1_passed and model is not None:
-                try:
-                    diag = run_diagnostic_suite(model, device=dev_str)
-                    program_metrics["diagnostic_tasks_json"] = json.dumps(diag.to_dict())
-                    program_metrics["diagnostic_score"] = diag.diagnostic_score
-                except Exception:
-                    pass
-
-            nov = novelty_score(graph, fingerprint=fp)
-            n_score = nov.overall_novelty
-
-            if s1_passed and n_score > 0.5:
-                results["novel_count"] += 1
-                with self._lock:
-                    self._progress.novel_count += 1
-                results["survivors"].append({
-                    "fingerprint": graph.fingerprint(),
-                    "novelty": n_score,
-                    "loss_ratio": loss_ratio,
-                })
-
-            if loss_ratio and (results["best_loss_ratio"] is None
-                               or loss_ratio < results["best_loss_ratio"]):
-                results["best_loss_ratio"] = loss_ratio
-                with self._lock:
-                    self._progress.best_loss_ratio = loss_ratio
-
-            if n_score and (results["best_novelty_score"] is None
-                            or n_score > results["best_novelty_score"]):
-                results["best_novelty_score"] = n_score
-                with self._lock:
-                    self._progress.best_novelty = n_score
-
-            # Record program result with ALL metrics
-            result_id = nb.record_program_result(
-                experiment_id=exp_id,
-                graph_fingerprint=graph.fingerprint(),
-                graph_json=graph_to_json(graph),
-                stage0_passed=s0_passed, stage05_passed=s05_passed,
-                stage1_passed=s1_passed,
-                stage0_error=sandbox_result.error,
-                loss_ratio=loss_ratio, final_loss=final_loss,
-                throughput=throughput, novelty_score=n_score,
-                structural_novelty=nov.structural_novelty,
-                behavioral_novelty=nov.behavioral_novelty,
-                most_similar_to=nov.most_similar_to,
-                novelty_confidence=nov.novelty_confidence,
-                model_source="graph_synthesis",
-                **program_metrics,
-            )
-
-            # Store training curve if available
-            if training_curve and result_id:
-                try:
-                    nb.store_training_curve(result_id, training_curve)
-                except Exception:
-                    pass
-
-            nb.log_metric("stage0_pass_rate",
-                          results["stage0_passed"] / (i + 1),
-                          experiment_id=exp_id)
-
-            stage_label = "S1 PASS" if s1_passed else ("S0" if s0_passed else "FAIL")
-            self._emit_event("program_evaluated", {
-                "index": i,
-                "fingerprint": graph.fingerprint()[:10],
-                "result": stage_label,
-                "novelty": round(n_score, 3),
-                "loss_ratio": round(loss_ratio, 4) if loss_ratio else None,
-                "params": sandbox_result.param_count,
-            })
-
-            # Periodic progress log (every 10 programs or 15 seconds)
-            now = time.time()
-            if (i + 1) % 10 == 0 or now - last_log_time >= 15:
-                best = results.get("best_loss_ratio")
-                best_str = f", best_loss={best:.4f}" if best else ""
-                logger.info(
-                    "  [%d/%d] S0=%d S0.5=%d S1=%d%s (%.1fs elapsed)",
-                    i + 1, len(graphs),
-                    results["stage0_passed"], results["stage05_passed"],
-                    results["stage1_passed"], best_str,
-                    now - t_start,
-                )
-                last_log_time = now
-
-            # Cleanup
-            del model
-            if dev.type == "cuda":
-                torch.cuda.empty_cache()
-            gc.collect()
+        queue_telemetry = orchestrator.get_telemetry()
+        orchestrator.shutdown()
+        results["queue_telemetry"] = queue_telemetry
+        results["perf_report"] = self._build_experiment_perf_report(results, queue_telemetry=queue_telemetry)
+        results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
+        results.pop("_perf_traces", None)
+        results.pop("_gpu_starvation", None)
+        results.pop("_kernel_timing", None)
 
         elapsed = time.time() - t_start
         with self._lock:
@@ -5373,7 +7152,8 @@ class ExperimentRunner:
             logger.warning("Refinement mode requested without source IDs; falling back to synthesis generation")
             return batch_generate(target_n, grammar)
 
-        source_pairs: List[Tuple[str, Any]] = []
+        source_pairs: List[Tuple[str, Any, Dict[str, Any]]] = []
+        source_stage1_passed = 0
         for source_id in source_ids:
             source = nb.get_program_detail(source_id)
             if not source:
@@ -5385,7 +7165,9 @@ class ExperimentRunner:
                 parent_graph = graph_from_json(graph_json_str)
             except Exception:
                 continue
-            source_pairs.append((source_id, parent_graph))
+            source_pairs.append((source_id, parent_graph, source))
+            if source.get("stage1_passed"):
+                source_stage1_passed += 1
 
         if not source_pairs:
             logger.warning(
@@ -5403,13 +7185,46 @@ class ExperimentRunner:
         seed = self._stable_seed("fingerprint_refine", exp_id, ",".join(source_ids))
         rng = random.Random(seed)
         per_source = max(1, int(config.refine_mutations_per_source or 1))
-        mutated_graphs: List[Any] = []
+        target_pool = max(target_n, target_n * max(1, int(config.refine_pool_multiplier or 1)))
+        candidate_pool: List[Tuple[float, Any]] = []
+        seen_fingerprints: Set[str] = set()
+        op_success = self._op_success_lookup(nb)
+        intent = str(config.refine_intent or "balanced").lower()
 
-        while len(mutated_graphs) < target_n:
+        # Apply analysis-driven grammar hints if available
+        analysis_data: Optional[Dict[str, Any]] = None
+        if config.refine_analysis_json:
+            try:
+                analysis_data = json.loads(config.refine_analysis_json)
+                grammar = self._apply_analysis_to_grammar(grammar, analysis_data, intent)
+                logger.info(
+                    "Experiment %s: applied analysis-driven grammar hints (intent=%s, %d exclude, %d boost)",
+                    exp_id[:8], intent,
+                    len(analysis_data.get("recipe", {}).get("grammar_hints", {}).get("exclude_ops", [])),
+                    len(analysis_data.get("recipe", {}).get("grammar_hints", {}).get("boost_ops", {})),
+                )
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                logger.warning("Experiment %s: failed to parse refine_analysis_json: %s", exp_id[:8], e)
+
+        recent_health = self._recent_synthesis_health(nb, window=5)
+        zero_s1_regime = (
+            source_stage1_passed == 0
+            and float(recent_health.get("s1_rate") or 0.0) <= 0.0
+        )
+        mutated_budget = target_n if not zero_s1_regime else max(1, target_n // 2)
+        if zero_s1_regime:
+            logger.warning(
+                "Refinement detected zero-S1 regime with no survivor sources; "
+                "forcing exploration mix (mutated=%d, fallback=%d)",
+                mutated_budget,
+                max(0, target_n - mutated_budget),
+            )
+
+        while len(candidate_pool) < target_pool:
             added_this_round = 0
-            for source_id, parent_graph in source_pairs:
+            for source_id, parent_graph, source_row in source_pairs:
                 for _ in range(per_source):
-                    if len(mutated_graphs) >= target_n:
+                    if len(candidate_pool) >= target_pool:
                         break
                     try:
                         child = _mutate_graph(parent_graph, grammar, rng)
@@ -5423,29 +7238,201 @@ class ExperimentRunner:
                     if not validation.valid:
                         continue
 
+                    fp = child.fingerprint()
+                    if fp in seen_fingerprints:
+                        continue
+                    seen_fingerprints.add(fp)
                     child.metadata.setdefault("refinement", {})
                     child.metadata["refinement"]["source_result_id"] = source_id
                     child.metadata["refinement"]["seed_fingerprint"] = parent_graph.fingerprint()
-                    mutated_graphs.append(child)
+                    child.metadata["refinement"]["intent"] = intent
+                    score, score_breakdown = self._score_refinement_candidate(
+                        child,
+                        op_success=op_success,
+                        intent=intent,
+                        source_row=source_row,
+                        include_breakdown=True,
+                    )
+                    child.metadata["refinement"]["intent_score"] = score
+                    child.metadata["refinement"]["intent_score_breakdown"] = score_breakdown
+                    if analysis_data:
+                        recipe = analysis_data.get("recipe", {})
+                        child.metadata["refinement"]["analysis_driven"] = True
+                        child.metadata["refinement"]["analysis_recipe"] = {
+                            "recommended_intent": recipe.get("recommended_intent", "balanced"),
+                            "primary_target": recipe.get("primary_target", ""),
+                            "confidence": recipe.get("confidence", "low"),
+                        }
+                    candidate_pool.append((score, child))
                     added_this_round += 1
 
-                if len(mutated_graphs) >= target_n:
+                if len(candidate_pool) >= target_pool:
                     break
 
             if added_this_round == 0:
                 break
 
+        candidate_pool.sort(key=lambda item: item[0], reverse=True)
+        mutated_graphs = [g for _, g in candidate_pool[:mutated_budget]]
+
         if len(mutated_graphs) < target_n:
             fallback = batch_generate(target_n - len(mutated_graphs), grammar)
+            for f in fallback:
+                f.metadata.setdefault("refinement", {})
+                f.metadata["refinement"]["intent"] = intent
+                f.metadata["refinement"]["fallback"] = True
+                if zero_s1_regime:
+                    f.metadata["refinement"]["fallback_reason"] = "zero_s1_regime"
             mutated_graphs.extend(fallback)
 
         logger.info(
-            "Experiment %s: generated %d refinement graphs from %d source fingerprint(s)",
+            "Experiment %s: generated %d refinement graphs from %d source fingerprint(s) [intent=%s pool=%d]",
             exp_id[:8],
             len(mutated_graphs),
             len(source_pairs),
+            intent,
+            len(candidate_pool),
         )
         return mutated_graphs
+
+    @staticmethod
+    def _apply_analysis_to_grammar(
+        base_grammar: GrammarConfig,
+        analysis: Dict[str, Any],
+        intent: str,
+    ) -> GrammarConfig:
+        """Apply RefinementAnalyzer recipe hints to a grammar config."""
+        recipe = analysis.get("recipe", {})
+        hints = recipe.get("grammar_hints", {})
+
+        # Exclude risky ops
+        exclude_ops = hints.get("exclude_ops", [])
+        if exclude_ops:
+            base_grammar.excluded_ops = base_grammar.excluded_ops | set(exclude_ops)
+
+        # Boost ops (cap at 3.0)
+        boost_ops = hints.get("boost_ops", {})
+        for op_name, multiplier in boost_ops.items():
+            current = base_grammar.op_weights.get(op_name, 1.0)
+            base_grammar.op_weights[op_name] = min(3.0, current * multiplier)
+
+        # Boost categories (×1.5, capped)
+        add_categories = hints.get("add_categories", {})
+        for cat, multiplier in add_categories.items():
+            current = base_grammar.category_weights.get(cat, 1.0)
+            base_grammar.category_weights[cat] = min(8.0, current * multiplier)
+
+        return base_grammar
+
+    def _op_success_lookup(self, nb: LabNotebook) -> Dict[str, float]:
+        """Return per-op Stage1 success rates for learning-guided refinement."""
+        lookup: Dict[str, float] = {}
+        try:
+            for row in nb.get_op_success_rates():
+                n_used = float(row.get("n_used") or 0.0)
+                n_s1 = float(row.get("n_stage1_passed") or 0.0)
+                if n_used > 0:
+                    lookup[str(row.get("op_name"))] = n_s1 / n_used
+        except Exception:
+            pass
+        return lookup
+
+    def _score_refinement_candidate(
+        self,
+        graph: Any,
+        op_success: Dict[str, float],
+        intent: str,
+        source_row: Optional[Dict[str, Any]] = None,
+        include_breakdown: bool = False,
+    ) -> Any:
+        """Score a refinement candidate using past learning + objective intent."""
+        ops: List[str] = []
+        for node in graph.nodes.values():
+            if not node.is_input:
+                ops.append(str(node.op_name))
+
+        n_ops = max(1, int(graph.n_ops()))
+        depth = max(1, int(graph.depth()))
+        params = max(1.0, float(graph.n_params_estimate()))
+        unique_ops = len(set(ops))
+
+        learned_quality = 0.5
+        if ops:
+            learned_quality = sum(op_success.get(op, 0.5) for op in ops) / len(ops)
+
+        compression_proxy = 1.0 / (1.0 + math.log1p(params) + 0.25 * n_ops + 0.15 * depth)
+        novelty_proxy = min(1.0, (unique_ops / max(1, n_ops)) + (0.1 if depth >= 4 else 0.0))
+
+        sparse_hint_ops = (
+            "sparse", "gate", "topk", "mask", "threshold", "skip", "mixture"
+        )
+        sparse_op_bonus = 0.0
+        if ops:
+            sparse_op_bonus = sum(
+                1.0 for op in ops if any(token in op.lower() for token in sparse_hint_ops)
+            ) / len(ops)
+        sparsity_proxy = min(1.0, 0.7 * compression_proxy + 0.3 * sparse_op_bonus)
+
+        parent_novelty = float((source_row or {}).get("novelty_score") or 0.0)
+        parent_quality = 1.0 - float((source_row or {}).get("loss_ratio") or 1.0)
+
+        mode = str(intent or "balanced").lower()
+        weighted_terms: Dict[str, float]
+        if mode == "quality":
+            weighted_terms = {
+                "learned_quality": 0.60 * learned_quality,
+                "parent_quality": 0.25 * parent_quality,
+                "compression_proxy": 0.15 * compression_proxy,
+            }
+        elif mode == "compression":
+            weighted_terms = {
+                "compression_proxy": 0.60 * compression_proxy,
+                "learned_quality": 0.25 * learned_quality,
+                "parent_quality": 0.15 * parent_quality,
+            }
+        elif mode == "sparsity":
+            weighted_terms = {
+                "sparsity_proxy": 0.60 * sparsity_proxy,
+                "learned_quality": 0.25 * learned_quality,
+                "compression_proxy": 0.15 * compression_proxy,
+            }
+        elif mode == "novelty":
+            weighted_terms = {
+                "novelty_proxy": 0.55 * novelty_proxy,
+                "learned_quality": 0.25 * learned_quality,
+                "parent_novelty": 0.20 * parent_novelty,
+            }
+        else:  # balanced
+            weighted_terms = {
+                "learned_quality": 0.35 * learned_quality,
+                "compression_proxy": 0.25 * compression_proxy,
+                "novelty_proxy": 0.20 * novelty_proxy,
+                "parent_signal": 0.20 * max(parent_quality, parent_novelty),
+            }
+        score = float(sum(weighted_terms.values()))
+        if not include_breakdown:
+            return score
+
+        breakdown = {
+            "mode": mode,
+            "components": {
+                "learned_quality": float(learned_quality),
+                "compression_proxy": float(compression_proxy),
+                "novelty_proxy": float(novelty_proxy),
+                "sparsity_proxy": float(sparsity_proxy),
+                "parent_quality": float(parent_quality),
+                "parent_novelty": float(parent_novelty),
+                "sparse_op_bonus": float(sparse_op_bonus),
+            },
+            "weighted_terms": {k: float(v) for k, v in weighted_terms.items()},
+            "ops": {
+                "n_ops": int(n_ops),
+                "depth": int(depth),
+                "unique_ops": int(unique_ops),
+                "params_estimate": float(params),
+            },
+        }
+        return score, breakdown
 
     def _resolve_baseline_recipe(
         self,
@@ -5500,6 +7487,20 @@ class ExperimentRunner:
             "betas": betas,
         }
 
+    def _micro_train_wrapper(self, graph, config, seed, dev):
+        """Wrapper for orchestrator to compile and train a single graph."""
+        try:
+            layer_graphs = [graph] * config.n_layers
+            model = compile_model(
+                layer_graphs,
+                vocab_size=config.vocab_size,
+                max_seq_len=config.max_seq_len,
+            ).to(dev)
+            
+            return self._micro_train(model, config, dev, seed=seed)
+        except Exception as e:
+            return {"error": str(e), "passed": False}
+
     def _micro_train(self, model: nn.Module, config: RunConfig,
                      dev: torch.device, seed: int = 42) -> Dict:
         """Run Stage 1 micro-training with comprehensive metric capture.
@@ -5507,13 +7508,19 @@ class ExperimentRunner:
         Uses deterministic seeding per step so all candidates see the same
         training data in the same order, enabling fair comparison (#56).
         """
+        from research.scientist.perf import PerfTracer, GPUStarvationDetector, OpKernelProfiler
+        tracer = PerfTracer()
+        starvation_detector = GPUStarvationDetector(threshold_ms=2.0)
+        op_profiler = OpKernelProfiler(enabled=True, top_k=20)
+        
         result: Dict[str, Any] = {"passed": False}
 
         try:
-            model = model.to(dev)
-            model.train()
-            optimizer = torch.optim.AdamW(model.parameters(),
-                                          lr=config.stage1_lr, weight_decay=0.01)
+            with tracer.trace("model_setup"):
+                model = model.to(dev)
+                model.train()
+                optimizer = torch.optim.AdamW(model.parameters(),
+                                              lr=config.stage1_lr, weight_decay=0.01)
 
             result["optimizer_class"] = optimizer.__class__.__name__.lower()
             if optimizer.param_groups:
@@ -5535,6 +7542,7 @@ class ExperimentRunner:
             step_times: List[float] = []
             grad_norms: List[float] = []
             training_curve: List[Dict] = []
+            kernel_profiles: List[Dict[str, Any]] = []
 
             seq_len = min(128, config.max_seq_len)
 
@@ -5542,32 +7550,54 @@ class ExperimentRunner:
                 if self._stop_event.is_set():
                     break
 
-                input_ids = self._sample_training_input_ids(
-                    config=config,
-                    dev=dev,
-                    batch_size=config.stage1_batch_size,
-                    seq_len=seq_len,
-                    seed=seed + step,
-                )
+                starvation_detector.start_wait()
+                with tracer.trace("data_sampling"):
+                    input_ids = self._sample_training_input_ids(
+                        config=config,
+                        dev=dev,
+                        batch_size=config.stage1_batch_size,
+                        seq_len=seq_len,
+                        seed=seed + step,
+                    )
+                starvation_detector.end_wait()
 
                 t_step = time.perf_counter()
 
-                with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
-                                        enabled=(dev.type == "cuda")):
-                    logits = model(input_ids)
-                    loss = F.cross_entropy(
-                        logits[:, :-1].reshape(-1, logits.shape[-1]),
-                        input_ids[:, 1:].reshape(-1),
-                    )
+                step_state: Dict[str, Any] = {}
 
-                if torch.isnan(loss) or torch.isinf(loss):
+                def _run_step() -> None:
+                    with tracer.trace("forward_pass"):
+                        with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
+                                                enabled=(dev.type == "cuda")):
+                            logits = model(input_ids)
+                            loss = F.cross_entropy(
+                                logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                input_ids[:, 1:].reshape(-1),
+                            )
+                    step_state["loss"] = loss
+
+                    with tracer.trace("backward_pass"):
+                        optimizer.zero_grad(set_to_none=True)
+                        loss.backward()
+                        step_state["grad_norm"] = nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+
+                    with tracer.trace("optimizer_step"):
+                        optimizer.step()
+
+                if step == 0:
+                    kernel_summary = op_profiler.profile_callable(_run_step)
+                    if kernel_summary:
+                        kernel_profiles.append({"step": step, **kernel_summary})
+                else:
+                    _run_step()
+
+                loss = step_state.get("loss")
+                grad_norm = float(step_state.get("grad_norm", 0.0))
+
+                if loss is None or torch.isnan(loss) or torch.isinf(loss):
                     result["error"] = f"NaN/Inf loss at step {step}"
                     result["n_train_steps"] = step
                     return result
-
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
 
                 if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
                     result["error"] = "zero_grad_precheck_failed"
@@ -5576,8 +7606,6 @@ class ExperimentRunner:
                     result["mean_grad_norm"] = grad_norm
                     result["grad_norm_std"] = 0.0
                     return result
-
-                optimizer.step()
 
                 if dev.type == "cuda":
                     torch.cuda.synchronize(dev)
@@ -5614,6 +7642,16 @@ class ExperimentRunner:
 
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
+
+            # Collect perf results
+            result["perf_traces"] = tracer.get_report()
+            result["gpu_starvation"] = starvation_detector.get_summary()
+            if kernel_profiles:
+                result["kernel_timing"] = {
+                    "sample_count": len(kernel_profiles),
+                    "samples": kernel_profiles,
+                    "top_ops": kernel_profiles[0].get("top_ops", []),
+                }
 
             if initial_loss and final_loss:
                 result["loss_ratio"] = final_loss / max(initial_loss, 1e-6)
@@ -5694,6 +7732,15 @@ class ExperimentRunner:
                 del pruned_model
             except Exception as e:
                 result["pruning_error"] = str(e)
+
+        # Finalize performance reports
+        try:
+            result["perf_report"] = result.get("perf_traces", tracer.get_report())
+            result["starvation_report"] = result.get("gpu_starvation", starvation_detector.get_summary())
+            if "kernel_timing" in result:
+                result["kernel_timings_ms"] = result["kernel_timing"]
+        except Exception as e:
+            result["perf_error"] = str(e)
 
         return result
 
@@ -5798,14 +7845,24 @@ class ExperimentRunner:
                 "learning_log": nb.get_learning_log(limit=10),
                 "insights": nb.get_insights(limit=20),
                 "negative_results": analytics.negative_results_synthesis(),
+                "decision_outcomes": analytics.decision_outcome_analysis(),
             }
         except Exception:
             return {}
 
     def _get_past_hypotheses(self, nb: LabNotebook, limit: int = 5) -> List[Dict]:
-        """Get past hypotheses with their outcomes."""
+        """Get past hypotheses with their outcomes, including refuted insights.
+
+        Merges two sources:
+        1. Recent experiment hypotheses (confirmed/refuted by S1 outcome)
+        2. Formally refuted insights from the insights table
+
+        This ensures the system never re-tests directions that were already
+        proven unsuccessful.
+        """
         experiments = nb.get_recent_experiments(limit * 2)
         past = []
+        seen_texts: set = set()
         for exp in experiments:
             hyp = exp.get("hypothesis")
             if not hyp:
@@ -5819,9 +7876,74 @@ class ExperimentRunner:
                 "best_novelty": best_novelty or 0,
                 "experiment_id": exp.get("experiment_id"),
             })
+            seen_texts.add(hyp[:80].lower())
             if len(past) >= limit:
                 break
+
+        # Also pull formally refuted insights so hypotheses that failed
+        # in prior campaigns are visible to hypothesis generation.
+        try:
+            refuted_insights = nb.get_insights(status="refuted", limit=limit)
+            for ins in refuted_insights:
+                content = ins.get("content", "")
+                if not content:
+                    continue
+                # Skip duplicates already covered by experiment hypotheses
+                if content[:80].lower() in seen_texts:
+                    continue
+                past.append({
+                    "hypothesis": content,
+                    "confirmed": False,
+                    "s1_count": 0,
+                    "best_novelty": 0,
+                    "experiment_id": None,
+                    "source": "refuted_insight",
+                    "confidence": ins.get("confidence", 0),
+                    "evidence": ins.get("supporting_evidence", ""),
+                })
+                seen_texts.add(content[:80].lower())
+        except Exception:
+            pass  # insights table may not exist in older notebooks
+
         return past
+
+    def _populate_refuted_cache(self, nb: LabNotebook) -> None:
+        """Populate the persona's refuted hypothesis cache for similarity gating.
+
+        Merges refuted insights from the insights table with refuted hypotheses
+        from negative_results_synthesis so the persona can reject new hypotheses
+        that are too similar to proven failures.
+        """
+        refuted: List[Dict] = []
+        try:
+            # Source 1: Formally refuted insights
+            for ins in nb.get_insights(status="refuted", limit=20):
+                content = ins.get("content", "")
+                if content:
+                    refuted.append({
+                        "content": content,
+                        "confidence": ins.get("confidence", 0),
+                    })
+
+            # Source 2: Refuted hypotheses from negative_results_synthesis
+            try:
+                from .analytics import ExperimentAnalytics
+                analytics = ExperimentAnalytics(nb)
+                neg = analytics.negative_results_synthesis()
+                for rh in neg.get("refuted_hypotheses", []):
+                    content = rh.get("content", "")
+                    if content and not any(r.get("content", "")[:80] == content[:80]
+                                           for r in refuted):
+                        refuted.append({
+                            "content": content,
+                            "confidence": rh.get("confidence", 0),
+                        })
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        self.aria.set_refuted_hypotheses(refuted)
 
     def _auto_recommend(self, results: Dict, config: RunConfig,
                         hypothesis: str, nb: LabNotebook):
@@ -5831,12 +7953,20 @@ class ExperimentRunner:
                 results, config, hypothesis, nb)
             suggestion = self.aria.suggest_experiment(context)
             if suggestion:
+                evidence_pack = build_evidence_pack(
+                    nb,
+                    analytics=None,
+                    recommendation=suggestion,
+                    decision_type="experiment_recommendation",
+                )
+                suggestion["evidence_pack"] = evidence_pack
                 with self._lock:
                     self._last_recommendation = suggestion
                 self._emit_event("aria_recommendation", {
                     "reasoning": suggestion.get("reasoning", ""),
                     "confidence": suggestion.get("confidence", 0),
                     "config": suggestion.get("config", {}),
+                    "evidence_pack": evidence_pack,
                 })
                 # Store as notebook entry
                 nb.add_entry(ExperimentEntry(
@@ -5846,6 +7976,7 @@ class ExperimentRunner:
                     metadata={
                         "confidence": suggestion.get("confidence", 0),
                         "suggested_config": suggestion.get("config", {}),
+                        "evidence_pack": evidence_pack,
                     },
                 ))
                 # PROACTIVE: Apply suggested config/grammar changes immediately
@@ -5858,6 +7989,9 @@ class ExperimentRunner:
 
         Also detects code-level issues in reasoning and spawns repair agents.
         """
+        if not suggestion.get("evidence_pack"):
+            logger.warning("Skipping recommendation application: missing Evidence Pack.")
+            return
         confidence = suggestion.get("confidence", 0)
         reasoning = str(suggestion.get("reasoning") or "")
 
@@ -5992,7 +8126,15 @@ class ExperimentRunner:
 
         # Check novelty
         if survivors:
-            avg_novelty = sum(s.get("novelty", 0) for s in survivors) / len(survivors)
+            valid_survivors = [
+                s for s in survivors if s.get("novelty_valid_for_promotion", True)
+            ]
+            if not valid_survivors:
+                return
+            avg_novelty = (
+                sum(s.get("novelty", 0) for s in valid_survivors)
+                / len(valid_survivors)
+            )
             if avg_novelty < config.auto_scale_up_min_novelty:
                 return
 
@@ -6022,11 +8164,19 @@ class ExperimentRunner:
                 f"at {config.scale_up_steps} steps to confirm they work at scale."
             ),
         }
+        evidence_pack = build_evidence_pack(
+            nb,
+            analytics=None,
+            recommendation={"mode": "scale_up"},
+            decision_type="auto_scale_up",
+        )
+        self._pending_scale_up["evidence_pack"] = evidence_pack
 
         self._emit_event("auto_scale_up_queued", {
             "result_ids": result_ids,
             "n_programs": len(result_ids),
             "reason": f"{s1_count} S1 survivors with avg novelty >= {config.auto_scale_up_min_novelty}",
+            "evidence_pack": evidence_pack,
         })
 
         nb.add_entry(ExperimentEntry(
@@ -6036,7 +8186,7 @@ class ExperimentRunner:
                 f"Automatically queuing scale-up validation for {len(result_ids)} "
                 f"top performers. Criteria met: {s1_count} S1 survivors."
             ),
-            metadata={"result_ids": result_ids},
+            metadata={"result_ids": result_ids, "evidence_pack": evidence_pack},
         ))
 
     def _maybe_auto_report(self, config: RunConfig, nb: LabNotebook,
@@ -6260,11 +8410,17 @@ class ExperimentRunner:
 
         Returns same metrics dict as _micro_train() plus training_program_json.
         """
+        from research.scientist.perf import PerfTracer, GPUStarvationDetector, KernelTimer
+        tracer = PerfTracer()
+        starvation_detector = GPUStarvationDetector(threshold_ms=2.0)
+        kernel_timer = KernelTimer(model, enabled=True)
+        
         result: Dict[str, Any] = {"passed": False}
 
         try:
-            model = model.to(dev)
-            model.train()
+            with tracer.trace("model_setup"):
+                model = model.to(dev)
+                model.train()
 
             # Apply init scheme
             if program.init_scheme == "small":
@@ -6333,41 +8489,46 @@ class ExperimentRunner:
                 except Exception:
                     pass
 
-                input_ids = self._sample_training_input_ids(
-                    config=config,
-                    dev=dev,
-                    batch_size=batch_size,
-                    seq_len=seq_len,
-                    seed=seed + step,
-                )
+                starvation_detector.start_wait()
+                with tracer.trace("data_sampling"):
+                    input_ids = self._sample_training_input_ids(
+                        config=config,
+                        dev=dev,
+                        batch_size=batch_size,
+                        seq_len=seq_len,
+                        seed=seed + step,
+                    )
+                starvation_detector.end_wait()
 
                 t_step = time.perf_counter()
 
-                with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
-                                        enabled=(dev.type == "cuda")):
-                    logits = model(input_ids)
-                    # Use synthesized loss if possible
-                    try:
-                        loss = program.loss.compute(
-                            logits[:, :-1].reshape(-1, logits.shape[-1]),
-                            input_ids[:, 1:].reshape(-1),
-                        )
-                    except Exception:
-                        loss = F.cross_entropy(
-                            logits[:, :-1].reshape(-1, logits.shape[-1]),
-                            input_ids[:, 1:].reshape(-1),
-                        )
+                with tracer.trace("forward_pass"):
+                    with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
+                                            enabled=(dev.type == "cuda")):
+                        logits = model(input_ids)
+                        # Use synthesized loss if possible
+                        try:
+                            loss = program.loss.compute(
+                                logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                input_ids[:, 1:].reshape(-1),
+                            )
+                        except Exception:
+                            loss = F.cross_entropy(
+                                logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                input_ids[:, 1:].reshape(-1),
+                            )
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     result["error"] = f"NaN/Inf loss at step {step}"
                     result["n_train_steps"] = step
                     return result
 
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                grad_norm = nn.utils.clip_grad_norm_(
-                    model.parameters(), max_grad_norm_val).item()
-                optimizer.step()
+                with tracer.trace("backward_pass"):
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm_val).item()
+                    optimizer.step()
+            
 
                 if dev.type == "cuda":
                     torch.cuda.synchronize(dev)
@@ -6424,6 +8585,15 @@ class ExperimentRunner:
 
         except Exception as e:
             result["error"] = str(e)
+
+        # Finalize performance reports
+        try:
+            result["perf_report"] = tracer.get_report()
+            result["starvation_report"] = starvation_detector.get_summary()
+            if kernel_timer.enabled:
+                result["kernel_timings_ms"] = kernel_timer.synchronize_and_get_timings()
+        except Exception as e:
+            result["perf_error"] = str(e)
 
         return result
 
@@ -6685,7 +8855,9 @@ class ExperimentRunner:
     # ── Investigation Phase ──
 
     def start_investigation(self, result_ids: List[str], config: RunConfig,
-                            hypothesis: Optional[str] = None) -> str:
+                            hypothesis: Optional[str] = None,
+                            preregistration: Optional[Dict[str, Any]] = None,
+                            exploratory: bool = False) -> str:
         """Start investigation phase for selected candidates."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -6716,7 +8888,8 @@ class ExperimentRunner:
                 f"with multiple training programs to test robustness."
             )
 
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="investigation",
             config=config.to_dict(),
             hypothesis=hypothesis,
@@ -6726,6 +8899,9 @@ class ExperimentRunner:
                 fallback_used=False,
                 used_context=False,
             ),
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by="start_investigation",
         )
         nb.close()
 
@@ -6781,6 +8957,10 @@ class ExperimentRunner:
             inv_config.stage1_steps = config.investigation_steps
             inv_config.stage1_batch_size = config.investigation_batch_size
 
+            # Fetch all sources at once to avoid N+1 queries
+            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+
             for prog_idx, source_result_id in enumerate(result_ids):
                 if prog_idx < resume_from_candidate:
                     continue
@@ -6806,7 +8986,7 @@ class ExperimentRunner:
                 })
 
                 # Fetch source program
-                source = nb.get_program_detail(source_result_id)
+                source = source_map.get(source_result_id)
                 if source is None:
                     continue
 
@@ -6815,15 +8995,17 @@ class ExperimentRunner:
                 arch_spec_json_str = source.get("arch_spec_json")
                 model_source = source.get("model_source", "graph_synthesis")
 
-                # Generate training programs
-                training_programs = []
-                for tp_i in range(config.n_training_programs):
-                    tp = synthesize_training_program(
-                        n_steps=config.investigation_steps,
-                        max_seq_len=config.max_seq_len,
-                        seed=tp_i + prog_idx * 1000,
-                    )
-                    training_programs.append(tp)
+                # Generate training programs (queue-level scheduling telemetry)
+                training_programs, tp_sched = synthesize_training_program_batch(
+                    n_programs=config.n_training_programs,
+                    n_steps=config.investigation_steps,
+                    max_seq_len=config.max_seq_len,
+                    seed_offset=prog_idx * 1000,
+                )
+                results.setdefault("training_program_scheduling", []).append({
+                    "result_id": source_result_id,
+                    **tp_sched,
+                })
 
                 # Test each (model x training_program) pair
                 tp_results = []
@@ -6836,7 +9018,7 @@ class ExperimentRunner:
                         if model_source == "morphological_box" and arch_spec_json_str:
                             from ..morphological_box import ArchSpec
                             from ..arch_builder import build_model, BuildConfig
-                            spec_data = json.loads(arch_spec_json_str)
+                            spec_data = self._cached_json_load(arch_spec_json_str)
                             spec = ArchSpec(**spec_data)
                             build_cfg = BuildConfig(
                                 dim=config.model_dim,
@@ -6922,6 +9104,8 @@ class ExperimentRunner:
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
                     "best_training_program": best_tp.get("training_program") if best_tp else None,
+                    "training_program_scheduling_avg_ms": tp_sched.get("scheduling_avg_ms"),
+                    "training_program_scheduling_max_ms": tp_sched.get("scheduling_max_ms"),
                 }
                 results["investigation_results"].append(investigation_entry)
 
@@ -6969,6 +9153,12 @@ class ExperimentRunner:
                     loss_ratio=best_lr,
                     novelty_score=source.get("novelty_score"),
                     novelty_confidence=source.get("novelty_confidence"),
+                    novelty_raw_score=source.get("novelty_raw_score"),
+                    novelty_z_score=source.get("novelty_z_score"),
+                    novelty_reference_version=source.get("novelty_reference_version"),
+                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+                    novelty_validity_reason=source.get("novelty_validity_reason"),
+                    novelty_requires_justification=source.get("novelty_requires_justification"),
                     training_program_json=best_tp_json,
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
@@ -7039,6 +9229,15 @@ class ExperimentRunner:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Investigation failed (%s): %s\n%s", exp_id, e, error)
+            self._invoke_code_healer(
+                nb=nb,
+                trigger_type="repeated_exception",
+                experiment_id=exp_id,
+                scope=f"Investigation failure: {str(e)[:240]}",
+                reproduction_steps=["python -m pytest tests/test_integration.py -k \"investigation\" -x --tb=short"],
+                acceptance_tests=["python -m pytest tests/test_integration.py -k \"investigation\" -x --tb=short"],
+                trigger_payload={"mode": "investigation", "error": str(e)},
+            )
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -7056,6 +9255,8 @@ class ExperimentRunner:
 
     def start_validation(self, result_ids: List[str], config: RunConfig,
                          hypothesis: Optional[str] = None,
+                         preregistration: Optional[Dict[str, Any]] = None,
+                         exploratory: bool = False,
                          trigger: str = "manual") -> str:
         """Start validation phase for investigation survivors."""
         if self.is_running:
@@ -7100,7 +9301,8 @@ class ExperimentRunner:
                 f"investigation survivors with multi-seed evaluation."
             )
 
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="validation",
             config=self._validation_config_with_result_ids(config, result_ids, trigger),
             hypothesis=hypothesis,
@@ -7110,6 +9312,9 @@ class ExperimentRunner:
                 fallback_used=False,
                 used_context=False,
             ),
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by="start_validation",
         )
         nb.close()
 
@@ -7165,6 +9370,10 @@ class ExperimentRunner:
             val_config.stage1_batch_size = config.validation_batch_size
             val_config.max_seq_len = config.validation_seq_len
 
+            # Fetch all sources at once to avoid N+1 queries
+            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+
             for prog_idx, source_result_id in enumerate(result_ids):
                 if prog_idx < resume_from_candidate:
                     continue
@@ -7191,7 +9400,7 @@ class ExperimentRunner:
                 })
 
                 # Fetch source and leaderboard entry
-                source = nb.get_program_detail(source_result_id)
+                source = source_map.get(source_result_id)
                 if source is None:
                     continue
 
@@ -7220,7 +9429,7 @@ class ExperimentRunner:
                         if model_source == "morphological_box" and arch_spec_json_str:
                             from ..morphological_box import ArchSpec
                             from ..arch_builder import build_model, BuildConfig
-                            spec_data = json.loads(arch_spec_json_str)
+                            spec_data = self._cached_json_load(arch_spec_json_str)
                             spec = ArchSpec(**spec_data)
                             build_cfg = BuildConfig(
                                 dim=config.model_dim,
@@ -7256,7 +9465,7 @@ class ExperimentRunner:
                     # Train (use best training program if available)
                     if best_tp_json:
                         try:
-                            tp_data = json.loads(best_tp_json)
+                            tp_data = self._cached_json_load(best_tp_json)
                             tp = synthesize_training_program(
                                 n_steps=config.validation_steps,
                                 max_seq_len=config.validation_seq_len,
@@ -7416,6 +9625,11 @@ class ExperimentRunner:
                 hp_ok = (sensitivity_result is not None
                          and sensitivity_result.get("hp_robustness", 0) >= 0.75)
                 nov_conf = source.get("novelty_confidence", 0) if source else 0
+                novelty_valid = False
+                if source:
+                    novelty_valid = bool(source.get("novelty_valid_for_promotion"))
+                    if not novelty_valid and source.get("cka_source") == "artifact":
+                        novelty_valid = True
                 is_breakthrough = (
                     val_baseline_ratio is not None
                     and val_baseline_ratio < 0.90
@@ -7425,6 +9639,7 @@ class ExperimentRunner:
                     and (ood_result is None or ood_ok)
                     and (sensitivity_result is None or hp_ok)
                     and nov_conf >= 0.5
+                    and novelty_valid
                 )
 
                 tier = "breakthrough" if is_breakthrough else "validation"
@@ -7494,6 +9709,12 @@ class ExperimentRunner:
                     baseline_loss_ratio=val_baseline_ratio,
                     novelty_score=source.get("novelty_score"),
                     novelty_confidence=source.get("novelty_confidence"),
+                    novelty_raw_score=source.get("novelty_raw_score"),
+                    novelty_z_score=source.get("novelty_z_score"),
+                    novelty_reference_version=source.get("novelty_reference_version"),
+                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+                    novelty_validity_reason=source.get("novelty_validity_reason"),
+                    novelty_requires_justification=source.get("novelty_requires_justification"),
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
                 )
@@ -7560,6 +9781,15 @@ class ExperimentRunner:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Validation failed (%s): %s\n%s", exp_id, e, error)
+            self._invoke_code_healer(
+                nb=nb,
+                trigger_type="repeated_exception",
+                experiment_id=exp_id,
+                scope=f"Validation failure: {str(e)[:240]}",
+                reproduction_steps=["python -m pytest tests/test_integration.py -k \"validation\" -x --tb=short"],
+                acceptance_tests=["python -m pytest tests/test_integration.py -k \"validation\" -x --tb=short"],
+                trigger_payload={"mode": "validation", "error": str(e)},
+            )
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -7613,19 +9843,78 @@ class ExperimentRunner:
                 skipped = before - len(top)
                 if skipped:
                     logger.info("Auto-escalate: skipped %d already-investigated archs", skipped)
-
-            candidate_ids = [
-                p["result_id"] for p in top
-                if p.get("stage1_passed") and p.get("loss_ratio", 1.0) < 0.5
-            ][:config.auto_investigate_top_n]
+            selection = self._score_candidate_pool(
+                candidates=top,
+                config=config,
+                nb=nb,
+                context="auto_investigate_screening",
+                experiment_id=exp_id,
+            )
+            scored_by_id = {s["result_id"]: s for s in selection.get("scored", [])}
+            ranked = selection.get("selected", [])
+            candidate_ids = []
+            for item in ranked:
+                row = next((p for p in top if p.get("result_id") == item["result_id"]), None)
+                if row is None:
+                    continue
+                if not row.get("stage1_passed"):
+                    continue
+                if row.get("loss_ratio") is not None and float(row.get("loss_ratio")) >= 0.75:
+                    continue
+                candidate_ids.append(item["result_id"])
+                if len(candidate_ids) >= config.auto_investigate_top_n:
+                    break
 
             if len(candidate_ids) < config.auto_investigate_min_survivors:
                 return
+            selected_rows = [p for p in top if p.get("result_id") in candidate_ids]
+            decision_payload = {
+                "decision_id": str(uuid.uuid4())[:12],
+                "timestamp": time.time(),
+                "context": "auto_investigate_screening",
+                "experiment_id": exp_id,
+                "candidate_pool_summary": selection.get("summary", {}),
+                "score_breakdown": selection.get("scored", []),
+                "policy": selection.get("policy", {}),
+                "reason": selection.get("reason", ""),
+                "chosen_experiments": [
+                    {
+                        "result_id": rid,
+                        "family": scored_by_id.get(rid, {}).get("family"),
+                        "score": scored_by_id.get(rid, {}).get("score"),
+                    }
+                    for rid in candidate_ids
+                ],
+                "trigger": None,
+            }
+            try:
+                validate_selection_decision_log(decision_payload)
+                decision_id = nb.record_selection_decision(
+                    context=decision_payload["context"],
+                    experiment_id=decision_payload["experiment_id"],
+                    candidate_pool_summary=decision_payload["candidate_pool_summary"],
+                    score_breakdown=decision_payload["score_breakdown"],
+                    policy=decision_payload["policy"],
+                    reason=decision_payload["reason"],
+                    chosen_experiments=decision_payload["chosen_experiments"],
+                    trigger=None,
+                )
+                supporting_insight_ids = selection.get("supporting_insight_ids") or []
+                if supporting_insight_ids:
+                    nb.record_selection_insight_trial(
+                        decision_id=decision_id,
+                        context=decision_payload["context"],
+                        insight_ids=supporting_insight_ids,
+                        chosen_result_ids=candidate_ids,
+                        source_experiment_id=exp_id,
+                    )
+            except Exception as sel_err:
+                logger.debug("Auto-investigate selection logging failed: %s", sel_err)
 
             # Go/no-go decision for each candidate
             if config.auto_go_no_go and config.enable_campaigns:
                 approved_ids = []
-                for p in top:
+                for p in selected_rows:
                     if p["result_id"] not in candidate_ids:
                         continue
                     try:
@@ -7653,6 +9942,11 @@ class ExperimentRunner:
                                      f"novelty={p.get('novelty_score', '?')}",
                             context=go_context,
                         )
+                        evidence_pack = self._safe_build_evidence_pack(
+                            nb,
+                            recommendation={"mode": "investigation"},
+                            decision_type="go_no_go",
+                        )
                         nb.record_decision(
                             campaign_id=self._active_campaign_id,
                             decision_type=decision["decision"],
@@ -7660,11 +9954,13 @@ class ExperimentRunner:
                             rationale=decision["rationale"],
                             evidence_ids=[p["result_id"]],
                             alternatives=[{"considered": decision.get("alternatives", "")}],
+                            evidence_pack=evidence_pack,
                         )
                         self._emit_event("decision_recorded", {
                             "decision_type": decision["decision"],
                             "subject": p["result_id"][:8],
                             "rationale": decision["rationale"][:100],
+                            "evidence_pack": evidence_pack,
                         })
                         if decision["decision"] in ("go", "pivot"):
                             approved_ids.append(p["result_id"])
@@ -7673,13 +9969,24 @@ class ExperimentRunner:
                         approved_ids.append(p["result_id"])
 
                 candidate_ids = approved_ids if approved_ids else candidate_ids
+                selected_rows = [p for p in selected_rows if p.get("result_id") in candidate_ids]
+
+            for rid in candidate_ids:
+                score_row = scored_by_id.get(rid)
+                if not score_row:
+                    continue
+                reward = score_row.get("base_score", 0.0)
+                nb.update_selection_family_stats(
+                    score_row.get("family", "Unknown"),
+                    reward=float(reward),
+                )
 
             # Add to leaderboard as screening tier (skip if already at screening or above)
             existing_lb = {
                 e["result_id"]: e["tier"]
                 for e in nb.get_leaderboard(limit=500)
             }
-            for p in top:
+            for p in selected_rows:
                 if p["result_id"] in candidate_ids:
                     if p["result_id"] in existing_lb and existing_lb[p["result_id"]] in (
                         "screening", "investigation", "validation"
@@ -7705,11 +10012,18 @@ class ExperimentRunner:
                     f"{config.n_training_programs} training programs each."
                 ),
             }
+            evidence_pack = self._safe_build_evidence_pack(
+                nb,
+                recommendation={"mode": "investigation"},
+                decision_type="auto_investigate",
+            )
+            self._pending_investigation["evidence_pack"] = evidence_pack
 
             self._emit_event("auto_investigate_queued", {
                 "result_ids": candidate_ids,
                 "n_candidates": len(candidate_ids),
                 "reason": f"{s1_count} S1 survivors with loss_ratio < 0.5",
+                "evidence_pack": evidence_pack,
             })
 
             nb.add_entry(ExperimentEntry(
@@ -7719,7 +10033,7 @@ class ExperimentRunner:
                     f"Automatically queuing investigation for {len(candidate_ids)} "
                     f"top performers. Criteria: {s1_count} S1 survivors."
                 ),
-                metadata={"result_ids": candidate_ids},
+                metadata={"result_ids": candidate_ids, "evidence_pack": evidence_pack},
             ))
 
         elif phase == "investigation":
@@ -7728,27 +10042,146 @@ class ExperimentRunner:
                 return
 
             inv_results = results.get("investigation_results", [])
-            strong = [
-                r for r in inv_results
-                if r.get("robustness", 0) >= config.auto_validate_min_robustness
-                and (r.get("best_loss_ratio") or 1.0) < 0.6
-                and r.get("baseline_loss_ratio") is not None
-                and r.get("baseline_loss_ratio") < config.auto_validate_max_baseline_ratio
-                and r.get("novelty_confidence") is not None
-                and r.get("novelty_confidence") >= config.auto_validate_min_novelty_confidence
-                and not r.get("brittle_risk", False)
-                and (
-                    r.get("loss_ratio_multiplier") is None
-                    or r.get("loss_ratio_multiplier") <= config.investigation_max_loss_ratio_multiplier
-                )
-            ]
+            inv_ids = [r.get("result_id") for r in inv_results if r.get("result_id")]
+            novelty_meta: Dict[str, Dict[str, Any]] = {}
+            if inv_ids:
+                placeholders = ",".join("?" for _ in inv_ids)
+                rows = nb.conn.execute(
+                    f"""SELECT result_id, novelty_valid_for_promotion, cka_source
+                        FROM program_results
+                        WHERE result_id IN ({placeholders})""",
+                    tuple(inv_ids),
+                ).fetchall()
+                novelty_meta = {row["result_id"]: dict(row) for row in rows}
+
+            strong = []
+            for r in inv_results:
+                rid = r.get("result_id")
+                meta = novelty_meta.get(rid or "", {})
+                if not meta:
+                    novelty_valid = True  # legacy records pre-date novelty validity fields
+                else:
+                    novelty_valid = bool(meta.get("novelty_valid_for_promotion"))
+                    if not novelty_valid and meta.get("cka_source") == "artifact":
+                        novelty_valid = True
+                if not novelty_valid and config.allow_heuristic_novelty_promotion:
+                    novelty_valid = bool(str(config.heuristic_novelty_justification or "").strip())
+                if (
+                    r.get("robustness", 0) >= config.auto_validate_min_robustness
+                    and (r.get("best_loss_ratio") or 1.0) < 0.6
+                    and r.get("baseline_loss_ratio") is not None
+                    and r.get("baseline_loss_ratio") < config.auto_validate_max_baseline_ratio
+                    and r.get("novelty_confidence") is not None
+                    and r.get("novelty_confidence") >= config.auto_validate_min_novelty_confidence
+                    and novelty_valid
+                    and not r.get("brittle_risk", False)
+                    and (
+                        r.get("loss_ratio_multiplier") is None
+                        or r.get("loss_ratio_multiplier") <= config.investigation_max_loss_ratio_multiplier
+                    )
+                ):
+                    strong.append(r)
 
             if not strong:
                 return
 
-            candidate_ids = [
-                r["result_id"] for r in strong
-            ][:config.auto_validate_top_n]
+            result_ids_all = [r.get("result_id") for r in strong if r.get("result_id")]
+            graph_meta: Dict[str, Dict[str, Any]] = {}
+            if result_ids_all:
+                placeholders = ",".join("?" for _ in result_ids_all)
+                rows = nb.conn.execute(
+                    f"""SELECT result_id, graph_json, routing_mode
+                        FROM program_results
+                        WHERE result_id IN ({placeholders})""",
+                    tuple(result_ids_all),
+                ).fetchall()
+                graph_meta = {row["result_id"]: dict(row) for row in rows}
+
+            prepared_candidates: List[Dict[str, Any]] = []
+            for r in strong:
+                rid = r.get("result_id")
+                if not rid:
+                    continue
+                meta = graph_meta.get(rid, {})
+                prepared_candidates.append({
+                    "result_id": rid,
+                    "graph_json": meta.get("graph_json"),
+                    "routing_mode": meta.get("routing_mode"),
+                    "loss_ratio": r.get("best_loss_ratio"),
+                    "baseline_loss_ratio": r.get("baseline_loss_ratio"),
+                    "novelty_score": r.get("novelty_confidence"),
+                    "throughput_tok_s": r.get("throughput_tok_s"),
+                    "flops_per_token": r.get("flops_per_token"),
+                    "peak_memory_mb": r.get("peak_memory_mb"),
+                    "stage0_passed": 1,
+                    "stage05_passed": 1,
+                    "stage1_passed": 1,
+                    "stability_score": r.get("robustness"),
+                    "has_nan_grad": 0,
+                    "has_zero_grad": 0,
+                })
+
+            selection = self._score_candidate_pool(
+                candidates=prepared_candidates,
+                config=config,
+                nb=nb,
+                context="auto_validate_investigation",
+                experiment_id=results.get("experiment_id"),
+            )
+            scored_by_id = {s["result_id"]: s for s in selection.get("scored", [])}
+            ranked = selection.get("selected", [])
+            candidate_ids = [item["result_id"] for item in ranked[:config.auto_validate_top_n]]
+            decision_payload = {
+                "decision_id": str(uuid.uuid4())[:12],
+                "timestamp": time.time(),
+                "context": "auto_validate_investigation",
+                "experiment_id": results.get("experiment_id"),
+                "candidate_pool_summary": selection.get("summary", {}),
+                "score_breakdown": selection.get("scored", []),
+                "policy": selection.get("policy", {}),
+                "reason": selection.get("reason", ""),
+                "chosen_experiments": [
+                    {
+                        "result_id": rid,
+                        "family": scored_by_id.get(rid, {}).get("family"),
+                        "score": scored_by_id.get(rid, {}).get("score"),
+                    }
+                    for rid in candidate_ids
+                ],
+                "trigger": None,
+            }
+            try:
+                validate_selection_decision_log(decision_payload)
+                decision_id = nb.record_selection_decision(
+                    context=decision_payload["context"],
+                    experiment_id=decision_payload["experiment_id"],
+                    candidate_pool_summary=decision_payload["candidate_pool_summary"],
+                    score_breakdown=decision_payload["score_breakdown"],
+                    policy=decision_payload["policy"],
+                    reason=decision_payload["reason"],
+                    chosen_experiments=decision_payload["chosen_experiments"],
+                    trigger=None,
+                )
+                supporting_insight_ids = selection.get("supporting_insight_ids") or []
+                if supporting_insight_ids:
+                    nb.record_selection_insight_trial(
+                        decision_id=decision_id,
+                        context=decision_payload["context"],
+                        insight_ids=supporting_insight_ids,
+                        chosen_result_ids=candidate_ids,
+                        source_experiment_id=str(results.get("experiment_id") or ""),
+                    )
+            except Exception as sel_err:
+                logger.debug("Auto-validate selection logging failed: %s", sel_err)
+
+            for rid in candidate_ids:
+                score_row = scored_by_id.get(rid)
+                if not score_row:
+                    continue
+                nb.update_selection_family_stats(
+                    score_row.get("family", "Unknown"),
+                    reward=float(score_row.get("base_score", 0.0)),
+                )
 
             self._pending_validation = {
                 "result_ids": candidate_ids,
@@ -7758,12 +10191,19 @@ class ExperimentRunner:
                     f"{len(candidate_ids)} robust investigation survivors."
                 ),
             }
+            evidence_pack = self._safe_build_evidence_pack(
+                nb,
+                recommendation={"mode": "validation"},
+                decision_type="auto_validate",
+            )
+            self._pending_validation["evidence_pack"] = evidence_pack
 
             self._emit_event("auto_validate_queued", {
                 "result_ids": candidate_ids,
                 "n_candidates": len(candidate_ids),
                 "reason": f"{len(strong)} candidates with robustness >= "
                           f"{config.auto_validate_min_robustness}",
+                "evidence_pack": evidence_pack,
             })
 
             nb.add_entry(ExperimentEntry(
@@ -7773,7 +10213,7 @@ class ExperimentRunner:
                     f"Automatically queuing validation for {len(candidate_ids)} "
                     f"robust investigation survivors."
                 ),
-                metadata={"result_ids": candidate_ids},
+                metadata={"result_ids": candidate_ids, "evidence_pack": evidence_pack},
             ))
 
     @staticmethod
@@ -7832,7 +10272,9 @@ class ExperimentRunner:
     # ── Evolution & Novelty Search ──
 
     def start_evolution(self, config: RunConfig,
-                        hypothesis: Optional[str] = None) -> str:
+                        hypothesis: Optional[str] = None,
+                        preregistration: Optional[Dict[str, Any]] = None,
+                        exploratory: bool = False) -> str:
         """Start evolutionary search in a background thread."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -7856,11 +10298,15 @@ class ExperimentRunner:
                 hypothesis = result
                 hypothesis_metadata["source"] = "rule_based"
 
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="evolution",
             config=config.to_dict(),
             hypothesis=hypothesis,
             hypothesis_metadata=hypothesis_metadata,
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by="start_evolution",
         )
         nb.close()
 
@@ -7887,7 +10333,9 @@ class ExperimentRunner:
         return exp_id
 
     def start_novelty_search(self, config: RunConfig,
-                             hypothesis: Optional[str] = None) -> str:
+                             hypothesis: Optional[str] = None,
+                             preregistration: Optional[Dict[str, Any]] = None,
+                             exploratory: bool = False) -> str:
         """Start novelty search in a background thread."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -7911,11 +10359,15 @@ class ExperimentRunner:
                 hypothesis = result
                 hypothesis_metadata["source"] = "rule_based"
 
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="novelty",
             config=config.to_dict(),
             hypothesis=hypothesis,
             hypothesis_metadata=hypothesis_metadata,
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by="start_novelty_search",
         )
         nb.close()
 
@@ -8210,6 +10662,15 @@ class ExperimentRunner:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Evolution failed (%s): %s\n%s", exp_id, e, error)
+            self._invoke_code_healer(
+                nb=nb,
+                trigger_type="repeated_exception",
+                experiment_id=exp_id,
+                scope=f"Evolution failure: {str(e)[:240]}",
+                reproduction_steps=["python -m pytest tests/test_integration.py -k \"evolution\" -x --tb=short"],
+                acceptance_tests=["python -m pytest tests/test_integration.py -k \"evolution\" -x --tb=short"],
+                trigger_payload={"mode": "evolution", "error": str(e)},
+            )
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -8485,6 +10946,15 @@ class ExperimentRunner:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Novelty search failed (%s): %s\n%s", exp_id, e, error)
+            self._invoke_code_healer(
+                nb=nb,
+                trigger_type="repeated_exception",
+                experiment_id=exp_id,
+                scope=f"Novelty search failure: {str(e)[:240]}",
+                reproduction_steps=["python -m pytest tests/test_integration.py -k \"novelty\" -x --tb=short"],
+                acceptance_tests=["python -m pytest tests/test_integration.py -k \"novelty\" -x --tb=short"],
+                trigger_payload={"mode": "novelty", "error": str(e)},
+            )
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"
@@ -8501,7 +10971,9 @@ class ExperimentRunner:
     # ── Scale-Up Mode ──
 
     def start_scale_up(self, result_ids: List[str], config: RunConfig,
-                       hypothesis: Optional[str] = None) -> str:
+                       hypothesis: Optional[str] = None,
+                       preregistration: Optional[Dict[str, Any]] = None,
+                       exploratory: bool = False) -> str:
         """Start scale-up validation of specific programs in a background thread."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -8517,7 +10989,8 @@ class ExperimentRunner:
                 f"top performer(s) maintain their advantage at 10x training scale."
             )
 
-        exp_id = nb.start_experiment(
+        exp_id = self._start_preregistered_experiment(
+            nb=nb,
             experiment_type="scale_up",
             config=config.to_dict(),
             hypothesis=hypothesis,
@@ -8527,6 +11000,9 @@ class ExperimentRunner:
                 fallback_used=False,
                 used_context=False,
             ),
+            preregistration=preregistration,
+            exploratory=exploratory,
+            created_by="start_scale_up",
         )
         nb.close()
 
@@ -8725,6 +11201,7 @@ class ExperimentRunner:
 
                 # Novelty — compute behavioral fingerprint for S1 survivors
                 fp = None
+                calibration_row = None
                 if s1_passed and model is not None:
                     try:
                         fp = compute_fingerprint(
@@ -8734,17 +11211,47 @@ class ExperimentRunner:
                             vocab_size=config.vocab_size,
                             device=dev_str,
                         )
+                        program_metrics["cka_source"] = fp.cka_source
+                        program_metrics["cka_artifact_version"] = fp.cka_artifact_version
+                        program_metrics["cka_probe_protocol_hash"] = fp.cka_probe_protocol_hash
+                        program_metrics["cka_reference_quality"] = fp.cka_reference_quality
+                        calibration_row = self._ensure_novelty_calibration(nb, config, fp)
                     except Exception:
                         pass
 
-                nov = novelty_score(graph, fingerprint=fp)
+                calibration = None
+                if calibration_row:
+                    calibration = {
+                        "noise_floor_mean": calibration_row.get("noise_floor_mean"),
+                        "noise_floor_std": calibration_row.get("noise_floor_std"),
+                    }
+                nov = novelty_score(graph, fingerprint=fp, calibration=calibration)
                 n_score = nov.overall_novelty
+                novelty_valid, novelty_valid_reason, novelty_requires_justification = (
+                    self._resolve_novelty_promotion_validity(
+                        config,
+                        nov.novelty_valid_for_promotion,
+                        nov.novelty_validity_reason,
+                    )
+                )
+                program_metrics["novelty_raw_score"] = nov.raw_novelty
+                program_metrics["novelty_z_score"] = nov.novelty_z_score
+                program_metrics["novelty_reference_version"] = (
+                    nov.novelty_reference_version
+                    or (fp.novelty_reference_version if fp is not None else None)
+                )
+                program_metrics["novelty_valid_for_promotion"] = int(novelty_valid)
+                program_metrics["novelty_validity_reason"] = novelty_valid_reason
+                program_metrics["novelty_requires_justification"] = int(
+                    novelty_requires_justification
+                )
                 if s1_passed and n_score > 0.5:
                     results["novel_count"] += 1
                     results["survivors"].append({
                         "fingerprint": graph.fingerprint(),
                         "novelty": n_score,
                         "loss_ratio": loss_ratio,
+                        "novelty_valid_for_promotion": novelty_valid,
                     })
 
                 if loss_ratio and (results["best_loss_ratio"] is None
@@ -8840,6 +11347,15 @@ class ExperimentRunner:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Scale-up failed (%s): %s\n%s", exp_id, e, error)
+            self._invoke_code_healer(
+                nb=nb,
+                trigger_type="repeated_exception",
+                experiment_id=exp_id,
+                scope=f"Scale-up failure: {str(e)[:240]}",
+                reproduction_steps=["python -m pytest tests/test_integration.py -k \"scale_up\" -x --tb=short"],
+                acceptance_tests=["python -m pytest tests/test_integration.py -k \"scale_up\" -x --tb=short"],
+                trigger_payload={"mode": "scale_up", "error": str(e)},
+            )
             nb.fail_experiment(exp_id, str(e))
             with self._lock:
                 self._progress.status = "failed"

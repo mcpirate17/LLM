@@ -12,6 +12,9 @@ import ast
 import json
 import csv
 import io
+from collections import deque
+from datetime import datetime
+import hashlib
 import logging
 import math
 import os
@@ -27,6 +30,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from .notebook import LabNotebook
+from .evidence import build_evidence_pack
 from .persona import get_aria
 from .runner import ExperimentRunner, RunConfig
 from .llm.context import build_program_context
@@ -41,12 +45,22 @@ _WORKSPACE_FILE_INDEX: Dict[str, Dict[str, Any]] = {}
 _WORKSPACE_FILE_INDEX_LOCK = threading.Lock()
 _WORKSPACE_FILE_INDEX_BUILT_AT: float = 0.0
 _RUN_TRIGGER_LOCK = threading.Lock()
+_CHAT_GUARDRAIL_LOCK = threading.Lock()
+_CHAT_GUARDRAIL_EVENTS = deque(maxlen=500)
 _LAST_RUN_TRIGGER: Dict[str, Any] = {
     "experiment_id": None,
     "source": "unknown",
     "mode": None,
     "timestamp": None,
     "details": {},
+}
+
+_ALLOWED_CHAT_ACTION_TYPES = {
+    "adjust_config",
+    "adjust_grammar",
+    "start_experiment",
+    "edit_file",
+    "spawn_agent",
 }
 
 
@@ -114,8 +128,11 @@ def _deduplicate_insights(insights: list) -> list:
 
 def _json_safe(value: Any) -> Any:
     """Convert values to JSON-serializable primitives for API/SSE payloads."""
-    if value is None or isinstance(value, (str, bool, int, float)):
+    if value is None or isinstance(value, (str, bool, int)):
         return value
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
 
     if isinstance(value, Path):
         return str(value)
@@ -156,6 +173,65 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _to_safe_float(value: Any, default: float = 0.0) -> float:
+    """Best-effort float parse with NaN/inf guard."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if math.isnan(parsed) or math.isinf(parsed):
+        return float(default)
+    return parsed
+
+
+def _extract_hypothesis_missing_fields(critique: Any) -> List[str]:
+    """Derive a stable checklist of missing hypothesis fields for UI display."""
+    if not isinstance(critique, dict):
+        return []
+    out: List[str] = []
+
+    def _add(field: str) -> None:
+        f = str(field or "").strip()
+        if f and f not in out:
+            out.append(f)
+
+    explicit = critique.get("missing_fields")
+    if isinstance(explicit, list):
+        for field in explicit:
+            _add(str(field))
+    if out:
+        return out
+
+    check_map = {
+        "testability": "success_criteria",
+        "measurable_metric": "primary_metric",
+        "confound_risk": "confounders_checklist",
+        "fallback_plan": "fallback_plan",
+    }
+    for check in critique.get("checks") or []:
+        if not isinstance(check, dict):
+            continue
+        status = str(check.get("status") or "").lower()
+        if status not in {"warn", "fail"}:
+            continue
+        key = str(check.get("key") or "").lower()
+        mapped = check_map.get(key)
+        if mapped:
+            _add(mapped)
+
+    concern_text = " ".join(str(c).lower() for c in (critique.get("concerns") or []))
+    if "source-selection" in concern_text:
+        _add("source_selection_rule")
+    if "mutation" in concern_text and ("operator" in concern_text or "underspecified" in concern_text or "radius" in concern_text):
+        _add("mutation_mechanism")
+    if "intent" in concern_text and "undefined" in concern_text:
+        _add("intent_weights")
+    if "success criteria" in concern_text:
+        _add("success_criteria")
+
+    return out
+
+
 def _normalize_entry(entry: dict) -> dict:
     """Normalize notebook entry shape for UI consumers.
 
@@ -181,6 +257,67 @@ def _normalize_entry(entry: dict) -> dict:
 
 def _normalize_entries(entries: list) -> list:
     return [_normalize_entry(entry) for entry in entries]
+
+
+def _program_lineage_chain(nb: LabNotebook, result_id: str, max_depth: int = 16) -> List[Dict[str, Any]]:
+    """Resolve refinement lineage by walking source_result_id links."""
+    chain: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    current = str(result_id or "").strip()
+
+    while current and current not in seen and len(chain) < max_depth:
+        seen.add(current)
+        row = nb.get_program_detail(current)
+        if not row:
+            break
+
+        graph_parsed = row.get("graph_json_parsed") if isinstance(row, dict) else None
+        metadata = graph_parsed.get("metadata") if isinstance(graph_parsed, dict) else None
+        metadata = metadata if isinstance(metadata, dict) else {}
+        refinement = metadata.get("refinement") if isinstance(metadata.get("refinement"), dict) else {}
+        lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+
+        source_result_id = str(refinement.get("source_result_id") or "").strip() or None
+        chain.append({
+            "result_id": row.get("result_id"),
+            "graph_fingerprint": row.get("graph_fingerprint"),
+            "experiment_id": row.get("experiment_id"),
+            "stage1_passed": bool(row.get("stage1_passed")),
+            "loss_ratio": row.get("loss_ratio"),
+            "novelty_score": row.get("novelty_score"),
+            "refinement": {
+                "intent": refinement.get("intent"),
+                "intent_score": refinement.get("intent_score"),
+                "source_result_id": source_result_id,
+                "seed_fingerprint": refinement.get("seed_fingerprint"),
+                "fallback": bool(refinement.get("fallback")),
+            },
+            "lineage": {
+                "type": lineage.get("type"),
+                "parent": lineage.get("parent"),
+            },
+        })
+
+        current = source_result_id if source_result_id and source_result_id not in seen else ""
+
+    return chain
+
+
+def _enrich_program_detail(nb: LabNotebook, program: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach derived fields for program detail responses."""
+    if program.get("external_benchmarks_json_parsed") is not None:
+        program["external_benchmarks"] = program.get("external_benchmarks_json_parsed")
+    try:
+        from .analytics import ExperimentAnalytics
+        analytics = ExperimentAnalytics(nb)
+        qkv_usage = analytics.qkv_usage_enum(program)
+        program["qkv_usage"] = qkv_usage
+        program["uses_qkv"] = qkv_usage != "qkv_free"
+        program["compression_metrics"] = analytics.canonical_compression_metrics(program)
+        program["reproducibility_packet"] = analytics.reproducibility_packet_status(program)
+    except Exception as e:
+        logger.debug("Program enrichment failed for %s: %s", program.get("result_id"), e)
+    return program
 
 
 def _entry_to_live_feed_event(entry: dict) -> Optional[dict]:
@@ -606,6 +743,127 @@ def _format_simple_answer_action_plan(text: str) -> str:
         return result
     return cleaned[:200]
 
+
+def _truncate_summary(text: str, max_chars: int = 220) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 1].rstrip() + "…"
+
+
+def _record_chat_guardrail_event(
+    *,
+    actionable: bool,
+    advice_only: bool,
+    summary_text: str,
+) -> None:
+    event = {
+        "timestamp": time.time(),
+        "actionable": bool(actionable),
+        "advice_only": bool(advice_only),
+        "summary_length": len(str(summary_text or "")),
+    }
+    with _CHAT_GUARDRAIL_LOCK:
+        _CHAT_GUARDRAIL_EVENTS.append(event)
+
+
+def _chat_guardrail_snapshot(window: int = 200) -> Dict[str, Any]:
+    window_size = max(1, min(int(window or 200), 500))
+    with _CHAT_GUARDRAIL_LOCK:
+        events = list(_CHAT_GUARDRAIL_EVENTS)[-window_size:]
+    n = len(events)
+    if n == 0:
+        return {
+            "window": window_size,
+            "n_events": 0,
+            "actionable_response_rate": 0.0,
+            "advice_only_rate": 0.0,
+            "summary_length": {"avg": 0.0, "p95": 0.0, "max": 0},
+        }
+
+    actionable_count = sum(1 for e in events if e.get("actionable"))
+    advice_only_count = sum(1 for e in events if e.get("advice_only"))
+    lengths = sorted(int(e.get("summary_length") or 0) for e in events)
+    p95_idx = max(0, min(len(lengths) - 1, int(math.ceil(0.95 * len(lengths))) - 1))
+    return {
+        "window": window_size,
+        "n_events": n,
+        "actionable_response_rate": round(actionable_count / n, 4),
+        "advice_only_rate": round(advice_only_count / n, 4),
+        "summary_length": {
+            "avg": round(sum(lengths) / n, 2),
+            "p95": lengths[p95_idx],
+            "max": lengths[-1],
+        },
+    }
+
+
+def _summarize_agent_task(task: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    row = dict(task or {})
+    status = str(row.get("status") or "queued").strip().lower()
+    phase = str(row.get("phase") or "").strip().lower()
+    applied = len(row.get("applied_edits") or [])
+    proposed = len(row.get("proposed_edits") or [])
+    skipped = len(row.get("skipped_edits") or [])
+    summary = str(row.get("summary") or "").strip()
+    timings = row.get("timings") if isinstance(row.get("timings"), dict) else {}
+
+    if status in {"queued", "running"}:
+        phase_label = phase.replace("_", " ") if phase else "working"
+        headline = f"{status.upper()} · {phase_label}"
+    elif status == "completed":
+        headline = f"COMPLETED · applied {applied}, proposed {proposed}, skipped {skipped}"
+    else:
+        headline = f"{status.upper()} · review required"
+
+    if summary:
+        headline = f"{headline} · {_truncate_summary(summary, max_chars=140)}"
+    if timings:
+        total_s = sum(float(v or 0.0) for v in timings.values())
+        if total_s > 0:
+            headline = f"{headline} · {total_s:.1f}s"
+
+    return {
+        "task_id": row.get("task_id"),
+        "status": status,
+        "phase": phase,
+        "updated_at": row.get("updated_at"),
+        "allow_write": bool(row.get("allow_write")),
+        "milestone_summary": _truncate_summary(headline, max_chars=220),
+        "full_status_url": f"/api/aria/agent/status/{row.get('task_id')}?detail=full",
+    }
+
+
+def _parse_action_contract_response(text: str) -> Dict[str, Any]:
+    """Parse LLM output under strict action contract, returning summary + typed actions."""
+    raw = str(text or "").strip()
+    if not raw:
+        return {"summary": "", "actions": [], "advice_only": True}
+
+    pattern = re.compile(r"```(\w+)?\s*\n(.*?)\n```", re.DOTALL)
+    action_blocks: List[Dict[str, Any]] = []
+    retained_text = raw
+    for match in pattern.finditer(raw):
+        block_lang = str(match.group(1) or "").strip().lower()
+        block_body = str(match.group(2) or "").strip()
+        if block_lang != "action":
+            continue
+        try:
+            parsed = json.loads(block_body)
+        except Exception:
+            continue
+        if isinstance(parsed, dict) and str(parsed.get("type") or "") in _ALLOWED_CHAT_ACTION_TYPES:
+            action_blocks.append(parsed)
+
+    retained_text = pattern.sub("", retained_text).strip()
+    retained_text = re.sub(r"`{3}[\s\S]*?`{3}", "", retained_text).strip()
+    summary = _truncate_summary(_format_simple_answer_action_plan(retained_text), max_chars=220)
+    advice_only = len(action_blocks) == 0
+    return {
+        "summary": summary,
+        "actions": action_blocks,
+        "advice_only": advice_only,
+    }
 
 def _code_agent_task_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
     with _CODE_AGENT_TASKS_LOCK:
@@ -1786,6 +2044,7 @@ def _normalize_start_mode(mode: Any) -> str:
         "sparse_morphological": "sparse_morph",
         "refine": "refine_fingerprint",
         "fingerprint_refine": "refine_fingerprint",
+        "refine_recommended": "refine_fingerprint",
     }
     return aliases.get(raw, raw)
 
@@ -2035,6 +2294,162 @@ def _rank_label(delta: Optional[int], seen_runs: int) -> str:
     if delta >= 2:
         return "down"
     return "stable"
+
+
+def _parse_bool_query(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _parse_report_date(value: Optional[str], end_of_day: bool = False) -> Optional[float]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) == 10:
+            dt = datetime.strptime(raw, "%Y-%m-%d")
+            if end_of_day:
+                dt = dt.replace(hour=23, minute=59, second=59)
+            return dt.timestamp()
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _report_program_matches_theme(program: Dict[str, Any], theme: str) -> bool:
+    normalized = str(theme or "").strip().lower()
+    if not normalized or normalized in {"all", "any"}:
+        return True
+    graph_json = str(program.get("graph_json") or "").lower()
+    arch_spec = str(program.get("arch_spec_json") or "").lower()
+    pruning_method = str(program.get("pruning_method") or "").lower()
+    if normalized == "sparsity":
+        return (
+            program.get("sparse_density_mean") is not None
+            or "sparse" in graph_json
+            or "sparse" in arch_spec
+            or bool(pruning_method)
+        )
+    if normalized == "compression":
+        compression_markers = (
+            "low_rank", "shared_basis", "tied_proj", "grouped_linear", "bottleneck", "quant", "compressed"
+        )
+        return any(marker in graph_json or marker in arch_spec for marker in compression_markers)
+    if normalized == "routing":
+        return (
+            program.get("routing_confidence_mean") is not None
+            or "routing" in graph_json
+            or "moe" in graph_json
+            or "gate" in graph_json
+        )
+    if normalized == "mathspace":
+        return (
+            bool(program.get("graph_uses_math_spaces"))
+            or "mathspace" in graph_json
+            or "clifford" in graph_json
+            or "hyperbolic" in graph_json
+            or "padic" in graph_json
+            or "tropical" in graph_json
+        )
+    if normalized == "failure_modes":
+        return (program.get("stage1_passed") or 0) == 0 or bool(program.get("error_type"))
+    return True
+
+
+def _experiment_s1_rate(exp: Dict[str, Any]) -> Optional[float]:
+    generated = exp.get("n_programs_generated")
+    if generated is None:
+        generated = exp.get("n_programs")
+    passed = exp.get("n_stage1_passed")
+    if passed is None:
+        passed = exp.get("s1_passed")
+    try:
+        gen = float(generated or 0)
+        s1 = float(passed or 0)
+    except Exception:
+        return None
+    if gen <= 0:
+        return None
+    return s1 / gen
+
+
+def _report_experiment_matches_trend(exp: Dict[str, Any], trend: str) -> bool:
+    normalized = str(trend or "").strip().lower()
+    if not normalized or normalized in {"all", "any"}:
+        return True
+    rate = _experiment_s1_rate(exp)
+    novelty = exp.get("best_novelty_score")
+    if normalized == "high_novelty":
+        return isinstance(novelty, (int, float)) and float(novelty) >= 0.5
+    if rate is None:
+        return False
+    if normalized in {"improving", "high_survival"}:
+        return rate >= 0.08
+    if normalized == "declining":
+        return rate < 0.03
+    if normalized == "plateaued":
+        return 0.03 <= rate < 0.08
+    return True
+
+
+def _build_filtered_report_summary(
+    base_summary: Dict[str, Any],
+    experiments: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not experiments:
+        return dict(base_summary or {})
+    total_programs = 0
+    total_survivors = 0
+    for exp in experiments:
+        total_programs += int(exp.get("n_programs_generated") or 0)
+        total_survivors += int(exp.get("n_stage1_passed") or 0)
+    out = dict(base_summary or {})
+    out["total_experiments"] = len(experiments)
+    out["total_programs_evaluated"] = total_programs
+    out["stage1_survivors"] = total_survivors
+    return out
+
+
+def _build_report_snapshot_key(scope: str, query_payload: Dict[str, Any]) -> str:
+    raw = json.dumps(
+        {"scope": scope, "query": query_payload or {}},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _infer_tier_for_program(nb: LabNotebook, program: dict) -> str:
+    """Infer tier for a raw program_results row by checking the leaderboard."""
+    result_id = program.get("result_id")
+    if not result_id:
+        return "screening"
+    row = nb.conn.execute(
+        "SELECT tier FROM leaderboard WHERE result_id = ?", (result_id,)
+    ).fetchone()
+    return row["tier"] if row else "screening"
+
+
+def _count_discovery_tiers(nb: LabNotebook) -> dict:
+    """Count unique fingerprints per tier + total S1 survivors."""
+    rows = nb.conn.execute(
+        "SELECT tier, COUNT(*) AS cnt FROM leaderboard GROUP BY tier"
+    ).fetchall()
+    counts = {r["tier"]: r["cnt"] for r in rows}
+    total_s1 = nb.conn.execute(
+        "SELECT COUNT(*) AS cnt FROM program_results WHERE stage1_passed = 1"
+    ).fetchone()
+    counts["total_survivors"] = total_s1["cnt"] if total_s1 else 0
+    return counts
 
 
 def _compute_cross_run_stability(nb: LabNotebook, top_programs: list) -> dict:
@@ -2344,6 +2759,8 @@ def _build_scale_up_templates_for_result(result_id: Optional[str]) -> List[Dict[
 def _build_reproducibility_workflow(
     repro_packet: Dict[str, Any],
     scale_up_templates: List[Dict[str, Any]],
+    result_id: Optional[str] = None,
+    graph_fingerprint: Optional[str] = None,
 ) -> Dict[str, Any]:
     packet = repro_packet or {}
     ready_count = int(packet.get("ready_count") or 0)
@@ -2381,6 +2798,10 @@ def _build_reproducibility_workflow(
             "status": "complete" if is_complete else "missing",
             "guidance": guidance,
         }
+        if result_id:
+            step["result_id"] = result_id
+        if graph_fingerprint:
+            step["graph_fingerprint"] = graph_fingerprint
         if not is_complete and template_id:
             payload = _payload(template_id)
             if payload:
@@ -2408,6 +2829,8 @@ def _build_reproducibility_workflow(
         "remaining": max(0, total_checks - ready_count),
         "steps": steps,
         "next_actions": next_actions,
+        "result_id": result_id,
+        "graph_fingerprint": graph_fingerprint,
     }
 
 
@@ -2456,6 +2879,8 @@ def _compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) 
         reproducibility_workflow = _build_reproducibility_workflow(
             row["reproducibility_packet"],
             scale_up_templates,
+            result_id=row.get("result_id"),
+            graph_fingerprint=row.get("graph_fingerprint"),
         )
         evaluated.append({
             "result_id": row.get("result_id"),
@@ -2836,6 +3261,171 @@ def _save_llm_config(notebook_path: str, config: Dict):
         logger.warning(f"Failed to save LLM config: {e}")
 
 
+_DISMISSED_ACTIONS: set = set()
+
+# Singleton autonomy engine (created lazily on first API call)
+_aria_autonomy = None
+_aria_action_store = None
+
+
+def _get_autonomy(notebook_path: str):
+    """Get or create the singleton AriaAutonomy instance."""
+    global _aria_autonomy, _aria_action_store
+    if _aria_autonomy is None:
+        from .autonomy import AriaAutonomy
+        from .actions import ActionStore
+        nb = LabNotebook(notebook_path)
+        _aria_autonomy = AriaAutonomy(notebook=nb)
+        _aria_action_store = ActionStore(nb.conn)
+    return _aria_autonomy, _aria_action_store
+
+
+def _compute_action_queue(nb, analytics=None) -> List[Dict[str, Any]]:
+    """Aggregate prioritized actions from existing data sources."""
+    actions: List[Dict[str, Any]] = []
+
+    # 1. Breakthrough candidates from leaderboard
+    try:
+        breakthroughs = nb.get_leaderboard(tier="breakthrough", limit=5, sort_by="composite_score")
+        for entry in breakthroughs:
+            rid = entry.get("result_id", "")
+            actions.append({
+                "id": f"breakthrough_{rid[:12]}",
+                "type": "breakthrough",
+                "priority": 1,
+                "icon": "trophy",
+                "title": f"Architecture {rid[:8]} — Breakthrough",
+                "summary": f"Composite score {entry.get('composite_score', 0):.3f}. Tier: breakthrough.",
+                "detail": {
+                    "result_id": rid,
+                    "composite_score": entry.get("composite_score"),
+                    "screening_loss_ratio": entry.get("screening_loss_ratio"),
+                    "tier": "breakthrough",
+                },
+                "actions": [
+                    {"label": "View Details", "action": "navigate", "payload": {"tab": "discoveries", "result_id": rid}},
+                ],
+                "dismissable": True,
+                "source": "leaderboard",
+            })
+    except Exception:
+        pass
+
+    # 2. Stalled run warning — last 3+ completed experiments with 0 S1 survivors
+    try:
+        recent = nb.get_recent_experiments(5)
+        completed = [e for e in recent if e.get("status") == "completed"]
+        if len(completed) >= 3 and all(
+            (e.get("n_stage1_passed") or 0) == 0 for e in completed[:3]
+        ):
+            actions.append({
+                "id": "warning_stalled_runs",
+                "type": "warning",
+                "priority": 2,
+                "icon": "warning",
+                "title": "Pipeline stalled — zero S1 survivors",
+                "summary": f"Last {len(completed[:3])} completed runs produced no Stage 1 survivors.",
+                "detail": {
+                    "recent_experiments": [
+                        {"id": e.get("experiment_id", "")[:12], "s1": e.get("n_stage1_passed", 0)}
+                        for e in completed[:3]
+                    ],
+                },
+                "actions": [
+                    {"label": "Run Novelty Search", "action": "start", "payload": {"mode": "novelty"}},
+                ],
+                "dismissable": True,
+                "source": "experiments",
+            })
+    except Exception:
+        pass
+
+    # 3. Healer fixes from recent tasks
+    try:
+        healer_tasks = nb.get_recent_healer_tasks(limit=5)
+        active = [t for t in healer_tasks if t.get("state") not in ("completed", "failed")]
+        for task in active[:2]:
+            tid = task.get("task_id", "")
+            actions.append({
+                "id": f"healer_{tid[:12]}",
+                "type": "healer",
+                "priority": 4,
+                "icon": "wrench",
+                "title": f"Code healer: {task.get('trigger_type', 'repair')}",
+                "summary": f"Task {tid[:12]} — {task.get('state', 'active')}. {task.get('scope', '')[:80]}",
+                "detail": {
+                    "task_id": tid,
+                    "state": task.get("state"),
+                    "trigger_type": task.get("trigger_type"),
+                    "experiment_id": task.get("experiment_id"),
+                },
+                "actions": [],
+                "dismissable": True,
+                "source": "healer",
+            })
+    except Exception:
+        pass
+
+    # 4. Diagnosis issues from analytics
+    try:
+        if analytics:
+            analytics_data = analytics.get_analytics_data() if hasattr(analytics, "get_analytics_data") else {}
+        else:
+            from .analytics import ExperimentAnalytics
+            analytics_obj = ExperimentAnalytics(nb)
+            analytics_data = analytics_obj.get_analytics_data() if hasattr(analytics_obj, "get_analytics_data") else {}
+        issues = _diagnose_research_issues(analytics_data, nb)
+        for i, issue in enumerate(issues[:3]):
+            actions.append({
+                "id": f"diagnosis_{i}",
+                "type": "diagnosis",
+                "priority": 3,
+                "icon": "stethoscope",
+                "title": "Diagnosis",
+                "summary": issue.get("issue", "Unknown issue"),
+                "detail": {"config_fix": issue.get("config_fix")},
+                "actions": (
+                    [{"label": "Apply Fix", "action": "config_fix", "payload": issue.get("config_fix", {})}]
+                    if issue.get("action_type") in ("config_fix", "grammar_fix")
+                    else []
+                ),
+                "dismissable": True,
+                "source": "diagnostics",
+            })
+    except Exception:
+        pass
+
+    # 5. Strategy suggestion (lightweight — just presence indicator)
+    try:
+        summary = nb.get_dashboard_summary()
+        total_exp = summary.get("total_experiments", 0)
+        if total_exp == 0:
+            actions.append({
+                "id": "strategy_first_run",
+                "type": "strategy",
+                "priority": 5,
+                "icon": "lightbulb",
+                "title": "Get started",
+                "summary": "No experiments yet. Start your first continuous run to begin exploring architectures.",
+                "detail": {},
+                "actions": [
+                    {"label": "Start Continuous", "action": "start", "payload": {"mode": "continuous"}},
+                ],
+                "dismissable": False,
+                "source": "strategy",
+            })
+    except Exception:
+        pass
+
+    # Filter out dismissed actions
+    actions = [a for a in actions if a["id"] not in _DISMISSED_ACTIONS]
+
+    # Sort by priority
+    actions.sort(key=lambda a: a.get("priority", 10))
+
+    return actions[:8]
+
+
 def create_app(
     notebook_path: str = "research/lab_notebook.db",
     static_folder: Optional[str] = None,
@@ -2848,6 +3438,26 @@ def create_app(
     app = Flask(__name__, static_folder=static_folder, static_url_path="")
     CORS(app)
 
+    def _dashboard_index_path() -> Optional[Path]:
+        if not app.static_folder:
+            return None
+        candidate = Path(app.static_folder) / "index.html"
+        return candidate if candidate.is_file() else None
+
+    def _dashboard_missing_response():
+        expected = str((Path(__file__).parent.parent / "dashboard" / "build" / "index.html"))
+        body = (
+            "<html><body><h2>Dashboard frontend build is missing.</h2>"
+            f"<p>Expected index file at: {expected}</p>"
+            "<p>Build dashboard assets (dashboard/build) and retry.</p>"
+            "</body></html>"
+        )
+        return body, 503, {"Content-Type": "text/html; charset=utf-8"}
+
+    def _is_asset_path(path: str) -> bool:
+        name = Path(path or "").name
+        return "." in name
+
     # Auto-load persisted LLM config
     _load_persisted_llm_config(notebook_path)
 
@@ -2858,7 +3468,12 @@ def create_app(
         # Only return JSON for API routes; let static files 404 naturally
         if request.path.startswith("/api/"):
             return jsonify({"error": "Not found"}), 404
-        return send_from_directory(app.static_folder, "index.html")
+        index_path = _dashboard_index_path()
+        if index_path and not _is_asset_path(request.path):
+            return send_from_directory(app.static_folder, "index.html")
+        if _is_asset_path(request.path):
+            return "Not found", 404
+        return _dashboard_missing_response()
 
     @app.errorhandler(500)
     def internal_error(e):
@@ -2881,11 +3496,28 @@ def create_app(
 
     @app.route("/")
     def index():
+        if not _dashboard_index_path():
+            return _dashboard_missing_response()
         return send_from_directory(app.static_folder, "index.html")
+
+    @app.route("/favicon.ico")
+    def favicon():
+        if app.static_folder:
+            icon = Path(app.static_folder) / "favicon.ico"
+            if icon.is_file():
+                return send_from_directory(app.static_folder, "favicon.ico")
+        return "", 204
 
     @app.route("/<path:path>")
     def static_files(path):
-        return send_from_directory(app.static_folder, path)
+        if app.static_folder:
+            static_path = Path(app.static_folder) / path
+            if static_path.is_file():
+                return send_from_directory(app.static_folder, path)
+        index_path = _dashboard_index_path()
+        if index_path and not _is_asset_path(path):
+            return send_from_directory(app.static_folder, "index.html")
+        return "Not found", 404
 
     # ── Read-only API routes ──
 
@@ -2938,11 +3570,16 @@ def create_app(
                 return jsonify({"error": "Not found"}), 404
             entries = nb.get_entries(experiment_id=experiment_id)
             programs = nb.get_program_results(experiment_id)
-            return jsonify({
+            prereg = nb.get_preregistration_for_experiment(experiment_id)
+            deviations = nb.get_preregistration_deviations(experiment_id)
+            payload = {
                 "experiment": exp,
                 "entries": entries,
                 "programs": programs,
-            })
+                "preregistration": prereg,
+                "preregistration_deviations": deviations,
+            }
+            return jsonify(_json_safe(payload))
         except Exception as e:
             logger.error(f"Error in /api/experiments/{experiment_id}: {e}")
             return jsonify({"error": str(e)}), 500
@@ -2955,7 +3592,7 @@ def create_app(
         nb = LabNotebook(notebook_path)
         try:
             programs = nb.get_program_results(experiment_id)
-            return jsonify(programs)
+            return jsonify(_json_safe(programs))
         except Exception as e:
             logger.error(f"Error in /api/experiments/{experiment_id}/programs: {e}")
             return jsonify({"error": str(e)}), 500
@@ -2988,20 +3625,106 @@ def create_app(
             except Exception as e:
                 logger.debug(f"LLM fingerprint explanation failed for {result_id}: {e}")
 
-            try:
-                from .analytics import ExperimentAnalytics
-                analytics = ExperimentAnalytics(nb)
-                qkv_usage = analytics.qkv_usage_enum(program)
-                program["qkv_usage"] = qkv_usage
-                program["uses_qkv"] = qkv_usage != "qkv_free"
-                program["compression_metrics"] = analytics.canonical_compression_metrics(program)
-                program["reproducibility_packet"] = analytics.reproducibility_packet_status(program)
-            except Exception as e:
-                logger.debug("QKV usage classification failed for %s: %s", result_id, e)
+            program = _enrich_program_detail(nb, program)
 
-            return jsonify(program)
+            try:
+                program["lineage_chain"] = _program_lineage_chain(nb, result_id)
+            except Exception:
+                program["lineage_chain"] = []
+
+            return jsonify(_json_safe(program))
         except Exception as e:
             logger.error(f"Error in /api/programs/{result_id}: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/programs/<result_id>/lineage")
+    def api_program_lineage(result_id: str):
+        """Program lineage chain for refinement traceability."""
+        nb = LabNotebook(notebook_path)
+        try:
+            program = nb.get_program_detail(result_id)
+            if program is None:
+                return jsonify({"error": "Not found"}), 404
+            chain = _program_lineage_chain(nb, result_id)
+            return jsonify(_json_safe({
+                "result_id": result_id,
+                "lineage_chain": chain,
+                "depth": len(chain),
+            }))
+        except Exception as e:
+            logger.error(f"Error in /api/programs/{result_id}/lineage: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/programs/<result_id>/refine-analysis")
+    def api_program_refine_analysis(result_id):
+        """Data-driven refinement analysis for a program."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics, RefinementAnalyzer
+
+            program = nb.get_program_detail(result_id)
+            if program is None:
+                return jsonify({"error": "Not found"}), 404
+
+            analytics = ExperimentAnalytics(nb)
+            analyzer = RefinementAnalyzer(analytics)
+            analysis = analyzer.analyze_program_for_refinement(result_id, program)
+            return jsonify(_json_safe(analysis))
+        except Exception as e:
+            logger.error(f"Error in /api/programs/{result_id}/refine-analysis: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/programs/<result_id>/external-benchmarks", methods=["POST"])
+    def api_program_external_benchmarks(result_id):
+        """Attach external benchmark scores to a program result."""
+        nb = LabNotebook(notebook_path)
+        try:
+            payload = request.get_json(silent=True) or {}
+            if not isinstance(payload, (dict, list)):
+                return jsonify({"error": "Payload must be a JSON object or list."}), 400
+            ok = nb.set_external_benchmarks(result_id, payload)
+            if not ok:
+                return jsonify({"error": "Program result not found or payload invalid."}), 404
+            return jsonify({"status": "ok", "result_id": result_id})
+        except Exception as e:
+            logger.error(f"Error in /api/programs/{result_id}/external-benchmarks: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/healer/tasks")
+    def api_healer_tasks():
+        """List recent Code Healer tasks."""
+        nb = LabNotebook(notebook_path)
+        try:
+            limit = request.args.get("limit", 20, type=int)
+            return jsonify(nb.get_recent_healer_tasks(limit=max(1, min(limit, 200))))
+        except Exception as e:
+            logger.error(f"Error in /api/healer/tasks: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/healer/tasks/<task_id>")
+    def api_healer_task_detail(task_id: str):
+        """Get one healer task with state history."""
+        nb = LabNotebook(notebook_path)
+        try:
+            task = nb.get_healer_task(task_id)
+            if task is None:
+                return jsonify({"error": "Not found"}), 404
+            return jsonify({
+                "task": task,
+                "events": nb.get_healer_events(task_id, limit=200),
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/healer/tasks/{task_id}: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -3169,7 +3892,7 @@ def create_app(
             analytics = ExperimentAnalytics(nb)
             programs = nb.get_top_programs(n, sort_by)
             _annotate_qkv_usage(programs, analytics)
-            return jsonify(programs)
+            return jsonify(_json_safe(programs))
         except Exception as e:
             logger.error(f"Error in /api/programs: {e}")
             return jsonify({"error": str(e)}), 500
@@ -3186,6 +3909,39 @@ def create_app(
             return jsonify(_deduplicate_insights(raw))
         except Exception as e:
             logger.error(f"Error in /api/insights: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/insights/boost", methods=["POST"])
+    def api_insights_boost():
+        """Record a request to boost an insight in future experiment selection."""
+        payload = request.get_json(silent=True) or {}
+        insight_id = str(payload.get("insight_id") or "").strip()
+        content = str(payload.get("content") or "").strip()
+        category = str(payload.get("category") or "").strip()
+        confidence = payload.get("confidence")
+        if not insight_id:
+            return jsonify({"error": "insight_id required"}), 400
+        nb = LabNotebook(notebook_path)
+        try:
+            evidence = json.dumps({
+                "insight_id": insight_id,
+                "category": category or None,
+                "confidence": confidence,
+                "content": content[:400] if content else None,
+            }, sort_keys=True)
+            desc = f"Boost requested for insight {insight_id}"
+            if category:
+                desc += f" ({category})"
+            nb.log_learning_event(
+                "insight_boost",
+                desc,
+                evidence=evidence,
+            )
+            return jsonify({"status": "ok", "insight_id": insight_id})
+        except Exception as e:
+            logger.error(f"Error in /api/insights/boost: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -3369,21 +4125,27 @@ def create_app(
             from .analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
 
+            fast_mode = _parse_bool_query(request.args.get("fast"), default=False)
+            include_heavy = _parse_bool_query(
+                request.args.get("include_heavy"),
+                default=not fast_mode,
+            )
+            include_narrative = _parse_bool_query(
+                request.args.get("include_narrative"),
+                default=not fast_mode,
+            )
+
+            top_limit = 20 if not fast_mode else 12
+            expanded_limit = 80 if include_heavy else 0
+            recent_limit = 100 if include_heavy else 30
+
             data = {
                 "summary": nb.get_dashboard_summary(),
-                "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(20, sort_by="loss_ratio"),
-                "top_programs_expanded": nb.get_top_programs(80, sort_by="loss_ratio"),
-                "recent_experiments": nb.get_recent_experiments(100),
+                "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(top_limit, sort_by="loss_ratio"),
+                "top_programs_expanded": nb.get_top_programs(expanded_limit, sort_by="loss_ratio") if include_heavy else [],
+                "recent_experiments": nb.get_recent_experiments(recent_limit),
                 "op_success_rates": analytics.op_success_rates(),
-                "math_family_coverage": analytics.math_family_coverage(),
-                "mathspace_operator_impact": analytics.mathspace_operator_impact(),
-                "routing_mode_comparison": analytics.routing_mode_comparison(),
-                "gating_behavior_diagnostics": analytics.gating_behavior_diagnostics(),
-                "structural_correlations": analytics.structural_correlations(),
                 "failure_patterns": analytics.failure_patterns(),
-                "top_op_combinations": analytics.top_op_combinations(10),
-                "efficiency_frontier": analytics.efficiency_frontier(),
-                "experiment_clusters": analytics.experiment_clusters(),
                 "grammar_weights": {
                     "learned": analytics.compute_grammar_weights(),
                     "default": analytics.get_current_grammar_weights(),
@@ -3391,9 +4153,25 @@ def create_app(
                     "holdout_validation": analytics.holdout_validation(),
                     "learning_diagnostics": analytics.grammar_weight_learning_diagnostics(),
                 },
-                "learning_log": nb.get_learning_log(limit=50),
+                "learning_log": nb.get_learning_log(limit=20 if fast_mode else 50),
                 "insights": nb.get_insights(),
+                "report_mode": {
+                    "fast": fast_mode,
+                    "include_heavy": include_heavy,
+                    "include_narrative": include_narrative,
+                },
             }
+            if include_heavy:
+                data.update({
+                    "math_family_coverage": analytics.math_family_coverage(),
+                    "mathspace_operator_impact": analytics.mathspace_operator_impact(),
+                    "routing_mode_comparison": analytics.routing_mode_comparison(),
+                    "gating_behavior_diagnostics": analytics.gating_behavior_diagnostics(),
+                    "structural_correlations": analytics.structural_correlations(),
+                    "top_op_combinations": analytics.top_op_combinations(10),
+                    "efficiency_frontier": analytics.efficiency_frontier(),
+                    "experiment_clusters": analytics.experiment_clusters(),
+                })
             learning_diagnostics = data["grammar_weights"].get("learning_diagnostics") or {}
             data["architecture_rerun_telemetry"] = {
                 "unique_fingerprint_count": int(learning_diagnostics.get("unique_fingerprints") or 0),
@@ -3460,17 +4238,163 @@ def create_app(
                 by_fingerprint = stability_by_fingerprint.get(program.get("graph_fingerprint"))
                 program["cross_run_stability"] = by_result or by_fingerprint or fallback_stability
 
-            # Generate narrative (optional, non-blocking)
-            try:
-                narrative = aria.generate_report_narrative(data)
-                data["narrative"] = narrative
-            except Exception as e:
-                logger.debug(f"Report narrative generation failed: {e}")
-                data["narrative"] = None
+            # Generate narrative only when explicitly enabled
+            data["narrative"] = None
+            if include_narrative:
+                try:
+                    narrative = aria.generate_report_narrative(data)
+                    data["narrative"] = narrative
+                except Exception as e:
+                    logger.debug(f"Report narrative generation failed: {e}")
+                    data["narrative"] = None
 
             return jsonify(data)
         except Exception as e:
             logger.error(f"Error in /api/report: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/report/query")
+    def api_report_query():
+        """Scoped report payload for date/theme/trend report generation."""
+        nb = LabNotebook(notebook_path)
+        aria = get_aria()
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+
+            start_ts = _parse_report_date(request.args.get("start_date"), end_of_day=False)
+            end_ts = _parse_report_date(request.args.get("end_date"), end_of_day=True)
+            theme = str(request.args.get("theme") or "all").strip().lower()
+            trend = str(request.args.get("trend") or "all").strip().lower()
+            include_narrative = _parse_bool_query(
+                request.args.get("include_narrative"),
+                default=False,
+            )
+            try:
+                limit = int(request.args.get("limit") or 20)
+            except Exception:
+                limit = 20
+            limit = max(5, min(120, limit))
+
+            snapshot_query = {
+                "start_date": request.args.get("start_date"),
+                "end_date": request.args.get("end_date"),
+                "theme": theme,
+                "trend": trend,
+                "limit": limit,
+                "include_narrative": bool(include_narrative),
+            }
+            latest_completed_ts = nb.get_latest_completed_experiment_timestamp()
+            snapshot_key = _build_report_snapshot_key("report_query", snapshot_query)
+
+            if not include_narrative:
+                cached = nb.get_report_snapshot(
+                    snapshot_key=snapshot_key,
+                    scope="report_query",
+                    min_latest_completed_ts=latest_completed_ts,
+                )
+                if isinstance(cached, dict):
+                    cached["snapshot_cache"] = {
+                        "enabled": True,
+                        "hit": True,
+                        "key": snapshot_key,
+                        "latest_completed_ts": latest_completed_ts,
+                    }
+                    return jsonify(cached)
+
+            experiments = nb.get_recent_experiments(500)
+            filtered_experiments = []
+            for exp in experiments:
+                ts = exp.get("timestamp")
+                if isinstance(ts, (int, float)):
+                    if start_ts is not None and ts < start_ts:
+                        continue
+                    if end_ts is not None and ts > end_ts:
+                        continue
+                if not _report_experiment_matches_trend(exp, trend):
+                    continue
+                filtered_experiments.append(exp)
+
+            sort_by = "novelty_score" if trend == "high_novelty" else "loss_ratio"
+            expanded = nb.get_top_programs(max(limit * 3, 120), sort_by=sort_by)
+            filtered_programs: List[Dict[str, Any]] = []
+            for program in expanded:
+                ts = program.get("timestamp")
+                if isinstance(ts, (int, float)):
+                    if start_ts is not None and ts < start_ts:
+                        continue
+                    if end_ts is not None and ts > end_ts:
+                        continue
+                if not _report_program_matches_theme(program, theme):
+                    continue
+                filtered_programs.append(program)
+
+            grouped = []
+            seen = set()
+            for row in filtered_programs:
+                fp = row.get("graph_fingerprint")
+                if fp and fp in seen:
+                    continue
+                if fp:
+                    seen.add(fp)
+                grouped.append(row)
+                if len(grouped) >= limit:
+                    break
+
+            base_summary = nb.get_dashboard_summary()
+            summary = _build_filtered_report_summary(base_summary, filtered_experiments)
+
+            data = {
+                "summary": summary,
+                "top_programs": grouped,
+                "top_programs_expanded": filtered_programs[: max(limit * 2, 40)],
+                "recent_experiments": filtered_experiments[: max(limit * 5, 40)],
+                "op_success_rates": analytics.op_success_rates(),
+                "failure_patterns": analytics.failure_patterns(),
+                "insights": nb.get_insights(),
+                "learning_log": nb.get_learning_log(limit=30),
+                "narrative": None,
+                "query": {
+                    "start_date": request.args.get("start_date"),
+                    "end_date": request.args.get("end_date"),
+                    "theme": theme,
+                    "trend": trend,
+                    "limit": limit,
+                    "matched_experiments": len(filtered_experiments),
+                    "matched_programs": len(filtered_programs),
+                },
+                "snapshot_cache": {
+                    "enabled": True,
+                    "hit": False,
+                    "key": snapshot_key,
+                    "latest_completed_ts": latest_completed_ts,
+                },
+            }
+
+            if include_narrative:
+                try:
+                    data["narrative"] = aria.generate_report_narrative(data)
+                except Exception as e:
+                    logger.debug(f"Scoped report narrative generation failed: {e}")
+                    data["narrative"] = None
+
+            if not include_narrative:
+                try:
+                    nb.save_report_snapshot(
+                        snapshot_key=snapshot_key,
+                        scope="report_query",
+                        query=snapshot_query,
+                        payload=data,
+                        latest_completed_ts=latest_completed_ts,
+                    )
+                except Exception as e:
+                    logger.debug(f"Scoped report snapshot save failed: {e}")
+
+            return jsonify(data)
+        except Exception as e:
+            logger.error(f"Error in /api/report/query: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -3551,6 +4475,74 @@ def create_app(
             return jsonify(analytics.efficiency_frontier())
         except Exception as e:
             logger.error(f"Error in efficiency-frontier: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/regression-vs-baseline")
+    def api_regression_vs_baseline():
+        """Accuracy/speed tradeoff view based on baseline ratio vs throughput."""
+        limit = request.args.get("limit", 200, type=int)
+        nb = LabNotebook(notebook_path)
+        try:
+            rows = nb.conn.execute(
+                """
+                SELECT
+                    result_id,
+                    experiment_id,
+                    timestamp,
+                    loss_ratio,
+                    baseline_loss_ratio,
+                    throughput_tok_s,
+                    flops_per_token,
+                    novelty_score
+                FROM program_results
+                WHERE stage1_passed = 1
+                  AND baseline_loss_ratio IS NOT NULL
+                  AND throughput_tok_s IS NOT NULL
+                  AND throughput_tok_s > 0
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (max(20, int(limit)),),
+            ).fetchall()
+
+            points = []
+            for row in rows:
+                item = dict(row)
+                item["baseline_beats_reference"] = float(item.get("baseline_loss_ratio") or 0.0) < 1.0
+                points.append(item)
+
+            # Pareto frontier for (maximize throughput, minimize baseline ratio)
+            frontier = []
+            best_ratio = float("inf")
+            for item in sorted(points, key=lambda p: float(p.get("throughput_tok_s") or 0.0), reverse=True):
+                ratio = float(item.get("baseline_loss_ratio") or float("inf"))
+                if ratio <= best_ratio:
+                    frontier.append(item)
+                    best_ratio = ratio
+
+            summary = {
+                "n_points": len(points),
+                "n_beating_baseline": sum(1 for p in points if p["baseline_beats_reference"]),
+                "best_baseline_ratio": min(
+                    (float(p.get("baseline_loss_ratio") or float("inf")) for p in points),
+                    default=None,
+                ),
+                "best_throughput_tok_s": max(
+                    (float(p.get("throughput_tok_s") or 0.0) for p in points),
+                    default=0.0,
+                ),
+                "frontier_count": len(frontier),
+            }
+
+            return jsonify({
+                "points": points,
+                "pareto_frontier": frontier,
+                "summary": summary,
+            })
+        except Exception as e:
+            logger.error(f"Error in regression-vs-baseline: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -3785,6 +4777,79 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/analytics/insight-interactions")
+    def api_insight_interactions():
+        """Pairwise insight synergy/antagonism learned from selection outcomes."""
+        nb = LabNotebook(notebook_path)
+        try:
+            limit = request.args.get("limit", 80, type=int)
+            min_trials = request.args.get("min_trials", 1, type=int)
+            rows = nb.get_selection_insight_interactions(limit=max(1, min(limit, 500)))
+            rows = [
+                row for row in rows
+                if int(row.get("n_trials") or 0) >= max(1, int(min_trials))
+            ]
+
+            insight_rows = nb.get_insights(limit=500)
+            insight_by_id = {
+                str(row.get("insight_id")): row for row in insight_rows if row.get("insight_id")
+            }
+
+            enriched: List[Dict[str, Any]] = []
+            for row in rows:
+                a_id = str(row.get("insight_a") or "")
+                b_id = str(row.get("insight_b") or "")
+                a = insight_by_id.get(a_id, {})
+                b = insight_by_id.get(b_id, {})
+                mean_reward = _to_safe_float(row.get("mean_reward"), 0.0)
+                n_trials = int(row.get("n_trials") or 0)
+                supported = int(row.get("n_supported") or 0)
+                not_supported = int(row.get("n_not_supported") or 0)
+                support_rate = (supported / n_trials) if n_trials > 0 else 0.0
+                label = "synergistic" if mean_reward >= 0.55 else ("antagonistic" if mean_reward <= 0.45 else "mixed")
+                confidence = "high" if n_trials >= 8 else ("medium" if n_trials >= 4 else "low")
+                enriched.append({
+                    **row,
+                    "support_rate": round(support_rate, 6),
+                    "interaction_label": label,
+                    "confidence_label": confidence,
+                    "insight_a_content": a.get("content"),
+                    "insight_b_content": b.get("content"),
+                    "insight_a_category": a.get("category"),
+                    "insight_b_category": b.get("category"),
+                    "is_singleton": a_id == b_id,
+                })
+
+            synergistic = [
+                row for row in enriched
+                if not row.get("is_singleton") and row.get("interaction_label") == "synergistic"
+            ][:10]
+            antagonistic = [
+                row for row in enriched
+                if not row.get("is_singleton") and row.get("interaction_label") == "antagonistic"
+            ][:10]
+            singleton = [
+                row for row in enriched
+                if row.get("is_singleton")
+            ][:10]
+            return jsonify({
+                "available": len(enriched) > 0,
+                "total_interactions": len(enriched),
+                "synergistic_pairs": synergistic,
+                "antagonistic_pairs": antagonistic,
+                "singleton_insights": singleton,
+                "interactions": enriched,
+                "explanation": (
+                    "Interaction score is learned from downstream outcomes of selection decisions "
+                    "(supported/not_supported with reward aggregation)."
+                ),
+            })
+        except Exception as e:
+            logger.error(f"Error in insight-interactions: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/decision-packet/<result_id>")
     def api_decision_packet(result_id):
         """One-click evidence bundle for promotion decisions."""
@@ -3797,16 +4862,12 @@ def create_app(
             fingerprint = program.get("graph_fingerprint", "")
             experiment_id = program.get("experiment_id")
 
-            # Leaderboard entry
+            # Leaderboard entry (targeted)
             leaderboard_entry = None
             try:
-                rows = nb.get_leaderboard(limit=200)
-                for entry in rows:
-                    if entry.get("result_id") == result_id:
-                        leaderboard_entry = entry
-                        break
+                leaderboard_entry = nb.get_leaderboard_entry(result_id)
             except Exception:
-                pass
+                leaderboard_entry = None
 
             # Experiment data + failure analysis
             experiment = None
@@ -4088,6 +5149,126 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/discoveries")
+    def api_discoveries():
+        """Unified discoveries endpoint merging leaderboard + raw candidates.
+
+        Query params:
+          tier: filter by tier (screening/investigation/validation/breakthrough)
+          limit: max results (default 100)
+          sort: sort key (default composite_score)
+          view: 'all' for raw candidates, 'ranked' for leaderboard (default ranked)
+        """
+        from .naming import annotate_display_names
+
+        tier = request.args.get("tier")
+        limit = request.args.get("limit", 100, type=int)
+        sort_by = request.args.get("sort", "composite_score")
+        view = request.args.get("view", "ranked")
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+
+            if view == "all":
+                # Raw S1 survivors from program_results
+                programs = nb.get_top_programs(limit, sort_by="loss_ratio")
+                _annotate_qkv_usage(programs, analytics)
+                # Add family classification + display names
+                for p in programs:
+                    p["architecture_family"] = nb._classify_architecture_family(
+                        graph_json=p.get("graph_json"),
+                        routing_mode=p.get("routing_mode"),
+                    )
+                    p["tier"] = _infer_tier_for_program(nb, p)
+                annotate_display_names(programs)
+                # Strip large fields from response
+                for p in programs:
+                    p.pop("graph_json", None)
+                    p.pop("_graph_json", None)
+                    p.pop("loss_curve", None)
+
+                # Compute tier counts from all S1 survivors
+                tier_counts = _count_discovery_tiers(nb)
+
+                return jsonify({
+                    "entries": _json_safe(programs),
+                    "total": len(programs),
+                    "tier_counts": tier_counts,
+                    "view": "all",
+                })
+
+            # Default: ranked leaderboard view
+            entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
+            stability = _compute_cross_run_stability(
+                nb, nb.get_top_programs(20, sort_by="loss_ratio")
+            )
+            stability_by_result = {
+                c.get("result_id"): c
+                for c in stability.get("candidates", [])
+                if c.get("result_id")
+            }
+            for entry in entries:
+                entry["cross_run_stability"] = stability_by_result.get(
+                    entry.get("result_id"),
+                    {"trend": "unknown", "seen_runs": 0,
+                     "latest_rank": None, "previous_rank": None, "rank_delta": None},
+                )
+            _annotate_qkv_usage(entries, analytics)
+            annotate_display_names(entries)
+
+            # Summary counts
+            tier_counts = _count_discovery_tiers(nb)
+
+            return jsonify({
+                "entries": _json_safe(entries),
+                "total": len(entries),
+                "tier_counts": tier_counts,
+                "cross_run_stability_summary": stability.get("summary", {}),
+                "cross_run_stability_window": stability.get("window_size", 0),
+                "view": "ranked",
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/discoveries: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/fingerprint/resolve")
+    def api_fingerprint_resolve():
+        """Resolve a result_id or fingerprint prefix to a concrete program result."""
+        value = str(request.args.get("value") or "").strip()
+        if not value:
+            return jsonify({"error": "value query param required"}), 400
+        nb = LabNotebook(notebook_path)
+        try:
+            direct = nb.conn.execute(
+                "SELECT result_id, graph_fingerprint FROM program_results WHERE result_id = ?",
+                (value,),
+            ).fetchone()
+            if direct:
+                return jsonify({
+                    "result_id": direct["result_id"],
+                    "graph_fingerprint": direct.get("graph_fingerprint"),
+                    "resolved_from": "result_id",
+                    "candidates": [],
+                })
+            resolved = _resolve_scale_up_result_ids(nb, [], [value])
+            if resolved.get("resolved_fingerprints"):
+                chosen = resolved["resolved_fingerprints"][0]
+                return jsonify({
+                    "result_id": chosen.get("selected_result_id"),
+                    "graph_fingerprint": chosen.get("selected_graph_fingerprint"),
+                    "resolved_from": "graph_fingerprint",
+                    "candidates": chosen.get("candidates", []),
+                })
+            return jsonify({"error": "No matching fingerprint or result_id found."}), 404
+        except Exception as e:
+            logger.error(f"Error in /api/fingerprint/resolve: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     # ── Control endpoints ──
 
     @app.route("/api/experiments/start", methods=["POST"])
@@ -4100,9 +5281,17 @@ def create_app(
         body = request.get_json(silent=True) or {}
         auto_harden = bool(body.pop("auto_harden", True))
         hypothesis = body.pop("hypothesis", None)
+        preregistration = body.pop("preregistration", None)
+        exploratory = bool(body.pop("exploratory", False))
+        refine_analysis_json = body.pop("refine_analysis_json", "")
         mode = _normalize_start_mode(body.pop("mode", "single"))
 
         config = RunConfig.from_dict(body) if body else RunConfig()
+        if refine_analysis_json:
+            config.refine_analysis_json = (
+                refine_analysis_json if isinstance(refine_analysis_json, str)
+                else json.dumps(refine_analysis_json)
+            )
         compact_changes: Dict[str, Any] = {}
         sparse_morph_changes: Dict[str, Any] = {}
         if mode == "compact_synthesis":
@@ -4127,9 +5316,19 @@ def create_app(
                 config.continuous = True
                 exp_id = runner.start_continuous(config)
             elif mode == "evolve":
-                exp_id = runner.start_evolution(config, hypothesis=hypothesis)
+                exp_id = runner.start_evolution(
+                    config,
+                    hypothesis=hypothesis,
+                    preregistration=preregistration,
+                    exploratory=exploratory,
+                )
             elif mode == "novelty":
-                exp_id = runner.start_novelty_search(config, hypothesis=hypothesis)
+                exp_id = runner.start_novelty_search(
+                    config,
+                    hypothesis=hypothesis,
+                    preregistration=preregistration,
+                    exploratory=exploratory,
+                )
             elif mode == "investigation":
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
@@ -4144,7 +5343,13 @@ def create_app(
                         "error": "Ineligible result_ids for investigation mode",
                         "eligibility": eligibility,
                     }), 409
-                exp_id = runner.start_investigation(result_ids, config, hypothesis=hypothesis)
+                exp_id = runner.start_investigation(
+                    result_ids,
+                    config,
+                    hypothesis=hypothesis,
+                    preregistration=preregistration,
+                    exploratory=exploratory,
+                )
             elif mode == "validation":
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
@@ -4159,7 +5364,13 @@ def create_app(
                         "error": "Ineligible result_ids for validation mode",
                         "eligibility": eligibility,
                     }), 409
-                exp_id = runner.start_validation(result_ids, config, hypothesis=hypothesis)
+                exp_id = runner.start_validation(
+                    result_ids,
+                    config,
+                    hypothesis=hypothesis,
+                    preregistration=preregistration,
+                    exploratory=exploratory,
+                )
             elif mode == "scale_up":
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
                 graph_fingerprints = _normalize_result_ids(
@@ -4182,7 +5393,13 @@ def create_app(
                     }), 400
                 config.scale_up = True
                 config.scale_up_result_ids = ",".join(result_ids)
-                exp_id = runner.start_scale_up(result_ids, config, hypothesis=hypothesis)
+                exp_id = runner.start_scale_up(
+                    result_ids,
+                    config,
+                    hypothesis=hypothesis,
+                    preregistration=preregistration,
+                    exploratory=exploratory,
+                )
             elif mode == "refine_fingerprint":
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
                 graph_fingerprints = _normalize_result_ids(
@@ -4211,7 +5428,12 @@ def create_app(
                     hypothesis=hypothesis,
                 )
             else:
-                exp_id = runner.start_experiment(config, hypothesis=hypothesis)
+                exp_id = runner.start_experiment(
+                    config,
+                    hypothesis=hypothesis,
+                    preregistration=preregistration,
+                    exploratory=exploratory,
+                )
 
             _record_run_trigger(
                 experiment_id=exp_id,
@@ -4222,6 +5444,12 @@ def create_app(
                     "auto_harden": auto_harden,
                 },
             )
+            critique = (
+                runner.progress.hypothesis_critique
+                if isinstance(runner.progress.hypothesis_critique, dict)
+                else None
+            )
+            missing_fields = _extract_hypothesis_missing_fields(critique)
 
             return jsonify({
                 "experiment_id": exp_id,
@@ -4233,12 +5461,9 @@ def create_app(
                 "scale_up_resolution": scale_up_resolution,
                 "refine_resolution": refine_resolution,
                 "aria_message": runner.progress.aria_message,
-                "hypothesis_critique": runner.progress.hypothesis_critique,
-                "hypothesis_review_gate": (
-                    runner.progress.hypothesis_critique.get("gate")
-                    if isinstance(runner.progress.hypothesis_critique, dict)
-                    else None
-                ),
+                "hypothesis_critique": critique,
+                "hypothesis_review_gate": critique.get("gate") if critique else None,
+                "hypothesis_missing_fields": missing_fields,
                 "eligibility": eligibility,
             })
         except ValueError as e:
@@ -4395,7 +5620,10 @@ def create_app(
         def event_stream():
             while True:
                 for event in runner.get_events(timeout=sse_timeout):
-                    data = json.dumps(_json_safe(event.get("data", {})))
+                    data = json.dumps(
+                        _json_safe(event.get("data", {})),
+                        allow_nan=False,
+                    )
                     yield f"event: {event['type']}\ndata: {data}\n\n"
                 # After timeout, check if client is still connected
                 yield f"event: keepalive\ndata: {{}}\n\n"
@@ -4409,6 +5637,74 @@ def create_app(
                 "Connection": "keep-alive",
             },
         )
+
+    @app.route("/api/diagnostics/fingerprint")
+    def api_fingerprint_diagnostics():
+        """Expose lightweight runtime diagnostics for fingerprint analysis."""
+        reset = str(request.args.get("reset", "0")).strip().lower() in {"1", "true", "yes"}
+        try:
+            from research.eval.fingerprint import get_sensitivity_skip_stats
+
+            stats = get_sensitivity_skip_stats(reset=reset)
+            return jsonify({
+                "sensitivity_skips": stats,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/diagnostics/fingerprint: {e}")
+            return jsonify({
+                "sensitivity_skips": {
+                    "total": 0,
+                    "by_reason": {},
+                },
+                "error": str(e),
+            }), 500
+
+    @app.route("/api/diagnostics/report-cache")
+    def api_report_cache_diagnostics():
+        """Expose report snapshot cache usage and retention diagnostics."""
+        nb = LabNotebook(notebook_path)
+        try:
+            cleanup = str(request.args.get("cleanup", "0")).strip().lower() in {"1", "true", "yes"}
+            try:
+                ttl_seconds = int(os.environ.get("ARIA_REPORT_SNAPSHOT_TTL_SECONDS", str(7 * 24 * 3600)))
+            except Exception:
+                ttl_seconds = 7 * 24 * 3600
+            try:
+                max_rows_per_scope = int(os.environ.get("ARIA_REPORT_SNAPSHOT_MAX_ROWS_PER_SCOPE", "400"))
+            except Exception:
+                max_rows_per_scope = 400
+
+            cleanup_stats = None
+            if cleanup:
+                cleanup_stats = nb.cleanup_report_snapshots(
+                    ttl_seconds=max(60, ttl_seconds),
+                    max_rows_per_scope=max(20, max_rows_per_scope),
+                )
+
+            snapshot_stats = nb.get_report_snapshot_stats()
+            return jsonify({
+                "snapshot_cache": snapshot_stats,
+                "retention": {
+                    "ttl_seconds": max(60, int(ttl_seconds or 0)),
+                    "max_rows_per_scope": max(20, int(max_rows_per_scope or 0)),
+                },
+                "cleanup_triggered": bool(cleanup),
+                "cleanup": cleanup_stats,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/diagnostics/report-cache: {e}")
+            return jsonify({
+                "snapshot_cache": {
+                    "total_snapshots": 0,
+                    "n_scopes": 0,
+                    "oldest_age_seconds": None,
+                    "newest_age_seconds": None,
+                    "scopes": [],
+                },
+                "error": str(e),
+            }), 500
+        finally:
+            nb.close()
 
     @app.route("/api/config", methods=["GET"])
     def api_get_config():
@@ -4533,6 +5829,47 @@ def create_app(
         }
         return labels.get(mode, f"Run {mode or 'experiment'}")
 
+    def _sparse_coverage_summary(sparse_coverage_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        summary = sparse_coverage_data or {}
+        sparse_share = summary.get("sparse_share")
+        sparse_survival_rate = summary.get("sparse_survival_rate")
+        target_share = 0.15
+        sparse_share_value = float(sparse_share) if isinstance(sparse_share, (int, float)) else None
+        sparse_survival_value = float(sparse_survival_rate) if isinstance(sparse_survival_rate, (int, float)) else None
+        below_target = bool(sparse_share_value is not None and sparse_share_value < target_share)
+        return {
+            "sparse_share": sparse_share_value,
+            "sparse_survival_rate": sparse_survival_value,
+            "target_share": target_share,
+            "below_target": below_target,
+        }
+
+    def _augment_sparse_action_config(
+        suggested_config: Optional[Dict[str, Any]],
+        normalized_mode: Optional[str],
+        sparse_coverage_data: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        config = dict(suggested_config or {})
+        sparse_summary = _sparse_coverage_summary(sparse_coverage_data)
+        if not sparse_summary.get("below_target"):
+            return config
+
+        mode = str(normalized_mode or config.get("mode") or "").strip().lower()
+        if mode not in {"novelty", "evolve", "continuous", "single", "synthesis"}:
+            return config
+
+        config.setdefault("model_source", "mixed")
+        config.setdefault("morph_focus_sparse", True)
+        config.setdefault("morph_ratio", 0.8)
+        config.setdefault("use_synthesized_training", True)
+        config.setdefault("morph_sparse_weight_storage", "semi_structured_2_4")
+        config.setdefault("math_space_weight", 2.2)
+        config.setdefault("n_programs", 120)
+        if mode in {"novelty", "evolve"}:
+            config.setdefault("max_depth", 6)
+            config.setdefault("max_ops", 10)
+        return config
+
     @app.route("/api/strategy/briefing")
     def api_strategy_briefing():
         """Data-driven strategy briefing for the overview page.
@@ -4552,6 +5889,7 @@ def create_app(
             primitive_effectiveness = analytics.compression_primitive_effectiveness() or {}
             sparse_evidence = _compute_sparse_evidence(nb)
             sparse_coverage_data = analytics.sparse_coverage() or {}
+            sparse_coverage_summary = _sparse_coverage_summary(sparse_coverage_data)
 
             # Optional: highlight a just-completed experiment
             just_completed_id = request.args.get("just_completed")
@@ -4650,6 +5988,7 @@ def create_app(
                 "compression": compression_summary,
                 "compression_primitives": primitive_effectiveness.get("primitives", []),
                 "sparse": sparse_evidence,
+                "sparse_coverage": sparse_coverage_summary,
             }
 
             # --- Try LLM-powered briefing first ---
@@ -4740,13 +6079,31 @@ def create_app(
                             (_tier,),
                         ).fetchall()
                         _rids = [r["result_id"] for r in _tier_rows if r["result_id"]]
-                        if _rids:
-                            suggested_config["result_ids"] = _rids
+                        suggested_config["result_ids"] = _rids
+
+                    if normalized_mode in ("investigation", "validation"):
+                        _requested = _normalize_result_ids(suggested_config.get("result_ids", []))
+                        _eligibility = _build_start_mode_eligibility(nb, normalized_mode, _requested)
+                        _eligible = _eligibility.get("eligible_result_ids") or []
+                        if _eligible:
+                            suggested_config["result_ids"] = _eligible
                         else:
-                            # No actionable candidates — downgrade to continuous
+                            # No actionable candidates under start-mode guardrails — downgrade to continuous
                             normalized_mode = "continuous"
-                            suggested_config["mode"] = "continuous"
                             action_key = "continuous"
+                            _hypothesis = suggested_config.get("hypothesis")
+                            suggested_config = {
+                                "mode": "continuous",
+                                "model_source": "mixed",
+                            }
+                            if _hypothesis:
+                                suggested_config["hypothesis"] = _hypothesis
+
+                    suggested_config = _augment_sparse_action_config(
+                        suggested_config,
+                        normalized_mode,
+                        sparse_coverage_data,
+                    )
                     return jsonify({
                         "briefing": ai_briefing["briefing_text"],
                         "action": action_key or normalized_mode or "continuous",
@@ -4924,6 +6281,17 @@ def create_app(
                     "Compression techniques are underexplored in this campaign. "
                     "Run a compactness-focused synthesis batch to improve model efficiency coverage."
                 )
+            elif sparse_coverage_summary.get("below_target") and total_exp >= 3:
+                sparse_share = float(sparse_coverage_summary.get("sparse_share") or 0.0)
+                sparse_survival = float(sparse_coverage_summary.get("sparse_survival_rate") or 0.0)
+                target_share = float(sparse_coverage_summary.get("target_share") or 0.15)
+                action = "novelty_search"
+                action_label = "Run Sparse-Focused Novelty Search"
+                action_rationale = (
+                    f"Sparse coverage is below target ({sparse_share * 100:.1f}% < {target_share * 100:.0f}%) "
+                    f"with {sparse_survival * 100:.1f}% sparse survival. "
+                    "Run novelty search with sparse-focused morphological sampling to explore high-upside sparse candidates."
+                )
             elif validation > 0 and screening == 0 and investigation == 0:
                 action = "monitor_validation"
                 action_label = "Review Validation Progress"
@@ -4942,13 +6310,21 @@ def create_app(
                     "WHERE tier = 'screening' AND screening_passed = 1 "
                     "ORDER BY screening_loss_ratio ASC LIMIT 20"
                 ).fetchall()
-                screening_result_ids = [r["result_id"] for r in screening_rows if r["result_id"]]
+                screening_candidate_ids = [r["result_id"] for r in screening_rows if r["result_id"]]
+                screening_result_ids = []
+                if screening_candidate_ids:
+                    screening_eligibility = _build_start_mode_eligibility(
+                        nb,
+                        "investigation",
+                        screening_candidate_ids,
+                    )
+                    screening_result_ids = screening_eligibility.get("eligible_result_ids") or []
                 if not screening_result_ids:
                     # No actionable screening survivors — fall through to default
                     action = "continuous"
                     action_label = "Continue Research"
                     action_rationale = (
-                        "Screening survivors exist but lack actionable result IDs. "
+                        "Screening survivors exist but are not currently eligible for investigation reruns. "
                         "Continue generating new architectures."
                     )
                 else:
@@ -5021,6 +6397,19 @@ def create_app(
                     "residual_prob": 0.85,
                     "n_programs": 80,
                 }
+            elif action == "novelty_search" and sparse_coverage_summary.get("below_target"):
+                det_config = {
+                    "mode": "novelty",
+                    "model_source": "mixed",
+                    "morph_ratio": 0.8,
+                    "morph_focus_sparse": True,
+                    "morph_sparse_weight_storage": "semi_structured_2_4",
+                    "use_synthesized_training": True,
+                    "math_space_weight": 2.2,
+                    "max_depth": 6,
+                    "max_ops": 10,
+                    "n_programs": 120,
+                }
             elif action == "investigate" and screening_result_ids:
                 det_config = {
                     "mode": "investigation",
@@ -5033,6 +6422,12 @@ def create_app(
                     if det_mode
                     else None
                 )
+
+            det_config = _augment_sparse_action_config(
+                det_config,
+                det_config.get("mode") if isinstance(det_config, dict) else det_mode,
+                sparse_coverage_data,
+            ) if isinstance(det_config, dict) else det_config
 
             return jsonify({
                 "briefing": briefing,
@@ -5224,6 +6619,14 @@ def create_app(
                 past_hypotheses=past_hypotheses,
             )
             suggestion = aria.suggest_experiment(context)
+            if suggestion:
+                suggestion["evidence_pack"] = build_evidence_pack(
+                    nb,
+                    analytics=None,
+                    recommendation=suggestion,
+                    decision_type="api_recommendation",
+                    recent_experiments=history,
+                )
             return jsonify(suggestion)
         except Exception as e:
             logger.error(f"Error in /api/aria/recommendation: {e}")
@@ -5292,6 +6695,7 @@ def create_app(
             },
             "local_ollama_helper": ollama_helper,
             "chat_actions": ["adjust_config", "adjust_grammar", "start_experiment", "edit_file", "spawn_agent"],
+            "chat_guardrails": _chat_guardrail_snapshot(window=200),
             "local_context_tools": ["runner.progress", "notebook.get_recent_experiments", "workspace.search"],
             "llm": {
                 "available": llm_available,
@@ -5307,6 +6711,15 @@ def create_app(
                 "phase": cycle_status.get("phase"),
             },
         })
+
+    @app.route("/api/aria/chat/guardrails")
+    def api_aria_chat_guardrails():
+        """Expose chat action/summarization guardrail metrics."""
+        try:
+            window = int(request.args.get("window", 200))
+        except Exception:
+            window = 200
+        return jsonify(_chat_guardrail_snapshot(window=window))
 
     @app.route("/api/aria/agent/spawn", methods=["POST"])
     def api_aria_agent_spawn():
@@ -5333,7 +6746,21 @@ def create_app(
         task = _code_agent_task_snapshot(task_id)
         if not task:
             return jsonify({"error": "task not found"}), 404
+        detail = str(request.args.get("detail") or "").strip().lower()
+        if detail != "full":
+            task = {
+                **task,
+                **_summarize_agent_task(task),
+            }
         return jsonify({"ok": True, "task": task})
+
+    @app.route("/api/aria/agent/status/<task_id>/summary")
+    def api_aria_agent_status_summary(task_id: str):
+        """Get concise milestone summary for a background Aria codebase agent task."""
+        task = _code_agent_task_snapshot(task_id)
+        if not task:
+            return jsonify({"error": "task not found"}), 404
+        return jsonify({"ok": True, "task": _summarize_agent_task(task)})
 
     @app.route("/api/aria/diagnose", methods=["POST"])
     def api_aria_diagnose():
@@ -5395,25 +6822,6 @@ def create_app(
         runner = _get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
-
-        def _parse_chat_actions(text: str):
-            """Extract ```action blocks from LLM response.
-
-            Returns (clean_text, list_of_action_dicts).
-            """
-            import re as _re
-            pattern = _re.compile(r"```action\s*\n(.*?)\n```", _re.DOTALL)
-            actions = []
-            valid_types = {"adjust_config", "adjust_grammar", "start_experiment", "edit_file", "spawn_agent"}
-            for m in pattern.finditer(text):
-                try:
-                    obj = json.loads(m.group(1))
-                    if isinstance(obj, dict) and obj.get("type") in valid_types:
-                        actions.append(obj)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            clean = pattern.sub("", text).strip()
-            return clean, actions
 
         try:
             body = request.get_json(silent=True) or {}
@@ -5511,6 +6919,11 @@ def create_app(
                         )
                     except Exception:
                         pass
+                _record_chat_guardrail_event(
+                    actionable=bool(actions_taken or code_agent_task),
+                    advice_only=not bool(actions_taken or code_agent_task),
+                    summary_text=concise_reply,
+                )
                 return jsonify({
                     "reply": concise_reply,
                     "ai_powered": False,
@@ -5518,6 +6931,7 @@ def create_app(
                     "fallback_reason": None,
                     "brief_mode": True,
                     "execution_first_mode": True,
+                    "advice_only": not bool(actions_taken or code_agent_task),
                     "agent_task": code_agent_task,
                     "actions_taken": actions_taken,
                     "local_tools_used": [],
@@ -5625,21 +7039,14 @@ def create_app(
                 try:
                     from .llm.prompts import SYSTEM_PROMPT, CHAT_PROMPT
                     prompt_question = question
-                    if brief_response:
-                        prompt_question = (
-                            f"{question}\n\n"
-                            "MANDATORY: max 2-3 sentences of text. "
-                            "You MUST include at least one ```action block. "
-                            "If the user describes a problem, spawn_agent to fix it. "
-                            "If config/grammar needs tuning, emit adjust_config or adjust_grammar. "
-                            "TEXT WITHOUT ACTIONS IS A FAILURE."
-                        )
-                    if not summary_requested:
-                        prompt_question = (
-                            f"{prompt_question}\n\n"
-                            "Do NOT provide a summary. Emit action blocks. "
-                            "Prefer spawn_agent for complex issues (uses local Ollama, saves money)."
-                        )
+                    prompt_question = (
+                        f"{prompt_question}\n\n"
+                        "STRICT CONTRACT:\n"
+                        "1) Return only typed actions using ```action JSON blocks.\n"
+                        "2) Allowed type values: adjust_config, adjust_grammar, start_experiment, edit_file, spawn_agent.\n"
+                        "3) Do not output execution plans, pseudo-code, or non-action code blocks.\n"
+                        "4) If no action is appropriate, return one short plain sentence only."
+                    )
                     # Keep only last 5 history lines, each capped at 100 chars
                     trimmed_history = [
                         (line[:100] + "..." if len(line) > 100 else line)
@@ -5655,39 +7062,49 @@ def create_app(
                     aria._track_cost(resp)
                     text = (resp.text or "").strip()
                     if text:
-                        reply_text, actions = _parse_chat_actions(text)
-                        # Auto-spawn removed: only spawn agents when explicitly
-                        # requested via action blocks or fix-intent detection.
-                        if concise_default_mode and not explicit_detailed and not summary_requested:
-                            reply_text = _format_simple_answer_action_plan(reply_text)
-                        if code_agent_task:
-                            task_id = code_agent_task.get("task_id")
-                            reply_text = f"{reply_text}\n\nAgent `{task_id}` working on it."
+                        parsed = _parse_action_contract_response(text)
+                        actions = parsed.get("actions") or []
+                        advice_only = bool(parsed.get("advice_only"))
                         actions_taken = []
                         for action in actions:
                             try:
                                 if str(action.get("type") or "") == "spawn_agent":
-                                    goal = str(action.get("goal") or "").strip()
+                                    goal = str(action.get("goal") or "").strip() or question
                                     if goal:
-                                        # Enrich goal with file index hits
+                                        # Route technical planning details to local planner context
+                                        context_lines = [f"Original request: {question}"]
+                                        local_summary = str(local_agent_result.get("summary") or "").strip()
+                                        if local_summary:
+                                            context_lines.append(f"Local evidence summary: {local_summary}")
+                                        hits = local_agent_result.get("code_hits") or []
+                                        if hits:
+                                            top_hits = ", ".join(
+                                                f"{str(h.get('path') or '?')}:{int(h.get('line') or 0)}"
+                                                for h in hits[:5]
+                                            )
+                                            context_lines.append(f"Relevant code hits: {top_hits}")
                                         try:
                                             ws = _chat_workspace_root(notebook_path)
                                             idx_hits = _query_file_index(goal, ws, max_results=6)
                                             if idx_hits:
                                                 files_hint = ", ".join(h["rel_path"] for h in idx_hits[:6])
-                                                goal = f"{goal}\n[Relevant files: {files_hint}]"
+                                                context_lines.append(f"Indexed files: {files_hint}")
                                         except Exception:
                                             pass
+                                        history_tail = " | ".join(history_lines[-3:]) if history_lines else ""
+                                        if history_tail:
+                                            context_lines.append(f"Chat context: {history_tail}")
+                                        goal = f"{goal}\n\nTechnical plan context:\n- " + "\n- ".join(context_lines)
                                         agent_task = _spawn_code_agent_task(
                                             goal=goal,
                                             notebook_path=notebook_path,
-                                            allow_write=True,
+                                            allow_write=allow_code_writes,
                                             session_id=session_id,
                                         )
                                         result = {
                                             "status": "spawned",
                                             "task_id": agent_task.get("task_id"),
-                                            "goal": goal,
+                                            "goal": _truncate_summary(str(action.get("goal") or question), 120),
                                         }
                                         if not code_agent_task:
                                             code_agent_task = agent_task
@@ -5720,6 +7137,43 @@ def create_app(
                                     "status": "error",
                                     "detail": {"error": str(action_err)},
                                 })
+                        actionable = any(
+                            str(a.get("status") or "").lower() in {"applied", "started", "spawned"}
+                            for a in actions_taken
+                        )
+                        if actionable:
+                            action_types = ", ".join(
+                                sorted({str(a.get("type") or "?") for a in actions_taken})
+                            )
+                            status_bits = []
+                            for item in actions_taken:
+                                t = str(item.get("type") or "?")
+                                s = str(item.get("status") or "unknown")
+                                status_bits.append(f"{t}:{s}")
+                            reply_text = _truncate_summary(
+                                f"Action started: {action_types}. "
+                                f"Status: {'; '.join(status_bits[:4])}. "
+                                f"Next checkpoint: monitor task progress and report completion.",
+                                240,
+                            )
+                        else:
+                            summary = str(parsed.get("summary") or "").strip()
+                            reply_text = _truncate_summary(
+                                summary or "advice_only: no valid executable actions were produced.",
+                                220,
+                            )
+                            advice_only = True
+                        if code_agent_task and code_agent_task.get("task_id"):
+                            snap = _summarize_agent_task(code_agent_task)
+                            reply_text = _truncate_summary(
+                                f"{reply_text} Task {snap.get('task_id')} queued ({snap.get('milestone_summary')}).",
+                                260,
+                            )
+                        _record_chat_guardrail_event(
+                            actionable=actionable,
+                            advice_only=advice_only,
+                            summary_text=reply_text,
+                        )
                         if session_id:
                             try:
                                 nb.save_chat_message(
@@ -5736,6 +7190,7 @@ def create_app(
                             "brief_mode": brief_response,
                             "agent_task": code_agent_task,
                             "actions_taken": actions_taken,
+                            "advice_only": advice_only,
                             "local_tools_used": local_agent_result.get("tools_used", []),
                             "local_code_hits": [
                                 {
@@ -5772,12 +7227,18 @@ def create_app(
                     )
                 except Exception:
                     pass
+            _record_chat_guardrail_event(
+                actionable=False,
+                advice_only=True,
+                summary_text=fallback_reply,
+            )
             return jsonify({
                 "reply": fallback_reply,
                 "ai_powered": False,
                 "used_context": True,
                 "fallback_reason": fallback_reason,
                 "brief_mode": brief_response,
+                "advice_only": True,
                 "agent_task": code_agent_task,
                 "local_tools_used": local_agent_result.get("tools_used", []),
                 "local_code_hits": [
@@ -6313,6 +7774,110 @@ def create_app(
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
+
+    # ── Action Queue endpoints ──
+
+    @app.route("/api/actions")
+    def api_actions():
+        """Aggregated prioritized action list for the dashboard."""
+        nb = LabNotebook(notebook_path)
+        try:
+            actions = _compute_action_queue(nb)
+            return jsonify(actions)
+        except Exception as e:
+            logger.error(f"Error in /api/actions: {e}")
+            return jsonify([]), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/actions/<action_id>/dismiss", methods=["POST"])
+    def api_action_dismiss(action_id):
+        """Dismiss an action card (ephemeral, resets on server restart)."""
+        clean_id = str(action_id or "").strip()[:64]
+        if not clean_id:
+            return jsonify({"error": "Missing action_id"}), 400
+        _DISMISSED_ACTIONS.add(clean_id)
+        return jsonify({"dismissed": clean_id, "total_dismissed": len(_DISMISSED_ACTIONS)})
+
+    @app.route("/api/actions/<action_id>/approve", methods=["POST"])
+    def api_action_approve(action_id):
+        """User approves a pending autonomous action."""
+        try:
+            autonomy, store = _get_autonomy(notebook_path)
+            action = autonomy.approve(action_id)
+            if not action:
+                return jsonify({"error": "Action not found or not pending"}), 404
+            store.update_status(
+                action_id, action.status,
+                executed_at=action.executed_at,
+                undo_snapshot=action.undo_snapshot,
+            )
+            return jsonify(action.to_dict())
+        except Exception as e:
+            logger.error(f"Error approving action {action_id}: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/actions/<action_id>/undo", methods=["POST"])
+    def api_action_undo(action_id):
+        """Undo a recently executed autonomous action (within 5 min window)."""
+        try:
+            autonomy, store = _get_autonomy(notebook_path)
+            action = autonomy.undo(action_id)
+            if not action:
+                return jsonify({"error": "Action not found or undo window expired"}), 404
+            store.update_status(action_id, action.status)
+            return jsonify(action.to_dict())
+        except Exception as e:
+            logger.error(f"Error undoing action {action_id}: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    # ── Aria Autonomy endpoints ─────────────────────────────────────
+
+    @app.route("/api/aria/autonomy")
+    def api_aria_autonomy_get():
+        """Get current autonomy trust level and per-decision-type settings."""
+        try:
+            autonomy, _ = _get_autonomy(notebook_path)
+            return jsonify(autonomy.get_config())
+        except Exception as e:
+            logger.error(f"Error in GET /api/aria/autonomy: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/aria/autonomy", methods=["PUT"])
+    def api_aria_autonomy_put():
+        """Update autonomy trust level or per-decision-type overrides."""
+        try:
+            autonomy, _ = _get_autonomy(notebook_path)
+            body = request.get_json(force=True, silent=True) or {}
+            config = autonomy.update_config(body)
+            return jsonify(config)
+        except Exception as e:
+            logger.error(f"Error in PUT /api/aria/autonomy: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/aria/activity")
+    def api_aria_activity():
+        """Get Aria's recent autonomous decisions and their outcomes."""
+        try:
+            autonomy, store = _get_autonomy(notebook_path)
+            limit = request.args.get("limit", 20, type=int)
+            # Combine in-memory actions with persisted ones
+            memory_actions = autonomy.get_recent_activity(limit)
+            stored_actions = store.get_recent(limit)
+
+            # Merge: prefer in-memory (fresher), fill with stored
+            seen_ids = {a["action_id"] for a in memory_actions}
+            merged = list(memory_actions)
+            for sa in stored_actions:
+                if sa["action_id"] not in seen_ids:
+                    merged.append(sa)
+                    seen_ids.add(sa["action_id"])
+
+            merged.sort(key=lambda a: a.get("created_at", 0), reverse=True)
+            return jsonify(merged[:limit])
+        except Exception as e:
+            logger.error(f"Error in /api/aria/activity: {e}")
+            return jsonify([]), 500
 
     return app
 
