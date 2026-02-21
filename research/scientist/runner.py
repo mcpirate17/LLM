@@ -6722,10 +6722,15 @@ class ExperimentRunner:
             final_loss=final_loss,
             loss_ratio=loss_ratio,
             throughput_tok_s=throughput,
-            training_curve=training_curve,
             **program_metrics,
         )
-        
+
+        if training_curve and rid:
+            try:
+                nb.store_training_curve(rid, training_curve)
+            except Exception:
+                pass
+
         # Update best metrics in experiment summary
         if loss_ratio is not None:
             if results["best_loss_ratio"] is None or loss_ratio < results["best_loss_ratio"]:
