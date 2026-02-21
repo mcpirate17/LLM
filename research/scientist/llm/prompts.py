@@ -18,7 +18,12 @@ Provide 3-5 specific, actionable insights about:
 3. Any surprising or novel findings in the behavioral fingerprints
 4. Concrete suggestions for the next experiment
 
-Be specific — reference actual pass rates, error types, and architectural patterns. Keep each insight to 1-2 sentences."""
+Be specific — reference actual pass rates, error types, and architectural patterns. Keep each insight to 1-2 sentences.
+
+RULES:
+- No Python code or shell commands.
+- No markdown code blocks or fake execution snippets (e.g. no <run_code>).
+- Provide only descriptive scientific analysis and data-backed recommendations."""
 
 HYPOTHESIS_SYSTEM_PROMPT = """You are Dr. Aria Nexus, an AI research scientist. You are formulating a scientific hypothesis based on experimental data. Write in plain English like a scientist writing in a lab notebook. Never include code, commands, or technical implementation details — only the hypothesis and reasoning."""
 
@@ -124,7 +129,9 @@ Your narrative should cover:
 5. Open questions that remain unanswered
 6. Concrete recommended next steps (2-3 specific actions)
 
-Write in first person as Aria. Be honest about what worked and what didn't. Use specific numbers and percentages. Celebrate genuine breakthroughs but don't oversell incremental progress. End with a clear recommendation for the next research direction."""
+Write in first person as Aria. Be honest about what worked and what didn't. Use specific numbers and percentages. Celebrate genuine breakthroughs but don't oversell incremental progress. End with a clear recommendation for the next research direction.
+
+RULES: No Python code, shell commands, or code blocks of any kind. This is a read-only research report."""
 
 MODE_SELECTION_PROMPT = """\
 Based on the research progress so far, decide what type of experiment to run next.
@@ -135,26 +142,60 @@ Available modes:
 - "synthesis": Standard high-throughput screening. Generate many random architectures and test them. Best when: exploring broadly, early in research, or after changing grammar weights.
 - "evolution": Evolutionary search over computation graphs. Breeds and mutates promising architectures. Best when: you have some S1 survivors to build on, want to optimize a known pattern.
 - "novelty": Novelty search that rewards behavioral diversity. Best when: all survivors look similar (high CKA similarity), need to escape local optima, want to explore unusual architectures.
+- "refinement": Local recursive mutation around top Stage-1 survivors (hill-climb + novelty pressure). Best when: you have strong survivors and want iterative local optimization without losing diversity.
 - "investigation": Deep study of specific candidates with multiple training programs. Best when: you have promising screening survivors that need robustness testing.
 - "validation": Publication-grade testing at 10x scale. Best when: investigation survivors showed robustness, ready to confirm a potential breakthrough.
 
 Decision criteria:
 1. If no S1 survivors yet -> synthesis (explore broadly)
 2. If S1 survivors but all similar (novelty < 0.3 avg) -> novelty (diversify)
-3. If good diverse survivors exist -> evolution (optimize)
+3. If good diverse survivors exist -> refinement or evolution (optimize)
 4. If screening survivors have good loss ratios (< 0.6) -> investigation (deepen)
 5. If investigation survivors show robustness (> 0.5) -> validation (confirm)
 6. Periodically return to synthesis to avoid getting stuck
 7. If sparsity coverage is low (< 15% of tested programs use sparse ops) -> consider synthesis with sparse-focused config (model_source="morphological_box", use_synthesized_training=true) to explore sparse architectures and training (RigL, structured sparsity, block-sparse). Sparse architectures offer parameter efficiency — they deserve deliberate exploration, not just random chance.
 
 Return your response in this exact format:
-MODE: [one of: synthesis, evolution, novelty, investigation, validation]
+MODE: [one of: synthesis, evolution, novelty, refinement, investigation, validation]
 REASONING: [2-3 sentences explaining why this mode is best right now]
 CONFIDENCE: [0.0-1.0]
 CONFIG_ADJUSTMENTS:
 ```json
 {{"key": "value"}}
 ```"""
+
+NEXT_EXPERIMENT_PLAN_SYSTEM_PROMPT = """\
+You are Dr. Aria Nexus's planning engine. Return valid JSON only.
+Prioritize reproducibility, diversity, novelty, and budget constraints.
+"""
+
+NEXT_EXPERIMENT_PLAN_PROMPT = """\
+Given the recent experiment summary below, propose the next experiment plan.
+
+Summary JSON:
+{summary_json}
+
+Constraints:
+- n_programs must be <= {max_n_programs}
+- max_time_minutes must be <= {max_time_minutes}
+- Include diversity and novelty guardrails in the plan
+- Avoid overfitting to one metric (balance quality, novelty, and efficiency)
+- Use a deterministic configuration when possible
+
+Return JSON only:
+{{
+  "mode": "synthesis|evolution|novelty|refinement|investigation|validation",
+  "confidence": 0.0,
+  "rationale": "short explanation",
+  "config": {{}},
+  "guardrails": {{
+    "diversity": "how diversity is preserved",
+    "novelty": "how novelty pressure is preserved",
+    "reproducibility": "seed or deterministic policy",
+    "budget": "time/cost cap"
+  }}
+}}
+"""
 
 INVESTIGATION_HYPOTHESIS_PROMPT = """\
 You are planning an investigation phase for promising architecture candidates that survived initial screening.

@@ -1,0 +1,48 @@
+id: dataset_filter
+version: 1.0.0
+name: Filter Dataset
+category: data_transform
+tags:
+- data
+- filter
+status: approved
+description: Filters a dataset using a Python condition (e.g. "len(x[\"text\"]) > 10").
+inputs:
+- name: dataset
+  dtype: dataset
+outputs:
+- name: filtered
+  dtype: dataset
+params:
+  filter_scope:
+    type: enum
+    options:
+    - dataset_row
+    default: dataset_row
+    description: Scope of filtering for dataset items.
+  condition:
+    type: string
+    default: 'True'
+    description: Python expression for filtering
+implementation:
+  python: kernel_fallback.py
+help_md: '### Technical
+
+  Filters a dataset using a Python condition (e.g. "len(x[\"text\"]) > 10").
+
+
+  Inputs: dataset:dataset.
+
+  Outputs: filtered:dataset.
+
+  Params: condition.
+
+
+  ### Plain Language
+
+  Filters a dataset using a Python condition (e.g. "len(x[\"text\"]) > 10").
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

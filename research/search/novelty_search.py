@@ -12,9 +12,12 @@ rewarded based on how DIFFERENT they are from everything in the archive.
 from __future__ import annotations
 
 import logging
+import math
 import random as _random_module
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -42,66 +45,100 @@ class NoveltySearchConfig:
 class BehaviorArchive:
     """Archive of behavioral fingerprints seen during search.
 
-    Uses reservoir sampling for eviction so that all time periods are
-    represented equally, avoiding the recency bias of FIFO eviction.
+    Uses NumPy for vectorized distance computation and reservoir sampling
+    for eviction to maintain historical diversity without recency bias.
     """
 
     def __init__(self, max_size: int = 200):
         self.max_size = max_size
         self.entries: List[Tuple[str, BehavioralFingerprint]] = []
-        self._total_seen = 0  # total items offered (for reservoir sampling)
+        # Cached feature matrix for vectorized distance
+        self._feature_matrix: Optional[np.ndarray] = None
+        self._total_seen = 0
         self._rng = _random_module.Random(42)
+
+    def _update_cache(self):
+        """Update the internal NumPy feature matrix."""
+        if not self.entries:
+            self._feature_matrix = None
+            return
+        vectors = [_behavior_vector(fp) for _, fp in self.entries]
+        self._feature_matrix = np.array(vectors, dtype=np.float32)
 
     def add(self, graph_hash: str, behavior: BehavioralFingerprint):
         """Add a behavior to the archive using reservoir sampling."""
         self._total_seen += 1
         if len(self.entries) < self.max_size:
             self.entries.append((graph_hash, behavior))
+            self._update_cache()
         else:
-            # Reservoir sampling (Algorithm R): each new item replaces a
-            # random existing entry with probability max_size / total_seen.
             j = self._rng.randint(0, self._total_seen - 1)
             if j < self.max_size:
                 self.entries[j] = (graph_hash, behavior)
+                self._update_cache()
 
     def novelty_of(self, behavior: BehavioralFingerprint, k: int = 15) -> float:
         """Compute novelty of a behavior relative to the archive.
 
         Novelty = mean distance to K nearest neighbors in archive.
+        Vectorized via NumPy for high-performance orchestration.
         """
-        if not self.entries:
-            return 1.0  # Everything is novel when archive is empty
+        if not self.entries or self._feature_matrix is None:
+            return 1.0
 
-        distances = []
-        for _, archived in self.entries:
-            dist = _behavior_distance(behavior, archived)
-            distances.append(dist)
+        target = np.array(_behavior_vector(behavior), dtype=np.float32)
+        
+        # Vectorized Euclidean distance across entire archive
+        # d(x, y) = sqrt(1/N * sum((x-y)^2))
+        diff = self._feature_matrix - target
+        dist_sq = np.mean(np.square(diff), axis=1)
+        distances = np.sqrt(dist_sq)
 
-        distances.sort()
+        # Get K nearest neighbors
         k = min(k, len(distances))
-        return sum(distances[:k]) / k
+        if k == 0:
+            return 1.0
+        
+        # partition is O(N) compared to sort O(N log N)
+        if len(distances) > k:
+            k_nearest = np.partition(distances, k-1)[:k]
+        else:
+            k_nearest = distances
+            
+        return float(np.mean(k_nearest))
 
     def size(self) -> int:
         return len(self.entries)
 
 
 def _behavior_distance(a: BehavioralFingerprint, b: BehavioralFingerprint) -> float:
-    """Euclidean distance between two behavioral fingerprints."""
-    features_a = [
-        a.interaction_locality, a.interaction_sparsity,
-        a.interaction_symmetry, a.interaction_hierarchy,
-        a.isotropy, a.rank_ratio,
-        a.sensitivity_uniformity,
-        a.cka_vs_transformer, a.cka_vs_ssm, a.cka_vs_conv,
+    """RMS distance between sanitized behavior vectors (stable range: [0, 1])."""
+    fa = np.array(_behavior_vector(a), dtype=np.float32)
+    fb = np.array(_behavior_vector(b), dtype=np.float32)
+    return float(np.sqrt(np.mean(np.square(fa - fb))))
+
+
+def _behavior_vector(fp: BehavioralFingerprint) -> List[float]:
+    """Extract novelty features with robust sanitization for outliers/NaNs."""
+    raw_features = [
+        fp.interaction_locality, fp.interaction_sparsity,
+        fp.interaction_symmetry, fp.interaction_hierarchy,
+        fp.isotropy, fp.rank_ratio,
+        fp.sensitivity_uniformity,
+        fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv,
     ]
-    features_b = [
-        b.interaction_locality, b.interaction_sparsity,
-        b.interaction_symmetry, b.interaction_hierarchy,
-        b.isotropy, b.rank_ratio,
-        b.sensitivity_uniformity,
-        b.cka_vs_transformer, b.cka_vs_ssm, b.cka_vs_conv,
-    ]
-    return sum((fa - fb) ** 2 for fa, fb in zip(features_a, features_b)) ** 0.5
+    return [_sanitize_unit_feature(v) for v in raw_features]
+
+
+def _sanitize_unit_feature(value: float) -> float:
+    """Clip expected unit-scale features to [0, 1], replacing invalid values."""
+    try:
+        v = float(value)
+    except Exception:
+        return 0.5
+    if not math.isfinite(v):
+        return 0.5
+    return min(1.0, max(0.0, v))
 
 
 @dataclass

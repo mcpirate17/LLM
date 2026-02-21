@@ -1,0 +1,56 @@
+id: tied_proj
+version: 1.0.0
+name: Tied down/up projection (shared transposed weights, rank=D/4)
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: Tied down/up projection (shared transposed weights, rank=D/4)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*D//4
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Tied down/up projection (shared transposed weights, rank=D/4)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Tied down/up projection (shared transposed weights, rank=D/4)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

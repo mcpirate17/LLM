@@ -1,0 +1,53 @@
+id: causal_mask
+version: 1.0.0
+name: Apply causal (lower-triangular) mask
+category: sequence
+tags:
+- sequence
+status: approved
+description: Apply causal (lower-triangular) mask
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Apply causal (lower-triangular) mask
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Apply causal (lower-triangular) mask
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

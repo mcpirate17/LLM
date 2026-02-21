@@ -1,0 +1,55 @@
+id: spike_rate_code
+version: 1.0.0
+name: Continuous-to-spike-to-continuous rate coding with STE
+category: math_space
+tags:
+- math_space
+status: approved
+description: Continuous-to-spike-to-continuous rate coding with STE
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Continuous-to-spike-to-continuous rate coding with STE
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Continuous-to-spike-to-continuous rate coding with STE
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

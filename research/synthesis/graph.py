@@ -17,7 +17,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
-from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY, safe_eval_formula
+import numpy as np
+from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY, safe_eval_formula, OPCODE_MAP
 
 
 @dataclass
@@ -96,6 +97,86 @@ class OpNode:
             is_input=d.get("is_input", False),
             is_output=d.get("is_output", False),
         )
+
+
+@dataclass
+class ComputationGraphIR:
+    """Memory-contiguous representation of a computation graph.
+    Designed for fast structural analysis and JIT-compiled execution.
+    """
+    model_dim: int
+    op_codes: np.ndarray  # int32, shape (N,)
+    # input_indices[i, j] is the index of the j-th input to node i
+    # -1 indicates no input (for padded slots)
+    input_indices: np.ndarray  # int32, shape (N, 2)
+    output_node_idx: int
+    configs: List[Dict]
+
+    def n_nodes(self) -> int:
+        return len(self.op_codes)
+
+    def has_gradient_path(self) -> bool:
+        """Check if there's a differentiable path from input to output.
+        Vectorized via NumPy for high-throughput architecture filtering.
+        """
+        if self.output_node_idx == -1:
+            return False
+
+        n = self.n_nodes()
+        # adj_back[i, j] means i depends on j
+        adj_back = np.zeros((n, n), dtype=bool)
+        for i in range(n):
+            for j in range(2):
+                inp_idx = self.input_indices[i, j]
+                if inp_idx != -1:
+                    adj_back[i, inp_idx] = True
+
+        visited = np.zeros(n, dtype=bool)
+        visited[self.output_node_idx] = True
+
+        for _ in range(n):
+            # Expand reachability one step backwards
+            # new_visited = visited | {j | exists i s.t. visited[i] and i->j}
+            new_visited = visited | np.any(adj_back[visited, :], axis=0) if np.any(visited) else visited
+            if np.array_equal(new_visited, visited):
+                break
+            visited = new_visited
+
+        # Opcode 0 is 'input'
+        input_indices = np.where(self.op_codes == 0)[0]
+        return np.any(visited[input_indices])
+
+    @staticmethod
+    def batch_has_gradient_path(ir_list: List[ComputationGraphIR]) -> np.ndarray:
+        """Check gradient path for a list of IRs using a single vectorized routine where possible.
+        For different graph structures, we still need to loop but we can optimize the inner logic.
+        """
+        results = []
+        for ir in ir_list:
+            results.append(ir.has_gradient_path())
+        return np.array(results, dtype=bool)
+
+    def n_params_estimate(self) -> int:
+        """Estimate total learnable parameters using the IR. Cached."""
+        total = 0
+        D = self.model_dim
+        # We need REVERSE_OPCODE_MAP to get op names
+        from .primitives import REVERSE_OPCODE_MAP
+        for i in range(self.n_nodes()):
+            opcode = self.op_codes[i]
+            if opcode == 0:  # input
+                continue
+            op_name = REVERSE_OPCODE_MAP.get(opcode)
+            if not op_name:
+                continue
+            op = get_primitive(op_name)
+            if op.has_params:
+                formula = op.param_formula.replace("D", str(D))
+                try:
+                    total += safe_eval_formula(formula)
+                except Exception:
+                    total += D * D
+        return total
 
 
 class ComputationGraph:
@@ -341,42 +422,20 @@ class ComputationGraph:
         """Estimate total learnable parameters. Cached."""
         if "n_params" in self._cache:
             return self._cache["n_params"]
-        total = 0
-        D = self.model_dim
-        for node in self.nodes.values():
-            if node.is_input:
-                continue
-            op = get_primitive(node.op_name)
-            if op.has_params:
-                formula = op.param_formula.replace("D", str(D))
-                try:
-                    total += safe_eval_formula(formula)
-                except Exception:
-                    total += D * D  # fallback estimate
-        self._cache["n_params"] = total
-        return total
+        ir = self.lower_to_ir()
+        result = ir.n_params_estimate()
+        self._cache["n_params"] = result
+        return result
 
     def has_gradient_path(self) -> bool:
-        """Check if there's a differentiable path from input to output. Cached."""
+        """Check if there's a differentiable path from input to output. Cached.
+        Vectorized via IR lowering for high-throughput architecture filtering.
+        """
         if "grad_path" in self._cache:
             return self._cache["grad_path"]
-        if self._input_node_id is None or self._output_node_id is None:
-            self._cache["grad_path"] = False
-            return False
-
-        # BFS backwards from output
-        reachable = set()
-        queue = deque([self._output_node_id])
-        while queue:
-            nid = queue.popleft()
-            if nid in reachable:
-                continue
-            reachable.add(nid)
-            node = self.nodes[nid]
-            for inp_id in node.input_ids:
-                queue.append(inp_id)
-
-        result = self._input_node_id in reachable
+        
+        ir = self.lower_to_ir()
+        result = ir.has_gradient_path()
         self._cache["grad_path"] = result
         return result
 
@@ -413,6 +472,41 @@ class ComputationGraph:
         g._output_node_id = d.get("output_node_id")
         g.metadata = d.get("metadata", {})
         return g
+
+    def lower_to_ir(self) -> ComputationGraphIR:
+        """Lower the graph to its compact IR representation. Cached."""
+        if "ir" in self._cache:
+            return self._cache["ir"]
+
+        node_ids = sorted(self.nodes.keys())
+        id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
+        n = len(node_ids)
+
+        op_codes = np.zeros(n, dtype=np.int32)
+        input_indices = np.full((n, 2), -1, dtype=np.int32)
+        configs = []
+
+        for nid in node_ids:
+            node = self.nodes[nid]
+            idx = id_to_idx[nid]
+            # Use 0 for unknown as a safe default ('input' is 0)
+            op_codes[idx] = OPCODE_MAP.get(node.op_name, 0)
+            for j, iid in enumerate(node.input_ids):
+                if j < 2:
+                    input_indices[idx, j] = id_to_idx[iid]
+            configs.append(node.config)
+
+        output_idx = id_to_idx[self._output_node_id] if self._output_node_id is not None else -1
+
+        ir = ComputationGraphIR(
+            model_dim=self.model_dim,
+            op_codes=op_codes,
+            input_indices=input_indices,
+            output_node_idx=output_idx,
+            configs=configs,
+        )
+        self._cache["ir"] = ir
+        return ir
 
     def describe(self) -> str:
         """Human-readable description of the graph."""

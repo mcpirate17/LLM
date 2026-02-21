@@ -1,0 +1,60 @@
+id: multi_head_mix
+version: 1.0.0
+name: Multi-head reshape + per-head L2 normalize
+category: structural
+tags:
+- structural
+status: approved
+description: Multi-head reshape + per-head L2 normalize
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  n_heads:
+    type: integer
+    default: 8
+    constraints:
+      min: 1
+      max: 128
+    description: Numeric value for n heads.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Multi-head reshape + per-head L2 normalize
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: n_heads.
+
+
+  ### Plain Language
+
+  Multi-head reshape + per-head L2 normalize
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

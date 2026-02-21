@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from .primitives import (
     PrimitiveOp, OpCategory, PRIMITIVE_REGISTRY,
-    list_primitives, list_by_n_inputs, get_primitive,
+    list_primitives, get_primitive,
     safe_eval_formula,
 )
 from .graph import ComputationGraph, ShapeInfo, OpNode
@@ -53,6 +53,15 @@ class GrammarConfig:
     })
     # Excluded op names (if any)
     excluded_ops: Set[str] = field(default_factory=set)
+    # Per-op weight multipliers (op_name -> weight, default 1.0 if absent).
+    # Values < 1.0 soft-penalize weak ops; values > 1.0 boost strong ops.
+    op_weights: Dict[str, float] = field(default_factory=dict)
+    
+    # Structured Sparsity Constraints (Z7)
+    structured_sparsity_bias: float = 0.0 # 0.0 to 1.0, nudge toward sparse ops
+    enforce_block_size: Optional[int] = None # if set, force this block size
+    min_block_density: float = 0.05
+    max_block_density: float = 0.5
 
 
 def generate_layer_graph(
@@ -149,6 +158,21 @@ def _build_subgraph(
         return _freq_domain_detour(graph, config, rng, available_nodes,
                                    current_depth, n_ops_so_far, params_so_far)
 
+    elif action == "template":
+        from .templates import apply_random_template
+        node_id = available_nodes[-1]
+        try:
+            result_id = apply_random_template(graph, node_id, rng)
+            return _build_subgraph(
+                graph, config, rng,
+                available_nodes=available_nodes + [result_id],
+                current_depth=current_depth + 2,
+                n_ops_so_far=n_ops_so_far + 3,
+                params_so_far=params_so_far,
+            )
+        except Exception:
+            return node_id
+
     elif action == "parameterized":
         return _apply_parameterized(graph, config, rng, available_nodes,
                                     current_depth, n_ops_so_far, params_so_far)
@@ -187,6 +211,11 @@ def _choose_action(
         actions.append("freq_detour")
         weights.append(config.freq_domain_prob * 3)
 
+    # Template action (opinionated seeds from mined survivors)
+    if depth < config.max_depth - 3 and n_ops < config.max_ops - 4:
+        actions.append("template")
+        weights.append(0.8)
+
     # Stop (more likely as we go deeper)
     actions.append("stop")
     stop_weight = (depth / config.max_depth) ** 2 * 5
@@ -217,7 +246,16 @@ def _pick_op(
             # Check if shapes are compatible
             if _check_shape_compat(op, input_shapes, model_dim):
                 candidates.append(op.name)
-                weights.append(cat_weight)
+                op_w = config.op_weights.get(op.name, 1.0)
+                
+                # Apply Z7: Structured Sparsity Bias
+                if config.structured_sparsity_bias > 0:
+                    if op.name in {"block_sparse_linear", "nm_sparse_linear", "semi_structured_2_4_linear"}:
+                        op_w *= (1.0 + config.structured_sparsity_bias * 2.0)
+                    elif op.name in {"linear_proj", "linear_proj_down", "linear_proj_up"}:
+                        op_w *= (1.0 - config.structured_sparsity_bias * 0.5)
+                
+                weights.append(cat_weight * op_w)
 
     if not candidates:
         return None
@@ -399,7 +437,9 @@ def _apply_parameterized(graph, config, rng, available_nodes,
     if not candidates:
         return node_id
 
-    op_name, op_params = rng.choice(candidates)
+    # Weighted selection using per-op weights for soft penalties
+    cand_weights = [config.op_weights.get(name, 1.0) for name, _ in candidates]
+    op_name, op_params = rng.choices(candidates, weights=cand_weights, k=1)[0]
 
     try:
         op_config = {}
@@ -415,6 +455,12 @@ def _apply_parameterized(graph, config, rng, available_nodes,
             op_config["damping"] = rng.choice([0.4, 0.5, 0.6])
         elif op_name == "integral_kernel":
             op_config["kernel_scale"] = rng.choice([0.15, 0.25, 0.35])
+        elif op_name == "block_sparse_linear":
+            op_config["block_size"] = config.enforce_block_size or rng.choice([8, 16, 32])
+            op_config["block_density"] = rng.uniform(config.min_block_density, config.max_block_density)
+        elif op_name == "nm_sparse_linear":
+            op_config["n"] = 2
+            op_config["m"] = 4
         # New parameterized ops don't need special config beyond defaults
         new_id = graph.add_op(op_name, [node_id], config=op_config)
     except ValueError:

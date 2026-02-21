@@ -1,0 +1,60 @@
+id: local_window_attn
+version: 1.0.0
+name: Local windowed causal self-attention (Q=K=V)
+category: sequence
+tags:
+- sequence
+status: approved
+description: Local windowed causal self-attention (Q=K=V)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  window_size:
+    type: integer
+    default: 64
+    constraints:
+      min: 4
+      max: 4096
+    description: Numeric value for window size.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Local windowed causal self-attention (Q=K=V)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: window_size.
+
+
+  ### Plain Language
+
+  Local windowed causal self-attention (Q=K=V)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

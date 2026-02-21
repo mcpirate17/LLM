@@ -136,6 +136,39 @@ class TestNotebook(unittest.TestCase):
                 break
         self.assertTrue(has_experiment_index, "Missing index on program_results(experiment_id)")
 
+    def test_designer_run_lineage_upsert_and_query(self):
+        """Designer run lineage rows should upsert and round-trip structured payloads."""
+        self.nb.save_designer_run_lineage(
+            run_id="eval_test_lineage_1",
+            workflow_id="wf_lineage_test",
+            workflow_version=3,
+            graph_fingerprint="fp_lineage_test",
+            status="success",
+            source="aria-designer",
+            total_time_ms=123.4,
+            metrics={"overall_novelty": 0.42},
+            payload={"status": "success"},
+        )
+        row = self.nb.get_designer_run_lineage("eval_test_lineage_1")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["workflow_id"], "wf_lineage_test")
+        self.assertEqual(row["workflow_version"], 3)
+        self.assertEqual(row["graph_fingerprint"], "fp_lineage_test")
+        self.assertEqual(row["status"], "success")
+        self.assertAlmostEqual(float(row["total_time_ms"]), 123.4, places=2)
+        self.assertEqual(row["metrics"].get("overall_novelty"), 0.42)
+
+        # Upsert same run_id updates status and metrics.
+        self.nb.save_designer_run_lineage(
+            run_id="eval_test_lineage_1",
+            workflow_id="wf_lineage_test",
+            status="failed_sandbox",
+            metrics={"overall_novelty": 0.1},
+        )
+        row2 = self.nb.get_designer_run_lineage("eval_test_lineage_1")
+        self.assertEqual(row2["status"], "failed_sandbox")
+        self.assertEqual(row2["metrics"].get("overall_novelty"), 0.1)
+
     def test_experiment_lifecycle(self):
         """Start → complete → query an experiment."""
         exp_id = self.nb.start_experiment(
@@ -2110,6 +2143,81 @@ class TestAPI(unittest.TestCase):
 
         nb.close()
 
+    def test_api_designer_lineage_sync_and_fetch(self):
+        payload = {
+            "run_id": "eval_lineage_api_1",
+            "workflow_id": "wf_api_lineage",
+            "workflow_version": 7,
+            "graph_fingerprint": "fp_api_lineage",
+            "status": "success",
+            "source": "aria-designer",
+            "total_time_ms": 98.6,
+            "metrics": {"overall_novelty": 0.51},
+            "payload": {"result": {"status": "success"}},
+        }
+        r_sync = self.client.post("/api/designer/lineage/sync", json=payload)
+        self.assertEqual(r_sync.status_code, 200)
+        self.assertTrue(r_sync.json.get("success"))
+
+        r_get = self.client.get("/api/designer/lineage/eval_lineage_api_1")
+        self.assertEqual(r_get.status_code, 200)
+        self.assertEqual(r_get.json.get("workflow_id"), "wf_api_lineage")
+        self.assertEqual(r_get.json.get("status"), "success")
+        self.assertEqual(r_get.json.get("metrics", {}).get("overall_novelty"), 0.51)
+
+        r_list = self.client.get("/api/designer/lineage?workflow_id=wf_api_lineage&limit=5")
+        self.assertEqual(r_list.status_code, 200)
+        self.assertTrue(isinstance(r_list.json, list))
+        self.assertGreaterEqual(len(r_list.json), 1)
+
+    def test_api_designer_lineage_sync_requires_ids(self):
+        r = self.client.post("/api/designer/lineage/sync", json={"workflow_id": "wf_only"})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.json.get("success", True))
+
+    def test_api_designer_lifecycle_status(self):
+        with patch("research.scientist.api._designer_service_status") as mock_status, \
+             patch("research.scientist.api._designer_idle_state") as mock_idle:
+            mock_status.return_value = {"api_up": True, "ui_up": False, "running": False}
+            mock_idle.return_value = {"idle_for_s": 12.5, "idle_timeout_s": 900.0, "auto_stop_enabled": True}
+            r = self.client.get("/api/designer/lifecycle")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json.get("api_up"), True)
+            self.assertEqual(r.json.get("running"), False)
+            self.assertEqual(r.json.get("idle_timeout_s"), 900.0)
+            self.assertEqual(r.json.get("auto_stop_enabled"), True)
+
+    def test_api_designer_ensure_running(self):
+        with patch("research.scientist.api._start_designer_services") as mock_start:
+            mock_start.return_value = {"ok": True, "already_running": False, "status": {"running": True}}
+            r = self.client.post("/api/designer/ensure-running", json={})
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.json.get("ok"))
+            self.assertTrue(r.json.get("status", {}).get("running"))
+
+    def test_api_designer_stop(self):
+        with patch("research.scientist.api._stop_designer_services") as mock_stop:
+            mock_stop.return_value = {
+                "ok": True,
+                "status_before": {"running": True},
+                "status_after": {"running": False},
+            }
+            r = self.client.post("/api/designer/stop", json={})
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.json.get("ok"))
+            self.assertFalse(r.json.get("status_after", {}).get("running", True))
+
+    def test_api_designer_touch(self):
+        with patch("research.scientist.api._designer_touch_activity") as mock_touch, \
+             patch("research.scientist.api._designer_idle_state") as mock_idle:
+            mock_touch.return_value = {"activity_reason": "test-touch", "activity_at": 1000.0}
+            mock_idle.return_value = {"idle_for_s": 0.0, "idle_timeout_s": 900.0, "auto_stop_enabled": True}
+            r = self.client.post("/api/designer/touch", json={"reason": "test-touch"})
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.json.get("ok"))
+            self.assertEqual(r.json.get("activity_reason"), "test-touch")
+            self.assertEqual(r.json.get("idle_timeout_s"), 900.0)
+
     # ── GET endpoints ──
 
     def test_api_dashboard(self):
@@ -3503,6 +3611,124 @@ class TestAPI(unittest.TestCase):
                              json={"mode": "investigation"})
         self.assertEqual(r.status_code, 400)
         self.assertIn("result_ids", r.get_json()["error"])
+
+    def test_api_start_blocks_on_preflight_warn_without_override(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_experiment = MagicMock(return_value="exp-blocked")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 10,
+                    "risk_level": "low",
+                },
+            )
+        )
+
+        preflight_payload = {
+            "checked": True,
+            "mode": "single",
+            "verdict": "warn",
+            "checks": [{"key": "pipeline_sample_probe", "status": "warn"}],
+            "summary": {"pass": 0, "warn": 1, "fail": 0},
+        }
+
+        with patch.object(api_mod, "_runner", fake_runner), \
+             patch.object(api_mod, "_run_launch_preflight", return_value=preflight_payload):
+            r = self.client.post("/api/experiments/start", json={"mode": "single", "n_programs": 1})
+
+        self.assertEqual(r.status_code, 409)
+        data = r.get_json()
+        self.assertTrue(data.get("preflight_blocked"))
+        self.assertEqual((data.get("preflight") or {}).get("verdict"), "warn")
+        fake_runner.start_experiment.assert_not_called()
+
+    def test_api_start_allows_preflight_override(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.start_experiment = MagicMock(return_value="exp-override")
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 10,
+                    "risk_level": "low",
+                },
+            )
+        )
+        fake_runner.progress = MagicMock(aria_message="ok", hypothesis_critique={})
+        preflight_payload = {
+            "checked": True,
+            "mode": "single",
+            "verdict": "warn",
+            "checks": [{"key": "pipeline_sample_probe", "status": "warn"}],
+            "summary": {"pass": 0, "warn": 1, "fail": 0},
+        }
+
+        with patch.object(api_mod, "_runner", fake_runner), \
+             patch.object(api_mod, "_run_launch_preflight", return_value=preflight_payload):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={"mode": "single", "n_programs": 1, "preflight_override": True},
+            )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual((data.get("preflight") or {}).get("verdict"), "warn")
+        self.assertTrue(data.get("preflight_override"))
+        fake_runner.start_experiment.assert_called_once()
+
+    def test_api_experiments_preflight_endpoint(self):
+        from research.scientist import api as api_mod
+
+        fake_runner = MagicMock()
+        fake_runner.prescreen_run_config = MagicMock(
+            side_effect=lambda config, mode="single", auto_harden=True: (
+                config,
+                {
+                    "checked": True,
+                    "mode": mode,
+                    "auto_hardened": auto_harden,
+                    "issues": [],
+                    "adjustments": [],
+                    "risk_score": 0,
+                    "risk_level": "low",
+                },
+            )
+        )
+        preflight_payload = {
+            "checked": True,
+            "mode": "single",
+            "verdict": "fail",
+            "checks": [{"key": "pipeline_sample_probe", "status": "fail"}],
+            "summary": {"pass": 0, "warn": 0, "fail": 1},
+        }
+
+        with patch.object(api_mod, "_runner", fake_runner), \
+             patch.object(api_mod, "_run_launch_preflight", return_value=preflight_payload):
+            r = self.client.post("/api/experiments/preflight", json={"mode": "single", "n_programs": 1})
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("prescreen", data)
+        self.assertIn("preflight", data)
+        self.assertFalse(data.get("can_start_without_override"))
+        self.assertEqual(data["preflight"]["verdict"], "fail")
 
     def test_api_start_requires_result_ids_for_validation(self):
         r = self.client.post("/api/experiments/start",
@@ -5382,6 +5608,15 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("Open full task details", content)
         self.assertIn("Guardrails (", content)
 
+    def test_event_bus_hook_contract_exposes_subscribe_for_action_queue(self):
+        hook_path = os.path.join(self.repo_root, "dashboard", "src", "hooks", "useEventBus.js")
+        action_queue_path = os.path.join(self.component_dir, "ActionQueue.js")
+        hook_content = self._read_file(hook_path)
+        action_content = self._read_file(action_queue_path)
+        self.assertIn("subscribe: ctx?.subscribe", hook_content)
+        self.assertIn("const eventBus = useEventBus()", action_content)
+        self.assertIn("if (typeof subscribe !== 'function') return undefined;", action_content)
+
     def test_dashboard_wires_auto_repair_started_event_to_chat(self):
         app_content = self._read_file(self.app_js)
         chat_panel_path = os.path.join(self.component_dir, "AriaChatPanel.js")
@@ -5403,6 +5638,15 @@ class TestDashboardConsistency(unittest.TestCase):
             self.repo_root, "dashboard", "src", "hooks", "useAriaData.js"))
         self.assertIn("/api/diagnostics/fingerprint", hook_content)
         self.assertIn("handleRunProductionTemplate", app_content)
+
+    def test_architecture_drawer_auto_starts_designer(self):
+        drawer_path = os.path.join(self.component_dir, "ArchitectureDrawer.js")
+        content = self._read_file(drawer_path)
+        self.assertIn("/api/designer/ensure-running", content)
+        self.assertIn("/api/designer/touch", content)
+        self.assertIn("/api/designer/lineage?limit=20", content)
+        self.assertIn("Starting Aria Designer", content)
+        self.assertNotIn("Run: cd aria-designer/ui && npm run dev", content)
 
     def test_dashboard_wires_code_healer_panel(self):
         app_content = self._read_file(self.app_js)

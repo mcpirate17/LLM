@@ -205,32 +205,22 @@ function renderActions(message) {
   );
 }
 
-function renderAgentTask(message, showDetails, onToggleDetails) {
+function renderAgentTask(message) {
   const task = message.agentTask;
   if (!task || !task.task_id) return null;
 
   const status = String(task.status || 'queued').toLowerCase();
-  const isDone = status === 'completed' || status === 'failed';
   const isFailed = status === 'failed';
   const statusColor = isFailed
     ? 'var(--accent-red, #f44336)'
-    : isDone
+    : status === 'completed'
       ? 'var(--accent-green, #4caf50)'
       : 'var(--accent-yellow, #ffb300)';
 
-  const applied = Array.isArray(task.applied_edits) ? task.applied_edits : [];
-  const proposed = Array.isArray(task.proposed_edits) ? task.proposed_edits : [];
-  const skipped = Array.isArray(task.skipped_edits) ? task.skipped_edits : [];
-  const notes = Array.isArray(task.notes) ? task.notes : [];
-  const hasDetailRows = applied.length > 0 || proposed.length > 0 || skipped.length > 0 || notes.length > 0;
-  const plannerBackend = String(task.planner_backend || '').trim();
-  const mainLlmBackend = String(task.main_llm_backend || '').trim();
-  const localOllamaUsed = Boolean(task.local_ollama_used);
-  const localOllama = (task.local_ollama && typeof task.local_ollama === 'object') ? task.local_ollama : null;
-  const localOllamaReason = localOllama ? localHelperReasonLabel(localOllama.reason) : '';
-  const localOllamaEst = localOllama && localOllama.estimated_vram_gb != null
-    ? Number(localOllama.estimated_vram_gb)
-    : null;
+  const milestone = String(task.milestone_summary || task.summary || '').trim();
+  const detailUrl = task.full_status_url
+    ? `${API_BASE}${task.full_status_url}`
+    : `${API_BASE}/api/aria/agent/status/${encodeURIComponent(task.task_id)}?detail=full`;
 
   return (
     <div
@@ -250,77 +240,19 @@ function renderAgentTask(message, showDetails, onToggleDetails) {
           ({status.toUpperCase()})
         </span>
       </div>
-      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-        <span>allow_write={String(Boolean(task.allow_write))}</span>
-        {' · '}
-        <span>applied {applied.length}</span>
-        {' · '}
-        <span>proposed {proposed.length}</span>
-        {' · '}
-        <span>skipped {skipped.length}</span>
-      </div>
-      {(plannerBackend || mainLlmBackend || localOllama) && (
-        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-          {plannerBackend && (
-            <>
-              <span>planner={plannerBackend}</span>
-              {' · '}
-            </>
-          )}
-          {mainLlmBackend && (
-            <>
-              <span>primary={mainLlmBackend}</span>
-              {' · '}
-            </>
-          )}
-          {localOllama && (
-            <span>
-              local={localOllamaUsed ? 'used' : `blocked (${localOllamaReason})`}
-              {Number.isFinite(localOllamaEst) ? ` [est ${localOllamaEst}GB]` : ''}
-            </span>
-          )}
-        </div>
-      )}
-      {task.summary && (
+      {milestone && (
         <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-          {summarizeForChat(task.summary, 180)}
+          {summarizeForChat(milestone, 220)}
         </div>
       )}
-      {hasDetailRows && (
-        <button
-          type="button"
-          onClick={onToggleDetails}
-          style={{
-            alignSelf: 'flex-start',
-            fontSize: 10,
-            color: 'var(--text-muted)',
-            background: 'none',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            padding: '1px 6px',
-            cursor: 'pointer',
-          }}
-        >
-          {showDetails ? 'Hide task details' : 'Show task details'}
-        </button>
-      )}
-      {showDetails && applied.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)' }}>
-            Applied edits:
-          </span>
-          {applied.slice(0, 6).map((edit, idx) => (
-            <span key={`applied-${edit.path || idx}-${idx}`} style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-              {edit.path || 'unknown file'}
-            </span>
-          ))}
-        </div>
-      )}
-      {showDetails && isFailed && notes.length > 0 && (
-        <div style={{ fontSize: 10, color: 'var(--accent-red, #f44336)' }}>
-          {String(notes[0] || '').slice(0, 180)}
-        </div>
-      )}
+      <a
+        href={detailUrl}
+        target="_blank"
+        rel="noreferrer"
+        style={{ alignSelf: 'flex-start', fontSize: 10, color: 'var(--accent-blue)' }}
+      >
+        Open full task details
+      </a>
     </div>
   );
 }
@@ -341,8 +273,8 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
-  const [expandedAgentTasks, setExpandedAgentTasks] = useState({});
   const [localHelper, setLocalHelper] = useState(null);
+  const [chatGuardrails, setChatGuardrails] = useState(null);
   const completedAgentTasksRef = useRef(new Set());
   const lastEvidenceSnapshotRef = useRef('');
   const staleNoticeKeyRef = useRef('');
@@ -443,7 +375,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
 
       await Promise.all(pendingTaskIds.map(async (taskId) => {
         try {
-          const res = await fetch(`${API_BASE}/api/aria/agent/status/${encodeURIComponent(taskId)}`);
+          const res = await fetch(`${API_BASE}/api/aria/agent/status/${encodeURIComponent(taskId)}/summary`);
           const data = await res.json();
           if (!res.ok || !data?.task) return;
           const task = data.task;
@@ -484,10 +416,8 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
           const status = String(task.status || '').toLowerCase();
           if ((status === 'completed' || status === 'failed') && !completedAgentTasksRef.current.has(taskId)) {
             completedAgentTasksRef.current.add(taskId);
-            const applied = Array.isArray(task.applied_edits) ? task.applied_edits.length : 0;
-            const proposed = Array.isArray(task.proposed_edits) ? task.proposed_edits.length : 0;
             addSystemMessage(
-              `Codebase agent ${taskId} ${status}. Applied ${applied} edit${applied === 1 ? '' : 's'}, proposed ${proposed}.`,
+              summarizeForChat(`Codebase agent update: ${task.milestone_summary || `${taskId} ${status}`}`, 170),
             );
           }
         } catch {
@@ -605,6 +535,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
       const data = await res.json();
       const helper = data?.local_ollama_helper;
       if (!helper || typeof helper !== 'object') return;
+      const guardrails = data?.chat_guardrails;
       setLocalHelper({
         enabled: Boolean(helper.enabled),
         reason: String(helper.reason || ''),
@@ -612,6 +543,14 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         estimatedVramGb: helper.estimated_vram_gb,
         maxVramGb: helper.max_vram_gb,
       });
+      if (guardrails && typeof guardrails === 'object') {
+        setChatGuardrails({
+          actionableRate: Number(guardrails.actionable_response_rate || 0),
+          adviceOnlyRate: Number(guardrails.advice_only_rate || 0),
+          avgSummaryLength: Number(guardrails.summary_length?.avg || 0),
+          window: Number(guardrails.window || 0),
+        });
+      }
     } catch {
       // ignore polling failures
     }
@@ -896,6 +835,13 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
           {error}
         </div>
       )}
+      {chatGuardrails && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8 }}>
+          Guardrails ({chatGuardrails.window}): actionable {(chatGuardrails.actionableRate * 100).toFixed(0)}% ·
+          advice-only {(chatGuardrails.adviceOnlyRate * 100).toFixed(0)}% ·
+          avg summary {Math.round(chatGuardrails.avgSummaryLength)} chars
+        </div>
+      )}
 
       <div style={{ maxHeight: 400, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {messages.length === 0 ? (
@@ -932,18 +878,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
                 {m.role !== 'system' && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatTimestamp(m.timestamp)}</span>}
               </div>
               <div style={{ fontSize: m.role === 'system' ? 11 : 12, lineHeight: 1.45, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{m.text}</div>
-              {renderAgentTask(
-                m,
-                Boolean(expandedAgentTasks[m?.agentTask?.task_id]),
-                () => {
-                  const taskId = m?.agentTask?.task_id;
-                  if (!taskId) return;
-                  setExpandedAgentTasks((prev) => ({
-                    ...prev,
-                    [taskId]: !prev[taskId],
-                  }));
-                },
-              )}
+              {renderAgentTask(m)}
               {renderActions(m)}
               {renderLocalEvidence(m)}
             </div>

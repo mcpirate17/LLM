@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import re
+import requests
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -27,6 +29,7 @@ from .models import (
     AskAriaPromptRequest,
     AriaPatchProposalModel,
     CompileWorkflowRequest,
+    ComponentConfigValidateRequest,
     ComponentModel,
     RunWorkflowRequest,
     ValidateWorkflowRequest,
@@ -57,10 +60,13 @@ try:
         validate_workflow_graph as bridge_validate,
         estimate_performance as bridge_estimate,
         list_available_primitives as bridge_list_primitives,
+        analyze_compression as bridge_analyze_compression,
+        get_component_execution_capability as bridge_component_capability,
     )
     HAS_BRIDGE = True
 except ImportError:
     HAS_BRIDGE = False
+    bridge_component_capability = None
 
 try:
     from runtime.profiler import profile_workflow as bridge_profile
@@ -107,6 +113,11 @@ _EVAL_RUNS: Dict[str, Dict[str, Any]] = {}
 _EVAL_RUNS_LOCK = threading.Lock()
 _EVAL_RUNS_MAX = 200          # max runs kept in memory
 _EVAL_RUNS_TTL_S = 3600       # evict runs older than 1 hour
+
+# Optional lineage sync to research notebook service.
+_LINEAGE_SYNC_ENABLED = os.environ.get("ARIA_LINEAGE_SYNC_ENABLED", "0") != "0"
+_LINEAGE_SYNC_BASE = os.environ.get("ARIA_RESEARCH_API_BASE", "http://127.0.0.1:5000")
+_LINEAGE_SYNC_TIMEOUT = float(os.environ.get("ARIA_LINEAGE_SYNC_TIMEOUT", "3"))
 
 
 def _evict_old_runs():
@@ -163,6 +174,22 @@ def _list_runs() -> List[Dict[str, Any]]:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _sync_lineage_to_research(payload: Dict[str, Any]) -> bool:
+    """Best-effort sync of designer run lineage into research notebook API."""
+    if not _LINEAGE_SYNC_ENABLED:
+        return False
+    url = f"{_LINEAGE_SYNC_BASE.rstrip('/')}/api/designer/lineage/sync"
+    try:
+        resp = requests.post(url, json=payload, timeout=_LINEAGE_SYNC_TIMEOUT)
+        if resp.status_code >= 400:
+            logger.warning("Lineage sync failed (%s): %s", resp.status_code, resp.text[:200])
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("Lineage sync unavailable: %s", exc)
+        return False
 
 
 @asynccontextmanager
@@ -267,6 +294,266 @@ def get_component_properties(component_id: str) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/v1/components/{component_id}/execution-capability")
+def get_component_execution_capability(component_id: str) -> Dict[str, Any]:
+    """Return execution capability across native/runtime bridge paths."""
+    comp = db.get_component(component_id)
+    if comp is None:
+        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
+
+    category = comp.get("category", "")
+    manifest_id = comp.get("id", component_id)
+    component_type = f"{category}/{manifest_id}" if category else manifest_id
+
+    component_dir = COMPONENTS_ROOT / str(category) / str(manifest_id)
+    native_impl = []
+    if (component_dir / "kernel.c").exists():
+        native_impl.append("c")
+    if (component_dir / "kernel.cpp").exists() or (component_dir / "kernel.cc").exists():
+        native_impl.append("cpp")
+    if (component_dir / "kernel.rs").exists():
+        native_impl.append("rust")
+    if (component_dir / "kernel.pyx").exists():
+        native_impl.append("cython")
+
+    python_fallback = (component_dir / "kernel_fallback.py").exists()
+
+    bridge_info: Dict[str, Any] = {
+        "bridge_supported": False,
+        "primitive_name": None,
+        "execution_class": "unknown",
+        "reason": "Research bridge unavailable in this environment.",
+    }
+    if HAS_BRIDGE and bridge_component_capability:
+        try:
+            bridge_info = bridge_component_capability(component_type)
+        except Exception as exc:
+            bridge_info = {
+                "bridge_supported": False,
+                "primitive_name": None,
+                "execution_class": "unknown",
+                "reason": f"Capability check failed: {exc}",
+            }
+
+    return {
+        "component_id": manifest_id,
+        "component_type": component_type,
+        "category": category,
+        "native_impl": native_impl,
+        "python_fallback": python_fallback,
+        "preferred_backend": native_impl[0] if native_impl else ("python" if python_fallback else "none"),
+        "bridge": bridge_info,
+        "has_semantic_warnings": bool(bridge_info.get("warnings")),
+    }
+
+
+def _collect_workflow_semantic_warnings(workflow_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Collect approximate-mapping warnings for workflow components."""
+    if not (HAS_BRIDGE and bridge_component_capability):
+        return []
+    warnings: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for node in workflow_json.get("nodes", []):
+        node_id = str(node.get("id") or "")
+        component_type = str(node.get("component_type") or "")
+        if not component_type:
+            continue
+        try:
+            cap = bridge_component_capability(component_type)
+        except Exception:
+            continue
+        if not cap.get("bridge_supported"):
+            continue
+        semantic = str(cap.get("semantic_fidelity") or "exact")
+        if semantic != "approximate":
+            continue
+        primitive_name = cap.get("primitive_name")
+        for msg in cap.get("warnings") or [cap.get("reason")]:
+            key = (node_id, component_type, str(msg))
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings.append(
+                {
+                    "node_id": node_id,
+                    "component_type": component_type,
+                    "mapping_kind": cap.get("mapping_kind"),
+                    "primitive_name": primitive_name,
+                    "message": str(msg),
+                }
+            )
+    return warnings
+
+
+@app.get("/api/v1/integration/bridge-gap-report")
+def get_bridge_gap_report() -> Dict[str, Any]:
+    """Summarize components unsupported by the research primitive bridge."""
+    comps = db.list_components(status="approved")
+    gaps: List[Dict[str, Any]] = []
+    by_class: Dict[str, int] = {}
+    by_category: Dict[str, int] = {}
+
+    for comp in comps:
+        cid = comp.get("id")
+        category = comp.get("category", "")
+        ctype = f"{category}/{cid}" if category else str(cid)
+        cap = (
+            bridge_component_capability(ctype)
+            if HAS_BRIDGE and bridge_component_capability
+            else {
+                "bridge_supported": False,
+                "execution_class": "unknown",
+                "reason": "Research bridge unavailable in this environment.",
+                "primitive_name": None,
+            }
+        )
+        if cap.get("bridge_supported"):
+            continue
+
+        execution_class = str(cap.get("execution_class", "unknown"))
+        by_class[execution_class] = by_class.get(execution_class, 0) + 1
+        by_category[category] = by_category.get(category, 0) + 1
+        gaps.append(
+            {
+                "component_id": cid,
+                "component_type": ctype,
+                "category": category,
+                "execution_class": execution_class,
+                "reason": cap.get("reason", ""),
+            }
+        )
+
+    gaps.sort(key=lambda row: (row["category"], row["component_id"]))
+    return {
+        "total_components": len(comps),
+        "unsupported_components": len(gaps),
+        "by_execution_class": dict(sorted(by_class.items())),
+        "by_category": dict(sorted(by_category.items())),
+        "gaps": gaps,
+    }
+
+
+@app.post("/api/v1/components/{component_id}/validate-config")
+def validate_component_config(component_id: str, req: ComponentConfigValidateRequest) -> Dict[str, Any]:
+    """Validate a component config payload against manifest param schema/defaults."""
+    comp = db.get_component(component_id)
+    if comp is None:
+        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
+
+    params = comp.get("params") or {}
+    raw_config = req.config or {}
+    normalized = {}
+    errors: List[Dict[str, str]] = []
+    warnings: List[Dict[str, str]] = []
+
+    def _type_ok(schema: Dict[str, Any], value: Any) -> bool:
+        expected = schema.get("type")
+        if expected == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected == "float":
+            return (isinstance(value, (int, float)) and not isinstance(value, bool))
+        if expected == "boolean":
+            return isinstance(value, bool)
+        if expected == "string":
+            return isinstance(value, str)
+        if expected == "enum":
+            if schema.get("multi_select") or schema.get("multiple"):
+                if not isinstance(value, (list, tuple)):
+                    return False
+                return all(isinstance(v, (str, int, float, bool)) for v in value)
+            return isinstance(value, (str, int, float, bool))
+        return True
+
+    for name, schema in params.items():
+        schema = schema or {}
+        has_value = name in raw_config
+        value = raw_config.get(name, schema.get("default"))
+        normalized[name] = value
+
+        if schema.get("required", False) and (value is None or value == ""):
+            errors.append({"param": name, "message": "Required parameter is missing"})
+            continue
+
+        if value is None:
+            continue
+
+        expected_type = schema.get("type")
+        if expected_type and not _type_ok(schema, value):
+            errors.append({
+                "param": name,
+                "message": f"Expected {expected_type}, got {type(value).__name__}",
+            })
+            continue
+
+        if expected_type == "enum":
+            options = schema.get("options") or []
+            if options:
+                if schema.get("multi_select") or schema.get("multiple"):
+                    invalid_values = [v for v in (value or []) if v not in options]
+                    if invalid_values:
+                        errors.append({
+                            "param": name,
+                            "message": f"Invalid options {invalid_values}. Allowed: {options}",
+                        })
+                        continue
+                elif value not in options:
+                    errors.append({
+                        "param": name,
+                        "message": f"Invalid option '{value}'. Allowed: {options}",
+                    })
+                    continue
+
+        constraints = schema.get("constraints") or {}
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            min_v = constraints.get("min")
+            max_v = constraints.get("max")
+            if min_v is not None and value < min_v:
+                errors.append({"param": name, "message": f"Must be >= {min_v}"})
+            if max_v is not None and value > max_v:
+                errors.append({"param": name, "message": f"Must be <= {max_v}"})
+
+        if not has_value and schema.get("default") is not None:
+            warnings.append({"param": name, "message": "Using default value"})
+
+    for name in raw_config.keys():
+        if name not in params:
+            warnings.append({"param": name, "message": "Unknown parameter for this component"})
+
+    category = str(comp.get("category") or "")
+    manifest_id = str(comp.get("id") or component_id)
+    fallback_path = COMPONENTS_ROOT / category / manifest_id / "kernel_fallback.py"
+    if fallback_path.exists():
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"validate_handler_{category}_{manifest_id}",
+                str(fallback_path),
+            )
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                handler_cls = getattr(module, "ComponentHandler", None)
+                if handler_cls is not None:
+                    handler = handler_cls()
+                    validate_fn = getattr(handler, "validate_config", None)
+                    if callable(validate_fn):
+                        custom_errors = validate_fn(normalized) or []
+                        for msg in custom_errors:
+                            errors.append({"param": "__component__", "message": str(msg)})
+        except Exception as exc:
+            warnings.append({
+                "param": "__component__",
+                "message": f"Custom validation unavailable: {exc}",
+            })
+
+    return {
+        "component_id": comp.get("id"),
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "normalized_config": normalized,
+    }
+
+
 @app.get("/api/v1/components/property-audit/report")
 def get_component_property_audit() -> Dict[str, Any]:
     """Audit property coverage/defaults/help for all components."""
@@ -277,6 +564,8 @@ def get_component_property_audit() -> Dict[str, Any]:
 def create_component(component: ComponentModel) -> Dict[str, Any]:
     """Register a new component (status=draft)."""
     manifest = component.model_dump()
+    if "params" not in manifest:
+        manifest["params"] = manifest.get("params_schema") or {}
     manifest["status"] = "draft"
     now = _utc_now()
     db.upsert_component(manifest, created_at=now, updated_at=now)
@@ -434,11 +723,14 @@ def _validate_fallback_cycles(node_ids, workflow, issues):
 
 @app.post("/api/v1/workflows/compile")
 def compile_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
+    semantic_warnings = _collect_workflow_semantic_warnings(req.workflow.model_dump())
     if runtime_compile is None:
         return {
             "compiled": False,
             "error": "Runtime compiler not available",
-            "workflow_id": req.workflow.workflow_id
+            "workflow_id": req.workflow.workflow_id,
+            "semantic_warnings": semantic_warnings,
+            "semantic_warning_count": len(semantic_warnings),
         }
 
     try:
@@ -453,13 +745,17 @@ def compile_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
             "node_count": len(req.workflow.nodes),
             "submodule_count": len(model.submodules),
             "notes": "Workflow compiled successfully to torch.nn.Module",
+            "semantic_warnings": semantic_warnings,
+            "semantic_warning_count": len(semantic_warnings),
         }
     except Exception as e:
         logger.error("Compilation failed: %s", e)
         return {
             "compiled": False,
             "error": str(e),
-            "workflow_id": req.workflow.workflow_id
+            "workflow_id": req.workflow.workflow_id,
+            "semantic_warnings": semantic_warnings,
+            "semantic_warning_count": len(semantic_warnings),
         }
 
 
@@ -750,7 +1046,7 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
     lower = prompt.lower()
 
     # Replace operation: "replace X with Y"
-    for src_raw, dst_raw in re.findall(r"replace\\s+([a-zA-Z0-9_\\-/]+)\\s+with\\s+([a-zA-Z0-9_\\-/ ]+)", lower):
+    for src_raw, dst_raw in re.findall(r"replace\\s+([-a-zA-Z0-9_/]+)\\s+with\\s+([-a-zA-Z0-9_/ ]+)", lower):
         node_id = _resolve_node_token(src_raw, nodes)
         dst_type = _normalize_component_type(dst_raw, approved) or _infer_component_from_prompt(dst_raw, suggestions)
         if node_id and dst_type:
@@ -761,13 +1057,13 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
             })
 
     # Remove operation: "remove/delete X"
-    for rem_raw in re.findall(r"(?:remove|delete)\\s+(?:node\\s+)?([a-zA-Z0-9_\\-/]+)", lower):
+    for rem_raw in re.findall(r"(?:remove|delete)\\s+(?:node\\s+)?([-a-zA-Z0-9_/]+)", lower):
         node_id = _resolve_node_token(rem_raw, nodes)
         if node_id:
             ops.append({"op": "remove_node", "node_id": node_id, "payload": {}})
 
     # Connect operation: "connect X to Y"
-    for src_raw, tgt_raw in re.findall(r"connect\\s+([a-zA-Z0-9_\\-/]+)\\s+to\\s+([a-zA-Z0-9_\\-/]+)", lower):
+    for src_raw, tgt_raw in re.findall(r"connect\\s+([-a-zA-Z0-9_/]+)\\s+to\\s+([-a-zA-Z0-9_/]+)", lower):
         source = _resolve_node_token(src_raw, nodes)
         target = _resolve_node_token(tgt_raw, nodes)
         if source and target:
@@ -784,7 +1080,7 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
 
     # Param mutation: "set PARAM of NODE to VALUE"
     for key_raw, node_raw, val_raw in re.findall(
-        r"set\\s+([a-zA-Z0-9_]+)\\s+of\\s+([a-zA-Z0-9_\\-/]+)\\s+to\\s+([a-zA-Z0-9_\\-.]+)", lower
+        r"set\\s+([a-zA-Z0-9_]+)\\s+of\\s+([-a-zA-Z0-9_/]+)\\s+to\\s+([-a-zA-Z0-9_.]+)", lower
     ):
         node_id = _resolve_node_token(node_raw, nodes)
         if not node_id:
@@ -981,6 +1277,7 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
     if not HAS_BRIDGE:
         raise HTTPException(status_code=501, detail="Research bridge not available")
     wf = req.workflow.model_dump()
+    semantic_warnings = _collect_workflow_semantic_warnings(wf)
     budget = req.budget
     result = bridge_evaluate(
         wf,
@@ -995,18 +1292,43 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
     result_dict = result.to_dict()
     run_id = f"eval_{uuid4().hex[:12]}"
     result_dict["run_id"] = run_id
+    result_dict["semantic_warnings"] = semantic_warnings
+    result_dict["semantic_warning_count"] = len(semantic_warnings)
+
+    created_at = _utc_now()
 
     # Persist for observability
     _store_run(run_id, {
         "run_id": run_id,
         "workflow_id": wf.get("workflow_id"),
         "status": result_dict.get("status", "unknown"),
-        "created_at": _utc_now(),
+        "created_at": created_at,
         "total_time_ms": result_dict.get("total_time_ms"),
         "budget": budget,
         "stages": {},
         "result": result_dict,
     })
+
+    lineage_payload = {
+        "run_id": run_id,
+        "workflow_id": wf.get("workflow_id"),
+        "workflow_version": wf.get("version") or (wf.get("metadata") or {}).get("version"),
+        "graph_fingerprint": result_dict.get("graph_fingerprint"),
+        "status": result_dict.get("status", "unknown"),
+        "source": "aria-designer",
+        "total_time_ms": result_dict.get("total_time_ms"),
+        "metrics": {
+            "sandbox_passed": result_dict.get("sandbox_passed"),
+            "overall_novelty": result_dict.get("overall_novelty"),
+            "efficiency_score": result_dict.get("efficiency_score"),
+        },
+        "payload": result_dict,
+        "created_at": _time_mod.time(),
+    }
+    result_dict["lineage_sync"] = {
+        "attempted": _LINEAGE_SYNC_ENABLED,
+        "synced": _sync_lineage_to_research(lineage_payload) if _LINEAGE_SYNC_ENABLED else False,
+    }
     return result_dict
 
 
@@ -1025,6 +1347,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
     import time as _time
 
     wf = req.workflow.model_dump()
+    semantic_warnings = _collect_workflow_semantic_warnings(wf)
     budget = req.budget
     model_dim = budget.get("model_dim", 256)
     vocab_size = budget.get("vocab_size", 32000)
@@ -1042,13 +1365,15 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
     async def event_stream():
         total_t0 = _time.monotonic()
         accumulated = {}
+        lineage_synced = False
 
         # Init the stored run record
+        created_at = _utc_now()
         _store_run(run_id, {
             "run_id": run_id,
             "workflow_id": wf.get("workflow_id"),
             "status": "running",
-            "created_at": _utc_now(),
+            "created_at": created_at,
             "total_time_ms": None,
             "budget": budget,
             "stages": {},
@@ -1062,6 +1387,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             })
 
         def _persist_done(status, error=None, error_stage=None, total_ms=None):
+            nonlocal lineage_synced
             _update_run(run_id, {
                 "status": status,
                 "error": error,
@@ -1070,9 +1396,34 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "result": accumulated,
                 "completed_at": _utc_now(),
             })
+            if not lineage_synced and _LINEAGE_SYNC_ENABLED:
+                lineage_payload = {
+                    "run_id": run_id,
+                    "workflow_id": wf.get("workflow_id"),
+                    "workflow_version": wf.get("version") or (wf.get("metadata") or {}).get("version"),
+                    "graph_fingerprint": (accumulated.get("conversion") or {}).get("graph_fingerprint"),
+                    "status": status,
+                    "source": "aria-designer",
+                    "total_time_ms": total_ms,
+                    "metrics": {
+                        "sandbox_passed": (accumulated.get("sandbox") or {}).get("passed"),
+                        "overall_novelty": (accumulated.get("novelty") or {}).get("overall_novelty"),
+                        "efficiency_score": (accumulated.get("compression") or {}).get("efficiency_score"),
+                    },
+                    "payload": {
+                        "error": error,
+                        "error_stage": error_stage,
+                        "result": accumulated,
+                    },
+                    "created_at": _time_mod.time(),
+                }
+                lineage_synced = _sync_lineage_to_research(lineage_payload)
 
         # Emit run_id so the client can poll REST later if the stream drops
         yield f"event: run_id\ndata: {_json({'run_id': run_id})}\n\n"
+        if semantic_warnings:
+            accumulated["semantic_warnings"] = semantic_warnings
+            yield f"event: semantic_warnings\ndata: {_json({'count': len(semantic_warnings), 'warnings': semantic_warnings})}\n\n"
 
         # --- Stage 1: conversion ---
         yield f"event: stage\ndata: {_json({'stage': 'conversion', 'status': 'running'})}\n\n"
@@ -1087,6 +1438,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "depth": graph.depth(),
                 "params_estimate": int(graph.n_params_estimate()),
                 "has_gradient_path": bool(graph.has_gradient_path()),
+                "graph_fingerprint": graph.fingerprint(),
             }
             accumulated["conversion"] = metrics
             _persist_stage("conversion", {"status": "done", "metrics": metrics})
@@ -1191,7 +1543,25 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'sandbox', 'total_time_ms': round(total_ms, 1)})}\n\n"
             return
 
-        # --- Stage 5: fingerprint ---
+        # --- Stage 5: compression ---
+        yield f"event: stage\ndata: {_json({'stage': 'compression', 'status': 'running'})}\n\n"
+        t0 = _time.monotonic()
+        try:
+            comp_result = await asyncio.to_thread(
+                bridge_analyze_compression, model, graph,
+                vocab_size=vocab_size, device=device,
+                batch_size=batch_size, seq_len=min(seq_len, 64),
+            )
+            metrics = comp_result.to_dict()
+            accumulated["compression"] = metrics
+            _persist_stage("compression", {"status": "done", "metrics": metrics})
+            elapsed = (_time.monotonic() - t0) * 1000
+            yield f"event: stage\ndata: {_json({'stage': 'compression', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
+        except Exception as e:
+            elapsed = (_time.monotonic() - t0) * 1000
+            yield f"event: stage\ndata: {_json({'stage': 'compression', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
+
+        # --- Stage 6: fingerprint ---
         yield f"event: stage\ndata: {_json({'stage': 'fingerprint', 'status': 'running'})}\n\n"
         t0 = _time.monotonic()
         fp_obj = None
@@ -1221,7 +1591,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             elapsed = (_time.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'fingerprint', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
 
-        # --- Stage 6: novelty ---
+        # --- Stage 7: novelty ---
         yield f"event: stage\ndata: {_json({'stage': 'novelty', 'status': 'running'})}\n\n"
         t0 = _time.monotonic()
         try:
@@ -1288,8 +1658,8 @@ def get_eval_run(run_id: str) -> Dict[str, Any]:
 def get_eval_run_stages(run_id: str) -> Dict[str, Any]:
     """Get stage-by-stage breakdown for a run.
 
-    Each stage (conversion, profiling, compilation, sandbox, fingerprint,
-    novelty) includes status and metrics. Stages not yet reached are absent.
+    Each stage (conversion, profiling, compilation, sandbox, compression,
+    fingerprint, novelty) includes status and metrics. Stages not yet reached are absent.
     """
     run = _get_run(run_id)
     if run is None:
@@ -1356,6 +1726,25 @@ def get_eval_run_novelty(run_id: str) -> Dict[str, Any]:
     return {
         "run_id": run_id,
         **novelty.get("metrics", {}),
+    }
+
+
+@app.get("/api/v1/eval/runs/{run_id}/compression")
+def get_eval_run_compression(run_id: str) -> Dict[str, Any]:
+    """Get compression & efficiency analysis for a run.
+
+    Returns pruning curve, sparse op coverage, compression ratio,
+    theoretical sizes, and composite efficiency score.
+    """
+    run = _get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    compression = run.get("stages", {}).get("compression", {})
+    if not compression or compression.get("status") != "done":
+        raise HTTPException(status_code=404, detail="Compression data not available for this run")
+    return {
+        "run_id": run_id,
+        **compression.get("metrics", {}),
     }
 
 
@@ -1524,4 +1913,4 @@ def palette_constraints_endpoint(req: ValidateWorkflowRequest) -> Dict[str, Dict
     # Get all approved component IDs
     all_components = db.list_components(status="approved")
     component_ids = [c["id"] for c in all_components]
-    return compute_palette_constraints(wf, component_ids)
+    return compute_palette_constraints(wf, component_ids, selected_node_id=req.selected_node_id)

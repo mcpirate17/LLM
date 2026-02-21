@@ -3,7 +3,7 @@ import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
 import { formatTime, formatDuration } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
-import { programScore } from '../utils/scores';
+import { candidateScore } from '../utils/scoringEngine';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -89,7 +89,7 @@ function FunnelViz({ experiment }) {
 
 function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram }) {
   const sorted = useMemo(() => {
-    const aug = programs.map(p => ({ ...p, _score: programScore(p), _rating: programRowRating(p) }));
+    const aug = programs.map(p => ({ ...p, _score: candidateScore(p), _rating: programRowRating(p) }));
     aug.sort((a, b) => {
       let va, vb;
       if (sortKey === '_score') { va = a._score; vb = b._score; }
@@ -256,6 +256,8 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const exp = data.experiment;
   const programs = data.programs || [];
   const entries = data.entries || [];
+  const prereg = data.preregistration || null;
+  const preregDeviations = data.preregistration_deviations || [];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -263,7 +265,7 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div>
-            <button className="refresh-btn" onClick={onBack} style={{ marginRight: 12 }}>&larr; Back</button>
+            <button className="refresh-btn" onClick={() => onBack && onBack()} style={{ marginRight: 12 }}>&larr; Back</button>
             <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)' }}>{experimentId}</span>
             <span className={`badge ${exp.status === 'completed' ? 'pass' : exp.status === 'running' ? 'running' : 'fail'}`}
               style={{ marginLeft: 8 }}>
@@ -287,6 +289,34 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
             marginBottom: 12,
           }}>
             {exp.hypothesis}
+          </div>
+        )}
+
+        {prereg && (
+          <div style={{
+            marginBottom: 12,
+            padding: 10,
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            background: 'var(--bg-secondary)',
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+              Decision Rationale
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+              Primary metrics: {(prereg.analysis_plan_json?.primary_metrics || []).join(', ') || 'n/a'}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+              Success criteria: {JSON.stringify(prereg.hypothesis_json?.success_criteria || {})}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Falsification: {(prereg.falsification_json || []).slice(0, 2).join(' | ') || 'n/a'}
+            </div>
+            {preregDeviations.length > 0 && (
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--accent-yellow)' }}>
+                Exploratory deviations logged: {preregDeviations.length}
+              </div>
+            )}
           </div>
         )}
 

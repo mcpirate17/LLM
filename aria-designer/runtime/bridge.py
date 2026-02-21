@@ -12,11 +12,14 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import sys
 import os
 import time
+from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
+import yaml
 
 # Ensure research/ is importable
 _RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "research"))
@@ -37,7 +40,7 @@ register_all_mathspaces()
 # We strip the category prefix and map to PRIMITIVE_REGISTRY keys.
 # Most IDs match 1:1; a few need aliasing.
 
-_COMPONENT_ALIASES = {
+_DEFAULT_COMPONENT_ALIASES = {
     # aria-designer ID → research primitive name
     "relu_op": "relu",
     "gelu_op": "gelu",
@@ -45,10 +48,148 @@ _COMPONENT_ALIASES = {
     "linear": "linear_proj",
     "linear_down": "linear_proj_down",
     "linear_up": "linear_proj_up",
+    # SSM / normalization components used in examples
+    "state_space": "selective_scan",
+    "rmsnorm_pre": "rmsnorm",
+    "layernorm_pre": "rmsnorm",
+    # Transformer-mini example compatibility aliases
+    "softmax_attention": "local_window_attn",
+    "swiglu_mlp": "fused_linear_gelu",
 }
 
 # IO components that don't map to primitives
-_IO_COMPONENTS = {"graph_input", "graph_output", "input", "output"}
+_IO_COMPONENTS = {"graph_input", "graph_output", "input", "output", "output_head"}
+
+_MAPPING_FILE = Path(__file__).resolve().parent / "component_mapping.yaml"
+_MAPPING_CONFIG: Dict[str, Any] = {}
+
+if _MAPPING_FILE.exists():
+    try:
+        _MAPPING_CONFIG = yaml.safe_load(_MAPPING_FILE.read_text(encoding="utf-8")) or {}
+    except Exception:
+        _MAPPING_CONFIG = {}
+
+_COMPONENT_ALIASES = {
+    **_DEFAULT_COMPONENT_ALIASES,
+    **(_MAPPING_CONFIG.get("aliases") or {}),
+}
+_CATEGORY_EXECUTION_CLASS = _MAPPING_CONFIG.get("category_execution_class") or {}
+_COMPONENT_EXECUTION_CLASS = _MAPPING_CONFIG.get("component_execution_class") or {}
+_PASSTHROUGH_COMPONENTS = set(_MAPPING_CONFIG.get("passthrough_components") or [])
+_CONTROL_PASSTHROUGH_COMPONENTS = {"loop"}
+_SOURCE_COMPONENTS = set(_MAPPING_CONFIG.get("source_components") or [])
+_TEMPLATE_LOWERED_COMPONENTS = set(_MAPPING_CONFIG.get("template_lowered_components") or [])
+_APPROXIMATE_ALIAS_NOTES = _MAPPING_CONFIG.get("approximate_alias_notes") or {}
+
+_DATA_SOURCE_COMPONENTS = {
+    "csv_reader",
+    "file_loader",
+    "binary_file_reader",
+    "hf_dataset_loader",
+    "random_data_source",
+    "synthetic_data_source",
+}
+
+_DATA_TRANSFORM_COMPONENTS = {
+    "filter",
+    "dataset_filter",
+    "dataset_map",
+    "select_columns",
+    "split_train_val_test",
+}
+
+_DATA_SINK_COMPONENTS = {
+    "file_writer",
+}
+
+
+def _execution_class(component_leaf: str, category: Optional[str]) -> str:
+    if component_leaf in _COMPONENT_EXECUTION_CLASS:
+        return str(_COMPONENT_EXECUTION_CLASS[component_leaf])
+    if category and category in _CATEGORY_EXECUTION_CLASS:
+        return str(_CATEGORY_EXECUTION_CLASS[category])
+    return "primitive"
+
+
+def _is_passthrough_component(component_leaf: str) -> bool:
+    return component_leaf in _PASSTHROUGH_COMPONENTS or component_leaf in _CONTROL_PASSTHROUGH_COMPONENTS
+
+
+def _is_source_component(component_leaf: str) -> bool:
+    return component_leaf in _SOURCE_COMPONENTS
+
+
+def _is_data_source_component(component_leaf: str) -> bool:
+    return component_leaf in _DATA_SOURCE_COMPONENTS
+
+
+def _is_data_transform_component(component_leaf: str) -> bool:
+    return component_leaf in _DATA_TRANSFORM_COMPONENTS
+
+
+def _is_data_sink_component(component_leaf: str) -> bool:
+    return component_leaf in _DATA_SINK_COMPONENTS
+
+
+def _is_template_lowered_component(component_leaf: str) -> bool:
+    return component_leaf in _TEMPLATE_LOWERED_COMPONENTS
+
+
+def _alias_semantic_info(component_leaf: str, primitive_name: str) -> Dict[str, Any]:
+    """Return semantic fidelity metadata for alias mappings."""
+    if component_leaf == primitive_name:
+        return {"semantic_fidelity": "exact", "warnings": []}
+    note = _APPROXIMATE_ALIAS_NOTES.get(component_leaf)
+    if note:
+        return {"semantic_fidelity": "approximate", "warnings": [str(note)]}
+    return {"semantic_fidelity": "exact", "warnings": []}
+
+
+def _lower_template_component(
+    graph: ComputationGraph,
+    component_leaf: str,
+    input_cg_ids: List[int],
+    model_dim: int,
+) -> int:
+    """Lower high-level block node IDs into explicit primitive subgraphs."""
+    if not input_cg_ids:
+        raise ValueError(f"Template-lowered component '{component_leaf}' requires at least one input")
+    x = input_cg_ids[0]
+    d = int(model_dim)
+
+    if component_leaf in {"u_net", "hourglass"}:
+        down = graph.add_op("linear_proj_down", [x], {"out_dim": d})
+        mid = graph.add_op("gelu", [down], {})
+        up = graph.add_op("linear_proj_up", [mid], {"out_dim": d})
+        return up
+
+    if component_leaf == "dense_net":
+        proj = graph.add_op("linear_proj", [x], {"out_dim": d})
+        act = graph.add_op("relu", [proj], {})
+        return graph.add_op("add", [x, act], {})
+
+    if component_leaf == "fractal":
+        a = graph.add_op("relu", [x], {})
+        b = graph.add_op("gelu", [x], {})
+        return graph.add_op("add", [a, b], {})
+
+    if component_leaf == "parallel_streams":
+        a = graph.add_op("relu", [x], {})
+        b = graph.add_op("silu", [x], {})
+        return graph.add_op("add", [a, b], {})
+
+    if component_leaf == "feedback_loop":
+        proj = graph.add_op("linear_proj", [x], {"out_dim": d})
+        gate = graph.add_op("tanh", [proj], {})
+        return graph.add_op("add", [x, gate], {})
+
+    if component_leaf == "mixture_of_paths":
+        p1 = graph.add_op("relu", [x], {})
+        p2 = graph.add_op("gelu", [x], {})
+        mix = graph.add_op("add", [p1, p2], {})
+        return graph.add_op("linear_proj", [mix], {"out_dim": d})
+
+    raise ValueError(f"No template-lowering implementation for '{component_leaf}'")
 
 
 def _resolve_primitive(component_type: str) -> Optional[str]:
@@ -58,7 +199,9 @@ def _resolve_primitive(component_type: str) -> Optional[str]:
     Raises ValueError for unknown components.
     """
     # Strip category prefix: "math/relu" → "relu"
-    cid = component_type.split("/")[-1]
+    parts = component_type.split("/")
+    cid = parts[-1]
+    category = parts[0] if len(parts) > 1 else None
 
     if cid in _IO_COMPONENTS:
         return None
@@ -71,10 +214,183 @@ def _resolve_primitive(component_type: str) -> Optional[str]:
     if cid in _COMPONENT_ALIASES:
         return _COMPONENT_ALIASES[cid]
 
+    if _is_source_component(cid):
+        raise ValueError(
+            f"Component '{component_type}' is configured as source-lowered "
+            "and should be handled before primitive resolution."
+        )
+
+    if _is_passthrough_component(cid):
+        raise ValueError(
+            f"Component '{component_type}' is configured as passthrough-lowered "
+            "and should be handled before primitive resolution."
+        )
+
+    if _is_template_lowered_component(cid):
+        raise ValueError(
+            f"Component '{component_type}' is configured as template-lowered "
+            "and should be handled before primitive resolution."
+        )
+
+    exec_class = _execution_class(cid, category)
+    if exec_class != "primitive":
+        raise ValueError(
+            f"Unsupported component '{component_type}' for research primitive bridge: "
+            f"execution_class={exec_class}. Add lowering/expansion path before evaluation."
+        )
+
     raise ValueError(
         f"Unknown component '{component_type}': not in PRIMITIVE_REGISTRY "
         f"and no alias defined. Available primitives: {sorted(PRIMITIVE_REGISTRY.keys())[:10]}..."
     )
+
+
+def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
+    """Return bridge execution capability metadata for a component type."""
+    parts = component_type.split("/")
+    cid = parts[-1]
+    category = parts[0] if len(parts) > 1 else None
+
+    if cid in _IO_COMPONENTS:
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "io",
+            "execution_class": "io",
+            "semantic_fidelity": "exact",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": [],
+            "reason": "IO passthrough node.",
+        }
+
+    if _is_data_source_component(cid):
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "source",
+            "execution_class": _execution_class(cid, category),
+            "semantic_fidelity": "approximate",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": ["Data-source lowered to deterministic graph input in bridge mode."],
+            "reason": "Supported via data-source lowering in bridge (deterministic eval fallback).",
+        }
+
+    if _is_data_transform_component(cid):
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "passthrough",
+            "execution_class": _execution_class(cid, category),
+            "semantic_fidelity": "approximate",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": ["Data-transform is currently shape-safe passthrough in bridge mode."],
+            "reason": "Supported via shape-safe data-transform lowering in bridge.",
+        }
+
+    if _is_data_sink_component(cid):
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "passthrough",
+            "execution_class": _execution_class(cid, category),
+            "semantic_fidelity": "approximate",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": ["Data sink is non-materialized passthrough during bridge evaluation."],
+            "reason": "Supported as terminal/observability sink with passthrough gradient path.",
+        }
+
+    if _is_template_lowered_component(cid):
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "template",
+            "execution_class": _execution_class(cid, category),
+            "semantic_fidelity": "approximate",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": ["Template component expands to an approximate primitive subgraph."],
+            "reason": "Supported via template lowering (expanded primitive subgraph).",
+        }
+
+    if cid in PRIMITIVE_REGISTRY:
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "direct",
+            "execution_class": "primitive",
+            "semantic_fidelity": "exact",
+            "bridge_supported": True,
+            "primitive_name": cid,
+            "warnings": [],
+            "reason": "Direct primitive mapping.",
+        }
+
+    if cid in _COMPONENT_ALIASES:
+        alias_target = _COMPONENT_ALIASES[cid]
+        semantic = _alias_semantic_info(cid, alias_target)
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "alias",
+            "execution_class": "primitive",
+            "semantic_fidelity": semantic["semantic_fidelity"],
+            "bridge_supported": True,
+            "primitive_name": alias_target,
+            "warnings": semantic["warnings"],
+            "reason": "Mapped via component alias.",
+        }
+
+    if _is_source_component(cid):
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "source",
+            "execution_class": _execution_class(cid, category),
+            "semantic_fidelity": "approximate",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": ["Source component lowered to graph input in bridge mode."],
+            "reason": "Supported via source lowering (graph input seed).",
+        }
+
+    if _is_passthrough_component(cid):
+        reason = (
+            "Supported via control-flow passthrough lowering in bridge."
+            if cid in _CONTROL_PASSTHROUGH_COMPONENTS
+            else "Supported via passthrough lowering (wire-through)."
+        )
+        return {
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "passthrough",
+            "execution_class": _execution_class(cid, category),
+            "semantic_fidelity": "approximate",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": ["Component is currently wire-through passthrough in bridge mode."],
+            "reason": reason,
+        }
+
+    exec_class = _execution_class(cid, category)
+    return {
+        "component_type": component_type,
+        "component_leaf": cid,
+        "mapping_kind": "unsupported",
+        "execution_class": exec_class,
+        "semantic_fidelity": "unsupported",
+        "bridge_supported": False,
+        "primitive_name": None,
+        "warnings": [],
+        "reason": (
+            "No primitive mapping. Requires lowering/expansion path."
+            if exec_class in {"composite", "data_control", "control"}
+            else "No primitive mapping registered."
+        ),
+    }
 
 
 # ── Workflow → ComputationGraph conversion ───────────────────────────
@@ -118,7 +434,7 @@ def workflow_to_graph(
         cid = n["component_type"].split("/")[-1]
         if cid in ("graph_input", "input"):
             input_node_ids.append(n["id"])
-        elif cid in ("graph_output", "output"):
+        elif cid in ("graph_output", "output", "output_head"):
             output_node_ids.append(n["id"])
 
     # If no explicit input nodes, infer from topology (nodes with no incoming edges)
@@ -172,7 +488,13 @@ def workflow_to_graph(
             aria_to_cg[aria_id] = cg_id
             continue
 
-        if cid in ("graph_output", "output"):
+        if _is_source_component(cid):
+            # Data-source nodes become explicit graph inputs in eval bridge mode.
+            cg_id = graph.add_input()
+            aria_to_cg[aria_id] = cg_id
+            continue
+
+        if cid in ("graph_output", "output", "output_head"):
             # Output node: just wire through from its input
             inc = incoming.get(aria_id, [])
             if inc:
@@ -181,14 +503,65 @@ def workflow_to_graph(
                     aria_to_cg[aria_id] = aria_to_cg[src_aria_id]
             continue
 
+        if _is_data_source_component(cid):
+            cg_id = graph.add_input()
+            aria_to_cg[aria_id] = cg_id
+            continue
+
+        # Gather input node IDs from edges
+        inc = incoming.get(aria_id, [])
+        if _is_template_lowered_component(cid):
+            input_cg_ids = [aria_to_cg[src] for src, _sp, _tp in inc if src in aria_to_cg]
+            if not input_cg_ids and input_node_ids and input_node_ids[0] in aria_to_cg:
+                input_cg_ids = [aria_to_cg[input_node_ids[0]]]
+            try:
+                aria_to_cg[aria_id] = _lower_template_component(
+                    graph, cid, input_cg_ids, model_dim
+                )
+            except ValueError as e:
+                raise ValueError(
+                    f"Template lowering error at node '{aria_id}' ({cid}): {e}"
+                ) from e
+            continue
+
+        if _is_data_transform_component(cid) or _is_data_sink_component(cid):
+            if inc:
+                src_aria_id = inc[0][0]
+                if src_aria_id not in aria_to_cg:
+                    raise ValueError(
+                        f"Data-plane lowered component '{node_cfg['component_type']}' "
+                        f"references unresolved source node '{src_aria_id}'."
+                    )
+                aria_to_cg[aria_id] = aria_to_cg[src_aria_id]
+            else:
+                if input_node_ids and input_node_ids[0] in aria_to_cg:
+                    aria_to_cg[aria_id] = aria_to_cg[input_node_ids[0]]
+                else:
+                    cg_id = graph.add_input()
+                    aria_to_cg[aria_id] = cg_id
+            continue
+
+        if _is_passthrough_component(cid):
+            if not inc:
+                raise ValueError(
+                    f"Passthrough-lowered component '{node_cfg['component_type']}' "
+                    "requires an incoming edge."
+                )
+            src_aria_id = inc[0][0]
+            if src_aria_id not in aria_to_cg:
+                raise ValueError(
+                    f"Passthrough-lowered component '{node_cfg['component_type']}' "
+                    f"references unresolved source node '{src_aria_id}'."
+                )
+            aria_to_cg[aria_id] = aria_to_cg[src_aria_id]
+            continue
+
         prim_name = _resolve_primitive(node_cfg["component_type"])
         if prim_name is None:
             continue
 
         prim = get_primitive(prim_name)
 
-        # Gather input node IDs from edges
-        inc = incoming.get(aria_id, [])
         input_cg_ids = []
         for src_aria_id, _sp, _tp in inc:
             if src_aria_id in aria_to_cg:
@@ -248,6 +621,167 @@ def workflow_to_graph(
     return graph
 
 
+# ── Compression / Efficiency Analysis ─────────────────────────────────
+
+# Sparse ops and their effective density factors (fraction of weights actually used)
+_SPARSE_OP_DENSITY = {
+    "nm_sparse_linear": 0.50,        # 2:4 sparsity → 50% density
+    "block_sparse_linear": 0.25,     # default block_density
+    "semi_structured_2_4_linear": 0.50,
+}
+
+
+@dataclass
+class CompressionResult:
+    """Result of compression & efficiency analysis."""
+    # Pruning curve: list of {sparsity, loss, loss_ratio}
+    pruning_curve: List[Dict[str, float]] = field(default_factory=list)
+    baseline_loss: float = 0.0
+    pruning_tolerance: float = 0.0  # 0-1, how gracefully it degrades
+
+    # Param compression
+    dense_params: int = 0
+    effective_params: int = 0
+    compression_ratio: float = 1.0  # dense / effective
+
+    # Sparse op coverage
+    sparse_ops: int = 0
+    total_ops: int = 0
+    sparse_op_coverage: float = 0.0
+    sparse_op_names: List[str] = field(default_factory=list)
+
+    # Theoretical sizes
+    theoretical_size_fp16_mb: float = 0.0
+    theoretical_size_int8_mb: float = 0.0
+    theoretical_size_int4_mb: float = 0.0
+
+    # Composite scores
+    memory_efficiency_score: float = 0.0  # 0-1, smaller → higher
+    efficiency_score: float = 0.0         # composite 0-1
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        for k, v in d.items():
+            if hasattr(v, "item"):
+                d[k] = v.item()
+        return d
+
+
+def analyze_compression(
+    model,
+    graph,
+    vocab_size: int = 32000,
+    device: str = "cpu",
+    batch_size: int = 2,
+    seq_len: int = 64,
+) -> CompressionResult:
+    """Analyze compression characteristics: pruning tolerance, sparse coverage, sizes."""
+    import torch
+
+    result = CompressionResult()
+
+    # --- 1. Walk graph → sparse op coverage & effective params ---
+    sparse_names = []
+    total_op_count = 0
+    effective_param_count = 0
+
+    for node in graph.nodes.values():
+        if node.is_input:
+            continue
+        total_op_count += 1
+        op_name = node.op_name
+        if op_name in _SPARSE_OP_DENSITY:
+            sparse_names.append(op_name)
+            density = node.config.get("block_density", _SPARSE_OP_DENSITY[op_name])
+        else:
+            density = 1.0
+
+        # Estimate params for this op
+        if op_name in PRIMITIVE_REGISTRY:
+            prim = PRIMITIVE_REGISTRY[op_name]
+            if prim.has_params:
+                D = graph.model_dim
+                out_dim = node.config.get("out_dim", D)
+                op_params = D * out_dim  # rough estimate
+                effective_param_count += int(op_params * density)
+
+    # Get dense param count from model
+    dense_params = sum(p.numel() for p in model.parameters())
+    if effective_param_count == 0:
+        effective_param_count = dense_params
+
+    result.dense_params = dense_params
+    result.effective_params = effective_param_count
+    result.compression_ratio = dense_params / max(effective_param_count, 1)
+    result.sparse_ops = len(sparse_names)
+    result.total_ops = total_op_count
+    result.sparse_op_coverage = len(sparse_names) / max(total_op_count, 1)
+    result.sparse_op_names = sorted(set(sparse_names))
+
+    # --- 2. Theoretical sizes ---
+    result.theoretical_size_fp16_mb = (dense_params * 2) / (1024 * 1024)
+    result.theoretical_size_int8_mb = (dense_params * 1) / (1024 * 1024)
+    result.theoretical_size_int4_mb = (dense_params * 0.5) / (1024 * 1024)
+
+    # --- 3. Pruning curve (one-shot at 4 sparsity levels) ---
+    try:
+        from research.eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
+
+        dev = torch.device(device)
+        input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+
+        # Baseline loss
+        baseline = estimate_lm_ce_loss(model, [input_ids], dev)
+        if baseline is not None and baseline > 0:
+            result.baseline_loss = baseline
+            sparsity_levels = [0.25, 0.50, 0.75, 0.90]
+            curve = []
+
+            for sp in sparsity_levels:
+                t0 = time.monotonic()
+                try:
+                    pruned = copy.deepcopy(model)
+                    pruned.to(dev)
+                    apply_one_shot_pruning(pruned, target_sparsity=sp)
+                    loss = estimate_lm_ce_loss(pruned, [input_ids], dev)
+                    del pruned
+                    if loss is not None:
+                        ratio = loss / max(baseline, 1e-8)
+                        curve.append({"sparsity": sp, "loss": round(loss, 4), "loss_ratio": round(ratio, 4)})
+                except Exception:
+                    pass
+                # Time-box: skip remaining levels if this one exceeded 5s
+                if (time.monotonic() - t0) > 5.0:
+                    break
+
+            result.pruning_curve = curve
+
+            # Pruning tolerance: inverse of average loss ratio degradation
+            if curve:
+                avg_ratio = sum(p["loss_ratio"] for p in curve) / len(curve)
+                # tolerance=1 means no degradation, tolerance=0 means 2x+ degradation
+                result.pruning_tolerance = max(0.0, min(1.0, 2.0 - avg_ratio))
+    except Exception:
+        pass
+
+    # --- 4. Memory efficiency score (smaller models → higher) ---
+    # Scale: 0 at 100M+ params, 1 at <1M params (log scale)
+    import math
+    if dense_params > 0:
+        log_p = math.log10(max(dense_params, 1))
+        result.memory_efficiency_score = max(0.0, min(1.0, (8.0 - log_p) / 2.0))
+
+    # --- 5. Composite efficiency score ---
+    result.efficiency_score = (
+        0.35 * result.pruning_tolerance
+        + 0.25 * min(result.compression_ratio / 4.0, 1.0)
+        + 0.20 * result.sparse_op_coverage
+        + 0.20 * result.memory_efficiency_score
+    )
+
+    return result
+
+
 # ── Evaluation results ───────────────────────────────────────────────
 
 @dataclass
@@ -288,6 +822,12 @@ class BridgeResult:
     behavioral_novelty: float = 0.0
     overall_novelty: float = 0.0
     most_similar_to: str = ""
+
+    # Compression / Efficiency
+    compression_ratio: float = 1.0
+    pruning_tolerance: float = 0.0
+    sparse_op_coverage: float = 0.0
+    efficiency_score: float = 0.0
 
     # Timing
     total_time_ms: float = 0.0

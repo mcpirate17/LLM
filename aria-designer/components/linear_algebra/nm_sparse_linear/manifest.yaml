@@ -1,0 +1,72 @@
+id: nm_sparse_linear
+version: 1.0.0
+name: N:M structured sparse linear projection (2:4 default)
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+status: approved
+description: N:M structured sparse linear projection (2:4 default)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_in
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_out
+params:
+  n:
+    type: integer
+    default: 2
+    constraints:
+      min: 1
+      max: 4
+    description: Numeric value for n.
+  m:
+    type: integer
+    default: 4
+    constraints:
+      min: 2
+      max: 8
+    description: Numeric value for m.
+  out_dim:
+    type: integer
+    default: null
+    description: Output dim (null=same as input)
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D//2
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  N:M structured sparse linear projection (2:4 default)
+
+
+  Inputs: x:tensor[B, S, D_in].
+
+  Outputs: y:tensor[B, S, D_out].
+
+  Params: n, m, out_dim.
+
+
+  ### Plain Language
+
+  N:M structured sparse linear projection (2:4 default)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

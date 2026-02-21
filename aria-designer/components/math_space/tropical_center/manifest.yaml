@@ -1,0 +1,55 @@
+id: tropical_center
+version: 1.0.0
+name: Subtract sequence-wise tropical baseline (min) from features
+category: math_space
+tags:
+- math_space
+status: approved
+description: Subtract sequence-wise tropical baseline (min) from features
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Subtract sequence-wise tropical baseline (min) from features
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Subtract sequence-wise tropical baseline (min) from features
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

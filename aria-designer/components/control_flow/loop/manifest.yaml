@@ -1,0 +1,44 @@
+id: loop
+version: 1.0.0
+name: Loop Over Items
+category: control_flow
+tags:
+- control
+- loop
+status: approved
+description: Iterates over a dataset or list and executes a subgraph.
+inputs:
+- name: items
+  dtype: list
+outputs:
+- name: item
+  dtype: record
+- name: results
+  dtype: list
+params:
+  max_iterations:
+    type: integer
+    default: 100
+    description: Numeric value for max iterations.
+implementation:
+  python: kernel_fallback.py
+help_md: '### Technical
+
+  Iterates over a dataset or list and executes a subgraph.
+
+
+  Inputs: items:list.
+
+  Outputs: item:record, results:list.
+
+  Params: max_iterations.
+
+
+  ### Plain Language
+
+  Iterates over a dataset or list and executes a subgraph.
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

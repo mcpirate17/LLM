@@ -1,0 +1,56 @@
+id: sparse_topk
+version: 1.0.0
+name: Sparse Topk
+category: representation
+tags:
+- sparse
+- token_representation
+status: approved
+description: Sparse top-k activation vectors
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Sparse top-k activation vectors
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Sparse top-k activation vectors
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

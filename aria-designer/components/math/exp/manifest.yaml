@@ -1,0 +1,54 @@
+id: exp
+version: 1.0.0
+name: Exponential
+category: math
+tags:
+- elementwise_unary
+- numerically_risky
+status: approved
+description: Exponential
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  Exponential
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Exponential
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

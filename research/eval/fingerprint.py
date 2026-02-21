@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -23,6 +24,43 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+NOVELTY_REFERENCE_SCHEME_VERSION = "nv1"
+
+_SENSITIVITY_SKIP_COUNTS: Dict[str, int] = {}
+_SENSITIVITY_SKIP_LAST_LOG_TS: float = 0.0
+_SENSITIVITY_SKIP_LOG_INTERVAL_S: float = 60.0
+
+
+def _record_sensitivity_skip(reason: str) -> None:
+    """Track skipped sensitivity probes and emit a rate-limited debug summary."""
+    global _SENSITIVITY_SKIP_LAST_LOG_TS
+    key = str(reason or "unknown")
+    _SENSITIVITY_SKIP_COUNTS[key] = _SENSITIVITY_SKIP_COUNTS.get(key, 0) + 1
+
+    now = time.monotonic()
+    if (now - _SENSITIVITY_SKIP_LAST_LOG_TS) < _SENSITIVITY_SKIP_LOG_INTERVAL_S:
+        return
+
+    _SENSITIVITY_SKIP_LAST_LOG_TS = now
+    total = sum(_SENSITIVITY_SKIP_COUNTS.values())
+    breakdown = ", ".join(f"{name}={count}" for name, count in sorted(_SENSITIVITY_SKIP_COUNTS.items()))
+    logger.debug("Sensitivity probes skipped (%d total): %s", total, breakdown)
+
+
+def get_sensitivity_skip_stats(reset: bool = False) -> Dict[str, object]:
+    """Return aggregated sensitivity-skip counters for diagnostics."""
+    global _SENSITIVITY_SKIP_LAST_LOG_TS
+    by_reason = dict(_SENSITIVITY_SKIP_COUNTS)
+    payload = {
+        "total": int(sum(by_reason.values())),
+        "by_reason": by_reason,
+        "log_interval_seconds": _SENSITIVITY_SKIP_LOG_INTERVAL_S,
+        "last_log_monotonic": _SENSITIVITY_SKIP_LAST_LOG_TS,
+    }
+    if reset:
+        _SENSITIVITY_SKIP_COUNTS.clear()
+        _SENSITIVITY_SKIP_LAST_LOG_TS = 0.0
+    return payload
 
 
 @dataclass
@@ -55,6 +93,12 @@ class BehavioralFingerprint:
     # CKA provenance
     cka_source: str = "none"  # "artifact", "heuristic_fallback", "none"
     cka_artifact_version: Optional[str] = None
+    cka_probe_protocol_hash: Optional[str] = None
+    cka_reference_quality: Optional[str] = None
+    similarity_path: Optional[str] = None
+    novelty_reference_version: Optional[str] = None
+    novelty_valid_for_promotion: bool = False
+    novelty_validity_reason: str = "missing_reference"
 
     # Quality tracking: how many of the 4 sub-analyses succeeded
     analyses_succeeded: int = 0  # 0–4
@@ -140,6 +184,23 @@ def compute_fingerprint(
         fp.cka_vs_conv = cka.get("conv", 0.0)
         fp.cka_source = cka_meta.get("cka_source", "none")
         fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
+        fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
+        fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
+        fp.similarity_path = cka_meta.get("cka_similarity_path", "_compute_reference_cka")
+        fp.novelty_reference_version = build_novelty_reference_version(
+            fp.cka_source,
+            fp.cka_artifact_version,
+            fp.cka_probe_protocol_hash,
+        )
+        if fp.cka_source == "artifact":
+            fp.novelty_valid_for_promotion = True
+            fp.novelty_validity_reason = "artifact_reference"
+        elif fp.cka_source == "heuristic_fallback":
+            fp.novelty_valid_for_promotion = False
+            fp.novelty_validity_reason = "heuristic_fallback_reference"
+        else:
+            fp.novelty_valid_for_promotion = False
+            fp.novelty_validity_reason = "missing_reference"
         if cka.get("_succeeded"):
             n_succeeded += 1
 
@@ -158,6 +219,18 @@ def compute_fingerprint(
 
     model.train()
     return fp
+
+
+def build_novelty_reference_version(
+    cka_source: Optional[str],
+    cka_artifact_version: Optional[str],
+    cka_probe_protocol_hash: Optional[str],
+) -> str:
+    """Stable version id used to compare novelty across time."""
+    source = str(cka_source or "none")
+    art = str(cka_artifact_version or "none")
+    probe = str(cka_probe_protocol_hash or "none")
+    return f"{NOVELTY_REFERENCE_SCHEME_VERSION}:{source}:{art}:{probe}"
 
 
 def _get_representations(model: nn.Module, input_ids: torch.Tensor,
@@ -302,47 +375,60 @@ def _analyze_sensitivity(
 
     try:
         model.eval()
-        # Small batch for Jacobian estimation
-        ids = torch.randint(0, vocab_size, (1, seq_len), device=dev)
-        ids.requires_grad_(False)
+        with torch.enable_grad():
+            # Small batch for Jacobian estimation
+            ids = torch.randint(0, vocab_size, (1, seq_len), device=dev)
+            ids.requires_grad_(False)
 
-        # Get embedding and make it require grad
-        embed = model.embed(ids).detach().requires_grad_(True)
+            # Get embedding and make it require grad
+            embed = model.embed(ids).detach().requires_grad_(True)
 
-        # Forward through layers only (skip embed/head)
-        x = embed
-        if hasattr(model, 'pos_enc') and model.pos_enc is not None:
-            x = model.pos_enc(x)
-        if hasattr(model, 'layers'):
-            for layer in model.layers:
-                x = layer(x)
-        elif hasattr(model, 'topology'):
-            x = model.topology(x)
+            # Forward through layers only (skip embed/head)
+            x = embed
+            if hasattr(model, 'pos_enc') and model.pos_enc is not None:
+                x = model.pos_enc(x)
+            if hasattr(model, 'layers'):
+                for layer in model.layers:
+                    x = layer(x)
+            elif hasattr(model, 'topology'):
+                x = model.topology(x)
 
-        # Compute sensitivity per position
-        sensitivities = []
-        n_positions = min(4, seq_len)
-        for pos in range(0, seq_len, seq_len // n_positions):
-            if embed.grad is not None:
-                embed.grad.zero_()
-            x[:, pos, :].sum().backward(retain_graph=True)
-            if embed.grad is not None:
-                grad = embed.grad.clone()
-                sensitivities.append(grad.norm(dim=-1).squeeze(0))  # (S,)
+            if not x.requires_grad:
+                _record_sensitivity_skip("output_no_grad")
+                return result
 
-        if sensitivities:
-            sens_matrix = torch.stack(sensitivities)  # (n_pos, S)
-            result["spectral_norm"] = sens_matrix.norm().item()
+            # Compute sensitivity per position
+            sensitivities = []
+            n_positions = max(1, min(4, seq_len))
+            step = max(1, seq_len // n_positions)
+            for pos in range(0, seq_len, step):
+                if embed.grad is not None:
+                    embed.grad.zero_()
+                target = x[:, pos, :].sum()
+                if not target.requires_grad:
+                    _record_sensitivity_skip("target_no_grad")
+                    continue
+                target.backward(retain_graph=True)
+                if embed.grad is not None:
+                    grad = embed.grad.clone()
+                    sensitivities.append(grad.norm(dim=-1).squeeze(0))  # (S,)
 
-            # How uniform is sensitivity across positions?
-            per_pos_sens = sens_matrix.sum(dim=0)  # (S,)
-            if per_pos_sens.sum() > 1e-8:
-                probs = per_pos_sens / per_pos_sens.sum()
-                entropy = -(probs * (probs + 1e-10).log()).sum().item()
-                result["uniformity"] = entropy / math.log(seq_len)
-                result["effective_rank"] = math.exp(entropy)
+            if not sensitivities:
+                _record_sensitivity_skip("no_sensitivity_grads")
 
-        result["_succeeded"] = True
+            if sensitivities:
+                sens_matrix = torch.stack(sensitivities)  # (n_pos, S)
+                result["spectral_norm"] = sens_matrix.norm().item()
+
+                # How uniform is sensitivity across positions?
+                per_pos_sens = sens_matrix.sum(dim=0)  # (S,)
+                if per_pos_sens.sum() > 1e-8:
+                    probs = per_pos_sens / per_pos_sens.sum()
+                    entropy = -(probs * (probs + 1e-10).log()).sum().item()
+                    result["uniformity"] = entropy / math.log(seq_len)
+                    result["effective_rank"] = math.exp(entropy)
+
+            result["_succeeded"] = True
 
     except Exception as e:
         logger.warning("Sensitivity analysis failed: %s", e)

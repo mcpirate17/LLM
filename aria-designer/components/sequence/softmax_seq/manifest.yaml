@@ -1,0 +1,53 @@
+id: softmax_seq
+version: 1.0.0
+name: Softmax along sequence dimension
+category: sequence
+tags:
+- sequence
+status: approved
+description: Softmax along sequence dimension
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Softmax along sequence dimension
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Softmax along sequence dimension
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

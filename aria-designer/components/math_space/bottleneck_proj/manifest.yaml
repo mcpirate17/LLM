@@ -1,0 +1,39 @@
+id: bottleneck_proj
+version: 1.0.0
+name: "Squeeze-expand bottleneck (D\u2192D/4\u2192D)"
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: "Squeeze-expand bottleneck (D\u2192D/4\u2192D)"
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*D//2
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: "### Technical\nSqueeze-expand bottleneck (D\u2192D/4\u2192D)\n\nInputs: x:tensor[B, S, D].\nOutputs: y:tensor[B,\
+  \ S, D].\nParams: none.\n\n### Plain Language\nSqueeze-expand bottleneck (D\u2192D/4\u2192D)\n\nUse when you need this specific\
+  \ transformation in a workflow.\n"

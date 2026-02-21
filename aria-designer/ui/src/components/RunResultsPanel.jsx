@@ -1,14 +1,15 @@
 import { useState, useMemo } from 'react'
 import { CheckCircle2, Loader, Circle, XCircle, ChevronRight } from 'lucide-react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 
-const STAGE_ORDER = ['conversion', 'profiling', 'compilation', 'sandbox', 'fingerprint', 'novelty']
+const STAGE_ORDER = ['conversion', 'profiling', 'compilation', 'sandbox', 'compression', 'fingerprint', 'novelty']
 
 const STAGE_LABELS = {
   conversion: 'Conversion',
   profiling: 'Profiling',
   compilation: 'Compilation',
   sandbox: 'Sandbox Eval',
+  compression: 'Compression',
   fingerprint: 'Fingerprint',
   novelty: 'Novelty',
 }
@@ -68,6 +69,7 @@ export default function RunResultsPanel({ evalState }) {
 
   const sandboxMetrics = stageMap.sandbox?.metrics
   const profilingMetrics = stageMap.profiling?.metrics
+  const compressionMetrics = stageMap.compression?.metrics
   const fingerprintMetrics = stageMap.fingerprint?.metrics
   const noveltyMetrics = stageMap.novelty?.metrics
 
@@ -145,7 +147,13 @@ export default function RunResultsPanel({ evalState }) {
               <div className="stat-label">FLOPs/tok</div>
             </div>
             <div className="stat">
-              <div className="stat-val">{formatNum(sandboxMetrics.peak_memory_mb)}MB</div>
+              <div className="stat-val">{
+                sandboxMetrics.peak_memory_mb
+                  ? formatNum(sandboxMetrics.peak_memory_mb) + 'MB'
+                  : profilingMetrics?.total_memory_bytes
+                    ? formatNum(profilingMetrics.total_memory_bytes / (1024 * 1024)) + 'MB'
+                    : '-'
+              }</div>
               <div className="stat-label">Memory</div>
             </div>
             <div className="stat">
@@ -225,6 +233,81 @@ export default function RunResultsPanel({ evalState }) {
               <span key={i} className="bottleneck-badge">{op}</span>
             ))}
           </div>
+        </CollapsibleSection>
+      )}
+
+      {/* Compression & Efficiency */}
+      {compressionMetrics && (
+        <CollapsibleSection title="Compression & Efficiency">
+          {/* Efficiency Score Badge */}
+          <div className="efficiency-score-badge">
+            <div className="eff-score-value">{Math.round((compressionMetrics.efficiency_score || 0) * 100)}</div>
+            <div className="eff-score-label">Efficiency</div>
+          </div>
+
+          {/* Score Breakdown */}
+          <div className="compression-breakdown">
+            {[
+              { label: 'Prune Tol.', val: compressionMetrics.pruning_tolerance, color: '#24d1a0' },
+              { label: 'Compression', val: Math.min((compressionMetrics.compression_ratio || 1) / 4, 1), color: '#17a3ff' },
+              { label: 'Sparse Ops', val: compressionMetrics.sparse_op_coverage, color: '#a060ff' },
+              { label: 'Mem Eff.', val: compressionMetrics.memory_efficiency_score, color: '#f0a020' },
+            ].map(({ label, val, color }) => (
+              <div className="fp-row" key={label}>
+                <span className="fp-label">{label}</span>
+                <ProgressBar value={val} color={color} />
+                <span className="fp-val">{val != null ? (val * 100).toFixed(0) + '%' : '-'}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Pruning Tolerance Curve */}
+          {compressionMetrics.pruning_curve?.length > 0 && (
+            <div className="chart-container" style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>Pruning Curve</div>
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={compressionMetrics.pruning_curve} margin={{ left: 10, right: 10, top: 4, bottom: 4 }}>
+                  <XAxis dataKey="sparsity" tick={{ fill: '#8fa8c2', fontSize: 10 }} tickFormatter={v => (v * 100) + '%'} />
+                  <YAxis tick={{ fill: '#8fa8c2', fontSize: 10 }} domain={[0, 'auto']} tickFormatter={v => v.toFixed(1) + 'x'} />
+                  <Tooltip
+                    contentStyle={{ background: '#101b2b', border: '1px solid #1f3147', borderRadius: 6, fontSize: 12 }}
+                    formatter={(v) => v.toFixed(3) + 'x'}
+                    labelFormatter={(v) => 'Sparsity: ' + (v * 100) + '%'}
+                  />
+                  <Line type="monotone" dataKey="loss_ratio" stroke="#a060ff" strokeWidth={2} dot={{ r: 3, fill: '#a060ff' }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Compression Metrics Grid */}
+          <div className="metrics-grid" style={{ marginTop: 8 }}>
+            <div className="stat">
+              <div className="stat-val">{formatNum(compressionMetrics.compression_ratio?.toFixed(2))}x</div>
+              <div className="stat-label">Compression</div>
+            </div>
+            <div className="stat">
+              <div className="stat-val">{compressionMetrics.sparse_ops || 0}</div>
+              <div className="stat-label">Sparse Ops</div>
+            </div>
+            <div className="stat">
+              <div className="stat-val">{compressionMetrics.theoretical_size_int8_mb?.toFixed(1)}MB</div>
+              <div className="stat-label">INT8 Size</div>
+            </div>
+            <div className="stat">
+              <div className="stat-val">{compressionMetrics.theoretical_size_int4_mb?.toFixed(1)}MB</div>
+              <div className="stat-label">INT4 Size</div>
+            </div>
+          </div>
+
+          {/* Sparse Op Badges */}
+          {compressionMetrics.sparse_op_names?.length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {compressionMetrics.sparse_op_names.map(name => (
+                <span key={name} className="sparse-op-badge">{name}</span>
+              ))}
+            </div>
+          )}
         </CollapsibleSection>
       )}
 

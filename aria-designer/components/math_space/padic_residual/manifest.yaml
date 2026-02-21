@@ -1,0 +1,56 @@
+id: padic_residual
+version: 1.0.0
+name: Multi-resolution p-adic expansion with per-scale transform + residual
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: Multi-resolution p-adic expansion with per-scale transform + residual
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*2*D
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Multi-resolution p-adic expansion with per-scale transform + residual
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Multi-resolution p-adic expansion with per-scale transform + residual
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,19 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        args: [check, --fix]
+        types_or: [python, pyi]
+  - repo: local
+    hooks:
+      - id: manifest-validate
+        name: Validate component manifests
+        entry: python tools/validate_manifests.py
+        language: system
+        files: 'components/.*/manifest\.yaml$'
+      - id: schema-validate
+        name: Validate JSON schemas
+        entry: python tools/validate_schemas.py
+        language: system
+        files: 'schemas/.*\.schema\.json$'

@@ -1,0 +1,59 @@
+id: concat
+version: 1.0.0
+name: Concatenate along last dimension
+category: structural
+tags:
+- structural
+status: approved
+description: Concatenate along last dimension
+inputs:
+- name: a
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_a
+- name: b
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_b
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_out
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Concatenate along last dimension
+
+
+  Inputs: a:tensor[B, S, D_a], b:tensor[B, S, D_b].
+
+  Outputs: y:tensor[B, S, D_out].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Concatenate along last dimension
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

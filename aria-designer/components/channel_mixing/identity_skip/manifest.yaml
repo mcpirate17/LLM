@@ -1,0 +1,56 @@
+id: identity_skip
+version: 1.0.0
+name: Identity Skip
+category: channel_mixing
+tags:
+- minimal
+- channel_mixing
+status: approved
+description: No channel mixing (identity / skip connection only)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  No channel mixing (identity / skip connection only)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  No channel mixing (identity / skip connection only)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

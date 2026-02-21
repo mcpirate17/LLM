@@ -1,8 +1,94 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { scoreColor } from '../utils/format';
 import { reliabilityColor } from '../utils/colors';
+import { useAriaData } from '../hooks/useAriaData';
+import { NarrativeProvider, useNarrative } from '../hooks/useNarrative';
+import { opScore, opScoreBreakdown } from '../utils/scoringEngine';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
+
+function Tooltip({ children, content }) {
+  const [show, setShow] = useState(false);
+
+  if (!content) return children;
+
+  return (
+    <div
+      style={{ position: 'relative', display: 'inline-block' }}
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div style={{
+          position: 'absolute',
+          bottom: '100%',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          marginBottom: 8,
+          padding: '8px 12px',
+          background: '#161b22',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+          zIndex: 1000,
+          minWidth: 200,
+          whiteSpace: 'pre-wrap',
+          fontSize: 11,
+          fontWeight: 400,
+          lineHeight: 1.4,
+          color: 'var(--text-primary)',
+          pointerEvents: 'none',
+          textAlign: 'center',
+        }}>
+          {content}
+          <div style={{
+            position: 'absolute',
+            top: '100%',
+            left: '50%',
+            marginLeft: -6,
+            border: '6px solid transparent',
+            borderTopColor: 'var(--border)'
+          }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Section({ title, id, isOpen, onToggle, children }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div
+        onClick={() => onToggle(id)}
+        style={{
+          padding: '10px 16px',
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border)',
+          borderRadius: isOpen ? '6px 6px 0 0' : '6px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          cursor: 'pointer',
+          userSelect: 'none'
+        }}
+      >
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</h3>
+        <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>{isOpen ? '\u25be' : '\u25b8'}</span>
+      </div>
+      {isOpen && (
+        <div style={{
+          padding: '16px 0',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * LearningPanel — Shows grammar weight evolution, op success rates,
@@ -101,42 +187,20 @@ function opRating(stats) {
   return { color: 'var(--accent-red)', label: 'Weak', tip: 'Rarely compiles or leads to learning — may be deprioritized' };
 }
 
-/**
- * Score an op 0-100.
- * Weights: S1 rate (40%), S0.5 rate (20%), S0 rate (10%), novelty (20%), usage (10%)
- */
-function opScore(stats) {
-  const s1 = Math.min((stats.s1_rate || 0) / 0.15, 1.0) * 40;
-  const s05 = Math.min((stats.s05_rate || 0), 1.0) * 20;
-  const s0 = Math.min((stats.s0_rate || 0), 1.0) * 10;
-  const nov = Math.min((stats.avg_novelty || 0), 1.0) * 20;
-  const usage = Math.min((stats.n_used || 0) / 100, 1.0) * 10;
-  return Math.round(Math.max(0, Math.min(100, s1 + s05 + s0 + nov + usage)));
-}
-
 const OP_COLUMNS = [
-  { key: '_score', label: 'Score' },
-  { key: '_reliabilityOrder', label: 'Reliability' },
-  { key: 'rating', label: 'Rating' },
-  { key: 'op', label: 'Op' },
-  { key: 'n_used', label: 'Used' },
-  { key: 's0_rate', label: 'S0 %' },
-  { key: 's05_rate', label: 'S0.5 %' },
-  { key: 's1_rate', label: 'S1 %' },
-  { key: 'avg_novelty', label: 'Avg Novelty' },
-  { key: '_metricQualityOrder', label: 'Metric Quality' },
+  { key: '_score', label: 'Score', tooltip: 'Composite op score used to rank operations (S1, S0.5, S0, novelty, usage).' },
+  { key: '_reliabilityOrder', label: 'Reliability', tooltip: 'Confidence based on sample size (how many architectures used this op).' },
+  { key: 'rating', label: 'Rating', tooltip: 'Qualitative rating derived from S1/S0 pass rates.' },
+  { key: 'op', label: 'Op', tooltip: 'Primitive operation identifier used in generated programs.' },
+  { key: 'n_used', label: 'Used', tooltip: 'Number of architectures that included this op.' },
+  { key: 's0_rate', label: 'S0 %', tooltip: 'Percent of architectures that compile and run.' },
+  { key: 's05_rate', label: 'S0.5 %', tooltip: 'Percent of architectures that are numerically stable.' },
+  { key: 's1_rate', label: 'S1 %', tooltip: 'Percent of architectures that learn (loss decreases).' },
+  { key: 'avg_novelty', label: 'Avg Novelty', tooltip: 'Average novelty score for architectures using this op.' },
+  { key: '_metricQualityOrder', label: 'Metric Quality', tooltip: 'Coverage of trustworthy metrics for this op (more = better).' },
 ];
 
 const RATING_ORDER = { Strong: 4, Good: 3, Some: 2, Compiles: 1, Weak: 0 };
-
-function opScoreBreakdown(stats) {
-  const s1 = Math.min((stats.s1_rate || 0) / 0.15, 1.0) * 40;
-  const s05 = Math.min((stats.s05_rate || 0), 1.0) * 20;
-  const s0 = Math.min((stats.s0_rate || 0), 1.0) * 10;
-  const novelty = Math.min((stats.avg_novelty || 0), 1.0) * 20;
-  const usage = Math.min((stats.n_used || 0) / 100, 1.0) * 10;
-  return { s1, s05, s0, novelty, usage };
-}
 
 function opReliability(stats) {
   const n = stats.n_used || 0;
@@ -253,7 +317,11 @@ function OpSuccessTable({ opRates }) {
                   aria-label={`Sort op success table by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
                   style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                 >
-                  {col.label}
+                  {col.tooltip ? (
+                    <Tooltip content={col.tooltip}>
+                      <span>{col.label}</span>
+                    </Tooltip>
+                  ) : col.label}
                   {sortKey === col.key && (
                     <span style={{ marginLeft: 4, fontSize: 10 }}>
                       {sortDesc ? '\u25BC' : '\u25B2'}
@@ -275,21 +343,25 @@ function OpSuccessTable({ opRates }) {
               return (
                 <tr key={row.op}>
                   <td style={{ fontWeight: 600, color: scoreColor(row._score) }}>
-                    <span title={`S1 ${(opScoreBreakdown(row).s1 || 0).toFixed(1)}/40 | S0.5 ${(opScoreBreakdown(row).s05 || 0).toFixed(1)}/20 | S0 ${(opScoreBreakdown(row).s0 || 0).toFixed(1)}/10 | Novelty ${(opScoreBreakdown(row).novelty || 0).toFixed(1)}/20 | Usage ${(opScoreBreakdown(row).usage || 0).toFixed(1)}/10`}>
-                      {row._score}
-                    </span>
+                    <Tooltip content={`S1 ${(opScoreBreakdown(row).s1 || 0).toFixed(1)}/40 | S0.5 ${(opScoreBreakdown(row).s05 || 0).toFixed(1)}/20 | S0 ${(opScoreBreakdown(row).s0 || 0).toFixed(1)}/10 | Novelty ${(opScoreBreakdown(row).novelty || 0).toFixed(1)}/20 | Usage ${(opScoreBreakdown(row).usage || 0).toFixed(1)}/10`}>
+                      <span>{row._score}</span>
+                    </Tooltip>
                   </td>
-                  <td title={reliability.tip}>
-                    <span style={{ color: reliability.color, fontSize: 11, fontWeight: 600 }}>
-                      {reliability.label}
-                    </span>
+                  <td>
+                    <Tooltip content={`${reliability.tip}\nBased on ${nUsed} architectures.`}>
+                      <span style={{ color: reliability.color, fontSize: 11, fontWeight: 600 }}>
+                        {reliability.label}
+                      </span>
+                    </Tooltip>
                   </td>
-                  <td title={rating.tip}>
-                    <span style={{
-                      display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-                      background: rating.color, marginRight: 6,
-                    }} />
-                    <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
+                  <td>
+                    <Tooltip content={`${rating.tip}\nAppeared in ${nUsed} architectures, ${s1Count} learned.`}>
+                      <span style={{
+                        display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
+                        background: rating.color, marginRight: 6,
+                      }} />
+                      <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
+                    </Tooltip>
                   </td>
                   <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>{row.op}</td>
                   <td>{row.n_used}</td>
@@ -350,7 +422,57 @@ function OpSuccessTable({ opRates }) {
   );
 }
 
+function AdaptationSummary({ log }) {
+  const summary = useMemo(() => {
+    if (!log || log.length === 0) return null;
+    let improved = 0, neutral = 0, regressed = 0;
+    for (const entry of log) {
+      const desc = (entry.description || '').toLowerCase();
+      if (desc.includes('improved') || desc.includes('better') || desc.includes('positive')) {
+        improved++;
+      } else if (desc.includes('regressed') || desc.includes('worse') || desc.includes('negative') || desc.includes('declined')) {
+        regressed++;
+      } else {
+        neutral++;
+      }
+    }
+    return { total: log.length, improved, neutral, regressed };
+  }, [log]);
+
+  if (!summary) return null;
+
+  return (
+    <div className="card">
+      <div className="card-title">Adaptation Outcomes</div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        <span><strong>{summary.total}</strong> grammar adaptations</span>
+        <span style={{ color: 'var(--accent-green)' }}>{summary.improved} improved</span>
+        <span style={{ color: 'var(--text-muted)' }}>{summary.neutral} neutral</span>
+        <span style={{ color: 'var(--accent-red)' }}>{summary.regressed} regressed</span>
+      </div>
+      {summary.total > 0 && (
+        <div style={{
+          height: 8, borderRadius: 4, display: 'flex', overflow: 'hidden',
+          background: 'var(--bg-tertiary)',
+        }}>
+          {summary.improved > 0 && (
+            <div style={{ width: `${(summary.improved / summary.total) * 100}%`, background: 'var(--accent-green)', height: '100%' }} />
+          )}
+          {summary.neutral > 0 && (
+            <div style={{ width: `${(summary.neutral / summary.total) * 100}%`, background: 'var(--text-muted)', opacity: 0.4, height: '100%' }} />
+          )}
+          {summary.regressed > 0 && (
+            <div style={{ width: `${(summary.regressed / summary.total) * 100}%`, background: 'var(--accent-red)', height: '100%' }} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LearningLog({ log }) {
+  const [showRaw, setShowRaw] = useState(false);
+
   if (!log || log.length === 0) {
     return (
       <div className="card">
@@ -362,34 +484,41 @@ function LearningLog({ log }) {
 
   return (
     <div className="card">
-      <div className="card-title">Learning Log</div>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        Timeline of when the system adapted its strategy — e.g., adjusting grammar weights
-        based on which operations led to successful architectures.
-      </p>
-      <div style={{ maxHeight: 300, overflow: 'auto' }}>
-        {log.map((entry, i) => (
-          <div key={entry.id || i} style={{
-            padding: '8px 12px',
-            borderLeft: '3px solid var(--accent-purple)',
-            marginBottom: 8,
-            background: 'var(--bg-tertiary)',
-            borderRadius: '0 4px 4px 0',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-purple)', textTransform: 'uppercase' }}>
-                {entry.event_type?.replace(/_/g, ' ')}
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                {entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleString() : ''}
-              </span>
-            </div>
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-              {entry.description}
-            </div>
-          </div>
-        ))}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="card-title" style={{ margin: 0 }}>Learning Log ({log.length})</div>
+        <button
+          className="refresh-btn"
+          style={{ fontSize: 11, padding: '2px 8px' }}
+          onClick={() => setShowRaw(!showRaw)}
+        >
+          {showRaw ? 'Hide raw entries' : 'Show raw entries'}
+        </button>
       </div>
+      {showRaw && (
+        <div style={{ maxHeight: 300, overflow: 'auto', marginTop: 8 }}>
+          {log.map((entry, i) => (
+            <div key={entry.id || i} style={{
+              padding: '8px 12px',
+              borderLeft: '3px solid var(--accent-purple)',
+              marginBottom: 8,
+              background: 'var(--bg-tertiary)',
+              borderRadius: '0 4px 4px 0',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-purple)', textTransform: 'uppercase' }}>
+                  {entry.event_type?.replace(/_/g, ' ')}
+                </span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleString() : ''}
+                </span>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                {entry.description}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -506,7 +635,7 @@ function EfficiencyFrontier({ frontier }) {
   );
 }
 
-function LearningTrajectory({ trajectory }) {
+function LearningTrajectory({ trajectory, onNavigateStrategy }) {
   const minimumExperiments = Math.max(2, Number(trajectory?.min_experiments_required) || 5);
 
   if (!trajectory || trajectory.trend === 'insufficient_data') {
@@ -621,7 +750,7 @@ function LearningTrajectory({ trajectory }) {
         Tracks the stage-1 survival rate across recent experiments to show whether the
         AI scientist's search strategy is getting better at finding architectures that learn.
       </p>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
         <span style={{
           fontSize: 14, fontWeight: 700, color: trendColor,
           padding: '2px 10px', borderRadius: 12,
@@ -640,6 +769,35 @@ function LearningTrajectory({ trajectory }) {
           Slope: {(trajectory.slope || 0) > 0 ? '+' : ''}{((trajectory.slope || 0) * 100).toFixed(2)}%/exp
         </span>
       </div>
+      {trajectory.trend === 'plateaued' && (
+        <div style={{
+          marginBottom: 10,
+          padding: '10px 12px',
+          borderRadius: 6,
+          border: '1px solid var(--border)',
+          borderLeft: '3px solid var(--accent-purple)',
+          background: 'var(--bg-tertiary)',
+          fontSize: 12,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.5,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-purple)', marginBottom: 4, textTransform: 'uppercase' }}>
+            Aria's Analysis
+          </div>
+          <div>
+            Search productivity has <strong>plateaued</strong>. Aria will likely recommend <strong>Novelty Search</strong> to escape this local minimum.
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <button
+              className="refresh-btn"
+              style={{ fontSize: 11, padding: '2px 8px' }}
+              onClick={onNavigateStrategy}
+            >
+              See Strategy Advisor &rarr;
+            </button>
+          </div>
+        </div>
+      )}
       {sparkline}
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
         <span>{points.length} experiments</span>
@@ -1418,7 +1576,253 @@ function ArchitectureRerunTelemetry({ telemetry }) {
   );
 }
 
-function LearningPanel() {
+function FingerprintDiagnosticsCard({ diagnostics }) {
+  if (!diagnostics) {
+    return null;
+  }
+
+  const total = Number(diagnostics.total || 0);
+  const byReason = diagnostics.by_reason && typeof diagnostics.by_reason === 'object'
+    ? diagnostics.by_reason
+    : {};
+  const topReasons = Object.entries(byReason)
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+    .slice(0, 3);
+
+  return (
+    <div className="card">
+      <div className="card-title">Fingerprint Diagnostics</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+        Runtime telemetry for skipped sensitivity probes during fingerprint analysis.
+      </p>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+        <strong style={{ color: total > 0 ? 'var(--accent-yellow)' : 'var(--accent-green)' }}>
+          Sensitivity skips:
+        </strong>{' '}
+        {total}
+      </div>
+      {topReasons.length > 0 && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          Top reasons: {topReasons.map(([reason, count]) => `${reason} (${count})`).join(' · ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const MIN_SAMPLES = 5;
+
+function sampleCount(data, kind) {
+  if (!data) return 0;
+  if (kind === 'clusters') return data.n_experiments || 0;
+  if (kind === 'routing') return data.total_programs || 0;
+  if (kind === 'gating') return data.total_routed_programs || 0;
+  return 0;
+}
+
+function DataAccumulation({ title, current, threshold, children }) {
+  if (current >= threshold) return children;
+  const pct = threshold > 0 ? Math.min(100, Math.round((current / threshold) * 100)) : 0;
+  return (
+    <div className="card" style={{ position: 'relative', overflow: 'hidden' }}>
+      <div className="card-title">{title}</div>
+      <div style={{ padding: '16px 0 8px' }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          Accumulating data — {current} of {threshold} samples needed for statistically
+          meaningful results.
+        </div>
+        <div style={{
+          height: 6, borderRadius: 3,
+          background: 'var(--bg-tertiary)',
+          overflow: 'hidden',
+        }}>
+          <div style={{
+            height: '100%', borderRadius: 3,
+            width: `${pct}%`,
+            background: 'var(--accent-purple)',
+            opacity: 0.6,
+            transition: 'width 0.4s ease',
+          }} />
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, textAlign: 'right' }}>
+          {pct}% ({current}/{threshold})
+        </div>
+      </div>
+      {/* Skeleton rows */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, opacity: 0.25 }}>
+        {[1, 2, 3].map(i => (
+          <div key={i} style={{
+            height: 14, borderRadius: 4,
+            background: 'var(--bg-tertiary)',
+            width: `${85 - i * 12}%`,
+          }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AriaThoughtProcess() {
+  const ctx = useNarrative();
+  if (!ctx?.narrative) return null;
+
+  const { narrative, trend } = ctx;
+
+  const trendColor = trend === 'improving'
+    ? 'var(--accent-green)'
+    : trend === 'declining'
+      ? 'var(--accent-red, #e74c3c)'
+      : 'var(--accent-purple)';
+
+  return (
+    <div className="card" style={{
+      padding: '14px 16px',
+      borderLeft: `3px solid ${trendColor}`,
+      background: 'var(--bg-secondary)',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
+      }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+          letterSpacing: 0.5, color: trendColor,
+        }}>
+          Aria's Thought Process
+        </span>
+        <span style={{
+          fontSize: 9, fontWeight: 600,
+          color: trendColor,
+          background: `color-mix(in srgb, ${trendColor} 12%, transparent)`,
+          border: `1px solid ${trendColor}`,
+          borderRadius: 4,
+          padding: '1px 5px',
+        }}>
+          Live
+        </span>
+      </div>
+      <div style={{
+        fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65,
+      }}>
+        {narrative}
+      </div>
+    </div>
+  );
+}
+
+function FeedbackLoopSummary({ weights, trajectory, controlComparison, title }) {
+  const summary = useMemo(() => {
+    const parts = [];
+
+    if (weights?.default && weights?.learned) {
+      const deltas = Object.keys(weights.default).map(cat => ({
+        cat,
+        delta: (weights.learned[cat] || 0) - weights.default[cat]
+      })).sort((a, b) => b.delta - a.delta);
+
+      if (deltas.length > 0 && deltas[0].delta > 0.2) {
+        parts.push(`Grammar is shifting toward **${deltas[0].cat.replace(/_/g, ' ')}** (+${deltas[0].delta.toFixed(1)}).`);
+      }
+    }
+
+    if (trajectory?.trend) {
+      const trend = trajectory.trend === 'improving' ? 'improving' : trajectory.trend === 'declining' ? 'declining' : 'plateaued';
+      parts.push(`Search productivity (S1 pass rate) is currently **${trend}**.`);
+    }
+
+    if (controlComparison?.interpretation) {
+      parts.push(`Aria's verdict: **${controlComparison.interpretation}**.`);
+    }
+
+    return parts;
+  }, [weights, trajectory, controlComparison]);
+
+  if (summary.length === 0) return null;
+
+  return (
+    <div className="card" style={{ background: 'var(--bg-secondary)', borderLeft: '3px solid var(--accent-purple)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-purple)', marginBottom: 8, textTransform: 'uppercase' }}>
+        {title || 'Feedback Loop Summary'}
+      </div>
+      <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+        {summary.map((p, i) => (
+          <div key={i} style={{ marginBottom: 4 }}>
+            {p.split('**').map((text, idx) => (
+              idx % 2 === 1 ? <strong key={idx}>{text}</strong> : text
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InsightSynergyMatrix({ data }) {
+  const synergistic = Array.isArray(data?.synergistic_pairs) ? data.synergistic_pairs : [];
+  const antagonistic = Array.isArray(data?.antagonistic_pairs) ? data.antagonistic_pairs : [];
+  const available = Boolean(data?.available) && (synergistic.length > 0 || antagonistic.length > 0);
+  const trim = (text) => {
+    const t = String(text || '').trim();
+    if (t.length <= 88) return t;
+    return `${t.slice(0, 85)}...`;
+  };
+
+  if (!available) {
+    return (
+      <div className="card">
+        <h3 style={{ margin: 0, marginBottom: 8 }}>Insight Synergy Matrix</h3>
+        <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 12 }}>
+          Not enough resolved insight-bundle trials yet.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ margin: 0, marginBottom: 8 }}>Insight Synergy Matrix</h3>
+      <p style={{ margin: '0 0 10px', color: 'var(--text-secondary)', fontSize: 12 }}>
+        Learns which insight combinations improve downstream outcomes and which conflict.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-green)', marginBottom: 6 }}>
+            Positive Pairs
+          </div>
+          {synergistic.slice(0, 5).map((row, idx) => (
+            <div key={`syn-${idx}`} style={{ fontSize: 11, marginBottom: 6, color: 'var(--text-secondary)' }}>
+              <div>{trim(row?.insight_a_content)} + {trim(row?.insight_b_content)}</div>
+              <div style={{ color: 'var(--text-muted)' }}>
+                reward {Number(row?.mean_reward || 0).toFixed(3)} · trials {row?.n_trials || 0} · {row?.confidence_label || 'low'}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-red)', marginBottom: 6 }}>
+            Conflicting Pairs
+          </div>
+          {antagonistic.slice(0, 5).map((row, idx) => (
+            <div key={`ant-${idx}`} style={{ fontSize: 11, marginBottom: 6, color: 'var(--text-secondary)' }}>
+              <div>{trim(row?.insight_a_content)} + {trim(row?.insight_b_content)}</div>
+              <div style={{ color: 'var(--text-muted)' }}>
+                reward {Number(row?.mean_reward || 0).toFixed(3)} · trials {row?.n_trials || 0} · {row?.confidence_label || 'low'}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LearningPanel({ onNavigateStrategy }) {
+  const {
+    learningTrajectory,
+    fingerprintDiagnostics,
+    mathFamilyCoverage,
+    lastUpdated: sharedLastUpdated,
+  } = useAriaData() || {};
+
   const [weights, setWeights] = useState(null);
   const [opRates, setOpRates] = useState(null);
   const [log, setLog] = useState(null);
@@ -1427,16 +1831,26 @@ function LearningPanel() {
   const [routingHealth, setRoutingHealth] = useState(null);
   const [routingComparison, setRoutingComparison] = useState(null);
   const [gatingDiagnostics, setGatingDiagnostics] = useState(null);
-  const [mathFamilyCoverage, setMathFamilyCoverage] = useState(null);
   const [mathspaceImpact, setMathspaceImpact] = useState(null);
   const [compressionCoverage, setCompressionCoverage] = useState(null);
   const [learningSummary, setLearningSummary] = useState(null);
-  const [trajectory, setTrajectory] = useState(null);
   const [topPrograms, setTopPrograms] = useState(null);
   const [controlComparison, setControlComparison] = useState(null);
+  const [insightInteractions, setInsightInteractions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+
+  const [openSections, setOpenSections] = useState({
+    core: true,
+    quality: false,
+    diagnostics: false,
+    raw: false
+  });
+
+  const toggleSection = (id) => {
+    setOpenSections(prev => ({ ...prev, [id]: !prev[id] }));
+  };
 
   useEffect(() => {
     const safeFetch = (url) => fetch(url).then(r => {
@@ -1453,15 +1867,14 @@ function LearningPanel() {
       safeFetch(`${API_BASE}/api/analytics/routing-health`),
       safeFetch(`${API_BASE}/api/analytics/routing-comparison`),
       safeFetch(`${API_BASE}/api/analytics/gating-diagnostics`),
-      safeFetch(`${API_BASE}/api/analytics/math-family-coverage`),
       safeFetch(`${API_BASE}/api/analytics/mathspace-impact`),
       safeFetch(`${API_BASE}/api/analytics/compression-coverage`),
       safeFetch(`${API_BASE}/api/analytics/learning-summary`),
-      safeFetch(`${API_BASE}/api/analytics/learning-trajectory`),
       safeFetch(`${API_BASE}/api/programs?n=100&sort_by=loss_ratio`),
       safeFetch(`${API_BASE}/api/analytics/control-comparison`),
-    ]).then(([w, ops, lg, fr, cl, rh, rc, gd, mf, mi, cc, ls, lt, tp, ctrl]) => {
-      if (!w && !ops && !lg && !fr && !cl && !rh && !rc && !gd && !mf && !mi && !cc && !ls && !lt) {
+      safeFetch(`${API_BASE}/api/analytics/insight-interactions`),
+    ]).then(([w, ops, lg, fr, cl, rh, rc, gd, mi, cc, ls, tp, ctrl, si]) => {
+      if (!w && !ops && !lg && !fr && !cl && !rh && !rc && !gd && !mi && !cc && !ls && !si) {
         setError('Failed to load analytics data. The API may be unavailable.');
       }
       setWeights(w);
@@ -1472,13 +1885,12 @@ function LearningPanel() {
       setRoutingHealth(rh);
       setRoutingComparison(rc);
       setGatingDiagnostics(gd);
-      setMathFamilyCoverage(mf);
       setMathspaceImpact(mi);
       setCompressionCoverage(cc);
       setLearningSummary(ls);
-      setTrajectory(lt);
       setTopPrograms(Array.isArray(tp) ? tp : null);
       setControlComparison(ctrl);
+      setInsightInteractions(si);
       setLastUpdated(new Date());
       setLoading(false);
     }).catch(e => {
@@ -1496,6 +1908,7 @@ function LearningPanel() {
   }
 
   return (
+    <NarrativeProvider trajectoryData={learningTrajectory} weightData={weights}>
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div className="card" style={{ padding: '12px 16px' }}>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>
@@ -1504,36 +1917,75 @@ function LearningPanel() {
           grammar toward successful patterns. This tab shows what the system has learned so far.
         </p>
         <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '8px 0 0' }}>
-          Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Sources: analytics endpoints
+          Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'} · Shared data: {sharedLastUpdated ? new Date(sharedLastUpdated).toLocaleTimeString() : 'loading'}
         </p>
       </div>
-      <WhatIHaveLearned summary={learningSummary} />
-      <ArchitectureRerunTelemetry telemetry={weights?.architecture_rerun_telemetry} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <LearningTrajectory trajectory={trajectory} />
-        <ControlComparison data={controlComparison} />
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <FeedbackLoopSummary
+        weights={weights}
+        trajectory={learningTrajectory}
+        controlComparison={controlComparison}
+        title="Aria's Analysis / Feedback Loop Summary"
+      />
+
+      <Section title="Core Learning" id="core" isOpen={openSections.core} onToggle={toggleSection}>
+        <AriaThoughtProcess />
+        <WhatIHaveLearned summary={learningSummary} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <LearningTrajectory trajectory={learningTrajectory} onNavigateStrategy={onNavigateStrategy} />
+          <ControlComparison data={controlComparison} />
+        </div>
         <GrammarWeightsChart
           defaultWeights={weights?.default}
           learnedWeights={weights?.learned}
           explanation={weights?.explanation}
         />
-        <EfficiencyFrontier frontier={frontier} />
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <ExperimentClusters clustersData={clusters} />
-        <RoutingHealth data={routingComparison || routingHealth} />
-      </div>
-      <MathFamilyCoverage data={mathFamilyCoverage} />
-      <MathspaceImpact data={mathspaceImpact} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      </Section>
+
+      <Section title="Search Quality" id="quality" isOpen={openSections.quality} onToggle={toggleSection}>
+        <ArchitectureRerunTelemetry telemetry={weights?.architecture_rerun_telemetry} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <EfficiencyFrontier frontier={frontier} />
+          <DataAccumulation
+            title="Experiment Clusters"
+            current={sampleCount(clusters, 'clusters')}
+            threshold={MIN_SAMPLES}
+          >
+            <ExperimentClusters clustersData={clusters} />
+          </DataAccumulation>
+        </div>
+      </Section>
+
+      <Section title="Advanced Diagnostics" id="diagnostics" isOpen={openSections.diagnostics} onToggle={toggleSection}>
+        <FingerprintDiagnosticsCard diagnostics={fingerprintDiagnostics} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <DataAccumulation
+            title="Routing Health"
+            current={sampleCount(routingComparison || routingHealth, 'routing')}
+            threshold={MIN_SAMPLES}
+          >
+            <RoutingHealth data={routingComparison || routingHealth} />
+          </DataAccumulation>
+          <DataAccumulation
+            title="Gating Behavior Diagnostics"
+            current={sampleCount(gatingDiagnostics, 'gating')}
+            threshold={MIN_SAMPLES}
+          >
+            <GatingBehaviorDiagnostics data={gatingDiagnostics} />
+          </DataAccumulation>
+        </div>
+        <MathFamilyCoverage data={mathFamilyCoverage} />
+        <MathspaceImpact data={mathspaceImpact} />
         <CompressionCoverage data={compressionCoverage} programs={topPrograms} />
-        <GatingBehaviorDiagnostics data={gatingDiagnostics} />
-      </div>
-      <OpSuccessTable opRates={opRates} />
-      <LearningLog log={log} />
+      </Section>
+
+      <Section title="Raw Data" id="raw" isOpen={openSections.raw} onToggle={toggleSection}>
+        <AdaptationSummary log={log} />
+        <InsightSynergyMatrix data={insightInteractions} />
+        <OpSuccessTable opRates={opRates} />
+        <LearningLog log={log} />
+      </Section>
     </div>
+    </NarrativeProvider>
   );
 }
 

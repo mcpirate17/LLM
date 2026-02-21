@@ -2,61 +2,66 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback } f
 
 const EventBusContext = createContext(null);
 
+function resolveApiBase(apiBase) {
+  const configured = String(apiBase || '').trim();
+  if (configured) return configured.replace(/\/+$/, '');
+
+  if (typeof window === 'undefined') return '';
+  const { protocol, hostname, port } = window.location;
+  // When running dashboard via CRA dev server (localhost:3000) and no API base is set,
+  // default SSE/API traffic to the Flask backend on :5000.
+  if (port === '3000' || port === '3001' || port === '3002') {
+    return `${protocol}//${hostname}:5000`;
+  }
+  return '';
+}
+
 /**
- * Provider that opens a single EventSource to /api/events and dispatches
- * events to all subscribers. Mount once at the app root.
+ * Provider that offloads SSE handling to a Web Worker and dispatches
+ * events to all subscribers. Ensures the main thread stays responsive.
  */
 export function EventBusProvider({ apiBase, children }) {
   const listenersRef = useRef({}); // { eventName: Set<callback> }
   const [connected, setConnected] = useState(false);
-  const esRef = useRef(null);
+  const workerRef = useRef(null);
+  const resolvedApiBase = resolveApiBase(apiBase);
+  const eventsUrl = `${resolvedApiBase}/api/events`;
 
   useEffect(() => {
-    const es = new EventSource(`${apiBase}/api/events`);
-    esRef.current = es;
+    let worker;
+    try {
+      // Create worker using CRA 5.0 compatible syntax
+      worker = new Worker(new URL('../workers/eventBus.worker.js', import.meta.url));
+      workerRef.current = worker;
 
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
+      worker.onmessage = (e) => {
+        const { type, eventName, data, connected: workerConnected } = e.data;
 
-    // Generic message handler — route named events to subscribers
-    const knownEvents = [
-      'program_evaluated', 'experiment_started', 'experiment_completed',
-      'experiment_failed', 'experiment_stopping', 'evolution_started',
-      'evolution_generation', 'evolution_completed', 'novelty_started',
-      'novelty_generation', 'novelty_completed',
-      'scale_up_started', 'scale_up_progress', 'scale_up_completed',
-      'mode_selected', 'investigation_started', 'investigation_progress',
-      'investigation_completed', 'validation_started', 'validation_progress',
-      'validation_completed', 'hypothesis_generated', 'hypothesis_recorded',
-      'hypothesis_resolved', 'decision_made', 'decision_recorded',
-      'knowledge_updated', 'knowledge_extracted', 'campaign_updated',
-      'campaign_created', 'campaign_completed', 'learning_event',
-      'continuous_limit_reached', 'aria_cycle_completed',
-      'auto_scale_up_queued', 'auto_investigate_queued',
-      'auto_validate_queued', 'auto_report_generated',
-      'aria_recommendation', 'breakthrough_detected',
-    ];
+        if (type === 'status') {
+          setConnected(workerConnected);
+        } else if (type === 'event') {
+          const callbacks = listenersRef.current[eventName];
+          if (callbacks) {
+            callbacks.forEach(cb => cb(data));
+          }
+        }
+      };
 
-    const handler = (eventName) => (e) => {
-      const callbacks = listenersRef.current[eventName];
-      if (!callbacks) return;
-      let data;
-      try { data = JSON.parse(e.data); } catch { data = {}; }
-      callbacks.forEach(cb => cb(data, e));
-    };
-
-    const cleanups = knownEvents.map(name => {
-      const h = handler(name);
-      es.addEventListener(name, h);
-      return () => es.removeEventListener(name, h);
-    });
+      worker.postMessage({ type: 'connect', apiBase: resolvedApiBase, eventsUrl });
+    } catch (_err) {
+      // If worker creation fails (browser/build edge cases), stay gracefully disconnected
+      // instead of crashing the dashboard.
+      setConnected(false);
+    }
 
     return () => {
-      cleanups.forEach(fn => fn());
-      es.close();
+      if (worker) {
+        worker.postMessage({ type: 'disconnect' });
+        worker.terminate();
+      }
       setConnected(false);
     };
-  }, [apiBase]);
+  }, [resolvedApiBase, eventsUrl]);
 
   const subscribe = useCallback((eventName, callback) => {
     if (!listenersRef.current[eventName]) {
@@ -85,12 +90,15 @@ export function useEventBus(eventName, callback) {
   cbRef.current = callback;
 
   useEffect(() => {
-    if (!ctx) return;
+    if (!ctx || !eventName || typeof callback !== 'function') return;
     const stable = (data, e) => cbRef.current(data, e);
     return ctx.subscribe(eventName, stable);
-  }, [ctx, eventName]);
+  }, [ctx, eventName, callback]);
 
-  return { connected: ctx?.connected ?? false };
+  return {
+    connected: ctx?.connected ?? false,
+    subscribe: ctx?.subscribe,
+  };
 }
 
 export default EventBusContext;

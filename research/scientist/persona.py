@@ -123,6 +123,12 @@ class Aria:
         # When True, all per-cycle methods skip LLM and use rule-based paths.
         # Set by runner when entering continuous mode to save API costs.
         self._continuous_mode: bool = False
+        # If >0 in continuous mode, call LLM every N cycles for mode selection.
+        self._llm_decision_interval: int = 0
+        # Cached refuted hypotheses for similarity gating.
+        # Populated by runner via set_refuted_hypotheses() before hypothesis
+        # generation so the persona can reject near-duplicates of proven failures.
+        self._refuted_hypotheses: List[Dict] = []
 
     def _get_llm(self):
         """Lazy-init LLM backend (only try once)."""
@@ -411,9 +417,9 @@ class Aria:
             return None
 
         try:
-            from .llm.prompts import SYSTEM_PROMPT, ANALYSIS_PROMPT
+            from .llm.prompts import BRIEFING_SYSTEM_PROMPT, ANALYSIS_PROMPT
             prompt = ANALYSIS_PROMPT.format(context=context)
-            resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=1024)
+            resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
             self._track_cost(resp)
             return resp.text.strip() if resp.text.strip() else None
         except Exception as e:
@@ -427,9 +433,9 @@ class Aria:
             return None
 
         try:
-            from .llm.prompts import SYSTEM_PROMPT, FINGERPRINT_EXPLANATION_PROMPT
+            from .llm.prompts import BRIEFING_SYSTEM_PROMPT, FINGERPRINT_EXPLANATION_PROMPT
             prompt = FINGERPRINT_EXPLANATION_PROMPT.format(context=context)
-            resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
+            resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=512)
             self._track_cost(resp)
             return resp.text.strip() if resp.text.strip() else None
         except Exception as e:
@@ -1430,6 +1436,12 @@ class Aria:
         checks = base.get("checks")
         if not isinstance(checks, list) or not checks:
             checks = self._derive_preflight_checks(hypothesis, concerns)
+        missing_fields = self._derive_missing_hypothesis_fields(
+            hypothesis=hypothesis,
+            checks=checks,
+            concerns=concerns,
+            provided=base.get("missing_fields"),
+        )
 
         return {
             "verdict": verdict,
@@ -1437,8 +1449,71 @@ class Aria:
             "concerns": concerns,
             "suggestions": suggestions,
             "checks": checks,
+            "missing_fields": missing_fields,
             "confidence": confidence,
         }
+
+    def _derive_missing_hypothesis_fields(
+        self,
+        hypothesis: str,
+        checks: List[Dict],
+        concerns: List[str],
+        provided: Any = None,
+    ) -> List[str]:
+        """Build actionable missing-key checklist for hypothesis prereview."""
+        if isinstance(provided, list):
+            explicit = [str(item).strip() for item in provided if str(item).strip()]
+        else:
+            explicit = []
+        if explicit:
+            seen: set[str] = set()
+            out: List[str] = []
+            for key in explicit:
+                if key not in seen:
+                    seen.add(key)
+                    out.append(key)
+            return out
+
+        h_lower = (hypothesis or "").lower()
+        concern_text = " ".join(str(c).lower() for c in (concerns or []))
+        checklist: List[str] = []
+
+        def _add(item: str) -> None:
+            if item not in checklist:
+                checklist.append(item)
+
+        check_map = {
+            "testability": "success_criteria",
+            "measurable_metric": "primary_metric",
+            "confound_risk": "confounders_checklist",
+            "fallback_plan": "fallback_plan",
+        }
+        for check in checks or []:
+            if not isinstance(check, dict):
+                continue
+            status = str(check.get("status") or "").lower()
+            key = str(check.get("key") or "").lower()
+            if status in {"warn", "fail"} and key in check_map:
+                _add(check_map[key])
+
+        if "refine" in h_lower or "fingerprint refinement" in h_lower:
+            if not any(token in h_lower for token in ["source_selection_rule", "result_ids(", "source_result_id"]):
+                _add("source_selection_rule")
+            if not any(token in h_lower for token in ["mutation_mechanism", "mutation_rate", "operator", "neighborhood", "max_edits", "radius"]):
+                _add("mutation_mechanism")
+            if "intent=" in h_lower and not any(token in h_lower for token in ["weights=", "score=", "intent_weights"]):
+                _add("intent_weights")
+            if not any(token in h_lower for token in ["success_criteria", "threshold", "delta_", "baseline", ">=", "<="]):
+                _add("success_criteria")
+
+        if "undefined" in concern_text and "intent" in concern_text:
+            _add("intent_weights")
+        if "no mechanism" in concern_text or "underspecified" in concern_text:
+            _add("mutation_mechanism")
+        if "source-selection" in concern_text:
+            _add("source_selection_rule")
+
+        return checklist
 
     def _derive_preflight_checks(self, hypothesis: str, concerns: List[str]) -> List[Dict]:
         """Derive pass/warn/fail statuses for preflight review criteria."""
@@ -1463,10 +1538,26 @@ class Aria:
             "ablation", "control", "next step", "alternative",
         ]
         has_fallback = any(w in h_lower for w in fallback_words)
+        has_success_criteria = any(
+            token in h_lower
+            for token in ["success_criteria", "threshold", ">=", "<=", "delta_", "baseline", "vs_recent"]
+        )
+        has_mutation_mechanism = any(
+            token in h_lower
+            for token in ["mutation_mechanism", "operator", "mutation_rate", "neighborhood", "max_edits", "radius"]
+        )
+        has_source_rule = any(
+            token in h_lower
+            for token in ["source_selection_rule", "result_ids(", "stage1_survivor_sources"]
+        )
+        has_intent_spec = (
+            ("intent=" in h_lower and ("weights=" in h_lower or "score=" in h_lower))
+            or ("intent_weights" in h_lower)
+        )
 
         confound_signal = any(
             token in concern_text
-            for token in ["vague", "specific", "architectural", "measurable", "confound"]
+            for token in ["vague", "specific", "architectural", "measurable", "confound", "undefined", "no mechanism"]
         )
 
         def _status(pass_cond: bool, warn_cond: bool = False) -> str:
@@ -1480,17 +1571,20 @@ class Aria:
             {
                 "key": "testability",
                 "label": "Testability",
-                "status": _status(has_testability, has_metric),
+                "status": _status(has_testability and has_success_criteria, has_metric and has_success_criteria),
             },
             {
                 "key": "measurable_metric",
                 "label": "Measurable Metric",
-                "status": _status(has_metric),
+                "status": _status(has_metric and has_success_criteria, has_metric),
             },
             {
                 "key": "confound_risk",
                 "label": "Confound Risk",
-                "status": _status(not confound_signal and has_metric, has_metric),
+                "status": _status(
+                    (not confound_signal) and has_metric and has_source_rule and has_mutation_mechanism and has_intent_spec,
+                    has_metric,
+                ),
             },
             {
                 "key": "fallback_plan",
@@ -1583,6 +1677,36 @@ class Aria:
             concerns.append("No architectural specifics mentioned.")
             suggestions.append("Reference specific operations, structure types, or graph properties.")
 
+        # Check similarity to refuted hypotheses
+        refuted_matches = self._check_refuted_overlap(hypothesis)
+        if refuted_matches:
+            top_match = refuted_matches[0]
+            concerns.append(
+                f"Similar to a REFUTED hypothesis (similarity={top_match['similarity']:.0%}): "
+                f"\"{top_match['refuted_text']}\""
+            )
+            shared = ", ".join(top_match.get("shared_tokens", [])[:5])
+            suggestions.append(
+                f"Avoid repeating refuted directions. Shared concepts: {shared}. "
+                "Pivot to a substantially different approach or explicitly address "
+                "why the refuted hypothesis's failure mode does not apply here."
+            )
+
+        # Refinement-specific requirements
+        if "fingerprint refinement" in h_lower or "refine" in h_lower:
+            if not any(token in h_lower for token in ["source_selection_rule", "result_ids(", "source_result_id"]):
+                concerns.append("Fingerprint refinement undefined: no source-selection rule.")
+                suggestions.append("Specify which seed architectures are selected and why (e.g., Stage-1 survivors only).")
+            if not any(token in h_lower for token in ["mutation_mechanism", "mutation_rate", "operator", "radius", "neighborhood"]):
+                concerns.append("Local mutation is underspecified: mutation operators/radius are missing.")
+                suggestions.append("Declare mutation operators and neighborhood size (e.g., one-factor or max_edits<=2).")
+            if "intent=" in h_lower and not any(token in h_lower for token in ["weights=", "score=", "intent_weights"]):
+                concerns.append("Intent parameter is undefined: no scoring weights/formula provided.")
+                suggestions.append("Define intent weights and scoring equation used for ranking candidates.")
+            if not any(token in h_lower for token in ["success_criteria", "threshold", "baseline", "delta_", ">=", "<="]):
+                concerns.append("No explicit success criteria for refinement.")
+                suggestions.append("Add measurable promotion criteria versus baseline/parent (e.g., ΔS1 or loss ratio threshold).")
+
         if not concerns:
             return {
                 "verdict": "proceed",
@@ -1604,6 +1728,79 @@ class Aria:
                 "suggestions": suggestions,
                 "confidence": 0.5,
             }
+
+    # ── Refuted Hypothesis Similarity Gating ──
+
+    def set_refuted_hypotheses(self, refuted: List[Dict]) -> None:
+        """Cache refuted hypotheses for similarity checking.
+
+        Called by the runner before hypothesis generation with entries from
+        ``notebook.get_insights(status='refuted')`` and/or
+        ``negative_results_synthesis()['refuted_hypotheses']``.
+        """
+        self._refuted_hypotheses = list(refuted or [])
+
+    @staticmethod
+    def _tokenize_hypothesis(text: str) -> set:
+        """Extract meaningful tokens from a hypothesis string."""
+        import re as _re
+        text = text.lower()
+        # Remove common stop words and short tokens
+        stop = {"the", "a", "an", "is", "are", "was", "were", "be", "been",
+                "being", "have", "has", "had", "do", "does", "did", "will",
+                "would", "could", "should", "may", "might", "shall", "can",
+                "to", "of", "in", "for", "on", "with", "at", "by", "from",
+                "as", "into", "through", "during", "before", "after", "that",
+                "this", "these", "those", "it", "its", "and", "or", "but",
+                "not", "no", "if", "then", "than", "so", "very", "just",
+                "about", "also", "more", "most", "some", "any", "each",
+                "all", "both", "such", "only", "own", "same", "other",
+                "new", "old", "high", "low", "good", "bad", "best", "worst",
+                "we", "our", "they", "their", "use", "using", "used",
+                "based", "whether", "when", "which", "what", "how", "where"}
+        tokens = set(_re.findall(r'[a-z][a-z0-9_]{2,}', text))
+        return tokens - stop
+
+    @staticmethod
+    def _jaccard_similarity(a: set, b: set) -> float:
+        """Jaccard similarity between two token sets."""
+        if not a or not b:
+            return 0.0
+        intersection = len(a & b)
+        union = len(a | b)
+        return intersection / union if union > 0 else 0.0
+
+    def _check_refuted_overlap(self, hypothesis: str,
+                                threshold: float = 0.45) -> List[Dict]:
+        """Check if a hypothesis is too similar to any refuted hypothesis.
+
+        Returns a list of matches with similarity scores above threshold.
+        Threshold of 0.45 catches near-duplicates while allowing legitimate
+        variations on a theme.
+        """
+        if not self._refuted_hypotheses or not hypothesis:
+            return []
+
+        hyp_tokens = self._tokenize_hypothesis(hypothesis)
+        if len(hyp_tokens) < 3:
+            return []  # Too short to meaningfully compare
+
+        matches = []
+        for refuted in self._refuted_hypotheses:
+            content = refuted.get("content") or refuted.get("hypothesis") or ""
+            if not content:
+                continue
+            ref_tokens = self._tokenize_hypothesis(content)
+            sim = self._jaccard_similarity(hyp_tokens, ref_tokens)
+            if sim >= threshold:
+                matches.append({
+                    "refuted_text": content[:120],
+                    "similarity": round(sim, 3),
+                    "confidence": refuted.get("confidence", 0),
+                    "shared_tokens": sorted(hyp_tokens & ref_tokens)[:10],
+                })
+
+        return sorted(matches, key=lambda m: -m["similarity"])
 
     def _extract_breakthrough_metrics_from_context(self, context: str) -> Dict[str, float]:
         """Best-effort parse of validation metrics from free-form context text."""
@@ -1752,20 +1949,78 @@ class Aria:
         Returns {mode: str, reasoning: str, confidence: float, config: Dict}.
         Uses LLM with MODE_SELECTION_PROMPT, falls back to rule-based.
         In continuous mode, always uses rule-based to save API costs.
+
+        After computing the recommendation, applies decision outcome feedback
+        to adjust confidence for modes with poor historical performance.
         """
         llm = self._get_llm()
-        if llm and context and not self._continuous_mode:
+        use_llm = False
+        if llm and context:
+            if not self._continuous_mode:
+                use_llm = True
+            elif self._continuous_mode and self._llm_decision_interval > 0:
+                cycle_count = (fallback_data or {}).get("n_experiments_in_session", 0)
+                if cycle_count % self._llm_decision_interval == 0:
+                    use_llm = True
+        if use_llm:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, MODE_SELECTION_PROMPT
                 prompt = MODE_SELECTION_PROMPT.format(context=context)
                 resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
                 self._track_cost(resp)
                 if resp.text.strip():
-                    return self._parse_mode_recommendation(resp.text.strip())
+                    rec = self._parse_mode_recommendation(resp.text.strip())
+                    return self._apply_decision_feedback(rec, fallback_data)
             except Exception as e:
                 logger.warning(f"LLM mode recommendation failed, falling back: {e}")
 
-        return self._rule_based_mode_recommendation(fallback_data or {})
+        rec = self._rule_based_mode_recommendation(fallback_data or {})
+        return self._apply_decision_feedback(rec, fallback_data)
+
+    def _apply_decision_feedback(self, rec: Dict,
+                                  fallback_data: Optional[Dict] = None) -> Dict:
+        """Apply decision outcome feedback to a mode recommendation.
+
+        Adjusts confidence based on the chosen mode's historical success rate.
+        If a mode has 3+ consecutive failures, appends a warning to reasoning
+        and reduces confidence.
+        """
+        analytics = (fallback_data or {}).get("analytics_data") or {}
+        decision_outcomes = analytics.get("decision_outcomes") or {}
+        mode_penalties = decision_outcomes.get("mode_penalties") or {}
+        mode_stats = decision_outcomes.get("mode_stats") or {}
+
+        if not mode_penalties:
+            return rec
+
+        mode = rec.get("mode", "synthesis")
+        penalty = mode_penalties.get(mode, 1.0)
+        stats = mode_stats.get(mode) or {}
+        consec_failures = stats.get("consecutive_failures", 0)
+
+        if penalty < 1.0:
+            rec["confidence"] = round(rec.get("confidence", 0.5) * penalty, 2)
+            rec["reasoning"] = (
+                rec.get("reasoning", "") +
+                f" [Decision feedback: {mode} has "
+                f"{stats.get('success_rate', 0):.0%} historical success rate"
+                f" ({stats.get('n_decisions', 0)} decisions)"
+                f", confidence adjusted by {penalty:.2f}x]"
+            )
+
+        if consec_failures >= 3:
+            rec["reasoning"] = (
+                rec.get("reasoning", "") +
+                f" [WARNING: {consec_failures} consecutive {mode} failures]"
+            )
+
+        rec["decision_feedback"] = {
+            "penalty": penalty,
+            "consecutive_failures": consec_failures,
+            "mode_success_rate": stats.get("success_rate"),
+        }
+
+        return rec
 
     def _parse_mode_recommendation(self, text: str) -> Dict:
         """Parse LLM mode recommendation response."""
@@ -1783,7 +2038,7 @@ class Aria:
         if mode_match:
             mode = mode_match.group(1).lower().strip()
             valid_modes = {"synthesis", "evolution", "novelty",
-                           "investigation", "validation"}
+                           "refinement", "investigation", "validation"}
             if mode in valid_modes:
                 result["mode"] = mode
 
@@ -1818,6 +2073,11 @@ class Aria:
         grammar weight trends, and architectural diversity to select the
         next experiment mode and parameters.  Uses diverse templates that
         rotate based on experiment number to avoid repetitive suggestions.
+
+        Decision outcome feedback: when ``analytics_data`` contains
+        ``decision_outcomes``, per-mode success rates from past selection
+        decisions are used to adjust confidence and redirect away from
+        modes that have consistently failed.
         """
         total_s1 = data.get("total_s1_survivors", 0)
         avg_novelty = data.get("avg_novelty", 0)
@@ -1829,6 +2089,11 @@ class Aria:
         recent_failure_count = data.get("recent_failure_count", 0)
         leaderboard_diversity = data.get("leaderboard_diversity", 0)
         leaderboard_size = data.get("leaderboard_size", 0)
+
+        # Decision outcome feedback loop
+        decision_outcomes = analytics.get("decision_outcomes") or {}
+        mode_penalties = decision_outcomes.get("mode_penalties") or {}
+        mode_stats = decision_outcomes.get("mode_stats") or {}
 
         # --- Priority 1: Pipeline escalation (always takes precedence) ---
         if validation_ready > 0:
@@ -1960,7 +2225,7 @@ class Aria:
                 promising_ops.append(op_name)
 
         # Negative results — ops to avoid
-        failed_ops = negative_results.get("excluded_ops") or []
+        failed_ops = negative_results.get("failed_ops") or []
 
         # --- Decision logic: diverse, data-driven strategies ---
 

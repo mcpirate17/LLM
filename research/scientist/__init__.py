@@ -8,4 +8,10 @@ architecture discovery.
 
 from .persona import Aria, get_aria
 from .notebook import LabNotebook, ExperimentEntry
-from .runner import ExperimentRunner
+
+
+def __getattr__(name):
+    if name == "ExperimentRunner":
+        from .runner import ExperimentRunner
+        return ExperimentRunner
+    raise AttributeError(name)

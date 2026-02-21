@@ -1,0 +1,55 @@
+id: ultrametric_attention
+version: 1.0.0
+name: Attention using ultrametric (p-adic) distance
+category: math_space
+tags:
+- math_space
+status: approved
+description: Attention using ultrametric (p-adic) distance
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Attention using ultrametric (p-adic) distance
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Attention using ultrametric (p-adic) distance
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

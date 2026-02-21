@@ -1,0 +1,57 @@
+id: softmax_attention
+version: 1.0.0
+name: Softmax Attention
+category: mixing
+tags:
+- quadratic
+- standard
+- token_mixing
+status: approved
+description: Standard softmax QKV attention (baseline)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Standard softmax QKV attention (baseline)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Standard softmax QKV attention (baseline)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

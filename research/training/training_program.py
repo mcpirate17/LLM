@@ -8,8 +8,9 @@ loss function, optimizer, and curriculum — all potentially synthesized.
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .loss_synthesis import SynthesizedLoss, synthesize_loss
 from .optimizer_synthesis import SynthesizedOptimizer, synthesize_optimizer
@@ -96,3 +97,35 @@ def synthesize_training_program(
         init_scale=init_scale,
         seed=seed or 0,
     )
+
+
+def synthesize_training_program_batch(
+    n_programs: int,
+    n_steps: int = 500,
+    max_seq_len: int = 512,
+    seed_offset: int = 0,
+) -> Tuple[List[TrainingProgram], Dict[str, float]]:
+    """Generate a batch of training programs and return scheduling telemetry."""
+    total = max(0, int(n_programs))
+    programs: List[TrainingProgram] = []
+    per_program_ms: List[float] = []
+    started = time.perf_counter()
+
+    for idx in range(total):
+        t0 = time.perf_counter()
+        tp = synthesize_training_program(
+            n_steps=n_steps,
+            max_seq_len=max_seq_len,
+            seed=seed_offset + idx,
+        )
+        programs.append(tp)
+        per_program_ms.append((time.perf_counter() - t0) * 1000.0)
+
+    total_ms = (time.perf_counter() - started) * 1000.0
+    telemetry = {
+        "n_programs": float(total),
+        "scheduling_total_ms": total_ms,
+        "scheduling_avg_ms": (sum(per_program_ms) / len(per_program_ms)) if per_program_ms else 0.0,
+        "scheduling_max_ms": max(per_program_ms) if per_program_ms else 0.0,
+    }
+    return programs, telemetry

@@ -1,0 +1,54 @@
+id: sqrt
+version: 1.0.0
+name: Square root (clamped input)
+category: math
+tags:
+- elementwise_unary
+- numerically_risky
+status: approved
+description: Square root (clamped input)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  Square root (clamped input)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Square root (clamped input)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

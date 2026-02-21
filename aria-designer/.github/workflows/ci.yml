@@ -1,0 +1,92 @@
+name: Aria Designer CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff
+      - run: ruff check api/ runtime/ tools/
+
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r api/requirements.txt
+          pip install -r requirements-test.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+      - name: Run tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/../research:${{ github.workspace }}
+        run: pytest tests/ --ignore=tests/test_aria_features.py -x --tb=short
+
+  test-components:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pyyaml
+      - run: pytest components/ -x -q
+
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyyaml jsonschema
+      - run: python tools/validate_manifests.py
+      - run: python tools/check_component_mapping.py
+
+  build-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native kernels
+        run: make -C runtime build
+      - name: Run native tests
+        run: make -C runtime test
+
+  test-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r api/requirements.txt
+          pip install -r requirements-test.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+      - name: Build native library
+        run: make -C runtime build
+      - name: Run runtime Python tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/../research:${{ github.workspace }}
+        run: pytest runtime/tests/ -x --tb=short
+
+  build-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd ui && npm ci
+      - run: cd ui && npm run build

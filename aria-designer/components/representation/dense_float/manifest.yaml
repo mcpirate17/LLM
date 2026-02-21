@@ -1,0 +1,56 @@
+id: dense_float
+version: 1.0.0
+name: Dense Float
+category: representation
+tags:
+- standard
+- token_representation
+status: approved
+description: Standard dense float vectors (baseline)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Standard dense float vectors (baseline)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Standard dense float vectors (baseline)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

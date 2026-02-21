@@ -1,0 +1,54 @@
+id: reciprocal
+version: 1.0.0
+name: 1/x (clamped)
+category: math
+tags:
+- elementwise_unary
+- numerically_risky
+status: approved
+description: 1/x (clamped)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  1/x (clamped)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  1/x (clamped)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

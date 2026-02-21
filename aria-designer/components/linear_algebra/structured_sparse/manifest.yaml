@@ -1,0 +1,56 @@
+id: structured_sparse
+version: 1.0.0
+name: Structured Sparse
+category: linear_algebra
+tags:
+- sparse_weights
+- weight_storage
+status: approved
+description: N:M structured sparsity
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  N:M structured sparsity
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  N:M structured sparsity
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

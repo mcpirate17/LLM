@@ -7,8 +7,9 @@ for evaluating quality-retention without retraining.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Any
 
 import torch
 import torch.nn as nn
@@ -121,3 +122,85 @@ def estimate_lm_ce_loss(
     if not losses:
         return None
     return float(sum(losses) / len(losses))
+
+
+def run_dense_vs_structured_sparse_ablation(
+    model_dim: int = 128,
+    vocab_size: int = 2048,
+    seq_len: int = 48,
+    batch_size: int = 4,
+    steps: int = 16,
+    device: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compare dense vs structured sparse linear ops on speed and training loss."""
+    from ..synthesis.graph import ComputationGraph
+    from ..synthesis.compiler import compile_model
+
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    torch.manual_seed(13)
+
+    variants = [
+        ("dense", "linear_proj", {"out_dim": model_dim}),
+        ("nm_2_4", "nm_sparse_linear", {"out_dim": model_dim, "n": 2, "m": 4}),
+        ("block_16", "block_sparse_linear", {"out_dim": model_dim, "block_size": 16, "block_density": 0.25}),
+    ]
+
+    input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+    targets = input_ids.roll(shifts=-1, dims=1)
+    rows: List[Dict[str, Any]] = []
+
+    for label, op_name, config in variants:
+        graph = ComputationGraph(model_dim)
+        i0 = graph.add_input()
+        node = graph.add_op(op_name, [i0], config=config)
+        graph.set_output(node)
+
+        try:
+            model = compile_model([graph], vocab_size=vocab_size, max_seq_len=seq_len).to(dev)
+        except Exception as e:
+            rows.append({"label": label, "op_name": op_name, "error": str(e), "passed": False})
+            continue
+
+        model.train()
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        losses: List[float] = []
+        t0 = time.perf_counter()
+        for _ in range(max(1, int(steps))):
+            opt.zero_grad(set_to_none=True)
+            logits = model(input_ids)
+            loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.shape[-1]), targets[:, :-1].reshape(-1))
+            if torch.isnan(loss) or torch.isinf(loss):
+                break
+            loss.backward()
+            opt.step()
+            losses.append(float(loss.item()))
+        if dev.type == "cuda":
+            torch.cuda.synchronize(dev)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        rows.append({
+            "label": label,
+            "op_name": op_name,
+            "passed": len(losses) > 0,
+            "steps": len(losses),
+            "final_loss": float(losses[-1]) if losses else None,
+            "avg_step_ms": float(elapsed_ms / max(len(losses), 1)),
+            "total_time_ms": float(elapsed_ms),
+        })
+
+    dense = next((r for r in rows if r.get("label") == "dense" and r.get("passed")), None)
+    if dense:
+        dense_loss = float(dense.get("final_loss") or 1.0)
+        dense_step_ms = float(dense.get("avg_step_ms") or 1.0)
+        for row in rows:
+            if not row.get("passed") or row.get("label") == "dense":
+                continue
+            row["loss_ratio_vs_dense"] = float(row.get("final_loss") or dense_loss) / max(dense_loss, 1e-8)
+            row["speedup_vs_dense"] = dense_step_ms / max(float(row.get("avg_step_ms") or dense_step_ms), 1e-8)
+
+    return {
+        "device": str(dev),
+        "steps": int(steps),
+        "rows": rows,
+        "dense_row": dense,
+    }

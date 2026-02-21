@@ -1,0 +1,57 @@
+id: split2
+version: 1.0.0
+name: Split Tensor (2-way)
+category: structural
+tags:
+- structural
+- branching
+status: approved
+description: Split tensor into 2 parts across either token or feature axis.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y0
+  dtype: tensor
+  shape:
+  - '*'
+- name: y1
+  dtype: tensor
+  shape:
+  - '*'
+params:
+  split_scope:
+    type: enum
+    options:
+    - feature
+    - token
+    default: feature
+    description: Choose whether to split feature channels or sequence tokens.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Splits the input tensor into two outputs.
+
+  Inputs: `x:tensor[B,S,D]`.
+
+  Outputs: `y0:tensor[*]`, `y1:tensor[*]`.
+
+  `split_scope=feature` splits along the last axis `D`.
+  `split_scope=token` splits along sequence axis `S`.
+
+  ### Plain Language
+  Use this when you want two branches from one tensor.
+  Choose whether to split tokens or channels.

@@ -1,0 +1,59 @@
+id: outer_product
+version: 1.0.0
+name: Elementwise (Hadamard) product of two inputs
+category: linear_algebra
+tags:
+- linear_algebra
+status: approved
+description: Elementwise (Hadamard) product of two inputs
+inputs:
+- name: a
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: b
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Elementwise (Hadamard) product of two inputs
+
+
+  Inputs: a:tensor[B, S, D], b:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Elementwise (Hadamard) product of two inputs
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

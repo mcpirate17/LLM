@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workflow_graph.v1.schema.json",
+  "title": "WorkflowGraphV1",
+  "type": "object",
+  "required": ["schema_version", "workflow_id", "name", "nodes", "edges"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "workflow_graph.v1"
+    },
+    "workflow_id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "metadata": { "type": "object" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "component_type", "params", "ui_meta"],
+        "properties": {
+          "id": { "type": "string" },
+          "component_type": { "type": "string" },
+          "params": { "type": "object" },
+          "ui_meta": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "source_port", "target", "target_port"],
+        "properties": {
+          "id": { "type": "string" },
+          "source": { "type": "string" },
+          "source_port": { "type": "string" },
+          "target": { "type": "string" },
+          "target_port": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

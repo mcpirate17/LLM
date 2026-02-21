@@ -1,0 +1,53 @@
+id: transpose_sd
+version: 1.0.0
+name: Transpose sequence and feature dims
+category: linear_algebra
+tags:
+- linear_algebra
+status: approved
+description: Transpose sequence and feature dims
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - D
+  - S
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Transpose sequence and feature dims
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, D, S].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Transpose sequence and feature dims
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

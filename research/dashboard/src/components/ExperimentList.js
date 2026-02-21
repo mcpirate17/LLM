@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { noveltyColor, reliabilityColor } from '../utils/colors';
+import { experimentScore, experimentScoreBreakdown } from '../utils/scoringEngine';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 /** Color-code experiment outcome: green (good), amber (ok), red (bad) */
@@ -21,58 +22,6 @@ function experimentRating(exp) {
   if (s1 > 0) return { color: 'var(--accent-yellow)', label: 'Some', tip: 'At least one learnable architecture found' };
   if ((exp.n_stage0_passed || 0) > n * 0.3) return { color: 'var(--accent-orange, #f0883e)', label: 'Weak', tip: 'Programs compiled but none learned — need better op combinations' };
   return { color: 'var(--accent-red)', label: 'Poor', tip: 'Most programs failed to compile — grammar too aggressive' };
-}
-
-/**
- * Compute a 0-100 numeric score for an experiment.
- * Weights: S1 pass rate (40%), best loss ratio (30%), best novelty (20%), completion (10%)
- */
-function experimentScore(exp) {
-  if (exp?.status === 'running' && exp?.experiment_type === 'validation') {
-    return 25;
-  }
-
-  const n = exp.n_programs_generated || 0;
-  const s1 = exp.n_stage1_passed || 0;
-
-  // S1 pass rate: 0-1, scaled so 10% pass rate = 1.0
-  const passRate = n > 0 ? Math.min(s1 / n / 0.10, 1.0) : 0;
-
-  // Best loss ratio: lower is better, 0.2 = perfect, 1.0 = bad
-  const lossScore = exp.best_loss_ratio != null
-    ? Math.max(0, 1 - (exp.best_loss_ratio - 0.2) / 0.8)
-    : 0;
-
-  // Novelty: 0-1, already scaled
-  const noveltyScore = exp.best_novelty_score != null
-    ? Math.min(exp.best_novelty_score, 1.0)
-    : 0;
-
-  // Completion bonus
-  const completionScore = exp.status === 'completed' ? 1.0 : 0;
-
-  const score = (passRate * 40 + lossScore * 30 + noveltyScore * 20 + completionScore * 10);
-  return Math.round(Math.max(0, Math.min(100, score)));
-}
-
-function experimentScoreBreakdown(exp) {
-  const n = exp.n_programs_generated || 0;
-  const s1 = exp.n_stage1_passed || 0;
-  const passRate = n > 0 ? Math.min(s1 / n / 0.10, 1.0) : 0;
-  const lossScore = exp.best_loss_ratio != null
-    ? Math.max(0, 1 - (exp.best_loss_ratio - 0.2) / 0.8)
-    : 0;
-  const noveltyScore = exp.best_novelty_score != null
-    ? Math.min(exp.best_novelty_score, 1.0)
-    : 0;
-  const completionScore = exp.status === 'completed' ? 1.0 : 0;
-
-  return {
-    passRate: passRate * 40,
-    loss: lossScore * 30,
-    novelty: noveltyScore * 20,
-    completion: completionScore * 10,
-  };
 }
 
 function metricText(value, fallbackReason, formatter) {
@@ -143,8 +92,17 @@ function StageFunnel({ generated, s0, s05, s1 }) {
 }
 
 const EXPERIMENT_LIST_SORT_PREFS_KEY = 'dashboard.experiment-list.sort.v1';
+const EXPERIMENT_LIST_EXPERT_KEY = 'dashboard.experiment-list.expert.v1';
 
 function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
+  const [showExpertColumns, setShowExpertColumns] = useState(() => {
+    try {
+      return localStorage.getItem(EXPERIMENT_LIST_EXPERT_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
   const [sortKey, setSortKey] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(EXPERIMENT_LIST_SORT_PREFS_KEY) || '{}');
@@ -219,6 +177,13 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
     localStorage.setItem(EXPERIMENT_LIST_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
   }, [sortKey, sortDesc]);
 
+  useEffect(() => {
+    localStorage.setItem(EXPERIMENT_LIST_EXPERT_KEY, String(showExpertColumns));
+  }, [showExpertColumns]);
+
+  const signalKeys = new Set(['score', 'n_stage1_passed', 'best_loss_ratio', 'best_novelty_score', 'status', 'timestamp', 'experiment_id']);
+  const visibleColumns = COLUMNS.filter(col => showExpertColumns || signalKeys.has(col.key));
+
   const handleSort = (key) => {
     if (sortKey === key) {
       setSortDesc(!sortDesc);
@@ -281,7 +246,16 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
 
   return (
     <div className="card">
-      <div className="card-title">Experiments</div>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>Experiments</span>
+        <button
+          className="refresh-btn"
+          style={{ fontSize: 11, padding: '3px 10px' }}
+          onClick={() => setShowExpertColumns(!showExpertColumns)}
+        >
+          {showExpertColumns ? 'Hide noise' : 'Show expert columns'}
+        </button>
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         Each experiment generates a batch of random computation graphs, then tests whether they can
         function as LLM layers. S1 Pass = architectures that actually learned from data.
@@ -291,10 +265,11 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
       <table className="data-table">
         <thead>
           <tr>
-            {COLUMNS.map(col => (
+            {visibleColumns.map(col => (
               <th
                 key={col.key}
                 onClick={() => handleSort(col.key)}
+                aria-label={`Sort op success table by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
                 style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
               >
                 {col.label}
@@ -312,175 +287,229 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
             const rating = exp._rating;
             const score = exp._score;
             const isActiveValidation = exp.status === 'running' && exp.experiment_type === 'validation';
+            const nUsed = exp.n_programs_generated || 0;
+            const s1Count = exp.n_stage1_passed || 0;
             const chips = experimentMetricChips(exp);
+
             return (
               <tr key={exp.experiment_id}
                 style={{ cursor: onSelectExperiment ? 'pointer' : 'default' }}
                 onClick={() => onSelectExperiment && onSelectExperiment(exp.experiment_id)}>
-                <td style={{ fontWeight: 600, color: isActiveValidation ? 'var(--accent-blue)' : scoreColor(score) }}>
-                  {isActiveValidation ? (
-                    'running validation'
-                  ) : (
-                    <span title={`S1 rate ${(experimentScoreBreakdown(exp).passRate || 0).toFixed(1)}/40 | Loss ${(experimentScoreBreakdown(exp).loss || 0).toFixed(1)}/30 | Novelty ${(experimentScoreBreakdown(exp).novelty || 0).toFixed(1)}/20 | Completion ${(experimentScoreBreakdown(exp).completion || 0).toFixed(1)}/10`}>
-                      {score}
-                    </span>
-                  )}
-                </td>
-                <td title={rating.tip}>
-                  <span style={{
-                    display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-                    background: rating.color, marginRight: 6,
-                  }} />
-                  <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
-                </td>
-                <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
-                  {exp.experiment_id}
-                  {exp.experiment_id && (
-                    <button
-                      className="refresh-btn"
-                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        copyText(exp.experiment_id);
-                      }}
-                      aria-label={`Copy experiment id ${exp.experiment_id}`}
-                    >
-                      {copiedValue === exp.experiment_id ? 'Copied' : 'Copy'}
-                    </button>
-                  )}
-                </td>
-                <td>{exp.experiment_type}</td>
-                <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}
-                    title={exp.hypothesis || 'No hypothesis'}>
-                  {exp.hypothesis
-                    ? (exp.hypothesis.length > 60 ? exp.hypothesis.slice(0, 60) + '...' : exp.hypothesis)
-                    : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>none</span>
+                {visibleColumns.map(col => {
+                  if (col.key === 'score') {
+                    return (
+                      <td key="score" style={{ fontWeight: 600, color: isActiveValidation ? 'var(--accent-blue)' : scoreColor(score) }}>
+                        {isActiveValidation ? (
+                          'running validation'
+                        ) : (
+                          <span title={`S1 rate ${(experimentScoreBreakdown(exp).passRate || 0).toFixed(1)}/40 | Loss ${(experimentScoreBreakdown(exp).loss || 0).toFixed(1)}/30 | Novelty ${(experimentScoreBreakdown(exp).novelty || 0).toFixed(1)}/20 | Completion ${(experimentScoreBreakdown(exp).completion || 0).toFixed(1)}/10`}>
+                            {score}
+                          </span>
+                        )}
+                      </td>
+                    );
                   }
-                </td>
-                <td>
-                  <span className={`badge ${exp.status === 'completed' ? 'pass' :
-                    exp.status === 'running' ? 'running' : 'fail'}`}>
-                    {exp.status}
-                  </span>
-                  {exp.status === 'running' && (
-                    confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'cancel' ? (
-                      <span style={{ fontSize: 10, marginLeft: 6 }}>
-                        <span style={{ color: 'var(--accent-yellow)' }}>Cancel?</span>
-                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4, color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }} onClick={(e) => handleCancel(e, exp.experiment_id)}>Yes</button>
-                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 2 }} onClick={(e) => { e.stopPropagation(); setConfirmingAction(null); }}>No</button>
-                      </span>
-                    ) : (
-                      <button
-                        className="refresh-btn"
-                        style={{
-                          fontSize: 10, padding: '1px 5px', marginLeft: 6,
-                          color: 'var(--accent-red)', borderColor: 'var(--accent-red)',
-                        }}
-                        disabled={cancellingId === exp.experiment_id}
-                        onClick={(e) => handleCancel(e, exp.experiment_id)}
-                        aria-label="Cancel experiment"
-                      >
-                        {cancellingId === exp.experiment_id ? '...' : 'Cancel'}
-                      </button>
-                    )
-                  )}
-                  {(exp.status === 'running' || exp.status === 'failed') && (
-                    confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'rerun' ? (
-                      <span style={{ fontSize: 10, marginLeft: 6 }}>
-                        <span style={{ color: 'var(--accent-yellow)' }}>Rerun?</span>
-                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4 }} onClick={(e) => handleRerun(e, exp.experiment_id)}>Yes</button>
-                        <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 2 }} onClick={(e) => { e.stopPropagation(); setConfirmingAction(null); }}>No</button>
-                      </span>
-                    ) : (
-                      <button
-                        className="refresh-btn"
-                        style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
-                        disabled={rerunningId === exp.experiment_id}
-                        onClick={(e) => handleRerun(e, exp.experiment_id)}
-                        aria-label="Rerun experiment"
-                      >
-                        {rerunningId === exp.experiment_id ? '...' : 'Rerun'}
-                      </button>
-                    )
-                  )}
-                  {inlineError?.id === exp.experiment_id && (
-                    <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--accent-red)' }}>
-                      {inlineError.message}
-                      <button className="refresh-btn" style={{ fontSize: 9, padding: '0 4px', marginLeft: 4 }} onClick={(e) => { e.stopPropagation(); setInlineError(null); }}>&times;</button>
-                    </span>
-                  )}
-                </td>
-                <td title={`${exp.n_programs_generated || 0} generated \u2192 ${exp.n_stage0_passed ?? '?'} compiled \u2192 ${exp.n_stage05_passed ?? '?'} stage0.5 \u2192 ${exp.n_stage1_passed || 0} S1`}>
-                  <StageFunnel
-                    generated={exp.n_programs_generated || 0}
-                    s0={exp.n_stage0_passed}
-                    s05={exp.n_stage05_passed}
-                    s1={exp.n_stage1_passed || 0}
-                  />
-                </td>
-                <td style={{ color: (exp.n_stage1_passed || 0) > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
-                  {exp.n_stage1_passed || 0}
-                  <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                    / {exp.n_programs_generated || 0}
-                    {(exp.n_programs_generated || 0) > 0 && ` (${(((exp.n_stage1_passed || 0) / exp.n_programs_generated) * 100).toFixed(1)}%)`}
-                  </span>
-                </td>
-                <td style={{
-                  color: exp.best_loss_ratio != null
-                    ? (exp.best_loss_ratio < 0.5 ? 'var(--accent-green)' : exp.best_loss_ratio < 0.8 ? 'var(--accent-yellow)' : 'var(--text-muted)')
-                    : 'var(--text-muted)'
-                }}>
-                  {metricText(
-                    exp.best_loss_ratio,
-                    (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'not yet evaluated',
-                    (v) => v.toFixed(3),
-                  )}
-                </td>
-                <td style={{ color: noveltyColor(exp.best_novelty_score) }}>
-                  {metricText(
-                    exp.best_novelty_score,
-                    (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'insufficient data',
-                    (v) => v.toFixed(3),
-                  )}
-                  <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
-                    {chips.map(chip => (
-                      <span
-                        key={`${exp.experiment_id}-${chip.label}`}
-                        title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
-                        style={{
-                          fontSize: 10,
-                          padding: '1px 5px',
-                          borderRadius: 4,
-                          border: `1px solid ${reliabilityColor(chip.reliability)}55`,
-                          color: reliabilityColor(chip.reliability),
-                          background: `${reliabilityColor(chip.reliability)}22`,
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {chip.label}: {chip.source}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td style={{ maxWidth: 240, fontSize: 12, color: 'var(--text-secondary)' }}
-                    title={exp.aria_summary || exp.research_question || ''}>
-                  {exp.aria_summary
-                    ? (exp.aria_summary.length > 80
-                        ? exp.aria_summary.slice(0, 80) + '...'
-                        : exp.aria_summary)
-                    : exp.research_question
-                      ? <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
-                          {exp.research_question.length > 60
-                            ? exp.research_question.slice(0, 60) + '...'
-                            : exp.research_question}
+                  if (col.key === 'rating') {
+                    return (
+                      <td key="rating" title={rating.tip}>
+                        <span style={{
+                          display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
+                          background: rating.color, marginRight: 6,
+                        }} />
+                        <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
+                      </td>
+                    );
+                  }
+                  if (col.key === 'experiment_id') {
+                    return (
+                      <td key="id" style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
+                        {exp.experiment_id}
+                        {exp.experiment_id && (
+                          <button
+                            className="refresh-btn"
+                            style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              copyText(exp.experiment_id);
+                            }}
+                            aria-label={`Copy experiment id ${exp.experiment_id}`}
+                          >
+                            {copiedValue === exp.experiment_id ? 'Copied' : 'Copy'}
+                          </button>
+                        )}
+                      </td>
+                    );
+                  }
+                  if (col.key === 'experiment_type') {
+                    return <td key="type">{exp.experiment_type}</td>;
+                  }
+                  if (col.key === 'hypothesis') {
+                    return (
+                      <td key="hypothesis" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}
+                          title={exp.hypothesis || 'No hypothesis'}>
+                        {exp.hypothesis
+                          ? (exp.hypothesis.length > 60 ? exp.hypothesis.slice(0, 60) + '...' : exp.hypothesis)
+                          : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>none</span>
+                        }
+                      </td>
+                    );
+                  }
+                  if (col.key === 'status') {
+                    return (
+                      <td key="status">
+                        <span className={`badge ${exp.status === 'completed' ? 'pass' :
+                          exp.status === 'running' ? 'running' : 'fail'}`}>
+                          {exp.status}
                         </span>
-                      : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>--</span>
+                        {exp.status === 'running' && (
+                          confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'cancel' ? (
+                            <span style={{ fontSize: 10, marginLeft: 6 }}>
+                              <span style={{ color: 'var(--accent-yellow)' }}>Cancel?</span>
+                              <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4, color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }} onClick={(e) => handleCancel(e, exp.experiment_id)}>Yes</button>
+                              <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 2 }} onClick={(e) => { e.stopPropagation(); setConfirmingAction(null); }}>No</button>
+                            </span>
+                          ) : (
+                            <button
+                              className="refresh-btn"
+                              style={{
+                                fontSize: 10, padding: '1px 5px', marginLeft: 6,
+                                color: 'var(--accent-red)', borderColor: 'var(--accent-red)',
+                              }}
+                              disabled={cancellingId === exp.experiment_id}
+                              onClick={(e) => handleCancel(e, exp.experiment_id)}
+                              aria-label="Cancel experiment"
+                            >
+                              {cancellingId === exp.experiment_id ? '...' : 'Cancel'}
+                            </button>
+                          )
+                        )}
+                        {(exp.status === 'running' || exp.status === 'failed') && (
+                          confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'rerun' ? (
+                            <span style={{ fontSize: 10, marginLeft: 6 }}>
+                              <span style={{ color: 'var(--accent-yellow)' }}>Rerun?</span>
+                              <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4 }} onClick={(e) => handleRerun(e, exp.experiment_id)}>Yes</button>
+                              <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 2 }} onClick={(e) => { e.stopPropagation(); setConfirmingAction(null); }}>No</button>
+                            </span>
+                          ) : (
+                            <button
+                              className="refresh-btn"
+                              style={{ fontSize: 10, padding: '1px 5px', marginLeft: 6 }}
+                              disabled={rerunningId === exp.experiment_id}
+                              onClick={(e) => handleRerun(e, exp.experiment_id)}
+                              aria-label="Rerun experiment"
+                            >
+                              {rerunningId === exp.experiment_id ? '...' : 'Rerun'}
+                            </button>
+                          )
+                        )}
+                        {inlineError?.id === exp.experiment_id && (
+                          <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--accent-red)' }}>
+                            {inlineError.message}
+                            <button className="refresh-btn" style={{ fontSize: 9, padding: '0 4px', marginLeft: 4 }} onClick={(e) => { e.stopPropagation(); setInlineError(null); }}>&times;</button>
+                          </span>
+                        )}
+                      </td>
+                    );
                   }
-                </td>
-                <td>{formatDuration(exp.duration_seconds)}</td>
-                <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  {formatTime(exp.timestamp)}
-                </td>
+                  if (col.key === 'stage_funnel') {
+                    return (
+                      <td key="funnel" title={`${exp.n_programs_generated || 0} generated \u2192 ${exp.n_stage0_passed ?? '?'} compiled \u2192 ${exp.n_stage05_passed ?? '?'} stage0.5 \u2192 ${exp.n_stage1_passed || 0} S1`}>
+                        <StageFunnel
+                          generated={exp.n_programs_generated || 0}
+                          s0={exp.n_stage0_passed}
+                          s05={exp.n_stage05_passed}
+                          s1={exp.n_stage1_passed || 0}
+                        />
+                      </td>
+                    );
+                  }
+                  if (col.key === 'n_stage1_passed') {
+                    return (
+                      <td key="s1" style={{ color: s1Count > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                        {s1Count}
+                        <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                          / {nUsed}
+                          {nUsed > 0 && ` (${((s1Count / nUsed) * 100).toFixed(1)}%)`}
+                        </span>
+                      </td>
+                    );
+                  }
+                  if (col.key === 'best_loss_ratio') {
+                    return (
+                      <td key="loss" style={{
+                        color: exp.best_loss_ratio != null
+                          ? (exp.best_loss_ratio < 0.5 ? 'var(--accent-green)' : exp.best_loss_ratio < 0.8 ? 'var(--accent-yellow)' : 'var(--text-muted)')
+                          : 'var(--text-muted)'
+                      }}>
+                        {metricText(
+                          exp.best_loss_ratio,
+                          (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'not yet evaluated',
+                          (v) => v.toFixed(3),
+                        )}
+                      </td>
+                    );
+                  }
+                  if (col.key === 'best_novelty_score') {
+                    return (
+                      <td key="novelty" style={{ color: noveltyColor(exp.best_novelty_score) }}>
+                        {metricText(
+                          exp.best_novelty_score,
+                          (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'insufficient data',
+                          (v) => v.toFixed(3),
+                        )}
+                        <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
+                          {chips.map(chip => (
+                            <span
+                              key={`${exp.experiment_id}-${chip.label}`}
+                              title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                              style={{
+                                fontSize: 10,
+                                padding: '1px 5px',
+                                borderRadius: 4,
+                                border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                                color: reliabilityColor(chip.reliability),
+                                background: `${reliabilityColor(chip.reliability)}22`,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {chip.label}: {chip.source}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                    );
+                  }
+                  if (col.key === 'aria_summary') {
+                    return (
+                      <td key="outcome" style={{ maxWidth: 240, fontSize: 12, color: 'var(--text-secondary)' }}
+                          title={exp.aria_summary || exp.research_question || ''}>
+                        {exp.aria_summary
+                          ? (exp.aria_summary.length > 80
+                              ? exp.aria_summary.slice(0, 80) + '...'
+                              : exp.aria_summary)
+                          : exp.research_question
+                            ? <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
+                                {exp.research_question.length > 60
+                                  ? exp.research_question.slice(0, 60) + '...'
+                                  : exp.research_question}
+                              </span>
+                            : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>--</span>
+                        }
+                      </td>
+                    );
+                  }
+                  if (col.key === 'duration_seconds') {
+                    return <td key="duration">{formatDuration(exp.duration_seconds)}</td>;
+                  }
+                  if (col.key === 'timestamp') {
+                    return (
+                      <td key="time" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        {formatTime(exp.timestamp)}
+                      </td>
+                    );
+                  }
+                  return <td key={col.key}>--</td>;
+                })}
               </tr>
             );
           })}

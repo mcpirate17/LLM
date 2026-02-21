@@ -1,0 +1,57 @@
+id: hyp_linear
+version: 1.0.0
+name: Linear transformation in hyperbolic space
+category: math_space
+tags:
+- math_space
+- learnable
+- numerically_risky
+status: approved
+description: Linear transformation in hyperbolic space
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: true
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Linear transformation in hyperbolic space
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Linear transformation in hyperbolic space
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

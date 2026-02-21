@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import { confidenceColor } from '../utils/colors';
+import { insightScore } from '../utils/scoringEngine';
 import useRenderPerf from '../hooks/useRenderPerf';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -12,31 +13,8 @@ const CATEGORY_COLORS = {
   hypothesis: 'var(--accent-purple)',
 };
 
-const CATEGORY_ORDER = {
-  success_factor: 4,
-  pattern: 3,
-  hypothesis: 2,
-  failure_mode: 1,
-};
-
-const STATUS_ORDER = {
-  confirmed: 3,
-  active: 2,
-  superseded: 1,
-  refuted: 0,
-};
-
-/**
- * Score an insight 0-100.
- * Weights: confidence (40%), category importance (30%), status (20%), has evidence (10%)
- */
-function insightScore(insight) {
-  const conf = (insight.confidence || 0.5) * 40;
-  const cat = ((CATEGORY_ORDER[insight.category] || 0) / 4) * 30;
-  const status = ((STATUS_ORDER[insight.status] || 0) / 3) * 20;
-  const evidence = insight.supporting_evidence ? 10 : 0;
-  return Math.round(Math.max(0, Math.min(100, conf + cat + status + evidence)));
-}
+const CATEGORY_ORDER = { success_factor: 4, pattern: 3, hypothesis: 2, failure_mode: 1 };
+const STATUS_ORDER = { confirmed: 3, active: 2, superseded: 1, refuted: 0 };
 
 const COLUMNS_FULL = [
   { key: '_score', label: 'Score' },
@@ -217,6 +195,9 @@ function InsightsPanel({ insights, compact }) {
     return true;
   });
   const [expandedId, setExpandedId] = useState(null);
+  const [boostingId, setBoostingId] = useState(null);
+  const [boostedIds, setBoostedIds] = useState(() => new Set());
+  const [boostError, setBoostError] = useState(null);
 
   useEffect(() => {
     try {
@@ -230,6 +211,31 @@ function InsightsPanel({ insights, compact }) {
     } else {
       setSortKey(key);
       setSortDesc(true);
+    }
+  };
+
+  const handleBoost = async (insight) => {
+    const insightId = insight?.insight_id || null;
+    if (!insightId || boostingId) return;
+    setBoostError(null);
+    setBoostingId(insightId);
+    try {
+      const res = await fetch(`${API_BASE}/api/insights/boost`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          insight_id: insightId,
+          category: insight?.category,
+          content: insight?.content,
+          confidence: insight?.confidence,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setBoostedIds(prev => new Set([...Array.from(prev), insightId]));
+    } catch (e) {
+      setBoostError(e.message || 'Boost failed');
+    } finally {
+      setBoostingId(null);
     }
   };
 
@@ -389,6 +395,38 @@ function InsightsPanel({ insights, compact }) {
                         whiteSpace: 'pre-wrap',
                       }}>
                         {insight.content}
+                        {!compact && (
+                          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleBoost(insight);
+                              }}
+                              disabled={boostingId === insight.insight_id}
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                borderRadius: 6,
+                                border: '1px solid var(--border)',
+                                background: boostedIds.has(insight.insight_id) ? 'var(--accent-green)' : 'var(--bg-secondary)',
+                                color: boostedIds.has(insight.insight_id) ? '#0b0f13' : 'var(--text-primary)',
+                                padding: '4px 8px',
+                                cursor: boostingId === insight.insight_id ? 'progress' : 'pointer',
+                              }}
+                            >
+                              {boostedIds.has(insight.insight_id) ? 'Boosted' : (boostingId === insight.insight_id ? 'Boosting...' : 'Boost this pattern')}
+                            </button>
+                            {boostError && (
+                              <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>
+                                {boostError}
+                              </span>
+                            )}
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                              Adds a learning-log note to bias future experiments toward this pattern.
+                            </span>
+                          </div>
+                        )}
                         {insight.supporting_evidence && (
                           <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' }}>
                             <strong>Evidence:</strong> {insight.supporting_evidence}

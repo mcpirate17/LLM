@@ -1,0 +1,21 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "wf_example_tropical_block",
+  "name": "Tropical Block",
+  "nodes": [
+    {"id": "n_input",     "component_type": "io/input",                      "params": {"dim": 64, "vocab_size": 32000},        "ui_meta": {"position": {"x": 300, "y": 40}}},
+    {"id": "n_trop_attn", "component_type": "math_space/tropical_attention", "params": {},                                       "ui_meta": {"position": {"x": 180, "y": 180}}},
+    {"id": "n_trop_gate", "component_type": "math_space/tropical_gate",      "params": {},                                       "ui_meta": {"position": {"x": 180, "y": 310}}},
+    {"id": "n_add",       "component_type": "math/add",                      "params": {},                                       "ui_meta": {"position": {"x": 300, "y": 440}}},
+    {"id": "n_norm",      "component_type": "normalization/rmsnorm_pre",     "params": {},                                       "ui_meta": {"position": {"x": 300, "y": 570}}},
+    {"id": "n_out",       "component_type": "io/output_head",                "params": {"vocab_size": 32000, "tie_weights": true},"ui_meta": {"position": {"x": 300, "y": 700}}}
+  ],
+  "edges": [
+    {"id": "e1", "source": "n_input",     "source_port": "y", "target": "n_trop_attn", "target_port": "x"},
+    {"id": "e2", "source": "n_trop_attn", "source_port": "y", "target": "n_trop_gate", "target_port": "x"},
+    {"id": "e3", "source": "n_input",     "source_port": "y", "target": "n_add",       "target_port": "a"},
+    {"id": "e4", "source": "n_trop_gate", "source_port": "y", "target": "n_add",       "target_port": "b"},
+    {"id": "e5", "source": "n_add",       "source_port": "y", "target": "n_norm",      "target_port": "x"},
+    {"id": "e6", "source": "n_norm",      "source_port": "y", "target": "n_out",       "target_port": "x"}
+  ]
+}

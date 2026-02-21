@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 import uuid
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,8 +35,267 @@ from .evidence import build_evidence_pack
 from .persona import get_aria
 from .runner import ExperimentRunner, RunConfig
 from .llm.context import build_program_context
+from .designer_utils import compile_designer_graph, validate_designer_graph, run_designer_graph, get_designer_components, generate_python_module, import_research_program
+
+import requests as _requests
 
 logger = logging.getLogger(__name__)
+
+# ── Designer proxy configuration ────────────────────────────────────────
+# When set, /api/designer/* endpoints proxy to the aria-designer API first,
+# falling back to local implementation if the proxy is unavailable.
+_DESIGNER_PROXY_BASE = os.environ.get("ARIA_DESIGNER_PROXY_BASE", "http://127.0.0.1:8091")
+_DESIGNER_PROXY_ENABLED = os.environ.get("ARIA_DESIGNER_PROXY_ENABLED", "1") != "0"
+_DESIGNER_PROXY_TIMEOUT = float(os.environ.get("ARIA_DESIGNER_PROXY_TIMEOUT", "10"))
+
+# ── Designer lifecycle orchestration ────────────────────────────────────
+_ARIA_DESIGNER_ROOT = Path(
+    os.environ.get(
+        "ARIA_DESIGNER_ROOT",
+        str(Path(__file__).resolve().parents[2] / "aria-designer"),
+    )
+)
+_ARIA_DESIGNER_API_HEALTH = os.environ.get("ARIA_DESIGNER_API_HEALTH", "http://127.0.0.1:8091/health")
+_ARIA_DESIGNER_UI_HEALTH = os.environ.get("ARIA_DESIGNER_UI_HEALTH", "http://127.0.0.1:5174")
+_ARIA_DESIGNER_BOOT_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_BOOT_TIMEOUT_S", "30"))
+_ARIA_DESIGNER_IDLE_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_IDLE_TIMEOUT_S", "900"))
+_DESIGNER_LIFECYCLE_LOCK = threading.Lock()
+_DESIGNER_ACTIVITY_LOCK = threading.Lock()
+_DESIGNER_LAST_ACTIVITY_TS = time.time()
+_DESIGNER_LAST_ACTIVITY_REASON = "startup"
+_DESIGNER_LAST_AUTOSTOP_TS: float | None = None
+_DESIGNER_IDLE_WATCHDOG_STARTED = False
+
+
+def _designer_service_status() -> Dict[str, Any]:
+    """Probe aria-designer API/UI health."""
+    api_up = False
+    ui_up = False
+    try:
+        r = _requests.get(_ARIA_DESIGNER_API_HEALTH, timeout=1.0)
+        api_up = r.status_code < 500
+    except Exception:
+        api_up = False
+    try:
+        r = _requests.get(_ARIA_DESIGNER_UI_HEALTH, timeout=1.0)
+        ui_up = r.status_code < 500
+    except Exception:
+        ui_up = False
+    return {
+        "api_up": api_up,
+        "ui_up": ui_up,
+        "running": bool(api_up and ui_up),
+        "api_health_url": _ARIA_DESIGNER_API_HEALTH,
+        "ui_health_url": _ARIA_DESIGNER_UI_HEALTH,
+    }
+
+
+def _designer_touch_activity(reason: str = "activity") -> Dict[str, Any]:
+    now = time.time()
+    with _DESIGNER_ACTIVITY_LOCK:
+        global _DESIGNER_LAST_ACTIVITY_TS, _DESIGNER_LAST_ACTIVITY_REASON
+        _DESIGNER_LAST_ACTIVITY_TS = now
+        _DESIGNER_LAST_ACTIVITY_REASON = str(reason or "activity")
+        idle_timeout = max(0.0, _ARIA_DESIGNER_IDLE_TIMEOUT_S)
+        return {
+            "activity_at": now,
+            "activity_reason": _DESIGNER_LAST_ACTIVITY_REASON,
+            "idle_timeout_s": idle_timeout,
+            "auto_stop_enabled": idle_timeout > 0.0,
+        }
+
+
+def _designer_idle_state() -> Dict[str, Any]:
+    now = time.time()
+    with _DESIGNER_ACTIVITY_LOCK:
+        idle_s = max(0.0, now - _DESIGNER_LAST_ACTIVITY_TS)
+        idle_timeout = max(0.0, _ARIA_DESIGNER_IDLE_TIMEOUT_S)
+        remaining = max(0.0, idle_timeout - idle_s) if idle_timeout > 0.0 else None
+        return {
+            "activity_at": _DESIGNER_LAST_ACTIVITY_TS,
+            "activity_reason": _DESIGNER_LAST_ACTIVITY_REASON,
+            "idle_for_s": idle_s,
+            "idle_timeout_s": idle_timeout,
+            "auto_stop_enabled": idle_timeout > 0.0,
+            "auto_stop_in_s": remaining,
+            "last_auto_stop_at": _DESIGNER_LAST_AUTOSTOP_TS,
+        }
+
+
+def _ensure_designer_idle_watchdog() -> None:
+    global _DESIGNER_IDLE_WATCHDOG_STARTED
+    with _DESIGNER_ACTIVITY_LOCK:
+        if _DESIGNER_IDLE_WATCHDOG_STARTED:
+            return
+        _DESIGNER_IDLE_WATCHDOG_STARTED = True
+
+    def _loop() -> None:
+        global _DESIGNER_LAST_AUTOSTOP_TS
+        while True:
+            try:
+                idle_timeout = max(0.0, _ARIA_DESIGNER_IDLE_TIMEOUT_S)
+                if idle_timeout <= 0.0:
+                    time.sleep(15.0)
+                    continue
+                with _DESIGNER_ACTIVITY_LOCK:
+                    idle_for = time.time() - _DESIGNER_LAST_ACTIVITY_TS
+                if idle_for >= idle_timeout:
+                    status = _designer_service_status()
+                    if status.get("running"):
+                        result = _stop_designer_services()
+                        if result.get("ok"):
+                            with _DESIGNER_ACTIVITY_LOCK:
+                                _DESIGNER_LAST_AUTOSTOP_TS = time.time()
+                time.sleep(5.0)
+            except Exception:
+                logger.exception("Designer idle auto-stop watchdog failed; retrying")
+                time.sleep(5.0)
+
+    thread = threading.Thread(
+        target=_loop,
+        name="designer-idle-watchdog",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _designer_dev_up_path() -> Path:
+    return _ARIA_DESIGNER_ROOT / "tools" / "dev_up.sh"
+
+
+def _designer_dev_down_path() -> Path:
+    return _ARIA_DESIGNER_ROOT / "tools" / "dev_down.sh"
+
+
+def _start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
+    """Best-effort start of aria-designer FE/BE via shared scripts."""
+    if not _ARIA_DESIGNER_ROOT.exists():
+        return {
+            "ok": False,
+            "error": f"ARIA_DESIGNER_ROOT not found: {_ARIA_DESIGNER_ROOT}",
+        }
+    dev_up = _designer_dev_up_path()
+    dev_down = _designer_dev_down_path()
+    if not dev_up.exists() or not dev_down.exists():
+        return {
+            "ok": False,
+            "error": f"Missing lifecycle scripts under {_ARIA_DESIGNER_ROOT / 'tools'}",
+        }
+
+    with _DESIGNER_LIFECYCLE_LOCK:
+        status0 = _designer_service_status()
+        if status0["running"] and not force_restart:
+            return {"ok": True, "already_running": True, "status": status0}
+
+        if force_restart or status0["api_up"] or status0["ui_up"]:
+            try:
+                subprocess.run(
+                    [str(dev_down)],
+                    cwd=str(_ARIA_DESIGNER_ROOT),
+                    check=False,
+                    timeout=20,
+                )
+            except Exception:
+                pass
+
+        log_path = _ARIA_DESIGNER_ROOT / ".run" / "research_designer_boot.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_path, "ab")
+        proc = subprocess.Popen(
+            [str(dev_up)],
+            cwd=str(_ARIA_DESIGNER_ROOT),
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        log_fh.close()
+
+        deadline = time.time() + max(5.0, _ARIA_DESIGNER_BOOT_TIMEOUT_S)
+        latest = _designer_service_status()
+        while time.time() < deadline:
+            latest = _designer_service_status()
+            if latest["running"]:
+                return {
+                    "ok": True,
+                    "already_running": False,
+                    "pid": proc.pid,
+                    "status": latest,
+                    "log_path": str(log_path),
+                }
+            time.sleep(0.5)
+
+        return {
+            "ok": False,
+            "error": "Timed out while starting aria-designer services.",
+            "pid": proc.pid,
+            "status": latest,
+            "log_path": str(log_path),
+        }
+
+
+def _stop_designer_services() -> Dict[str, Any]:
+    """Best-effort stop of aria-designer FE/BE via shared scripts."""
+    dev_down = _designer_dev_down_path()
+    if not dev_down.exists():
+        return {"ok": False, "error": f"Missing stop script: {dev_down}"}
+    with _DESIGNER_LIFECYCLE_LOCK:
+        status_before = _designer_service_status()
+        try:
+            subprocess.run(
+                [str(dev_down)],
+                cwd=str(_ARIA_DESIGNER_ROOT),
+                check=False,
+                timeout=25,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "status_before": status_before}
+        deadline = time.time() + 10.0
+        latest = _designer_service_status()
+        while time.time() < deadline:
+            latest = _designer_service_status()
+            if not latest["api_up"] and not latest["ui_up"]:
+                return {"ok": True, "status_before": status_before, "status_after": latest}
+            time.sleep(0.3)
+        return {"ok": True, "status_before": status_before, "status_after": latest}
+
+
+def _designer_proxy(method: str, path: str, *, json_body=None, params=None,
+                     timeout: float | None = None) -> _requests.Response | None:
+    """Try to proxy a request to the aria-designer API.
+
+    Returns the Response on success, or None if proxy is disabled/unavailable
+    (caller should fall back to legacy implementation).
+    """
+    if not _DESIGNER_PROXY_ENABLED:
+        return None
+    url = f"{_DESIGNER_PROXY_BASE.rstrip('/')}{path}"
+    _timeout = timeout or _DESIGNER_PROXY_TIMEOUT
+    try:
+        resp = _requests.request(
+            method, url, json=json_body, params=params, timeout=_timeout,
+        )
+        return resp
+    except _requests.ConnectionError:
+        logger.debug("Designer proxy unavailable at %s", _DESIGNER_PROXY_BASE)
+        return None
+    except _requests.Timeout:
+        logger.warning("Designer proxy timeout after %.1fs for %s %s", _timeout, method, path)
+        return None
+    except Exception:
+        logger.exception("Designer proxy unexpected error for %s %s", method, path)
+        return None
+
+
+def _proxy_or_error(resp: _requests.Response | None):
+    """Convert a proxy response to a Flask (body, status) tuple, or return None
+    if no proxy response is available (caller falls back to legacy)."""
+    if resp is None:
+        return None
+    try:
+        body = resp.json()
+    except Exception:
+        body = {"error": resp.text or "Proxy returned non-JSON response"}
+    return jsonify(body), resp.status_code
 
 # Singleton runner shared across requests
 _runner: Optional[ExperimentRunner] = None
@@ -1803,6 +2063,20 @@ def _spawn_code_agent_task(
     )
     worker.start()
 
+    # Watchdog timer to kill stalled agent threads
+    max_seconds = 300
+    def _watchdog():
+        worker.join(timeout=max_seconds)
+        if worker.is_alive():
+            _code_agent_task_update(
+                task_id, status="failed", finished_at=time.time(),
+                phase="timeout", summary=f"Agent timed out after {max_seconds}s",
+            )
+    timer = threading.Thread(
+        target=_watchdog, daemon=True, name=f"watchdog-{task_id}",
+    )
+    timer.start()
+
     snap = _code_agent_task_snapshot(task_id)
     return snap or task
 
@@ -2047,6 +2321,217 @@ def _normalize_start_mode(mode: Any) -> str:
         "refine_recommended": "refine_fingerprint",
     }
     return aliases.get(raw, raw)
+
+
+def _run_pipeline_sample_check(
+    config: RunConfig,
+    sample_n: int = 4,
+    max_depth_cap: int = 6,
+    max_ops_cap: int = 10,
+) -> Dict[str, Any]:
+    """Run a lightweight generation->compile->stage0 sanity probe on CPU."""
+    n = max(1, min(int(sample_n or 4), 12))
+    generated = 0
+    compiled = 0
+    passed_s0 = 0
+    errors: List[str] = []
+
+    try:
+        from ..synthesis.grammar import GrammarConfig, batch_generate
+        from ..synthesis.compiler import compile_model
+        from ..synthesis.validator import validate_graph
+        from ..eval.sandbox import safe_eval
+
+        grammar = GrammarConfig(
+            model_dim=max(16, int(config.model_dim)),
+            max_depth=max(2, min(int(config.max_depth), int(max_depth_cap))),
+            max_ops=max(4, min(int(config.max_ops), int(max_ops_cap))),
+        )
+        graphs = batch_generate(n, grammar)
+        generated = len(graphs)
+
+        for graph in graphs:
+            val = validate_graph(graph)
+            if not val.valid:
+                errors.append(f"validation: {val.errors[0] if val.errors else 'invalid'}")
+                continue
+            try:
+                model = compile_model(
+                    [graph] * max(1, int(config.n_layers)),
+                    vocab_size=max(512, int(config.vocab_size)),
+                    max_seq_len=max(32, min(int(config.max_seq_len), 256)),
+                )
+                compiled += 1
+                result = safe_eval(
+                    model,
+                    batch_size=1,
+                    seq_len=min(max(16, int(config.max_seq_len)), 64),
+                    vocab_size=max(512, int(config.vocab_size)),
+                    device="cpu",
+                )
+                if result.passed:
+                    passed_s0 += 1
+                else:
+                    errors.append(f"sandbox: {result.error or 'failed'}")
+                del model
+            except Exception as e:
+                errors.append(f"compile: {str(e)[:80]}")
+    except Exception as e:
+        errors.append(f"preflight_exception: {str(e)[:120]}")
+
+    s0_rate = (passed_s0 / generated) if generated > 0 else 0.0
+    return {
+        "sample_n": n,
+        "generated": generated,
+        "compiled": compiled,
+        "passed_s0": passed_s0,
+        "s0_pass_rate": round(s0_rate, 4),
+        "errors": errors[:6],
+    }
+
+
+def _run_launch_preflight(
+    *,
+    config: RunConfig,
+    mode: str,
+    prescreen: Optional[Dict[str, Any]] = None,
+    notebook_path: str,
+    eligibility: Optional[Dict[str, Any]] = None,
+    sample_n: int = 4,
+) -> Dict[str, Any]:
+    """Compute launch preflight verdict and checks before starting an experiment."""
+    mode_norm = _normalize_start_mode(mode)
+    checks: List[Dict[str, Any]] = []
+
+    risk_score = int((prescreen or {}).get("risk_score") or 0)
+    risk_level = str((prescreen or {}).get("risk_level") or "low").lower()
+    high_unadjusted = [
+        issue for issue in ((prescreen or {}).get("issues") or [])
+        if str(issue.get("severity") or "").lower() == "high" and not bool(issue.get("adjusted"))
+    ]
+    if high_unadjusted:
+        checks.append({
+            "key": "prescreen_hard_risk",
+            "status": "fail",
+            "reason": "High-severity launch risks were detected and not auto-hardened.",
+            "suggested_action": "Enable auto_harden or adjust configuration before launch.",
+            "details": {"issues": high_unadjusted[:3]},
+        })
+    elif risk_level == "high" or risk_score >= 60:
+        checks.append({
+            "key": "prescreen_risk_level",
+            "status": "warn",
+            "reason": f"Prescreen risk is high (score={risk_score}, level={risk_level}).",
+            "suggested_action": "Proceed only with override if you intentionally accept elevated failure risk.",
+        })
+    else:
+        checks.append({
+            "key": "prescreen_risk_level",
+            "status": "pass",
+            "reason": f"Prescreen risk is {risk_level} (score={risk_score}).",
+        })
+
+    if mode_norm in {"investigation", "validation"} and isinstance(eligibility, dict):
+        if eligibility.get("all_eligible"):
+            checks.append({
+                "key": "candidate_eligibility",
+                "status": "pass",
+                "reason": f"All requested candidates are eligible for {mode_norm}.",
+            })
+        else:
+            checks.append({
+                "key": "candidate_eligibility",
+                "status": "fail",
+                "reason": f"Ineligible candidate IDs detected for {mode_norm}.",
+                "suggested_action": "Use only eligible IDs from eligibility payload.",
+                "details": {
+                    "ineligible_count": int((eligibility.get("summary") or {}).get("ineligible") or 0),
+                },
+            })
+
+    nb = LabNotebook(notebook_path)
+    try:
+        recent = nb.get_recent_experiments(8)
+    finally:
+        nb.close()
+    completed = [exp for exp in recent if str(exp.get("status") or "").lower() == "completed"]
+    if completed:
+        total_gen = sum(max(int(exp.get("n_programs_generated") or 0), 0) for exp in completed)
+        total_s0 = sum(max(int(exp.get("n_stage0_passed") or 0), 0) for exp in completed)
+        total_s1 = sum(max(int(exp.get("n_stage1_passed") or 0), 0) for exp in completed)
+        s0_rate = (total_s0 / total_gen) if total_gen > 0 else 0.0
+        s1_rate = (total_s1 / total_gen) if total_gen > 0 else 0.0
+
+        if total_gen >= 40 and total_s0 == 0:
+            checks.append({
+                "key": "recent_stage0_health",
+                "status": "fail",
+                "reason": "Recent completed runs show 0% Stage-0 pass rate (pipeline stall).",
+                "suggested_action": "Reduce max_depth/max_ops, increase residual_prob, and bias toward stable ops.",
+                "details": {"window_programs": total_gen, "s0_pass_rate": round(s0_rate, 4)},
+            })
+        elif total_gen >= 40 and s0_rate < 0.02:
+            checks.append({
+                "key": "recent_stage0_health",
+                "status": "warn",
+                "reason": "Recent Stage-0 pass rate is critically low.",
+                "suggested_action": "Review grammar constraints before launching another full run.",
+                "details": {"window_programs": total_gen, "s0_pass_rate": round(s0_rate, 4)},
+            })
+        else:
+            checks.append({
+                "key": "recent_stage0_health",
+                "status": "pass",
+                "reason": "Recent Stage-0 pass rate is acceptable.",
+                "details": {"window_programs": total_gen, "s0_pass_rate": round(s0_rate, 4), "s1_pass_rate": round(s1_rate, 4)},
+            })
+
+    run_sample_probe = mode_norm in {"single", "continuous", "evolve", "novelty", "compact_synthesis", "sparse_morph"}
+    sample = _run_pipeline_sample_check(config, sample_n=sample_n) if run_sample_probe else None
+    if sample is not None:
+        if sample["generated"] == 0 or sample["compiled"] == 0 or sample["passed_s0"] == 0:
+            checks.append({
+                "key": "pipeline_sample_probe",
+                "status": "fail",
+                "reason": "Sample probe could not produce any Stage-0 pass.",
+                "suggested_action": "Adjust config with stability-first settings before launch.",
+                "details": sample,
+            })
+        elif float(sample.get("s0_pass_rate") or 0.0) < 0.2:
+            checks.append({
+                "key": "pipeline_sample_probe",
+                "status": "warn",
+                "reason": "Sample probe Stage-0 pass rate is weak.",
+                "suggested_action": "Proceed with caution or tighten generation constraints.",
+                "details": sample,
+            })
+        else:
+            checks.append({
+                "key": "pipeline_sample_probe",
+                "status": "pass",
+                "reason": "Sample probe passed with acceptable Stage-0 rate.",
+                "details": sample,
+            })
+
+    statuses = [str(check.get("status") or "pass").lower() for check in checks]
+    if "fail" in statuses:
+        verdict = "fail"
+    elif "warn" in statuses:
+        verdict = "warn"
+    else:
+        verdict = "pass"
+
+    return {
+        "checked": True,
+        "mode": mode_norm,
+        "verdict": verdict,
+        "checks": checks,
+        "summary": {
+            "pass": sum(1 for status in statuses if status == "pass"),
+            "warn": sum(1 for status in statuses if status == "warn"),
+            "fail": sum(1 for status in statuses if status == "fail"),
+        },
+    }
 
 
 def _apply_compact_synthesis_bias(config: RunConfig) -> Dict[str, Any]:
@@ -3437,6 +3922,7 @@ def create_app(
 
     app = Flask(__name__, static_folder=static_folder, static_url_path="")
     CORS(app)
+    _ensure_designer_idle_watchdog()
 
     def _dashboard_index_path() -> Optional[Path]:
         if not app.static_folder:
@@ -3491,6 +3977,17 @@ def create_app(
         if request.path.startswith("/api/") and response.status_code >= 400:
             logger.warning(f"{request.method} {request.path} -> {response.status_code}")
         return response
+
+    @app.before_request
+    def designer_activity_hook():
+        if not request.path.startswith("/api/designer"):
+            return None
+        if request.path in {"/api/designer/lifecycle", "/api/designer/stop"}:
+            return None
+        if request.method == "OPTIONS":
+            return None
+        _designer_touch_activity(f"{request.method} {request.path}")
+        return None
 
     # ── Dashboard routes ──
 
@@ -3676,6 +4173,193 @@ def create_app(
             return jsonify(_json_safe(analysis))
         except Exception as e:
             logger.error(f"Error in /api/programs/{result_id}/refine-analysis: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/programs/<result_id>/morph", methods=["POST"])
+    def api_program_morph(result_id):
+        """Generate scored mutation candidates for a program.
+
+        Request JSON:
+            intent: str — quality|compression|sparsity|novelty|balanced (default: balanced)
+            n_candidates: int — number of candidates to return (default: 5, max: 20)
+
+        Returns top-N mutation candidates ranked by intent score, with op diffs
+        and score breakdowns. No training or eval — fast, synchronous, <2s.
+        """
+        nb = LabNotebook(notebook_path)
+        try:
+            import random as _random
+            from ..synthesis.grammar import GrammarConfig
+            from ..synthesis.serializer import graph_from_json, graph_to_json
+            from ..synthesis.validator import validate_graph
+            from ..search.evolution import _mutate_graph
+
+            # Import workflow converter for aria-designer format
+            try:
+                import sys as _sys
+                _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+                if _designer_root not in _sys.path:
+                    _sys.path.insert(0, _designer_root)
+                from runtime.importer import graph_to_workflow as _graph_to_workflow
+            except ImportError:
+                _graph_to_workflow = None
+
+            body = request.get_json(silent=True) or {}
+            intent = str(body.get("intent", "balanced")).lower()
+            n_candidates = min(20, max(1, int(body.get("n_candidates", 5))))
+
+            if intent not in ("quality", "compression", "sparsity", "novelty", "balanced"):
+                return jsonify({"error": f"Invalid intent: {intent}"}), 400
+
+            program = nb.get_program_detail(result_id)
+            if program is None:
+                return jsonify({"error": "Not found"}), 404
+
+            graph_json_str = program.get("graph_json")
+            if not graph_json_str:
+                return jsonify({"error": "No graph JSON for this program"}), 400
+
+            try:
+                parent_graph = graph_from_json(graph_json_str)
+            except Exception as e:
+                return jsonify({"error": f"Could not reconstruct graph: {e}"}), 400
+
+            # Get grammar and op success rates for scoring
+            grammar = GrammarConfig()
+            op_success: dict = {}
+            try:
+                for row in nb.get_op_success_rates():
+                    n_used = float(row.get("n_used") or 0)
+                    n_s1 = float(row.get("n_stage1_passed") or 0)
+                    if n_used > 0:
+                        op_success[str(row.get("op_name"))] = n_s1 / n_used
+            except Exception:
+                pass
+
+            # Optionally apply analysis-driven grammar hints
+            analysis_data = None
+            if body.get("use_analysis"):
+                try:
+                    from .analytics import ExperimentAnalytics, RefinementAnalyzer
+                    analytics = ExperimentAnalytics(nb)
+                    analyzer = RefinementAnalyzer(analytics)
+                    analysis_data = analyzer.analyze_program_for_refinement(result_id, program)
+                    recipe = analysis_data.get("recipe", {})
+                    hints = recipe.get("grammar_hints", {})
+                    for op_name in hints.get("exclude_ops", []):
+                        grammar.excluded_ops = grammar.excluded_ops | {op_name}
+                    for op_name, mult in hints.get("boost_ops", {}).items():
+                        current = grammar.op_weights.get(op_name, 1.0)
+                        grammar.op_weights[op_name] = min(3.0, current * mult)
+                except Exception as e:
+                    logger.warning("Morph: analysis hint application failed: %s", e)
+
+            # Generate mutation pool
+            rng = _random.Random(hash((result_id, intent, time.time())))
+            pool_size = n_candidates * 4  # oversample then pick top-N
+            candidates = []
+            seen_fps = set()
+            parent_ops = sorted(set(
+                str(n.op_name) for n in parent_graph.nodes.values() if not n.is_input
+            ))
+
+            for _ in range(pool_size):
+                try:
+                    child = _mutate_graph(parent_graph, grammar, rng)
+                except Exception:
+                    continue
+                validation = validate_graph(child, max_ops=30, max_depth=20)
+                if not validation.valid:
+                    continue
+                fp = child.fingerprint()
+                if fp in seen_fps:
+                    continue
+                seen_fps.add(fp)
+
+                # Score using runner's scoring logic (inline for speed)
+                child_ops_list = [
+                    str(n.op_name) for n in child.nodes.values() if not n.is_input
+                ]
+                n_ops = max(1, int(child.n_ops()))
+                depth = max(1, int(child.depth()))
+                params = max(1.0, float(child.n_params_estimate()))
+                unique_ops = len(set(child_ops_list))
+
+                import math as _math
+                learned_quality = 0.5
+                if child_ops_list:
+                    learned_quality = sum(op_success.get(op, 0.5) for op in child_ops_list) / len(child_ops_list)
+                compression_proxy = 1.0 / (1.0 + _math.log1p(params) + 0.25 * n_ops + 0.15 * depth)
+                novelty_proxy = min(1.0, (unique_ops / max(1, n_ops)) + (0.1 if depth >= 4 else 0.0))
+                sparse_hint_ops = ("sparse", "gate", "topk", "mask", "threshold", "skip", "mixture")
+                sparse_op_bonus = 0.0
+                if child_ops_list:
+                    sparse_op_bonus = sum(
+                        1.0 for op in child_ops_list if any(t in op.lower() for t in sparse_hint_ops)
+                    ) / len(child_ops_list)
+                sparsity_proxy = min(1.0, 0.7 * compression_proxy + 0.3 * sparse_op_bonus)
+                parent_novelty = float(program.get("novelty_score") or 0.0)
+                parent_quality = 1.0 - float(program.get("loss_ratio") or 1.0)
+
+                if intent == "quality":
+                    score = 0.60 * learned_quality + 0.25 * parent_quality + 0.15 * compression_proxy
+                elif intent == "compression":
+                    score = 0.60 * compression_proxy + 0.25 * learned_quality + 0.15 * parent_quality
+                elif intent == "sparsity":
+                    score = 0.60 * sparsity_proxy + 0.25 * learned_quality + 0.15 * compression_proxy
+                elif intent == "novelty":
+                    score = 0.55 * novelty_proxy + 0.25 * learned_quality + 0.20 * parent_novelty
+                else:
+                    score = 0.35 * learned_quality + 0.25 * compression_proxy + 0.20 * novelty_proxy + 0.20 * max(parent_quality, parent_novelty)
+
+                child_ops = sorted(set(child_ops_list))
+                added_ops = [op for op in child_ops if op not in parent_ops]
+                removed_ops = [op for op in parent_ops if op not in child_ops]
+
+                # Convert to workflow format for designer loading
+                workflow_json = None
+                if _graph_to_workflow:
+                    try:
+                        wf = _graph_to_workflow(child, workflow_id=fp[:12], name=f"morph_{fp[:8]}")
+                        workflow_json = wf
+                    except Exception:
+                        pass
+
+                candidates.append({
+                    "fingerprint": fp,
+                    "score": round(float(score), 4),
+                    "n_ops": n_ops,
+                    "depth": depth,
+                    "params_estimate": int(params),
+                    "unique_ops": unique_ops,
+                    "ops": child_ops,
+                    "added_ops": added_ops,
+                    "removed_ops": removed_ops,
+                    "graph_json": graph_to_json(child),
+                    "workflow_json": workflow_json,
+                    "score_breakdown": {
+                        "learned_quality": round(float(learned_quality), 4),
+                        "compression_proxy": round(float(compression_proxy), 4),
+                        "novelty_proxy": round(float(novelty_proxy), 4),
+                        "sparsity_proxy": round(float(sparsity_proxy), 4),
+                    },
+                })
+
+            candidates.sort(key=lambda c: c["score"], reverse=True)
+            top = candidates[:n_candidates]
+
+            return jsonify({
+                "result_id": result_id,
+                "intent": intent,
+                "source_ops": parent_ops,
+                "source_fingerprint": parent_graph.fingerprint(),
+                "n_generated": len(seen_fps),
+                "candidates": top,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/programs/{result_id}/morph: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -5271,6 +5955,36 @@ def create_app(
 
     # ── Control endpoints ──
 
+    @app.route("/api/experiments/preflight", methods=["POST"])
+    def api_preflight_experiment():
+        """Run preflight checks without launching an experiment."""
+        runner = _get_runner(notebook_path)
+        body = request.get_json(silent=True) or {}
+        auto_harden = bool(body.pop("auto_harden", True))
+        mode = _normalize_start_mode(body.pop("mode", "single"))
+        sample_n = int(body.pop("preflight_sample_n", body.pop("sample_n", 4)) or 4)
+        config = RunConfig.from_dict(body) if body else RunConfig()
+        config, prescreen = runner.prescreen_run_config(
+            config,
+            mode=mode,
+            auto_harden=auto_harden,
+        )
+        preflight = _run_launch_preflight(
+            config=config,
+            mode=mode,
+            prescreen=prescreen,
+            notebook_path=notebook_path,
+            sample_n=sample_n,
+        )
+        return jsonify({
+            "status": "ok",
+            "mode": mode,
+            "config": config.to_dict(),
+            "prescreen": prescreen,
+            "preflight": preflight,
+            "can_start_without_override": preflight.get("verdict") == "pass",
+        })
+
     @app.route("/api/experiments/start", methods=["POST"])
     def api_start_experiment():
         """Start a new experiment. Accepts RunConfig fields + optional hypothesis."""
@@ -5280,6 +5994,9 @@ def create_app(
 
         body = request.get_json(silent=True) or {}
         auto_harden = bool(body.pop("auto_harden", True))
+        preflight_override = bool(body.pop("preflight_override", False))
+        enforce_preflight = bool(body.pop("enforce_preflight", True))
+        preflight_sample_n = int(body.pop("preflight_sample_n", 4) or 4)
         hypothesis = body.pop("hypothesis", None)
         preregistration = body.pop("preregistration", None)
         exploratory = bool(body.pop("exploratory", False))
@@ -5306,6 +6023,25 @@ def create_app(
             mode=mode,
             auto_harden=auto_harden,
         )
+        preflight = _run_launch_preflight(
+            config=config,
+            mode=mode,
+            prescreen=prescreen,
+            notebook_path=notebook_path,
+            sample_n=preflight_sample_n,
+        )
+        if enforce_preflight and preflight.get("verdict") in {"warn", "fail"} and not preflight_override:
+            return jsonify({
+                "error": (
+                    "Preflight gate blocked launch."
+                    if preflight.get("verdict") == "fail"
+                    else "Preflight produced warnings; override required to start."
+                ),
+                "preflight_blocked": True,
+                "preflight": preflight,
+                "config": config.to_dict(),
+                "prescreen": prescreen,
+            }), 409
 
         eligibility: Optional[Dict[str, Any]] = None
         scale_up_resolution: Optional[Dict[str, Any]] = None
@@ -5464,6 +6200,8 @@ def create_app(
                 "hypothesis_critique": critique,
                 "hypothesis_review_gate": critique.get("gate") if critique else None,
                 "hypothesis_missing_fields": missing_fields,
+                "preflight": preflight,
+                "preflight_override": preflight_override,
                 "eligibility": eligibility,
             })
         except ValueError as e:
@@ -5593,6 +6331,22 @@ def create_app(
         try:
             count = nb.cleanup_stale_experiments()
             return jsonify({"cleaned": count})
+        finally:
+            nb.close()
+
+    @app.route("/api/programs/purge-junk", methods=["POST"])
+    def api_purge_junk_programs():
+        """Purge Stage 0 failure program results that carry no useful data."""
+        dry_run = True
+        if request.is_json and request.json:
+            dry_run = request.json.get("dry_run", True)
+        nb = LabNotebook(notebook_path)
+        try:
+            result = nb.purge_junk_programs(dry_run=dry_run)
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Error purging junk programs: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
 
@@ -7455,54 +8209,37 @@ def create_app(
     def api_validate_pipeline():
         """Validate the synthesis pipeline by generating and testing programs."""
         body = request.get_json(silent=True) or {}
-        n = body.get("n", 5)
-        n = min(n, 20)  # cap at 20
+        n = min(int(body.get("n", body.get("sample_n", 5)) or 5), 20)
+        mode = _normalize_start_mode(body.pop("mode", "single"))
+        auto_harden = bool(body.pop("auto_harden", True))
+        runner = _get_runner(notebook_path)
+        config = RunConfig.from_dict(body) if body else RunConfig()
+        config, prescreen = runner.prescreen_run_config(
+            config,
+            mode=mode,
+            auto_harden=auto_harden,
+        )
 
         try:
-            from ..synthesis.grammar import GrammarConfig, batch_generate
-            from ..synthesis.compiler import compile_model
-            from ..synthesis.validator import validate_graph
-            from ..eval.sandbox import safe_eval
-
-            grammar = GrammarConfig(model_dim=256, max_depth=8, max_ops=12)
-            graphs = batch_generate(n, grammar)
-
-            generated = len(graphs)
-            compiled = 0
-            passed_s0 = 0
-            errors = []
-
-            for graph in graphs:
-                val = validate_graph(graph)
-                if not val.valid:
-                    errors.append(f"validation: {val.errors[0] if val.errors else 'unknown'}")
-                    continue
-
-                try:
-                    model = compile_model(
-                        [graph] * 2,
-                        vocab_size=1000,
-                        max_seq_len=128,
-                    )
-                    compiled += 1
-
-                    result = safe_eval(model, batch_size=1, seq_len=64,
-                                       vocab_size=1000, device="cpu")
-                    if result.passed:
-                        passed_s0 += 1
-                    else:
-                        errors.append(f"sandbox: {result.error or 'failed'}")
-                    del model
-                except Exception as e:
-                    errors.append(f"compile: {str(e)[:60]}")
-
-            healthy = compiled > 0 and passed_s0 > 0
+            sample = _run_pipeline_sample_check(config=config, sample_n=n)
+            preflight = _run_launch_preflight(
+                config=config,
+                mode=mode,
+                prescreen=prescreen,
+                notebook_path=notebook_path,
+                sample_n=n,
+            )
+            healthy = preflight.get("verdict") != "fail"
             return jsonify({
-                "generated": generated,
-                "compiled": compiled,
-                "passed_s0": passed_s0,
-                "errors": errors[:5],
+                "generated": sample.get("generated", 0),
+                "compiled": sample.get("compiled", 0),
+                "passed_s0": sample.get("passed_s0", 0),
+                "errors": sample.get("errors", [])[:5],
                 "healthy": healthy,
+                "mode": mode,
+                "config": config.to_dict(),
+                "prescreen": prescreen,
+                "preflight": preflight,
             })
         except Exception as e:
             logger.error(f"Error in pipeline validation: {e}")
@@ -7512,7 +8249,385 @@ def create_app(
                 "passed_s0": 0,
                 "errors": [str(e)],
                 "healthy": False,
+                "mode": mode,
+                "config": config.to_dict(),
+                "prescreen": prescreen,
             })
+
+    # ── Designer endpoints (proxy-first → aria-designer API) ──
+    #
+    # Each endpoint tries the aria-designer backend first via HTTP proxy.
+    # If the proxy is unavailable or disabled (ARIA_DESIGNER_PROXY_ENABLED=0),
+    # the legacy local implementation is used as fallback.
+
+    @app.route("/api/designer/lifecycle")
+    def api_designer_lifecycle():
+        """Return current aria-designer service status."""
+        payload = _designer_service_status()
+        payload.update(_designer_idle_state())
+        return jsonify(payload)
+
+    @app.route("/api/designer/ensure-running", methods=["POST"])
+    def api_designer_ensure_running():
+        """Ensure aria-designer API+UI are running for seamless UX."""
+        body = request.get_json(silent=True) or {}
+        force_restart = bool(body.get("force_restart", False))
+        result = _start_designer_services(force_restart=force_restart)
+        if result.get("ok"):
+            result.update(_designer_touch_activity("ensure-running"))
+        status = 200 if result.get("ok") else 503
+        return jsonify(result), status
+
+    @app.route("/api/designer/stop", methods=["POST"])
+    def api_designer_stop():
+        """Stop aria-designer API+UI services."""
+        result = _stop_designer_services()
+        status = 200 if result.get("ok") else 500
+        return jsonify(result), status
+
+    @app.route("/api/designer/touch", methods=["POST"])
+    def api_designer_touch():
+        """Refresh designer activity for idle auto-stop policy."""
+        body = request.get_json(silent=True) or {}
+        reason = str(body.get("reason") or "manual-touch")
+        payload = {"ok": True}
+        payload.update(_designer_touch_activity(reason))
+        payload.update(_designer_idle_state())
+        return jsonify(payload), 200
+
+    @app.route("/api/designer/compile", methods=["POST"])
+    def api_designer_compile():
+        """Accept graph JSON from designer and return compiled module info."""
+        workflow_json = request.get_json(silent=True)
+        if not workflow_json:
+            return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
+
+        # Proxy: POST /api/v1/workflows/compile
+        proxy_body = {"workflow": workflow_json, "target": "auto"}
+        proxied = _proxy_or_error(
+            _designer_proxy("POST", "/api/v1/workflows/compile", json_body=proxy_body)
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        result = compile_designer_graph(workflow_json)
+        return jsonify(result)
+
+    @app.route("/api/designer/validate", methods=["POST"])
+    def api_designer_validate():
+        """Accept graph JSON from designer and return validation results."""
+        workflow_json = request.get_json(silent=True)
+        if not workflow_json:
+            return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
+
+        # Proxy: POST /api/v1/workflows/validate
+        proxy_body = {"workflow": workflow_json}
+        proxied = _proxy_or_error(
+            _designer_proxy("POST", "/api/v1/workflows/validate", json_body=proxy_body)
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        result = validate_designer_graph(workflow_json)
+        return jsonify(result)
+
+    @app.route("/api/designer/run", methods=["POST"])
+    def api_designer_run():
+        """Accept graph JSON from designer, run forward pass, and return metrics."""
+        workflow_json = request.get_json(silent=True)
+        if not workflow_json:
+            return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
+
+        device = request.args.get("device", "cpu")
+
+        # Proxy: POST /api/v1/workflows/run
+        proxy_body = {"workflow": workflow_json, "budget": {"device": device}}
+        proxied = _proxy_or_error(
+            _designer_proxy("POST", "/api/v1/workflows/run", json_body=proxy_body)
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        result = run_designer_graph(workflow_json, device=device)
+        return jsonify(result)
+
+    @app.route("/api/designer/components", methods=["GET"])
+    def api_designer_components():
+        """Return all available primitives formatted for the designer."""
+        # Proxy: GET /api/v1/components
+        proxied = _proxy_or_error(
+            _designer_proxy("GET", "/api/v1/components")
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        return jsonify(get_designer_components())
+
+    @app.route("/api/designer/save", methods=["POST"])
+    def api_designer_save():
+        """Save a workflow definition to the notebook."""
+        body = request.get_json(silent=True) or {}
+        workflow_id = body.get("workflow_id")
+        name = body.get("name", "Untitled Workflow")
+        if not workflow_id:
+            return jsonify({"success": False, "error": "Missing workflow_id"}), 400
+
+        # Proxy: PUT /api/v1/workflows/{workflow_id}
+        proxy_body = {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": workflow_id,
+            "name": name,
+            "nodes": body.get("nodes", []),
+            "edges": body.get("edges", []),
+            "metadata": body.get("metadata", {}),
+        }
+        proxied = _proxy_or_error(
+            _designer_proxy("PUT", f"/api/v1/workflows/{workflow_id}", json_body=proxy_body)
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        nb = LabNotebook(notebook_path)
+        try:
+            nb.save_workflow_definition(
+                workflow_id=workflow_id,
+                name=name,
+                graph_json=json.dumps(body),
+                metadata=body.get("metadata", {}),
+                author=body.get("author", "user")
+            )
+            return jsonify({"success": True, "workflow_id": workflow_id})
+        finally:
+            nb.close()
+
+    @app.route("/api/designer/load/<workflow_id>")
+    def api_designer_load(workflow_id):
+        """Load a specific workflow definition."""
+        # Proxy: GET /api/v1/workflows/{workflow_id}
+        proxied = _proxy_or_error(
+            _designer_proxy("GET", f"/api/v1/workflows/{workflow_id}")
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        nb = LabNotebook(notebook_path)
+        try:
+            wf = nb.get_workflow_definition(workflow_id)
+            if not wf:
+                return jsonify({"error": "Workflow not found"}), 404
+            return jsonify(json.loads(wf["graph_json"]))
+        finally:
+            nb.close()
+
+    @app.route("/api/designer/list")
+    def api_designer_list_workflows():
+        """List all saved workflows."""
+        # Proxy: GET /api/v1/workflows
+        proxied = _proxy_or_error(
+            _designer_proxy("GET", "/api/v1/workflows")
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        nb = LabNotebook(notebook_path)
+        try:
+            return jsonify(nb.list_workflow_definitions())
+        finally:
+            nb.close()
+
+    @app.route("/api/designer/templates")
+    def api_designer_templates():
+        """Return hardcoded starter templates for the designer.
+
+        No proxy equivalent — templates are served locally.
+        """
+        templates = [
+            {
+                "id": "tpl_linear",
+                "name": "Simple Linear",
+                "description": "Single linear projection.",
+                "workflow": {
+                    "nodes": [
+                        {"id": "n0", "component_type": "io/input", "params": {}, "ui_meta": {"position": {"x": 100, "y": 100}}},
+                        {"id": "n1", "component_type": "linear_algebra/linear_proj", "params": {}, "ui_meta": {"position": {"x": 100, "y": 200}}},
+                        {"id": "n2", "component_type": "io/output", "params": {}, "ui_meta": {"position": {"x": 100, "y": 300}}}
+                    ],
+                    "edges": [
+                        {"id": "e0", "source": "n0", "target": "n1"},
+                        {"id": "e1", "source": "n1", "target": "n2"}
+                    ]
+                }
+            },
+            {
+                "id": "tpl_mlp",
+                "name": "Standard MLP",
+                "description": "Two-layer MLP with ReLU.",
+                "workflow": {
+                    "nodes": [
+                        {"id": "in", "component_type": "io/input", "params": {}, "ui_meta": {"position": {"x": 100, "y": 50}}},
+                        {"id": "l1", "component_type": "linear_algebra/linear_proj", "params": {"out_dim": 512}, "ui_meta": {"position": {"x": 100, "y": 150}}},
+                        {"id": "act", "component_type": "math/relu", "params": {}, "ui_meta": {"position": {"x": 100, "y": 250}}},
+                        {"id": "l2", "component_type": "linear_algebra/linear_proj", "params": {"out_dim": 256}, "ui_meta": {"position": {"x": 100, "y": 350}}},
+                        {"id": "out", "component_type": "io/output", "params": {}, "ui_meta": {"position": {"x": 100, "y": 450}}}
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "in", "target": "l1"},
+                        {"id": "e2", "source": "l1", "target": "act"},
+                        {"id": "e3", "source": "act", "target": "l2"},
+                        {"id": "e4", "source": "l2", "target": "out"}
+                    ]
+                }
+            }
+        ]
+        return jsonify(templates)
+
+    @app.route("/api/designer/export/python", methods=["POST"])
+    def api_designer_export_python():
+        """Generate standalone PyTorch module code for a workflow.
+
+        No proxy equivalent — uses local generation.
+        """
+        workflow_json = request.get_json(silent=True)
+        if not workflow_json:
+            return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
+
+        from .designer_utils import generate_python_module
+        code = generate_python_module(workflow_json)
+        return jsonify({"success": True, "code": code})
+
+    @app.route("/api/designer/import/survivors")
+    def api_designer_survivors():
+        """List top survivors from the research pipeline for importing."""
+        n = request.args.get("n", 20, type=int)
+
+        # Proxy: GET /api/v1/import/survivors
+        proxied = _proxy_or_error(
+            _designer_proxy("GET", "/api/v1/import/survivors", params={"n": n})
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        nb = LabNotebook(notebook_path)
+        try:
+            survivors = nb.get_top_programs(n, sort_by="loss_ratio")
+            return jsonify({"success": True, "survivors": survivors})
+        finally:
+            nb.close()
+
+    @app.route("/api/designer/import", methods=["POST"])
+    def api_designer_import():
+        """Import a computation graph from the research pipeline by result_id."""
+        body = request.get_json(silent=True) or {}
+        result_id = body.get("result_id")
+        if not result_id:
+            return jsonify({"success": False, "error": "Missing result_id"}), 400
+
+        # Proxy: POST /api/v1/import/survivors/{result_id}
+        proxied = _proxy_or_error(
+            _designer_proxy("POST", f"/api/v1/import/survivors/{result_id}")
+        )
+        if proxied is not None:
+            return proxied
+
+        # Legacy fallback
+        nb = LabNotebook(notebook_path)
+        try:
+            row = nb.get_program_detail(result_id)
+            if row is None:
+                return jsonify({"success": False, "error": "Program not found"}), 404
+
+            graph_json_str = row["graph_json"]
+            workflow = import_research_program(graph_json_str)
+            return jsonify({"success": True, "workflow": workflow})
+        finally:
+            nb.close()
+
+    @app.route("/api/designer/lineage/sync", methods=["POST"])
+    def api_designer_lineage_sync():
+        """Upsert Aria Designer run-lineage metadata into the research notebook."""
+        body = request.get_json(silent=True) or {}
+        run_id = str(body.get("run_id") or "").strip()
+        workflow_id = str(body.get("workflow_id") or "").strip()
+        if not run_id or not workflow_id:
+            return jsonify({
+                "success": False,
+                "error": "run_id and workflow_id are required",
+            }), 400
+
+        workflow_version = body.get("workflow_version")
+        try:
+            workflow_version = int(workflow_version) if workflow_version is not None else None
+        except Exception:
+            workflow_version = None
+
+        total_time_ms = body.get("total_time_ms")
+        try:
+            total_time_ms = float(total_time_ms) if total_time_ms is not None else None
+        except Exception:
+            total_time_ms = None
+
+        created_at = body.get("created_at")
+        try:
+            created_at = float(created_at) if created_at is not None else None
+        except Exception:
+            created_at = None
+
+        nb = LabNotebook(notebook_path)
+        try:
+            nb.save_designer_run_lineage(
+                run_id=run_id,
+                workflow_id=workflow_id,
+                workflow_version=workflow_version,
+                graph_fingerprint=body.get("graph_fingerprint"),
+                status=str(body.get("status") or "unknown"),
+                source=str(body.get("source") or "aria-designer"),
+                total_time_ms=total_time_ms,
+                metrics=body.get("metrics") if isinstance(body.get("metrics"), dict) else {},
+                payload=body.get("payload") if isinstance(body.get("payload"), dict) else {},
+                created_at=created_at,
+            )
+            row = nb.get_designer_run_lineage(run_id)
+            return jsonify({
+                "success": True,
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "stored": bool(row),
+            })
+        finally:
+            nb.close()
+
+    @app.route("/api/designer/lineage/<run_id>")
+    def api_designer_lineage_get(run_id):
+        """Get one designer run-lineage record."""
+        nb = LabNotebook(notebook_path)
+        try:
+            row = nb.get_designer_run_lineage(run_id)
+            if row is None:
+                return jsonify({"error": "Lineage run not found"}), 404
+            return jsonify(row)
+        finally:
+            nb.close()
+
+    @app.route("/api/designer/lineage")
+    def api_designer_lineage_list():
+        """List designer run-lineage rows, optionally filtered by workflow_id."""
+        workflow_id = request.args.get("workflow_id")
+        limit = request.args.get("limit", 100, type=int)
+        limit = max(1, min(int(limit or 100), 500))
+        nb = LabNotebook(notebook_path)
+        try:
+            rows = nb.list_designer_run_lineage(workflow_id=workflow_id, limit=limit)
+            return jsonify(rows)
+        finally:
+            nb.close()
 
     # ── Campaign endpoints ──
 

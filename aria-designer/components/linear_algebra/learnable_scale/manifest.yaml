@@ -1,0 +1,54 @@
+id: learnable_scale
+version: 1.0.0
+name: Learnable per-dimension scale
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+status: approved
+description: Learnable per-dimension scale
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Learnable per-dimension scale
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Learnable per-dimension scale
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

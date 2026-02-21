@@ -170,4 +170,6 @@ class CorpusTokenBatcher:
         if not rows:
             return None
 
-        return torch.tensor(rows, dtype=torch.long, device=device)
+        # Create on CPU with pin_memory for faster async transfer to GPU
+        batch = torch.tensor(rows, dtype=torch.long, device="cpu").pin_memory()
+        return batch.to(device, non_blocking=True)

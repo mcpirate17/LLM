@@ -1,0 +1,54 @@
+id: log
+version: 1.0.0
+name: Natural logarithm (clamped input)
+category: math
+tags:
+- elementwise_unary
+- numerically_risky
+status: approved
+description: Natural logarithm (clamped input)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  Natural logarithm (clamped input)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Natural logarithm (clamped input)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useAriaData } from '../hooks/useAriaData';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -75,6 +76,18 @@ function HypothesisCritique({ critique }) {
   const gate = typeof critique.gate === 'string' ? critique.gate : (critique.verdict === 'proceed' ? 'pass' : critique.verdict === 'revise' ? 'fail' : 'warn');
   const gateStyle = CRITIQUE_GATE_STYLES[gate] || CRITIQUE_GATE_STYLES.warn;
   const checks = Array.isArray(critique.checks) ? critique.checks : [];
+  const missingFields = Array.isArray(critique.missing_fields)
+    ? critique.missing_fields.filter(Boolean)
+    : [];
+  const missingFieldLabels = {
+    source_selection_rule: 'source_selection_rule',
+    mutation_mechanism: 'mutation_mechanism',
+    intent_weights: 'intent_weights',
+    primary_metric: 'primary_metric',
+    success_criteria: 'success_criteria',
+    confounders_checklist: 'confounders_checklist',
+    fallback_plan: 'fallback_plan',
+  };
   const hasConcerns = critique.concerns && critique.concerns.length > 0;
   const hasSuggestions = critique.suggestions && critique.suggestions.length > 0;
 
@@ -144,6 +157,34 @@ function HypothesisCritique({ critique }) {
           })}
         </div>
       )}
+      {missingFields.length > 0 && (
+        <div style={{
+          marginBottom: hasConcerns || hasSuggestions ? 6 : 0,
+          paddingLeft: 20,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
+            Missing fields:
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {missingFields.map((field) => (
+              <span
+                key={field}
+                style={{
+                  fontSize: 10,
+                  color: 'var(--accent-yellow)',
+                  background: 'rgba(210, 153, 34, 0.18)',
+                  border: '1px solid var(--accent-yellow)',
+                  borderRadius: 4,
+                  padding: '1px 6px',
+                  fontFamily: 'monospace',
+                }}
+              >
+                {missingFieldLabels[field] || field}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       {hasConcerns && (
         <div style={{ marginBottom: hasSuggestions ? 4 : 0 }}>
           {critique.concerns.map((c, i) => (
@@ -177,14 +218,14 @@ function ControlPanel({
   autoRecommendation,
   prefillRequest,
   onPrefillApplied,
-  displayMode = 'novice',
   startLocked = false,
   startLockReason = '',
 }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [hypothesis, setHypothesis] = useState('');
   const [mode, setMode] = useState('single');
-  const [showAdvanced, setShowAdvanced] = useState(displayMode === 'expert');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const { summary: liveSummary } = useAriaData() || {};
   const [systemStatus, setSystemStatus] = useState(null);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
@@ -211,10 +252,6 @@ function ControlPanel({
       setRecommendation(autoRecommendation);
     }
   }, [autoRecommendation, isRunning]);
-
-  useEffect(() => {
-    setShowAdvanced(displayMode === 'expert');
-  }, [displayMode]);
 
   // Fetch system status and LLM config on mount
   useEffect(() => {
@@ -559,7 +596,7 @@ function ControlPanel({
               : 'No LLM'}
           </span>
           <span className="sys-badge info">
-            DB: {systemStatus.database?.total_experiments || 0} exp
+            DB: {liveSummary?.total_experiments || systemStatus.database?.total_experiments || 0} exp
           </span>
         </div>
       )}
@@ -1473,7 +1510,7 @@ function ControlPanel({
           )}
 
           {/* Stop button */}
-          <button className="stop-btn" onClick={onStop}>
+          <button className="stop-btn" onClick={() => onStop && onStop()}>
             Stop Experiment
           </button>
         </div>

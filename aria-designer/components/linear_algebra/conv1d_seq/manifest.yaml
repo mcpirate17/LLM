@@ -1,0 +1,54 @@
+id: conv1d_seq
+version: 1.0.0
+name: Depthwise 1D convolution (kernel=3) along seq dim
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+status: approved
+description: Depthwise 1D convolution (kernel=3) along seq dim
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*3
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Depthwise 1D convolution (kernel=3) along seq dim
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Depthwise 1D convolution (kernel=3) along seq dim
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

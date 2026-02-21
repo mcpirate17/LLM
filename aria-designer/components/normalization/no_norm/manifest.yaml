@@ -1,0 +1,57 @@
+id: no_norm
+version: 1.0.0
+name: No Norm
+category: normalization
+tags:
+- minimal
+- risky
+- normalization
+status: approved
+description: No normalization (rely on careful init)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  No normalization (rely on careful init)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  No normalization (rely on careful init)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,56 @@
+id: log_map
+version: 1.0.0
+name: 'Logarithmic map: Poincare ball -> Euclidean'
+category: math_space
+tags:
+- math_space
+- numerically_risky
+status: approved
+description: 'Logarithmic map: Poincare ball -> Euclidean'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Logarithmic map: Poincare ball -> Euclidean
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Logarithmic map: Poincare ball -> Euclidean
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

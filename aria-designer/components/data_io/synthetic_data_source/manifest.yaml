@@ -1,0 +1,90 @@
+id: synthetic_data_source
+version: 1.0.0
+name: Synthetic Data Source
+category: data_io
+tags:
+- data
+- io
+- source
+status: approved
+description: Generates structured synthetic tensor patterns (sine, sawtooth, impulse, checkerboard).
+inputs: []
+outputs:
+- name: data
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  batch_size:
+    type: integer
+    default: 2
+    constraints:
+      min: 1
+      max: 8192
+    description: Numeric value for batch size.
+  seq_len:
+    type: integer
+    default: 64
+    constraints:
+      min: 1
+      max: 65536
+    description: Numeric value for seq len.
+  feature_dim:
+    type: integer
+    default: 64
+    constraints:
+      min: 1
+      max: 65536
+    description: Numeric value for feature dim.
+  pattern:
+    type: enum
+    options:
+    - sine
+    - sawtooth
+    - impulse
+    - checkerboard
+    default: sine
+    description: Pattern family to generate.
+  amplitude:
+    type: float
+    default: 1.0
+    description: Numeric value for amplitude.
+  frequency:
+    type: float
+    default: 1.0
+    description: Numeric value for frequency.
+  phase:
+    type: float
+    default: 0.0
+    description: Numeric value for phase.
+  impulse_index:
+    type: integer
+    default: 0
+    constraints:
+      min: 0
+      max: 65535
+    description: Index used for impulse pattern.
+implementation:
+  python: kernel_fallback.py
+performance:
+  has_params: false
+help_md: '### Technical
+
+  Builds deterministic synthetic patterns over the sequence axis.
+
+
+  Inputs: none.
+
+
+  Outputs: `data:tensor[B, S, D]`.
+
+
+  ### Plain Language
+
+  Use this for repeatable pattern-based tests.
+
+  It helps verify whether a model block reacts to specific temporal structure.
+
+  '

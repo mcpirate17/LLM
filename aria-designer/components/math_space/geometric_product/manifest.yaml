@@ -1,0 +1,61 @@
+id: geometric_product
+version: 1.0.0
+name: Clifford geometric product (dot + wedge)
+category: math_space
+tags:
+- math_space
+status: approved
+description: Clifford geometric product (dot + wedge)
+inputs:
+- name: a
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: b
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Clifford geometric product (dot + wedge)
+
+
+  Inputs: a:tensor[B, S, D], b:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Clifford geometric product (dot + wedge)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

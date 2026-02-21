@@ -1,0 +1,40 @@
+id: hyperbolic_norm
+version: 1.0.0
+name: "Manifold-aware normalization: log-map \u2192 LayerNorm \u2192 exp-map"
+category: math_space
+tags:
+- math_space
+- learnable
+- numerically_risky
+status: approved
+description: "Manifold-aware normalization: log-map \u2192 LayerNorm \u2192 exp-map"
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D+D
+  preserves_gradient: true
+  numerically_risky: true
+limits:
+  deterministic: true
+help_md: "### Technical\nManifold-aware normalization: log-map \u2192 LayerNorm \u2192 exp-map\n\nInputs: x:tensor[B, S, D].\n\
+  Outputs: y:tensor[B, S, D].\nParams: none.\n\n### Plain Language\nManifold-aware normalization: log-map \u2192 LayerNorm\
+  \ \u2192 exp-map\n\nUse when you need this specific transformation in a workflow.\n"

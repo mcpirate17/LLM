@@ -1,0 +1,56 @@
+id: swiglu_mlp
+version: 1.0.0
+name: Swiglu Mlp
+category: channel_mixing
+tags:
+- standard
+- channel_mixing
+status: approved
+description: SwiGLU MLP (baseline)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  SwiGLU MLP (baseline)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  SwiGLU MLP (baseline)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

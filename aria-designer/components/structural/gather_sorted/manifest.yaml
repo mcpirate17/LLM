@@ -1,0 +1,58 @@
+id: gather_sorted
+version: 1.0.0
+name: Gather elements using sort indices
+category: structural
+tags:
+- structural
+status: approved
+description: Gather elements using sort indices
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: idx
+  dtype: index
+  shape:
+  - B
+  - S
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Gather elements using sort indices
+
+
+  Inputs: x:tensor[B, S, D], idx:index[B, S].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Gather elements using sort indices
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

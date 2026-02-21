@@ -1,0 +1,58 @@
+id: implicit_fixed_point
+version: 1.0.0
+name: Implicit Fixed Point
+category: channel_mixing
+tags:
+- functional
+- implicit_solver
+- recurrent
+- channel_mixing
+status: approved
+description: Implicit fixed-point channel solver (deep-equilibrium style)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Implicit fixed-point channel solver (deep-equilibrium style)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Implicit fixed-point channel solver (deep-equilibrium style)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

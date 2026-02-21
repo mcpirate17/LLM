@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import GraphViewer from './GraphViewer';
 import { lossColor, noveltyColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import apiService from '../services/apiService';
@@ -1225,7 +1224,7 @@ function RefinementAdvisor({ analysis, loading, error, onLaunchRefinement, actio
   );
 }
 
-function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, eligibilityByResultId }) {
+function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, onOpenInDesigner, eligibilityByResultId }) {
   const [program, setProgram] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1543,13 +1542,14 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={e => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ fontSize: 16, margin: 0 }}>Program Detail</h3>
+    <div className="program-drawer-backdrop" onClick={onClose}>
+      <div className="program-drawer" onClick={e => e.stopPropagation()}>
+        <div className="program-drawer-header">
+          <span>Program Detail</span>
           <button className="refresh-btn" onClick={onClose} style={{ fontSize: 18, lineHeight: 1, padding: '4px 8px' }}>&times;</button>
         </div>
 
+        <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
         {loading ? (
           <p style={{ color: 'var(--text-muted)' }}>Loading...</p>
         ) : error ? (
@@ -2142,7 +2142,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                   <button
                     className="start-btn"
                     onClick={() => setScaleUpOpen(true)}
-                    style={{ padding: '6px 16px', fontSize: 12 }}
+                    style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(88, 166, 255, 0.15)', border: '1px solid rgba(88, 166, 255, 0.4)', color: 'var(--accent-blue)' }}
                   >
                     Scale Up This Architecture
                   </button>
@@ -2232,52 +2232,6 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
             {/* Investigate / Validate actions */}
             {program.stage1_passed && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  className="start-btn"
-                  disabled={actionStarting === 'refine'}
-                  onClick={() => handleLaunchRefinement('balanced', 'refine', 'Failed to start fingerprint refinement')}
-                  style={{ padding: '6px 16px', fontSize: 12, background: 'var(--accent-yellow)', borderColor: 'var(--accent-yellow)' }}
-                  title="Generate local mutated variants around this architecture fingerprint (balanced objective)."
-                >
-                  {actionStarting === 'refine' ? 'Starting...' : 'Refine Fingerprint'}
-                </button>
-                <button
-                  className="start-btn"
-                  disabled={actionStarting === 'refine_recommended'}
-                  onClick={() => handleLaunchRefinement('recommended', 'refine_recommended', 'Failed to start recommended refinement')}
-                  style={{ padding: '6px 14px', fontSize: 12, background: 'var(--accent-purple)', borderColor: 'var(--accent-purple)' }}
-                  title="Auto-select refinement intent from historical op success, source quality, novelty, and compression evidence."
-                >
-                  {actionStarting === 'refine_recommended' ? 'Starting...' : 'Refine Recommended'}
-                </button>
-                <button
-                  className="start-btn"
-                  disabled={actionStarting === 'refine_compression'}
-                  onClick={() => handleLaunchRefinement('compression', 'refine_compression', 'Failed to start compression refinement')}
-                  style={{ padding: '6px 14px', fontSize: 12, background: '#1f7a4f', borderColor: '#1f7a4f' }}
-                  title="Refine toward lower parameter/compute footprint while preserving quality."
-                >
-                  {actionStarting === 'refine_compression' ? 'Starting...' : 'Refine Compression'}
-                </button>
-                <button
-                  className="start-btn"
-                  disabled={actionStarting === 'refine_sparsity'}
-                  onClick={() => handleLaunchRefinement('sparsity', 'refine_sparsity', 'Failed to start sparsity refinement')}
-                  style={{ padding: '6px 14px', fontSize: 12, background: '#176f8c', borderColor: '#176f8c' }}
-                  title="Refine toward sparse/gated architectures using prior op success statistics."
-                >
-                  {actionStarting === 'refine_sparsity' ? 'Starting...' : 'Refine Sparsity'}
-                </button>
-                {lastRefinedCandidate?.resultId && onViewInLeaderboard && (
-                  <button
-                    className="refresh-btn"
-                    style={{ fontSize: 12, padding: '6px 12px', fontFamily: 'monospace' }}
-                    onClick={() => { onClose(); onViewInLeaderboard(lastRefinedCandidate.resultId); }}
-                    title={`Open ${lastRefinedCandidate.fingerprint || lastRefinedCandidate.resultId}`}
-                  >
-                    Reopen Last Refined Fingerprint
-                  </button>
-                )}
                 {resolvedEligibility.investigationEligible && (
                   <button
                     className="start-btn"
@@ -2303,7 +2257,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       }
                       setActionStarting(null);
                     }}
-                    style={{ padding: '6px 16px', fontSize: 12 }}
+                    style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(63, 185, 80, 0.15)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
                     title="Deep study with multiple training programs"
                   >
                     {actionStarting === 'investigate' ? 'Starting...' : 'Investigate'}
@@ -2345,7 +2299,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       }
                       setActionStarting(null);
                     }}
-                    style={{ padding: '6px 16px', fontSize: 12, background: 'var(--accent-purple)', borderColor: 'var(--accent-purple)' }}
+                    style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(188, 140, 255, 0.15)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
                     title="Publication-grade multi-seed validation"
                   >
                     {actionStarting === 'validate' ? 'Starting...' : 'Validate'}
@@ -2375,17 +2329,34 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
             <TokenMixingTaxonomy graphJson={program.graph_json_parsed} />
             <GatingDiagnostics program={program} />
 
-            {/* Graph Viewer */}
-            {program.graph_json_parsed && (
-              <div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
-                  Computation Graph
-                </div>
-                <GraphViewer graph={program.graph_json_parsed} />
+            {/* Open in Designer action */}
+            {program.graph_json_parsed && onOpenInDesigner && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  onClick={() => {
+                    onClose();
+                    onOpenInDesigner(resultId);
+                  }}
+                  style={{
+                    background: 'rgba(188, 140, 255, 0.15)',
+                    border: '1px solid rgba(188, 140, 255, 0.4)',
+                    color: 'var(--accent-purple)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '8px 20px',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    width: '100%',
+                  }}
+                  title="Open this architecture in the visual graph designer"
+                >
+                  Open in Designer
+                </button>
               </div>
             )}
           </div>
         )}
+        </div>
       </div>
     </div>
   );

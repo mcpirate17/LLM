@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
+import apiService from '../services/apiService';
 
 const RESULT_COLORS = {
   'S1 PASS': 'var(--accent-green)',
@@ -134,6 +135,9 @@ function annotateGenerationHistory(events) {
 function LiveFeed({ apiBase, experimentId = null }) {
   const [events, setEvents] = useState([]);
   const feedRef = useRef(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [showControls, setShowControls] = useState(false);
+  const prevConnectedRef = useRef(null);
   const displayEvents = useMemo(() => annotateGenerationHistory(events), [events]);
 
   // Helper to add an event with a mapped type
@@ -185,8 +189,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
     setEvents([]);
     if (!experimentId) return;
 
-    fetch(`${apiBase}/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=100`)
-      .then((r) => (r.ok ? r.json() : []))
+    apiService.getLiveFeed(experimentId, 100)
       .then((history) => {
         if (!Array.isArray(history) || history.length === 0) return;
         const normalizedHistory = history
@@ -200,16 +203,77 @@ function LiveFeed({ apiBase, experimentId = null }) {
 
   // Auto-scroll to bottom
   useEffect(() => {
-    if (feedRef.current) {
+    if (autoScroll && feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
-  }, [events]);
+  }, [autoScroll, events]);
+
+  // On reconnect, re-fetch history to heal gaps.
+  useEffect(() => {
+    const prev = prevConnectedRef.current;
+    if (prev === null) {
+      prevConnectedRef.current = connected;
+      return;
+    }
+    if (!prev && connected && experimentId) {
+      apiService.getLiveFeed(experimentId, 120)
+        .then((history) => {
+          if (!Array.isArray(history) || history.length === 0) return;
+          const normalizedHistory = history
+            .map((event) => normalizeLiveFeedEvent(event))
+            .filter(Boolean);
+          if (normalizedHistory.length === 0) return;
+          setEvents((prevEvents) => {
+            const merged = [...normalizedHistory, ...prevEvents];
+            const seen = new Set();
+            const deduped = [];
+            for (const evt of merged) {
+              const key = [
+                evt.type,
+                evt.experiment_id || '',
+                evt.result_id || '',
+                evt.fingerprint || '',
+                evt.generation || '',
+                evt.ts || ''
+              ].join('|');
+              if (seen.has(key)) continue;
+              seen.add(key);
+              deduped.push(evt);
+            }
+            return deduped.slice(-100);
+          });
+        })
+        .catch(() => {});
+    }
+    prevConnectedRef.current = connected;
+  }, [connected, experimentId]);
 
   return (
-    <div className="live-feed">
-      <div className="card-title">
-        Live Feed
+    <div
+      className="live-feed"
+      onMouseEnter={() => setShowControls(true)}
+      onMouseLeave={() => setShowControls(false)}
+    >
+      <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>Live Feed</span>
         <span className={`connection-dot ${connected ? 'connected' : ''}`}></span>
+        <span style={{
+          fontSize: 11,
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          color: connected ? 'var(--accent-green)' : 'var(--accent-yellow)',
+        }}>
+          {connected ? 'Live' : 'Reconnecting'}
+        </span>
+        {showControls && (
+          <button
+            className="refresh-btn"
+            style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
+            onClick={() => setAutoScroll(!autoScroll)}
+          >
+            {autoScroll ? 'Pause Scroll' : 'Resume Scroll'}
+          </button>
+        )}
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         Real-time stream of architectures being tested. Each line shows a generated computation graph and whether it passed or failed. Green = survived, red = failed at some stage.

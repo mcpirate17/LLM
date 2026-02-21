@@ -1,0 +1,57 @@
+id: csv_reader
+version: 1.0.0
+name: CSV Reader
+category: io
+tags:
+- io
+- data
+status: approved
+description: Reads a CSV file into a tensor or dataset.
+inputs: []
+outputs:
+- name: data
+  dtype: tensor
+  shape:
+  - B
+  - D
+params:
+  filepath:
+    type: string
+    default: data.csv
+    format: file
+    description: Path to CSV file.
+  delimiter:
+    type: string
+    default: ','
+    description: Configuration for delimiter.
+  has_header:
+    type: boolean
+    default: true
+    description: Enable or disable has header.
+implementation:
+  native: kernel.c
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  preserves_gradient: false
+  numerically_risky: false
+help_md: '### Technical
+
+  Reads a CSV file into a tensor or dataset.
+
+
+  Inputs: none.
+
+  Outputs: data:tensor[B, D].
+
+  Params: filepath, delimiter, has_header.
+
+
+  ### Plain Language
+
+  Reads a CSV file into a tensor or dataset.
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

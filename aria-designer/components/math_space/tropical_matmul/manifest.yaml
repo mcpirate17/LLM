@@ -1,0 +1,44 @@
+id: tropical_matmul
+version: 1.0.0
+name: "Tropical (min-plus) matrix multiply \u2014 shortest path distances"
+category: math_space
+tags:
+- math_space
+status: approved
+description: "Tropical (min-plus) matrix multiply \u2014 shortest path distances"
+inputs:
+- name: a
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: b
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: "### Technical\nTropical (min-plus) matrix multiply \u2014 shortest path distances\n\nInputs: a:tensor[B, S, D],\
+  \ b:tensor[B, S, D].\nOutputs: y:tensor[B, S, D].\nParams: none.\n\n### Plain Language\nTropical (min-plus) matrix multiply\
+  \ \u2014 shortest path distances\n\nUse when you need this specific transformation in a workflow.\n"

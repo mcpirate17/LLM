@@ -1,0 +1,56 @@
+id: hyp_distance
+version: 1.0.0
+name: Hyperbolic distance between two points in the Poincare ball
+category: math_space
+tags:
+- math_space
+- numerically_risky
+status: approved
+description: Hyperbolic distance between two points in the Poincare ball
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - '1'
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Hyperbolic distance between two points in the Poincare ball
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, 1].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Hyperbolic distance between two points in the Poincare ball
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

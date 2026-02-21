@@ -1,0 +1,56 @@
+id: polynomial
+version: 1.0.0
+name: Polynomial
+category: linear_algebra
+tags:
+- polynomial
+- weight_storage
+status: approved
+description: Polynomial weight parameterization (degree-N)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Polynomial weight parameterization (degree-N)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Polynomial weight parameterization (degree-N)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

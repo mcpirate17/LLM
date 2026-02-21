@@ -1,0 +1,55 @@
+id: sparse_threshold
+version: 1.0.0
+name: Adaptive median-based threshold gate (~50% sparsity)
+category: math_space
+tags:
+- math_space
+status: approved
+description: Adaptive median-based threshold gate (~50% sparsity)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Adaptive median-based threshold gate (~50% sparsity)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Adaptive median-based threshold gate (~50% sparsity)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

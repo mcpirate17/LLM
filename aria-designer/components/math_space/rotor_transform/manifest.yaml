@@ -1,0 +1,56 @@
+id: rotor_transform
+version: 1.0.0
+name: Clifford rotor transformation (efficient rotation)
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: Clifford rotor transformation (efficient rotation)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: '8'
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Clifford rotor transformation (efficient rotation)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Clifford rotor transformation (efficient rotation)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

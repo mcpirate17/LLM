@@ -1,0 +1,55 @@
+id: selective_scan
+version: 1.0.0
+name: SSM-style input-dependent state scan
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+- numerically_risky
+status: approved
+description: SSM-style input-dependent state scan
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*4
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  SSM-style input-dependent state scan
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  SSM-style input-dependent state scan
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,58 @@
+id: semi_structured_2_4
+version: 1.0.0
+name: Semi Structured 2 4
+category: linear_algebra
+tags:
+- sparse_weights
+- nm_2_4
+- hardware_sparse
+- weight_storage
+status: approved
+description: Semi-structured 2:4 sparse weights
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Semi-structured 2:4 sparse weights
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Semi-structured 2:4 sparse weights
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

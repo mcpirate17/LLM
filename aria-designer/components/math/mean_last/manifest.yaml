@@ -1,0 +1,53 @@
+id: mean_last
+version: 1.0.0
+name: Mean along last dimension
+category: math
+tags:
+- reduction
+status: approved
+description: Mean along last dimension
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - '1'
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Mean along last dimension
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, 1].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Mean along last dimension
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

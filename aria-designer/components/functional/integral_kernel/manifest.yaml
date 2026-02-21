@@ -1,0 +1,61 @@
+id: integral_kernel
+version: 1.0.0
+name: 'Integral kernel mixing: learned kernel over sequence positions'
+category: functional
+tags:
+- functional
+- learnable
+status: approved
+description: 'Integral kernel mixing: learned kernel over sequence positions'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  kernel_scale:
+    type: float
+    default: 1.0
+    constraints:
+      min: 0.01
+      max: 100.0
+    description: Numeric value for kernel scale.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Integral kernel mixing: learned kernel over sequence positions
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: kernel_scale.
+
+
+  ### Plain Language
+
+  Integral kernel mixing: learned kernel over sequence positions
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,59 @@
+id: mul
+version: 1.0.0
+name: Element-wise multiplication (gating)
+category: math
+tags:
+- elementwise_binary
+status: approved
+description: Element-wise multiplication (gating)
+inputs:
+- name: a
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: b
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Element-wise multiplication (gating)
+
+
+  Inputs: a:tensor[B, S, D], b:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Element-wise multiplication (gating)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

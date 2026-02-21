@@ -28,6 +28,7 @@ import time
 import traceback
 import uuid
 import functools
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -76,6 +77,7 @@ from .llm.context import (build_experiment_context,
                           build_campaign_report_context,
                           build_campaign_formulation_context,
                           build_manual_start_fallback_context)
+from .llm.decision import NextExperimentDecisionPlanner
 
 import logging
 logger = logging.getLogger(__name__)
@@ -217,6 +219,17 @@ class RunConfig:
     stage1_steps: int = 500
     stage1_lr: float = 3e-4
     stage1_batch_size: int = 4
+    enable_perf_tracing: bool = False
+    collect_training_curve: bool = False
+    gradient_clip_norm: float = 1.0
+    optimizer_fused: bool = True
+    optimizer_foreach: bool = True
+    starvation_check_interval: int = 8
+    enable_cuda_graphs: bool = False
+    cuda_graph_warmup_steps: int = 3
+    loss_check_interval: int = 8
+    enable_kernel_profiling: bool = False
+    kernel_profile_top_k: int = 20
     # Training data source
     data_mode: str = "random"  # "random" | "corpus" | "hydra"
     corpus_path: str = ""      # TXT or JSONL path for corpus mode
@@ -240,6 +253,20 @@ class RunConfig:
     control_experiment_interval: int = 5  # run every Nth synthesis as control (0 disables)
     max_time_minutes: int = 0        # 0 = no limit
     max_cost_dollars: float = 0.0    # 0 = no limit (estimated LLM API cost)
+    # LLM next-step planner (local preferred, remote fallback)
+    enable_llm_decision_planner: bool = True
+    llm_decision_local_backend: str = ""
+    llm_decision_local_model: str = ""
+    llm_decision_local_host: str = ""
+    llm_decision_remote_backend: str = ""
+    llm_decision_remote_model: str = ""
+    llm_decision_temperature: float = 0.2
+    llm_decision_max_tokens: int = 700
+    llm_decision_budget_dollars: float = 0.0
+    llm_decision_max_n_programs: int = 200
+    llm_decision_max_time_minutes: int = 120
+    llm_decision_min_novelty_weight: float = 0.25
+    llm_decision_min_family_bonus_weight: float = 0.10
     # Evolution search
     population_size: int = 50
     n_generations: int = 20
@@ -249,6 +276,16 @@ class RunConfig:
     elitism: int = 5
     novelty_weight: float = 0.5
     fitness_weight: float = 0.5
+    # Recursive local refinement (winner-tweak loop)
+    refinement_top_k: int = 4
+    refinement_generations: int = 3
+    refinement_mutation_radius: float = 0.35
+    refinement_novelty_pressure: float = 0.35
+    refinement_min_distance: float = 0.12
+    refinement_plateau_patience: int = 2
+    refinement_budget_programs: int = 180
+    refinement_min_stage1_survivors: int = 2
+    refinement_lookback_experiments: int = 4
     # Novelty search
     archive_size: int = 200
     k_nearest: int = 15
@@ -331,6 +368,20 @@ class RunConfig:
     enable_campaigns: bool = True
     knowledge_extraction_interval: int = 3  # every N experiments
     auto_go_no_go: bool = True  # auto-record go/no-go decisions at escalation
+    # Stage pass thresholds (overridable by LLM per-cycle)
+    stage1_loss_ratio_threshold: float = 0.8
+    stage05_stability_threshold: float = 0.5
+    investigation_loss_ratio_threshold: float = 0.5
+    investigation_robustness_threshold: float = 0.5
+    # Grammar structure probabilities (forwarded to GrammarConfig)
+    grammar_split_prob: float = 0.3
+    grammar_merge_prob: float = 0.2
+    grammar_risky_op_prob: float = 0.1
+    grammar_freq_domain_prob: float = 0.15
+    # Healer/agent settings
+    max_agent_seconds: int = 300
+    # LLM consultation in continuous mode
+    llm_decision_interval: int = 5  # call Sonnet every N cycles (0 = never in continuous)
 
     def to_dict(self) -> Dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -895,11 +946,15 @@ class ExperimentRunner:
         except Exception:
             pass  # Non-critical: start with empty overrides
         self._last_stagnation_agent_cycle = -10
+        self._last_anti_stagnation_cycle = -10
+        self._last_chat_config_overrides: Dict[str, Any] = {}
         try:
             self._healer = CodeHealer(self.notebook_path)
         except Exception:
             self._healer = None
         self._last_healer_integrity_check = 0.0
+        self._recent_healer_signatures: Dict[str, float] = {}
+        self._pending_heal_retry: Optional[Dict] = None
 
         self._recover_stale_experiments_on_startup()
 
@@ -1501,6 +1556,9 @@ class ExperimentRunner:
             elif selected_mode == "novelty":
                 self._run_continuous_novelty(
                     cycle_config, nb, n_experiments, limit_str, mode_reasoning)
+            elif selected_mode == "refinement":
+                self._run_continuous_refinement(
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
             else:
                 self._run_continuous_synthesis(
                     cycle_config, nb, n_experiments, limit_str, mode_reasoning)
@@ -1684,7 +1742,7 @@ class ExperimentRunner:
         recent = history[-3:]
         consecutive_zero = all(
             (h.get("delta_stage1_survivors", 0) == 0 and
-             h.get("after", {}).get("stage1_passed", 0) == 0)
+             (h.get("after") or {}).get("stage1_passed", 0) == 0)
             for h in recent
         )
         if not consecutive_zero:
@@ -1754,7 +1812,7 @@ class ExperimentRunner:
             s1_slope = trajectory.get("s1_slope", 0) if trajectory else 0
 
             recent_s1 = [
-                h.get("after", {}).get("stage1_passed", 0)
+                (h.get("after") or {}).get("stage1_passed", 0)
                 for h in recent
             ]
 
@@ -1883,6 +1941,20 @@ class ExperimentRunner:
             trigger_payload={"error_pattern": worst_error[0], "occurrences": worst_error[1]},
         )
 
+    def _healer_signature_seen(self, error: str, scope: str) -> bool:
+        """Return True if this error was already sent to the healer recently."""
+        sig = hashlib.md5((error[:200] + scope[:100]).encode()).hexdigest()[:12]
+        now = time.time()
+        # Expire old signatures (5-minute TTL)
+        self._recent_healer_signatures = {
+            k: v for k, v in self._recent_healer_signatures.items()
+            if now - v < 300
+        }
+        if sig in self._recent_healer_signatures:
+            return True
+        self._recent_healer_signatures[sig] = now
+        return False
+
     def _invoke_code_healer(
         self,
         nb: LabNotebook,
@@ -1895,6 +1967,11 @@ class ExperimentRunner:
     ) -> Optional[Dict[str, Any]]:
         """Run Code Healer state machine and log output to SQLite."""
         if self._healer is None:
+            return None
+        if self._healer_signature_seen(
+            (trigger_payload or {}).get("error", scope),
+            scope,
+        ):
             return None
         repro = reproduction_steps or []
         tests = acceptance_tests or ["python -m pytest tests -k integration -x --tb=short"]
@@ -1915,6 +1992,13 @@ class ExperimentRunner:
                 trigger_type=trigger_type,
                 healer_result=result,
             )
+            # If heal succeeded, schedule retry on next continuous cycle
+            if result and result.get("verification_ok"):
+                self._pending_heal_retry = {
+                    "trigger_type": trigger_type,
+                    "experiment_id": experiment_id,
+                    "scope": scope,
+                }
             return result
         except Exception as e:
             nb.log_learning_event(
@@ -2628,6 +2712,200 @@ class ExperimentRunner:
             "total_programs": float(total_programs),
             "total_s1": float(total_s1),
             "s1_rate": float(rate),
+        }
+
+    @staticmethod
+    def _refinement_candidate_distance(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+        """Approximate distance between two candidate programs for diversity gating."""
+        loss_a = float(a.get("loss_ratio") or 1.0)
+        loss_b = float(b.get("loss_ratio") or 1.0)
+        nov_a = float(a.get("novelty_score") or 0.0)
+        nov_b = float(b.get("novelty_score") or 0.0)
+        ops_a = float(a.get("graph_n_ops") or 0.0)
+        ops_b = float(b.get("graph_n_ops") or 0.0)
+        fp_a = str(a.get("graph_fingerprint") or "")
+        fp_b = str(b.get("graph_fingerprint") or "")
+        fp_term = 0.0 if fp_a[:8] == fp_b[:8] and fp_a and fp_b else 0.1
+        return abs(loss_a - loss_b) + abs(nov_a - nov_b) + (abs(ops_a - ops_b) / 16.0) + fp_term
+
+    def _select_diverse_refinement_sources(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        top_k: int,
+        min_distance: float,
+        novelty_pressure: float,
+    ) -> List[Dict[str, Any]]:
+        """Select top-k candidates while preserving pairwise diversity."""
+        if not candidates:
+            return []
+        ranked = []
+        for row in candidates:
+            loss = float(row.get("loss_ratio") or 1.0)
+            novelty = float(row.get("novelty_score") or 0.0)
+            quality = max(0.0, 1.0 - min(loss, 1.5))
+            score = (1.0 - novelty_pressure) * quality + novelty_pressure * novelty
+            ranked.append((score, row))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+
+        selected: List[Dict[str, Any]] = []
+        for _, row in ranked:
+            if any(self._refinement_candidate_distance(row, prev) < min_distance for prev in selected):
+                continue
+            selected.append(row)
+            if len(selected) >= top_k:
+                break
+        if len(selected) < top_k:
+            for _, row in ranked:
+                if row in selected:
+                    continue
+                selected.append(row)
+                if len(selected) >= top_k:
+                    break
+        return selected
+
+    def _build_refinement_plan(
+        self,
+        nb: LabNotebook,
+        config: RunConfig,
+    ) -> Optional[Dict[str, Any]]:
+        """Build a recursive refinement plan from recent Stage-1 survivors."""
+        lookback = max(1, int(config.refinement_lookback_experiments or 1))
+        recent = nb.get_recent_experiments(max(lookback * 3, lookback))
+        recent_ids = [
+            str(row.get("experiment_id") or "")
+            for row in recent
+            if str(row.get("experiment_id") or "")
+        ][:lookback]
+        if not recent_ids:
+            return None
+        if not hasattr(nb, "conn"):
+            return None
+
+        placeholders = ",".join(["?"] * len(recent_ids))
+        rows = nb.conn.execute(
+            f"""SELECT result_id, experiment_id, graph_fingerprint, loss_ratio, novelty_score,
+                       stage1_passed, graph_n_ops, timestamp
+                FROM program_results
+                WHERE stage1_passed = 1
+                  AND experiment_id IN ({placeholders})
+                ORDER BY loss_ratio ASC NULLS LAST, novelty_score DESC NULLS LAST, timestamp DESC
+                LIMIT ?""",
+            [*recent_ids, max(20, int(config.refinement_top_k) * 10)],
+        ).fetchall()
+        candidates = [dict(r) for r in rows]
+        if len(candidates) < max(1, int(config.refinement_min_stage1_survivors or 1)):
+            return None
+
+        selected = self._select_diverse_refinement_sources(
+            candidates,
+            top_k=max(1, int(config.refinement_top_k or 1)),
+            min_distance=max(0.01, float(config.refinement_min_distance or 0.01)),
+            novelty_pressure=max(0.0, min(1.0, float(config.refinement_novelty_pressure or 0.0))),
+        )
+        source_ids = [str(row.get("result_id") or "") for row in selected if row.get("result_id")]
+        if not source_ids:
+            return None
+
+        radius = max(0.05, min(1.0, float(config.refinement_mutation_radius or 0.35)))
+        mutation_rate = max(0.10, min(0.95, float(config.mutation_rate) * (0.5 + radius)))
+        generations = max(1, int(config.refinement_generations or 1))
+        budget_programs = max(int(config.n_programs), int(config.refinement_budget_programs or config.n_programs))
+        per_gen = max(4, min(int(config.n_programs), max(4, budget_programs // generations)))
+        mutations_per_source = max(1, int(round(2 + 4 * radius)))
+        pool_multiplier = max(2, int(round(2 + 3 * float(config.refinement_novelty_pressure or 0.0))))
+
+        return {
+            "source_result_ids": source_ids,
+            "source_count": len(source_ids),
+            "generations": generations,
+            "budget_programs": budget_programs,
+            "config": {
+                "model_source": "fingerprint_refine",
+                "refine_source_result_ids": ",".join(source_ids),
+                "refine_mutations_per_source": mutations_per_source,
+                "refine_pool_multiplier": pool_multiplier,
+                "mutation_rate": mutation_rate,
+                "n_programs": per_gen,
+                "refinement_top_k": int(config.refinement_top_k),
+                "refinement_generations": generations,
+                "refinement_budget_programs": budget_programs,
+                "refinement_plateau_patience": int(config.refinement_plateau_patience),
+                "refinement_min_distance": float(config.refinement_min_distance),
+                "refinement_novelty_pressure": float(config.refinement_novelty_pressure),
+            },
+        }
+
+    def _build_next_experiment_summary(
+        self,
+        nb: LabNotebook,
+        results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compact summary payload for LLM next-step planning."""
+        recent = nb.get_recent_experiments(8)
+        recent_exp_id = str(results.get("experiment_id") or "")
+        if not recent_exp_id and recent:
+            recent_exp_id = str(recent[0].get("experiment_id") or "")
+
+        stage1_rows: List[Dict[str, Any]] = []
+        fail_counts: Dict[str, int] = {}
+        if recent_exp_id:
+            rows = nb.get_program_results(recent_exp_id, limit=300)
+            for row in rows:
+                stage = str(row.get("stage_at_death") or "unknown")
+                fail_counts[stage] = fail_counts.get(stage, 0) + 1
+                if row.get("stage1_passed"):
+                    stage1_rows.append(row)
+        stage1_rows.sort(
+            key=lambda r: (
+                float(r.get("loss_ratio") if r.get("loss_ratio") is not None else 1.0),
+                -float(r.get("novelty_score") if r.get("novelty_score") is not None else 0.0),
+            )
+        )
+        top = [{
+            "result_id": row.get("result_id"),
+            "fingerprint": str(row.get("graph_fingerprint") or "")[:16],
+            "loss_ratio": row.get("loss_ratio"),
+            "novelty_score": row.get("novelty_score"),
+            "throughput_tok_s": row.get("throughput_tok_s"),
+            "avg_step_time_ms": row.get("avg_step_time_ms"),
+            "stability_score": row.get("stability_score"),
+        } for row in stage1_rows[:5]]
+
+        eff_rows = [r for r in stage1_rows if isinstance(r.get("throughput_tok_s"), (int, float))]
+        stab_rows = [r for r in stage1_rows if isinstance(r.get("stability_score"), (int, float))]
+        avg_tp = (sum(float(r.get("throughput_tok_s")) for r in eff_rows) / len(eff_rows)) if eff_rows else None
+        avg_stability = (sum(float(r.get("stability_score")) for r in stab_rows) / len(stab_rows)) if stab_rows else None
+        novelty_vals = [float(r.get("novelty_score")) for r in stage1_rows if isinstance(r.get("novelty_score"), (int, float))]
+        best_loss = min((float(r.get("loss_ratio")) for r in stage1_rows if isinstance(r.get("loss_ratio"), (int, float))), default=None)
+
+        return {
+            "recent_experiment_id": recent_exp_id or None,
+            "funnel": {
+                "total": int(results.get("total") or 0),
+                "stage0_passed": int(results.get("stage0_passed") or 0),
+                "stage05_passed": int(results.get("stage05_passed") or 0),
+                "stage1_passed": int(results.get("stage1_passed") or 0),
+            },
+            "stage1_survivors": int(len(stage1_rows)),
+            "best_loss_ratio": best_loss,
+            "best_novelty": max(novelty_vals) if novelty_vals else None,
+            "avg_novelty": (sum(novelty_vals) / len(novelty_vals)) if novelty_vals else None,
+            "avg_throughput_tok_s": avg_tp,
+            "avg_stability_score": avg_stability,
+            "top_performers": top,
+            "failure_breakdown": fail_counts,
+            "recent_experiments": [
+                {
+                    "experiment_id": str(r.get("experiment_id") or "")[:12],
+                    "type": r.get("experiment_type"),
+                    "status": r.get("status"),
+                    "stage1_passed": int(r.get("n_stage1_passed") or 0),
+                    "best_loss_ratio": r.get("best_loss_ratio"),
+                    "best_novelty_score": r.get("best_novelty_score"),
+                }
+                for r in recent[:6]
+            ],
         }
 
     def _refinement_intent_spec(self, intent: str) -> Dict[str, Any]:
@@ -4155,6 +4433,7 @@ class ExperimentRunner:
         # Skip per-cycle LLM calls — use rule-based paths to save API costs.
         # LLM is still available for user-initiated chat and campaign formulation.
         self.aria._continuous_mode = True
+        self.aria._llm_decision_interval = config.llm_decision_interval
         self._set_aria_cycle_phase(
             "planning",
             continuous_active=True,
@@ -4205,6 +4484,21 @@ class ExperimentRunner:
             self._wait_for_cycle_resume(n_experiments)
             if self._stop_event.is_set():
                 break
+
+            # Check for pending heal retry
+            if self._pending_heal_retry:
+                retry = self._pending_heal_retry
+                self._pending_heal_retry = None
+                logger.info("Retrying after successful heal: %s", retry.get("scope", "")[:100])
+                try:
+                    retry_nb = self._make_notebook()
+                    retry_nb.log_learning_event(
+                        "heal_retry",
+                        f"Retrying after heal: {retry['scope'][:200]}",
+                    )
+                    retry_nb.close()
+                except Exception:
+                    pass
 
             # Check limits before starting next experiment
             stop_reason = self._check_continuous_limits(
@@ -4337,13 +4631,13 @@ class ExperimentRunner:
                 e for e in leaderboard
                 if e.get("tier") == "screening"
                 and e.get("screening_loss_ratio") is not None
-                and e["screening_loss_ratio"] < 0.5
+                and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
             ])
             validation_ready = len([
                 e for e in leaderboard
                 if e.get("tier") == "investigation"
                 and e.get("investigation_robustness") is not None
-                and e["investigation_robustness"] >= 0.5
+                and e["investigation_robustness"] >= config.investigation_robustness_threshold
             ])
 
             # Gather richer analytics for data-driven rule-based recommendation
@@ -4446,6 +4740,27 @@ class ExperimentRunner:
                     ).strip(" |")
                 rec["safety_valve"] = trigger
 
+            refinement_plan = self._build_refinement_plan(nb, config)
+            if (
+                refinement_plan
+                and rec.get("mode") not in {"investigation", "validation"}
+            ):
+                rec.setdefault("config", {})
+                rec["mode"] = "refinement"
+                rec["config"].update(refinement_plan.get("config", {}))
+                rec["refinement_plan"] = {
+                    "source_result_ids": refinement_plan.get("source_result_ids", []),
+                    "source_count": refinement_plan.get("source_count", 0),
+                    "generations": refinement_plan.get("generations", 1),
+                    "budget_programs": refinement_plan.get("budget_programs", 0),
+                }
+                rec["confidence"] = max(float(rec.get("confidence", 0.5) or 0.5), 0.7)
+                rec["reasoning"] = (
+                    f"{rec.get('reasoning', '')} | "
+                    f"Recursive refinement on {rec['refinement_plan']['source_count']} "
+                    f"diverse Stage-1 winners for {rec['refinement_plan']['generations']} generation(s)."
+                ).strip(" |")
+
             evidence_pack = build_evidence_pack(
                 nb,
                 analytics=None,
@@ -4485,9 +4800,10 @@ class ExperimentRunner:
                     "novelty_signal": round(avg_novelty, 6),
                 }],
                 "policy": {
-                    "engine": "aria_rule_based_fallback",
+                    "engine": "aria_mode_selection_with_refinement",
                     "safety_valve_triggered": bool(trigger),
                     "safety_valve": trigger,
+                    "refinement_plan": rec.get("refinement_plan"),
                 },
                 "reason": rec.get("reasoning", ""),
                 "chosen_experiments": [{
@@ -4933,7 +5249,7 @@ class ExperimentRunner:
                 device=dev_str,
             )
             s0_passed = bool(s0.passed)
-            s05_passed = bool(s0.stability_score >= 0.5) if s0_passed else False
+            s05_passed = bool(s0.stability_score >= config.stage05_stability_threshold) if s0_passed else False
             if s0_passed:
                 stage0_pass += 1
             if s05_passed:
@@ -5212,6 +5528,10 @@ class ExperimentRunner:
             max_ops=evo_max_ops,
             model_dim=config.model_dim,
             residual_prob=config.residual_prob,
+            split_prob=config.grammar_split_prob,
+            merge_prob=config.grammar_merge_prob,
+            risky_op_prob=config.grammar_risky_op_prob,
+            freq_domain_prob=config.grammar_freq_domain_prob,
         )
         grammar.category_weights["math_space"] = config.math_space_weight
         evo_config = EvolutionConfig(
@@ -5352,6 +5672,10 @@ class ExperimentRunner:
             max_ops=ns_max_ops,
             model_dim=config.model_dim,
             residual_prob=config.residual_prob,
+            split_prob=config.grammar_split_prob,
+            merge_prob=config.grammar_merge_prob,
+            risky_op_prob=config.grammar_risky_op_prob,
+            freq_domain_prob=config.grammar_freq_domain_prob,
         )
         grammar.category_weights["math_space"] = config.math_space_weight
         ns_config = NoveltySearchConfig(
@@ -5513,6 +5837,121 @@ class ExperimentRunner:
             "experiment_id": exp_id, "results": results, "mode": "novelty",
         })
 
+    def _run_continuous_refinement(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        n_experiments: int,
+        limit_str: str,
+        mode_reasoning: str,
+    ):
+        """Run recursive local winner-tweak refinement with plateau stopping."""
+        plan = self._build_refinement_plan(nb, config)
+        if not plan:
+            logger.info("Refinement requested but no eligible Stage-1 winners found; falling back to synthesis.")
+            self._run_continuous_synthesis(config, nb, n_experiments, limit_str, mode_reasoning)
+            return
+
+        source_ids = list(plan.get("source_result_ids", []))
+        total_generations = max(1, int(plan.get("generations") or config.refinement_generations or 1))
+        budget_remaining = max(int(plan.get("budget_programs") or 0), int(config.n_programs))
+        plateau_patience = max(1, int(config.refinement_plateau_patience or 1))
+        mutation_radius = max(0.05, min(1.0, float(config.refinement_mutation_radius or 0.35)))
+        novelty_pressure = max(0.0, min(1.0, float(config.refinement_novelty_pressure or 0.35)))
+
+        best_loss_seen: Optional[float] = None
+        plateau_count = 0
+        executed_generations = 0
+        history: List[Dict[str, Any]] = []
+
+        for generation in range(total_generations):
+            if self._stop_event.is_set() or budget_remaining <= 0 or not source_ids:
+                break
+
+            gen_cfg = RunConfig.from_dict(config.to_dict())
+            gen_cfg.model_source = "fingerprint_refine"
+            gen_cfg.refine_source_result_ids = ",".join(source_ids)
+            gen_cfg.refine_mutations_per_source = max(1, int(round(2 + 4 * mutation_radius)))
+            gen_cfg.refine_pool_multiplier = max(2, int(round(2 + 3 * novelty_pressure)))
+            gen_cfg.mutation_rate = max(0.10, min(0.95, float(config.mutation_rate) * (0.5 + mutation_radius)))
+            gen_cfg.n_programs = max(4, min(int(config.n_programs), budget_remaining))
+
+            generation_reason = (
+                f"{mode_reasoning} | recursive_refine gen {generation + 1}/{total_generations} "
+                f"from {len(source_ids)} seed(s)"
+            )
+            self._run_continuous_synthesis(
+                gen_cfg,
+                nb,
+                n_experiments,
+                limit_str,
+                generation_reason,
+            )
+            budget_remaining -= int(gen_cfg.n_programs)
+            executed_generations += 1
+
+            recent = nb.get_recent_experiments(1)
+            if not recent:
+                break
+            current_exp_id = str(recent[0].get("experiment_id") or "")
+            if not current_exp_id:
+                break
+            rows = nb.get_program_results(current_exp_id, limit=400)
+            survivors = [row for row in rows if row.get("stage1_passed")]
+            if not survivors:
+                history.append({
+                    "generation": generation + 1,
+                    "experiment_id": current_exp_id,
+                    "stage1_survivors": 0,
+                    "best_loss_ratio": None,
+                })
+                break
+
+            cur_best = min(
+                (float(r.get("loss_ratio")) for r in survivors if isinstance(r.get("loss_ratio"), (int, float))),
+                default=None,
+            )
+            history.append({
+                "generation": generation + 1,
+                "experiment_id": current_exp_id,
+                "stage1_survivors": len(survivors),
+                "best_loss_ratio": cur_best,
+            })
+            if cur_best is not None:
+                if best_loss_seen is None or cur_best < best_loss_seen - 1e-4:
+                    best_loss_seen = cur_best
+                    plateau_count = 0
+                else:
+                    plateau_count += 1
+
+            selected = self._select_diverse_refinement_sources(
+                survivors,
+                top_k=max(1, int(config.refinement_top_k or 1)),
+                min_distance=max(0.01, float(config.refinement_min_distance or 0.01)),
+                novelty_pressure=novelty_pressure,
+            )
+            source_ids = [str(r.get("result_id") or "") for r in selected if r.get("result_id")]
+            if plateau_count >= plateau_patience:
+                break
+
+        nb.record_decision(
+            campaign_id=self._active_campaign_id,
+            decision_type="recursive_refinement",
+            subject=f"cycle_{n_experiments}",
+            rationale=(
+                f"Executed recursive local refinement for {executed_generations}/{total_generations} generation(s); "
+                f"plateau_count={plateau_count}, budget_remaining={budget_remaining}."
+            ),
+            evidence_pack={
+                "seed_count": int(plan.get("source_count") or 0),
+                "initial_source_result_ids": plan.get("source_result_ids", []),
+                "history": history,
+                "plateau_patience": plateau_patience,
+                "min_distance": float(config.refinement_min_distance),
+                "novelty_pressure": novelty_pressure,
+            },
+        )
+
     def _run_continuous_phase(self, phase: str, config: RunConfig,
                                nb: LabNotebook, n_experiments: int,
                                limit_str: str, mode_reasoning: str):
@@ -5536,7 +5975,7 @@ class ExperimentRunner:
             e for e in leaderboard
             if e.get("tier") == "screening"
             and e.get("screening_loss_ratio") is not None
-            and e["screening_loss_ratio"] < 0.5
+            and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
         ]
         if investigated_fps:
             before = len(candidates)
@@ -5850,7 +6289,7 @@ class ExperimentRunner:
             e for e in leaderboard
             if e.get("tier") == "investigation"
             and e.get("investigation_robustness") is not None
-            and e["investigation_robustness"] >= 0.5
+            and e["investigation_robustness"] >= config.investigation_robustness_threshold
         ]
         if not candidates:
             logger.info("No validation candidates, falling back to synthesis")
@@ -6866,6 +7305,10 @@ class ExperimentRunner:
             max_depth=config.max_depth,
             max_ops=config.max_ops,
             residual_prob=config.residual_prob,
+            split_prob=config.grammar_split_prob,
+            merge_prob=config.grammar_merge_prob,
+            risky_op_prob=config.grammar_risky_op_prob,
+            freq_domain_prob=config.grammar_freq_domain_prob,
             excluded_ops=excluded_ops,
             op_weights=op_weights,
         )
@@ -7046,6 +7489,13 @@ class ExperimentRunner:
 
             # Compile & Stage 0/0.5
             try:
+                # Z13: Defensive pause + GC to stabilize Torch Dynamo context if needed
+                if i > 0 and i % 10 == 0:
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    time.sleep(0.1)
+
                 layer_graphs = [graph] * config.n_layers
                 model = compile_model(layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
                 sandbox_result = safe_eval(model, batch_size=2, seq_len=min(128, config.max_seq_len),
@@ -7054,7 +7504,7 @@ class ExperimentRunner:
                 program_metrics["param_count"] = sandbox_result.param_count
                 
                 s0_passed = sandbox_result.passed
-                s05_passed = sandbox_result.stability_score >= 0.5
+                s05_passed = sandbox_result.stability_score >= config.stage05_stability_threshold
                 
                 if s0_passed:
                     results["stage0_passed"] += 1
@@ -7514,18 +7964,51 @@ class ExperimentRunner:
         training data in the same order, enabling fair comparison (#56).
         """
         from research.scientist.perf import PerfTracer, GPUStarvationDetector, OpKernelProfiler
-        tracer = PerfTracer()
+        trace_enabled = bool(getattr(config, "enable_perf_tracing", False))
+        tracer = PerfTracer() if trace_enabled else None
         starvation_detector = GPUStarvationDetector(threshold_ms=2.0)
-        op_profiler = OpKernelProfiler(enabled=True, top_k=20)
+        op_profiler = OpKernelProfiler(
+            enabled=bool(getattr(config, "enable_kernel_profiling", False)),
+            top_k=max(1, int(getattr(config, "kernel_profile_top_k", 20) or 20)),
+        )
         
         result: Dict[str, Any] = {"passed": False}
+        collect_curve = bool(getattr(config, "collect_training_curve", False))
+        grad_clip_norm = float(getattr(config, "gradient_clip_norm", 1.0) or 0.0)
+        if grad_clip_norm < 0.0:
+            grad_clip_norm = 0.0
+
+        trace_totals_ms: Dict[str, float] = {
+            "model_setup": 0.0,
+            "data_sampling": 0.0,
+            "forward_pass": 0.0,
+            "backward_pass": 0.0,
+            "optimizer_step": 0.0,
+        }
+
+        def _trace_ctx(name: str, use_gpu: bool = True):
+            return tracer.trace(name, use_gpu=use_gpu) if tracer is not None else nullcontext()
 
         try:
-            with tracer.trace("model_setup"):
+            setup_t0 = time.perf_counter()
+            with _trace_ctx("model_setup"):
                 model = model.to(dev)
                 model.train()
-                optimizer = torch.optim.AdamW(model.parameters(),
-                                              lr=config.stage1_lr, weight_decay=0.01)
+                opt_kwargs: Dict[str, Any] = {"lr": config.stage1_lr, "weight_decay": 0.01}
+                if dev.type == "cuda":
+                    use_fused = bool(getattr(config, "optimizer_fused", True))
+                    use_foreach = bool(getattr(config, "optimizer_foreach", True))
+                    if use_fused:
+                        opt_kwargs["fused"] = True
+                    elif use_foreach:
+                        opt_kwargs["foreach"] = True
+                try:
+                    optimizer = torch.optim.AdamW(model.parameters(), **opt_kwargs)
+                except Exception:
+                    opt_kwargs.pop("fused", None)
+                    opt_kwargs.pop("foreach", None)
+                    optimizer = torch.optim.AdamW(model.parameters(), **opt_kwargs)
+            trace_totals_ms["model_setup"] += (time.perf_counter() - setup_t0) * 1000.0
 
             result["optimizer_class"] = optimizer.__class__.__name__.lower()
             if optimizer.param_groups:
@@ -7544,112 +8027,257 @@ class ExperimentRunner:
             total_tokens = 0
             t_start = time.perf_counter()
 
-            step_times: List[float] = []
-            grad_norms: List[float] = []
-            training_curve: List[Dict] = []
+            step_time_sum_ms = 0.0
+            step_count = 0
+            grad_norm_sum = 0.0
+            grad_norm_sq_sum = 0.0
+            grad_norm_max = 0.0
+            grad_norm_count = 0
+            training_curve: List[Dict] = [] if collect_curve else []
             kernel_profiles: List[Dict[str, Any]] = []
 
             seq_len = min(128, config.max_seq_len)
+            random_mode = str(config.data_mode or "random").strip().lower() == "random"
+            random_input_batches: Optional[torch.Tensor] = None
+            if random_mode:
+                rand_generator = torch.Generator(device=dev)
+                rand_generator.manual_seed(int(seed))
+                random_input_batches = torch.randint(
+                    0,
+                    int(config.vocab_size),
+                    (max(1, int(config.stage1_steps)), config.stage1_batch_size, seq_len),
+                    generator=rand_generator,
+                    device=dev,
+                )
+            starvation_interval = max(1, int(getattr(config, "starvation_check_interval", 8) or 8))
 
-            for step in range(config.stage1_steps):
-                if self._stop_event.is_set():
-                    break
+            use_cuda_graph = bool(
+                dev.type == "cuda"
+                and bool(getattr(config, "enable_cuda_graphs", True))
+                and random_input_batches is not None
+                and not op_profiler.enabled
+                and not trace_enabled
+                and not collect_curve
+                and int(config.stage1_steps) >= 8
+            )
 
-                starvation_detector.start_wait()
-                with tracer.trace("data_sampling"):
-                    input_ids = self._sample_training_input_ids(
-                        config=config,
-                        dev=dev,
-                        batch_size=config.stage1_batch_size,
-                        seq_len=seq_len,
-                        seed=seed + step,
+            ran_cuda_graph = False
+            if use_cuda_graph:
+                try:
+                    static_input_ids = torch.empty(
+                        (config.stage1_batch_size, seq_len), dtype=torch.long, device=dev
                     )
-                starvation_detector.end_wait()
+                    captured_loss = torch.zeros((), device=dev)
+                    captured_grad_norm = torch.zeros((), device=dev)
+                    warmup_steps = max(1, int(getattr(config, "cuda_graph_warmup_steps", 3) or 3))
 
-                t_step = time.perf_counter()
-
-                step_state: Dict[str, Any] = {}
-
-                def _run_step() -> None:
-                    with tracer.trace("forward_pass"):
-                        with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
-                                                enabled=(dev.type == "cuda")):
-                            logits = model(input_ids)
-                            loss = F.cross_entropy(
+                    def _graph_step() -> Tuple[torch.Tensor, torch.Tensor]:
+                        with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=True):
+                            logits = model(static_input_ids)
+                            loss_t = F.cross_entropy(
                                 logits[:, :-1].reshape(-1, logits.shape[-1]),
-                                input_ids[:, 1:].reshape(-1),
+                                static_input_ids[:, 1:].reshape(-1),
                             )
-                    step_state["loss"] = loss
-
-                    with tracer.trace("backward_pass"):
                         optimizer.zero_grad(set_to_none=True)
-                        loss.backward()
-                        step_state["grad_norm"] = nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
-
-                    with tracer.trace("optimizer_step"):
+                        loss_t.backward()
+                        if grad_clip_norm > 0.0:
+                            grad_norm_t = nn.utils.clip_grad_norm_(
+                                model.parameters(), grad_clip_norm, foreach=True
+                            )
+                        else:
+                            grad_norm_t = torch.zeros((), device=dev)
                         optimizer.step()
+                        return loss_t, grad_norm_t
 
-                if step == 0:
-                    kernel_summary = op_profiler.profile_callable(_run_step)
-                    if kernel_summary:
-                        kernel_profiles.append({"step": step, **kernel_summary})
-                else:
-                    _run_step()
+                    for wi in range(min(warmup_steps, int(config.stage1_steps))):
+                        static_input_ids.copy_(random_input_batches[wi], non_blocking=True)
+                        loss_t, grad_norm_t = _graph_step()
+                        captured_loss.copy_(loss_t.detach())
+                        captured_grad_norm.copy_(torch.as_tensor(grad_norm_t, device=dev).detach())
 
-                loss = step_state.get("loss")
-                grad_norm = float(step_state.get("grad_norm", 0.0))
-
-                if loss is None or torch.isnan(loss) or torch.isinf(loss):
-                    result["error"] = f"NaN/Inf loss at step {step}"
-                    result["n_train_steps"] = step
-                    return result
-
-                if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
-                    result["error"] = "zero_grad_precheck_failed"
-                    result["n_train_steps"] = 0
-                    result["max_grad_norm"] = grad_norm
-                    result["mean_grad_norm"] = grad_norm
-                    result["grad_norm_std"] = 0.0
-                    return result
-
-                if dev.type == "cuda":
                     torch.cuda.synchronize(dev)
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph):
+                        loss_t, grad_norm_t = _graph_step()
+                        captured_loss.copy_(loss_t.detach())
+                        captured_grad_norm.copy_(torch.as_tensor(grad_norm_t, device=dev).detach())
 
-                t_step_end = time.perf_counter()
-                step_time_ms = (t_step_end - t_step) * 1000
+                    check_interval = max(1, int(getattr(config, "loss_check_interval", 8) or 8))
+                    for step in range(config.stage1_steps):
+                        if self._stop_event.is_set():
+                            break
+                        t_step = time.perf_counter()
+                        static_input_ids.copy_(random_input_batches[step], non_blocking=True)
+                        graph.replay()
+                        t_step_end = time.perf_counter()
+                        step_time_ms = (t_step_end - t_step) * 1000.0
+                        step_count += 1
+                        step_time_sum_ms += step_time_ms
+                        total_tokens += static_input_ids.numel()
 
-                loss_val = loss.item()
-                if step == 0:
-                    initial_loss = loss_val
-                final_loss = loss_val
-                min_loss = min(min_loss, loss_val)
-                total_tokens += input_ids.numel()
+                        should_check = (step == 0) or (step == config.stage1_steps - 1) or (step % check_interval == 0)
+                        if not should_check:
+                            continue
 
-                step_times.append(step_time_ms)
-                grad_norms.append(grad_norm)
+                        loss_val = float(captured_loss.item())
+                        grad_norm = float(captured_grad_norm.item())
+                        if not math.isfinite(loss_val):
+                            result["error"] = f"NaN/Inf loss at step {step}"
+                            result["n_train_steps"] = step
+                            return result
+                        if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
+                            result["error"] = "zero_grad_precheck_failed"
+                            result["n_train_steps"] = 0
+                            result["max_grad_norm"] = grad_norm
+                            result["mean_grad_norm"] = grad_norm
+                            result["grad_norm_std"] = 0.0
+                            return result
+                        if step == 0:
+                            initial_loss = loss_val
+                        final_loss = loss_val
+                        min_loss = min(min_loss, loss_val)
+                        grad_norm_sum += grad_norm
+                        grad_norm_sq_sum += grad_norm * grad_norm
+                        grad_norm_max = max(grad_norm_max, grad_norm)
+                        grad_norm_count += 1
+                    ran_cuda_graph = True
+                except Exception as e:
+                    result["cuda_graph_fallback_reason"] = str(e)
 
-                # Record per-step data
-                training_curve.append({
-                    "step": step,
-                    "loss": loss_val,
-                    "grad_norm": grad_norm,
-                    "step_time_ms": step_time_ms,
-                })
+            if not ran_cuda_graph:
+                for step in range(config.stage1_steps):
+                    if self._stop_event.is_set():
+                        break
 
-                # Log training progress at start, midpoint, and end
-                total_steps = config.stage1_steps
-                if step == 0 or step == total_steps // 2 or step == total_steps - 1:
-                    logger.debug(
-                        "    train step %d/%d: loss=%.4f, grad_norm=%.3f, "
-                        "step_time=%.1fms",
-                        step + 1, total_steps, loss_val, grad_norm, step_time_ms,
-                    )
+                    starvation_sample = (random_input_batches is None) and ((step % starvation_interval) == 0)
+                    if starvation_sample:
+                        starvation_detector.start_wait()
+                    data_t0 = time.perf_counter()
+                    with _trace_ctx("data_sampling"):
+                        if random_input_batches is not None:
+                            input_ids = random_input_batches[step]
+                        else:
+                            input_ids = self._sample_training_input_ids(
+                                config=config,
+                                dev=dev,
+                                batch_size=config.stage1_batch_size,
+                                seq_len=seq_len,
+                                seed=seed + step,
+                            )
+                    if starvation_sample:
+                        starvation_detector.end_wait()
+                    trace_totals_ms["data_sampling"] += (time.perf_counter() - data_t0) * 1000.0
 
+                    t_step = time.perf_counter()
+
+                    step_state: Dict[str, Any] = {}
+
+                    def _run_step() -> None:
+                        fwd_t0 = time.perf_counter()
+                        with _trace_ctx("forward_pass"):
+                            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
+                                                    enabled=(dev.type == "cuda")):
+                                logits = model(input_ids)
+                                loss = F.cross_entropy(
+                                    logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                    input_ids[:, 1:].reshape(-1),
+                                )
+                        trace_totals_ms["forward_pass"] += (time.perf_counter() - fwd_t0) * 1000.0
+                        step_state["loss"] = loss
+
+                        bwd_t0 = time.perf_counter()
+                        with _trace_ctx("backward_pass"):
+                            optimizer.zero_grad(set_to_none=True)
+                            loss.backward()
+                            if grad_clip_norm > 0.0:
+                                step_state["grad_norm"] = nn.utils.clip_grad_norm_(
+                                    model.parameters(), grad_clip_norm, foreach=(dev.type == "cuda")
+                                ).item()
+                            else:
+                                step_state["grad_norm"] = 0.0
+                        trace_totals_ms["backward_pass"] += (time.perf_counter() - bwd_t0) * 1000.0
+
+                        opt_t0 = time.perf_counter()
+                        with _trace_ctx("optimizer_step"):
+                            optimizer.step()
+                        trace_totals_ms["optimizer_step"] += (time.perf_counter() - opt_t0) * 1000.0
+
+                    if step == 0 and op_profiler.enabled:
+                        kernel_summary = op_profiler.profile_callable(_run_step)
+                        if kernel_summary:
+                            kernel_profiles.append({"step": step, **kernel_summary})
+                        else:
+                            _run_step()
+                    else:
+                        _run_step()
+
+                    loss = step_state.get("loss")
+                    grad_norm = float(step_state.get("grad_norm", 0.0))
+
+                    if loss is None or torch.isnan(loss) or torch.isinf(loss):
+                        result["error"] = f"NaN/Inf loss at step {step}"
+                        result["n_train_steps"] = step
+                        return result
+
+                    if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
+                        result["error"] = "zero_grad_precheck_failed"
+                        result["n_train_steps"] = 0
+                        result["max_grad_norm"] = grad_norm
+                        result["mean_grad_norm"] = grad_norm
+                        result["grad_norm_std"] = 0.0
+                        return result
+
+                    if dev.type == "cuda" and (trace_enabled or op_profiler.enabled):
+                        torch.cuda.synchronize(dev)
+
+                    t_step_end = time.perf_counter()
+                    step_time_ms = (t_step_end - t_step) * 1000
+
+                    loss_val = loss.item()
+                    if step == 0:
+                        initial_loss = loss_val
+                    final_loss = loss_val
+                    min_loss = min(min_loss, loss_val)
+                    total_tokens += input_ids.numel()
+
+                    step_count += 1
+                    step_time_sum_ms += step_time_ms
+                    grad_norm_sum += grad_norm
+                    grad_norm_sq_sum += grad_norm * grad_norm
+                    grad_norm_max = max(grad_norm_max, grad_norm)
+                    grad_norm_count += 1
+
+                    # Record per-step data
+                    if collect_curve:
+                        training_curve.append({
+                            "step": step,
+                            "loss": loss_val,
+                            "grad_norm": grad_norm,
+                            "step_time_ms": step_time_ms,
+                        })
+
+                    # Log training progress at start, midpoint, and end
+                    total_steps = config.stage1_steps
+                    if step == 0 or step == total_steps // 2 or step == total_steps - 1:
+                        logger.debug(
+                            "    train step %d/%d: loss=%.4f, grad_norm=%.3f, "
+                            "step_time=%.1fms",
+                            step + 1, total_steps, loss_val, grad_norm, step_time_ms,
+                        )
+
+            if dev.type == "cuda":
+                torch.cuda.synchronize(dev)
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
 
             # Collect perf results
-            result["perf_traces"] = tracer.get_report()
+            if tracer is not None:
+                result["perf_traces"] = tracer.get_report()
+            else:
+                result["perf_traces"] = {
+                    "summary_ms": {k: round(v, 4) for k, v in trace_totals_ms.items()},
+                    "traces": [],
+                }
             result["gpu_starvation"] = starvation_detector.get_summary()
             if kernel_profiles:
                 result["kernel_timing"] = {
@@ -7664,28 +8292,28 @@ class ExperimentRunner:
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
-                result["passed"] = result["loss_ratio"] < 0.8
+                result["passed"] = result["loss_ratio"] < config.stage1_loss_ratio_threshold
 
                 # Compute improvement rate
                 if initial_loss > 0:
                     result["loss_improvement_rate"] = (initial_loss - final_loss) / initial_loss
 
                 # Timing stats
-                result["avg_step_time_ms"] = sum(step_times) / len(step_times) if step_times else 0
+                result["avg_step_time_ms"] = (step_time_sum_ms / step_count) if step_count > 0 else 0.0
                 result["total_train_time_ms"] = total_time_ms
 
                 # Gradient norm stats
-                if grad_norms:
-                    result["max_grad_norm"] = max(grad_norms)
-                    result["mean_grad_norm"] = sum(grad_norms) / len(grad_norms)
+                if grad_norm_count > 0:
+                    result["max_grad_norm"] = grad_norm_max
+                    result["mean_grad_norm"] = grad_norm_sum / grad_norm_count
                     mean_gn = result["mean_grad_norm"]
-                    result["grad_norm_std"] = (
-                        sum((g - mean_gn) ** 2 for g in grad_norms) / len(grad_norms)
-                    ) ** 0.5
+                    var = max((grad_norm_sq_sum / grad_norm_count) - (mean_gn * mean_gn), 0.0)
+                    result["grad_norm_std"] = var ** 0.5
 
-                result["n_train_steps"] = len(step_times)
+                result["n_train_steps"] = step_count
                 result["final_lr"] = config.stage1_lr  # constant for now
-                result["training_curve"] = training_curve
+                if collect_curve:
+                    result["training_curve"] = training_curve
 
         except Exception as e:
             result["error"] = str(e)
@@ -7740,7 +8368,14 @@ class ExperimentRunner:
 
         # Finalize performance reports
         try:
-            result["perf_report"] = result.get("perf_traces", tracer.get_report())
+            if tracer is not None:
+                fallback_perf = tracer.get_report()
+            else:
+                fallback_perf = {
+                    "summary_ms": {k: round(v, 4) for k, v in trace_totals_ms.items()},
+                    "traces": [],
+                }
+            result["perf_report"] = result.get("perf_traces", fallback_perf)
             result["starvation_report"] = result.get("gpu_starvation", starvation_detector.get_summary())
             if "kernel_timing" in result:
                 result["kernel_timings_ms"] = result["kernel_timing"]
@@ -7956,7 +8591,23 @@ class ExperimentRunner:
         try:
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb)
-            suggestion = self.aria.suggest_experiment(context)
+            heuristic = self.aria.suggest_experiment(context) or {}
+            summary_payload = self._build_next_experiment_summary(nb, results)
+            planner = NextExperimentDecisionPlanner.from_run_config(config)
+            plan = planner.propose_plan(
+                summary_payload,
+                current_cost_dollars=float(self.aria.total_cost or 0.0),
+                fallback_plan=heuristic,
+            )
+            suggestion = {
+                "mode": plan.get("mode", heuristic.get("mode", "synthesis")),
+                "reasoning": plan.get("reasoning", heuristic.get("reasoning", "")),
+                "confidence": float(plan.get("confidence", heuristic.get("confidence", 0.5)) or 0.5),
+                "config": plan.get("config", heuristic.get("config", {})),
+                "planner": plan.get("planner", {}),
+                "guardrails": plan.get("guardrails", {}),
+                "summary_excerpt": plan.get("summary_excerpt", {}),
+            }
             if suggestion:
                 evidence_pack = build_evidence_pack(
                     nb,
@@ -7968,9 +8619,11 @@ class ExperimentRunner:
                 with self._lock:
                     self._last_recommendation = suggestion
                 self._emit_event("aria_recommendation", {
+                    "mode": suggestion.get("mode"),
                     "reasoning": suggestion.get("reasoning", ""),
                     "confidence": suggestion.get("confidence", 0),
                     "config": suggestion.get("config", {}),
+                    "planner": suggestion.get("planner", {}),
                     "evidence_pack": evidence_pack,
                 })
                 # Store as notebook entry
@@ -7979,11 +8632,32 @@ class ExperimentRunner:
                     title="Aria's Next Experiment Recommendation",
                     content=suggestion.get("reasoning", ""),
                     metadata={
+                        "mode": suggestion.get("mode"),
                         "confidence": suggestion.get("confidence", 0),
                         "suggested_config": suggestion.get("config", {}),
+                        "planner": suggestion.get("planner", {}),
+                        "guardrails": suggestion.get("guardrails", {}),
+                        "summary_payload": summary_payload,
                         "evidence_pack": evidence_pack,
                     },
                 ))
+                nb.record_decision(
+                    campaign_id=self._active_campaign_id,
+                    decision_type="next_experiment_plan",
+                    subject=f"experiment:{summary_payload.get('recent_experiment_id') or 'latest'}",
+                    rationale=suggestion.get("reasoning", ""),
+                    alternatives=[{
+                        "heuristic_fallback": heuristic,
+                    }],
+                    evidence_pack={
+                        "mode": suggestion.get("mode"),
+                        "confidence": suggestion.get("confidence", 0),
+                        "config": suggestion.get("config", {}),
+                        "planner": suggestion.get("planner", {}),
+                        "guardrails": suggestion.get("guardrails", {}),
+                        "summary_payload": summary_payload,
+                    },
+                )
                 # PROACTIVE: Apply suggested config/grammar changes immediately
                 self._apply_recommendation(suggestion, nb)
         except Exception as e:
@@ -8021,7 +8695,9 @@ class ExperimentRunner:
             elif k in (
                 "n_programs", "model_dim", "max_depth", "max_ops",
                 "model_source", "morph_focus_sparse",
-                "use_synthesized_training",
+                "use_synthesized_training", "novelty_weight",
+                "selection_family_bonus_weight", "refinement_top_k",
+                "refinement_generations", "refinement_budget_programs",
             ):
                 config_overrides[k] = v
 
@@ -8362,6 +9038,10 @@ class ExperimentRunner:
             max_depth=config.max_depth,
             max_ops=config.max_ops,
             residual_prob=config.residual_prob,
+            split_prob=config.grammar_split_prob,
+            merge_prob=config.grammar_merge_prob,
+            risky_op_prob=config.grammar_risky_op_prob,
+            freq_domain_prob=config.grammar_freq_domain_prob,
         )
         grammar.category_weights["math_space"] = config.math_space_weight
 
@@ -8418,7 +9098,7 @@ class ExperimentRunner:
         from research.scientist.perf import PerfTracer, GPUStarvationDetector, KernelTimer
         tracer = PerfTracer()
         starvation_detector = GPUStarvationDetector(threshold_ms=2.0)
-        kernel_timer = KernelTimer(model, enabled=True)
+        kernel_timer = KernelTimer(model, enabled=bool(getattr(config, "enable_kernel_profiling", False)))
         
         result: Dict[str, Any] = {"passed": False}
 
@@ -8567,7 +9247,7 @@ class ExperimentRunner:
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
-                result["passed"] = result["loss_ratio"] < 0.8
+                result["passed"] = result["loss_ratio"] < config.stage1_loss_ratio_threshold
 
                 if initial_loss > 0:
                     result["loss_improvement_rate"] = (initial_loss - final_loss) / initial_loss
@@ -10485,6 +11165,10 @@ class ExperimentRunner:
                 max_depth=min(config.max_depth, 12),
                 max_ops=min(config.max_ops, 20),
                 residual_prob=config.residual_prob,
+                split_prob=config.grammar_split_prob,
+                merge_prob=config.grammar_merge_prob,
+                risky_op_prob=config.grammar_risky_op_prob,
+                freq_domain_prob=config.grammar_freq_domain_prob,
             )
             grammar.category_weights["math_space"] = config.math_space_weight
 
@@ -10702,6 +11386,10 @@ class ExperimentRunner:
                 max_depth=min(config.max_depth, 12),
                 max_ops=min(config.max_ops, 20),
                 residual_prob=config.residual_prob,
+                split_prob=config.grammar_split_prob,
+                merge_prob=config.grammar_merge_prob,
+                risky_op_prob=config.grammar_risky_op_prob,
+                freq_domain_prob=config.grammar_freq_domain_prob,
             )
             grammar.category_weights["math_space"] = config.math_space_weight
 

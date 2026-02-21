@@ -1,0 +1,57 @@
+id: binary_hash
+version: 1.0.0
+name: Binary Hash
+category: representation
+tags:
+- binary
+- low_memory
+- token_representation
+status: approved
+description: Binary hash codes with straight-through estimator
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Binary hash codes with straight-through estimator
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Binary hash codes with straight-through estimator
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

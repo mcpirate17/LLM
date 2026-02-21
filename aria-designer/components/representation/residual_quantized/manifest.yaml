@@ -1,0 +1,57 @@
+id: residual_quantized
+version: 1.0.0
+name: Residual Quantized
+category: representation
+tags:
+- quantized
+- low_memory
+- token_representation
+status: approved
+description: Residual vector quantization (RVQ) codes
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Residual vector quantization (RVQ) codes
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Residual vector quantization (RVQ) codes
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

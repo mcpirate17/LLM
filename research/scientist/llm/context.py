@@ -295,6 +295,18 @@ def build_rich_context(
                     f"  {ap.get('feature', '?')}: correlation={ap.get('correlation', 0):.3f} "
                     f"— {ap.get('interpretation', '')}"
                 )
+        refuted_hyps = neg.get("refuted_hypotheses", [])
+        if refuted_hyps:
+            if not neg_lines:
+                neg_lines.append("Negative Results — Refuted Hypotheses:")
+            else:
+                neg_lines.append("  Refuted hypotheses (DO NOT re-test similar directions):")
+            for rh in refuted_hyps[:5]:
+                content = rh.get("content", "")[:120]
+                conf = rh.get("confidence", 0)
+                neg_lines.append(
+                    f"  REFUTED (conf={conf:.2f}): {content}"
+                )
         summary = neg.get("summary", "")
         if summary:
             neg_lines.append(f"  Summary: {summary[:200]}")
@@ -304,12 +316,18 @@ def build_rich_context(
     # Past hypothesis outcomes
     if past_hypotheses:
         lines = ["Past Hypothesis Outcomes:"]
-        for h in past_hypotheses[:5]:
+        for h in past_hypotheses[:10]:
             status = "CONFIRMED" if h.get("confirmed") else "REFUTED"
-            lines.append(f"  [{status}] {h.get('hypothesis', '?')[:80]}")
+            source = h.get("source", "")
+            label = f"[{status}]"
+            if source == "refuted_insight":
+                label = "[REFUTED INSIGHT — avoid similar directions]"
+            lines.append(f"  {label} {h.get('hypothesis', '?')[:80]}")
             if h.get("s1_count") is not None:
                 lines.append(f"    S1 passes: {h['s1_count']}, "
                              f"novelty: {h.get('best_novelty', 0):.3f}")
+            if source == "refuted_insight" and h.get("evidence"):
+                lines.append(f"    Evidence: {h['evidence'][:100]}")
         sections.append("\n".join(lines))
 
     # Session delta — what changed recently (avoids repeating stale observations)
@@ -580,6 +598,17 @@ def build_mode_selection_context(
                 f"{n_compressed_tested}/{n_tested} tested ({compressed_share:.1%}), "
                 f"compressed survival={compressed_survival:.1%}"
             )
+
+        # Refuted hypotheses — avoid re-testing failed directions
+        neg = analytics_data.get("negative_results") or {}
+        refuted_hyps = neg.get("refuted_hypotheses", [])
+        if refuted_hyps:
+            lines = ["Refuted Hypotheses (DO NOT re-test similar directions):"]
+            for rh in refuted_hyps[:5]:
+                content = rh.get("content", "")[:120]
+                conf = rh.get("confidence", 0)
+                lines.append(f"  REFUTED (conf={conf:.2f}): {content}")
+            sections.append("\n".join(lines))
 
         # Sparsity coverage
         sparse_summary = analytics_data.get("sparse_coverage") or {}

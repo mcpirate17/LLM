@@ -1,0 +1,65 @@
+id: file_writer
+version: 1.0.0
+name: File Writer
+category: data_io
+tags:
+- data
+- io
+- sink
+status: approved
+description: Writes tensor data to disk in CSV, JSON, NPY, PT, or TXT format.
+inputs:
+- name: data
+  dtype: tensor
+  shape:
+  - '*'
+outputs:
+- name: status
+  dtype: scalar
+params:
+  output_path:
+    type: string
+    default: output.npy
+    format: file
+    description: Configuration for output path.
+  file_format:
+    type: enum
+    options:
+    - auto
+    - csv
+    - json
+    - npy
+    - pt
+    - txt
+    default: auto
+    description: Select file format (auto, csv, json, npy, pt, txt).
+  overwrite:
+    type: boolean
+    default: false
+    description: Enable or disable overwrite.
+  include_shape:
+    type: boolean
+    default: true
+    description: Enable or disable include shape.
+implementation:
+  native: kernel.c
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  preserves_gradient: false
+help_md: '### Technical
+
+  Persists tensors to disk for inspection or downstream pipelines.
+
+
+  Inputs: `data:tensor[*]`.
+
+
+  Outputs: `status:scalar` (1.0 = success).
+
+
+  ### Plain Language
+
+  Use this as the workflow sink when you want actual files written.
+
+  '

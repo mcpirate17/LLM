@@ -128,6 +128,35 @@ class TestRunnerModeSelection(unittest.TestCase):
         self.assertIn("max_ops=max(1, int(config.max_ops))", src_generate)
         self.assertIn("max_depth=max(1, int(config.max_depth))", src_generate)
 
+    def test_run_cycle_dispatches_refinement_mode(self):
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "mode_refinement_cycle.db")
+        runner = ExperimentRunner(db_path)
+        nb = LabNotebook(db_path)
+
+        called = {}
+
+        def _capture_refinement(cfg, _nb, _n_exp, _limit, _reason):
+            called["model_source"] = cfg.model_source
+            called["source_ids"] = cfg.refine_source_result_ids
+
+        with patch.object(runner, "_select_next_mode", return_value={
+            "mode": "refinement",
+            "reasoning": "recursive local tweaks",
+            "confidence": 0.8,
+            "config": {"model_source": "fingerprint_refine", "refine_source_result_ids": "r1,r2"},
+        }), patch.object(runner, "_run_continuous_refinement", side_effect=_capture_refinement):
+            runner.run_aria_cycle(
+                RunConfig(device="cpu", n_programs=20, max_depth=10),
+                nb,
+                n_experiments=1,
+                t_start=time.time(),
+            )
+
+        nb.close()
+        self.assertEqual(called.get("model_source"), "fingerprint_refine")
+        self.assertEqual(called.get("source_ids"), "r1,r2")
+
 
 if __name__ == "__main__":
     unittest.main()

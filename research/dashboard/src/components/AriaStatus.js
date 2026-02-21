@@ -1,6 +1,7 @@
 import React from 'react';
 import AriaAvatar from './AriaAvatar';
 import useRenderPerf from '../hooks/useRenderPerf';
+import { useAriaData } from '../hooks/useAriaData';
 
 function sanitizeHypothesisText(rawText, maxLength = 220) {
   if (!rawText) return '';
@@ -24,10 +25,17 @@ function sanitizeHypothesisText(rawText, maxLength = 220) {
 
 function AriaStatus({ aria }) {
   useRenderPerf('AriaStatus');
+  const { summary } = useAriaData() || {};
 
   if (!aria) return <div className="card aria-card"><p>Waiting for connection...</p></div>;
 
   const summarizedHypothesis = sanitizeHypothesisText(aria.current_hypothesis);
+
+  // All-time counters: prefer summary (source of truth from LabNotebook),
+  // fall back to aria object (which copies the same values under shorter keys).
+  const totalExperiments = summary?.total_experiments ?? aria.total_experiments;
+  const totalPrograms = summary?.total_programs_evaluated ?? aria.total_programs;
+  const stage1Survivors = summary?.stage1_survivors ?? aria.stage1_survivors;
 
   return (
     <div className="card aria-card">
@@ -76,28 +84,28 @@ function AriaStatus({ aria }) {
         </div>
       </div>
 
-      {(aria.total_experiments != null || aria.total_programs != null) && (
+      {(totalExperiments != null || totalPrograms != null) && (
         <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', fontWeight: 600 }}>
             All-time
           </div>
           <div className="aria-stats">
-            {aria.total_experiments != null && (
+            {totalExperiments != null && (
               <div className="aria-stat">
                 <span className="aria-stat-label">Experiments</span>
-                <span>{aria.total_experiments}</span>
+                <span>{totalExperiments}</span>
               </div>
             )}
-            {aria.total_programs != null && (
+            {totalPrograms != null && (
               <div className="aria-stat">
                 <span className="aria-stat-label">Programs</span>
-                <span>{aria.total_programs}</span>
+                <span>{totalPrograms}</span>
               </div>
             )}
-            {aria.stage1_survivors != null && (
+            {stage1Survivors != null && (
               <div className="aria-stat">
                 <span className="aria-stat-label">S1 Survivors</span>
-                <span>{aria.stage1_survivors}</span>
+                <span>{stage1Survivors}</span>
               </div>
             )}
           </div>

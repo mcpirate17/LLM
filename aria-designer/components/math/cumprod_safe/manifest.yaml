@@ -1,0 +1,54 @@
+id: cumprod_safe
+version: 1.0.0
+name: Cumulative product (clamped) along seq dim
+category: math
+tags:
+- reduction
+- numerically_risky
+status: approved
+description: Cumulative product (clamped) along seq dim
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  Cumulative product (clamped) along seq dim
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Cumulative product (clamped) along seq dim
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

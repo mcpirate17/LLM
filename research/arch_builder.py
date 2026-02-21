@@ -179,7 +179,7 @@ class MixtureEmbeddingRepresentation(nn.Module):
 
 class SoftmaxAttention(nn.Module):
     """Standard multi-head softmax attention."""
-    def __init__(self, dim: int, n_heads: int, n_kv_heads: int, max_seq_len: int, rope: bool = True):
+    def __init__(self, dim: int, n_heads: int, n_kv_heads: int, max_seq_len: int):
         super().__init__()
         self.n_heads = n_heads
         self.n_kv_heads = n_kv_heads
@@ -613,7 +613,7 @@ class ImplicitFixedPointLayer(nn.Module):
 
 class ProductKeyMemory(nn.Module):
     """Product-key memory lookup."""
-    def __init__(self, dim: int, n_keys: int = 64, value_dim: int = 256):
+    def __init__(self, dim: int, n_keys: int = 64):
         super().__init__()
         self.half_dim = dim // 2
         self.keys_a = nn.Parameter(torch.randn(n_keys, self.half_dim) * 0.02)

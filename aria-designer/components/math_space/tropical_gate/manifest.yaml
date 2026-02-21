@@ -1,0 +1,56 @@
+id: tropical_gate
+version: 1.0.0
+name: Shortest-path tropical distances as a gating mechanism
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: Shortest-path tropical distances as a gating mechanism
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Shortest-path tropical distances as a gating mechanism
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Shortest-path tropical distances as a gating mechanism
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

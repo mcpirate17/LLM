@@ -1,0 +1,85 @@
+id: select_columns
+version: 1.0.0
+name: Select Columns
+category: data_transform
+tags:
+- data
+- transform
+- projection
+status: approved
+description: Selects a subset of feature columns from row-like tensor data using schema-aware names or indices.
+inputs:
+- name: data
+  dtype: tensor
+  shape:
+  - '*'
+outputs:
+- name: selected
+  dtype: tensor
+  shape:
+  - '*'
+params:
+  selection_mode:
+    type: enum
+    options:
+    - names
+    - indices
+    default: names
+    description: Choose whether to select columns by schema names or numeric indices.
+  schema_columns:
+    type: string
+    default: ''
+    description: Comma-separated column names that define the available schema (for name-based selection).
+  selected_columns:
+    type: string
+    default: ''
+    format: csv_columns
+    schema_source_param: schema_columns
+    description: Comma-separated column names to keep. In Inspector this is shown as a schema-aware multi-select list.
+  selected_indices:
+    type: string
+    default: ''
+    description: Comma-separated column indices to keep (e.g. 0,2,5).
+  drop_invalid:
+    type: boolean
+    default: true
+    description: Drop unknown names/out-of-range indices instead of failing.
+  schema_validation:
+    type: enum
+    options:
+    - none
+    - strict
+    default: none
+    description: Strict mode fails when requested columns are not present in schema/data.
+  keep_order:
+    type: boolean
+    default: true
+    description: Preserve user-specified column ordering; otherwise use sorted unique order.
+implementation:
+  python: kernel_fallback.py
+performance:
+  has_params: true
+help_md: '### Technical
+
+  Projects row-like tensor data onto selected feature columns.
+
+
+  Inputs: `data:tensor[*]`.
+
+  Outputs: `selected:tensor[*]`.
+
+
+  Selection modes:
+
+  - `names`: maps `selected_columns` against `schema_columns`
+
+  - `indices`: parses `selected_indices` as integer positions
+
+
+  ### Plain Language
+
+  Use this to keep only the columns you care about before downstream processing.
+
+  Provide schema column names once, then choose columns by name in the Inspector.
+
+  '

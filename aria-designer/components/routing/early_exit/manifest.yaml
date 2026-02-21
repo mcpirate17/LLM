@@ -1,0 +1,57 @@
+id: early_exit
+version: 1.0.0
+name: Early Exit
+category: routing
+tags:
+- dynamic_routing
+- early_exit
+- compute_routing
+status: approved
+description: 'Early exit: tokens stop at different depths'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Early exit: tokens stop at different depths
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Early exit: tokens stop at different depths
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

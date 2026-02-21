@@ -1,0 +1,70 @@
+id: file_loader
+version: 1.0.0
+name: File Loader
+category: data_io
+tags:
+- data
+- io
+- source
+status: approved
+description: Loads data from CSV, JSON, NPY, PT, or TXT into a tensor-like output.
+inputs: []
+outputs:
+- name: data
+  dtype: tensor
+  shape:
+  - '*'
+params:
+  file_path:
+    type: string
+    default: data.csv
+    format: file
+    description: Configuration for file path.
+  file_format:
+    type: enum
+    options:
+    - auto
+    - csv
+    - json
+    - npy
+    - pt
+    - txt
+    default: auto
+    description: Select file format (auto, csv, json, npy, pt, txt).
+  delimiter:
+    type: string
+    default: ','
+    description: Configuration for delimiter.
+  has_header:
+    type: boolean
+    default: true
+    description: Enable or disable has header.
+  text_encoding:
+    type: enum
+    options:
+    - utf-8
+    - latin-1
+    - ascii
+    default: utf-8
+    description: Select text encoding (utf-8, latin-1, ascii).
+implementation:
+  native: kernel.c
+  python: kernel_fallback.py
+performance:
+  has_params: false
+help_md: '### Technical
+
+  Unified loader for common on-disk formats.
+
+
+  Inputs: none.
+
+
+  Outputs: `data:tensor[*]`.
+
+
+  ### Plain Language
+
+  Use this for generic file-based ingestion when you do not want separate readers.
+
+  '

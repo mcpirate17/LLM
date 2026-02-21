@@ -168,7 +168,8 @@ class ReferenceCkaStore:
     Thread-safe. Lazily loads artifacts on first use.
 
     Usage:
-        store = ReferenceCkaStore(artifact_dir="/path/to/artifacts/cka_references/v1")
+        # relative to project root
+        store = ReferenceCkaStore(artifact_dir="artifacts/cka_references/v1")
         refs = store.get_references()  # Dict[str, Tensor] or None
         meta = store.get_metadata()    # source/version info
     """
@@ -178,7 +179,6 @@ class ReferenceCkaStore:
         artifact_dir: Optional[str] = None,
         artifact_version: Optional[str] = None,
         allow_heuristic_fallback: bool = True,
-        cache_max_items: int = 3,
     ):
         # Resolve from env or explicit args
         self._artifact_dir = artifact_dir or os.environ.get("CKA_REFERENCE_DIR")
@@ -257,6 +257,7 @@ class ReferenceCkaStore:
                 "cka_reference_quality": self._manifest.quality_flags.get(
                     "overall", "unknown"
                 ),
+                "cka_similarity_path": "_compute_reference_cka",
             }
         else:
             if not self._fallback_warned:
@@ -270,6 +271,7 @@ class ReferenceCkaStore:
                 "cka_artifact_version": None,
                 "cka_probe_protocol_hash": None,
                 "cka_reference_quality": "heuristic",
+                "cka_similarity_path": "_compute_reference_cka",
             }
 
     @property

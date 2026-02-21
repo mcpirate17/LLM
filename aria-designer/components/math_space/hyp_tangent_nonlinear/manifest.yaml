@@ -1,0 +1,56 @@
+id: hyp_tangent_nonlinear
+version: 1.0.0
+name: Tangent-space nonlinearity with exp/log manifold mapping
+category: math_space
+tags:
+- math_space
+- numerically_risky
+status: approved
+description: Tangent-space nonlinearity with exp/log manifold mapping
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Tangent-space nonlinearity with exp/log manifold mapping
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Tangent-space nonlinearity with exp/log manifold mapping
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

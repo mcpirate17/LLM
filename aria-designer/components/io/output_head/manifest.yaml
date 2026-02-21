@@ -1,0 +1,60 @@
+id: output_head
+version: 1.0.0
+name: Output Head
+category: io
+tags:
+- io
+- sink
+status: approved
+description: Model output projection to vocabulary
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: logits
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - V
+params:
+  vocab_size:
+    type: integer
+    default: 32000
+    description: Numeric value for vocab size.
+  tie_weights:
+    type: boolean
+    default: true
+    description: Enable or disable tie weights.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D * vocab_size
+help_md: '### Technical
+
+  Model output projection to vocabulary
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: logits:tensor[B, S, V].
+
+  Params: vocab_size, tie_weights.
+
+
+  ### Plain Language
+
+  Model output projection to vocabulary
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

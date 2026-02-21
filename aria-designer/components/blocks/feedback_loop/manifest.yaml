@@ -1,0 +1,57 @@
+id: feedback_loop
+version: 1.0.0
+name: Feedback Loop
+category: blocks
+tags:
+- recurrent
+- feedback
+- topology
+status: approved
+description: Feedback connections from later to earlier layers
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Feedback connections from later to earlier layers
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Feedback connections from later to earlier layers
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,56 @@
+id: tropical_attention
+version: 1.0.0
+name: Self-attention using tropical geometry (shortest-path)
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: Self-attention using tropical geometry (shortest-path)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Self-attention using tropical geometry (shortest-path)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Self-attention using tropical geometry (shortest-path)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,54 @@
+id: basis_expansion
+version: 1.0.0
+name: 'Basis-expansion layer: project through sinusoidal bases'
+category: functional
+tags:
+- functional
+- learnable
+status: approved
+description: 'Basis-expansion layer: project through sinusoidal bases'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*4
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Basis-expansion layer: project through sinusoidal bases
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Basis-expansion layer: project through sinusoidal bases
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

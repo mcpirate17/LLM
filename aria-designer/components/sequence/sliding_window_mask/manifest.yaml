@@ -1,0 +1,60 @@
+id: sliding_window_mask
+version: 1.0.0
+name: Exponential distance decay mask for windowed composition
+category: sequence
+tags:
+- sequence
+status: approved
+description: Exponential distance decay mask for windowed composition
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  window_size:
+    type: integer
+    default: 64
+    constraints:
+      min: 4
+      max: 4096
+    description: Numeric value for window size.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Exponential distance decay mask for windowed composition
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: window_size.
+
+
+  ### Plain Language
+
+  Exponential distance decay mask for windowed composition
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

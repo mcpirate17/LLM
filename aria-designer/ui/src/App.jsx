@@ -22,6 +22,7 @@ import EmptyState from './components/EmptyState'
 import KeyboardShortcuts from './components/KeyboardShortcuts'
 import ImportDialog from './components/ImportDialog'
 import RunResultsPanel from './components/RunResultsPanel'
+import ErrorBoundary from './components/ErrorBoundary'
 import { isValidConnection as validateConnection } from './utils/validation'
 import { buildWorkflowJson } from './utils/workflow'
 import { starterEdges, starterNodes } from './mockData'
@@ -62,14 +63,27 @@ function DesignerApp() {
   const [ariaSuggestions, setAriaSuggestions] = useState([])
   const [ariaLoading, setAriaLoading] = useState(false)
 
+  const [isDragging, setIsDragging] = useState(false)
+  const [paletteConstraints, setPaletteConstraints] = useState({})
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [helpRequest, setHelpRequest] = useState(null)
+  const [readOnly, setReadOnly] = useState(false)
+  const [embeddedMode, setEmbeddedMode] = useState(false)
   const [evalState, setEvalState] = useState({ stages: [], status: null, totalTimeMs: null, error: null })
+  const [validateUi, setValidateUi] = useState({ inProgress: false, last: 'idle', issues: 0 })
+  const [stepStatus, setStepStatus] = useState({
+    validate: 'idle',
+    compile: 'idle',
+    test: 'idle',
+    run: 'idle',
+  })
   const deepRunAbortRef = useRef(null)
+  const validateTimersRef = useRef({})
+  const loadWorkflowJsonRef = useRef(null)
   const reactFlowWrapper = useRef(null)
   const importInputRef = useRef(null)
-  const { screenToFlowPosition, deleteElements } = useReactFlow()
+  const { screenToFlowPosition, deleteElements, fitView } = useReactFlow()
 
   const clearNodeHighlights = useCallback(() => {
     setNodes((nds) => nds.map((n) => ({ ...n, className: '', data: { ...n.data, errors: [] } })))
@@ -128,11 +142,126 @@ function DesignerApp() {
     return () => clearInterval(timer)
   }, [])
 
-  // Autosave local draft on canvas changes.
+  // Fetch palette constraints
   useEffect(() => {
+    const fetchConstraints = async () => {
+      try {
+        const workflow = buildWorkflowJson(nodes, edges)
+        const res = await fetch(`${API_BASE}/api/v1/constraints/palette`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workflow, selected_node_id: selectedNodeId }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setPaletteConstraints(data)
+        }
+      } catch (err) {
+        console.warn('Failed to fetch palette constraints', err)
+      }
+    }
+    const timer = setTimeout(fetchConstraints, 300)
+    return () => clearTimeout(timer)
+  }, [nodes, edges, selectedNodeId])
+
+  // PostMessage bridge — notify parent window of state changes in embedded mode.
+  const postToParent = useCallback((type, payload = {}) => {
+    if (!embeddedMode || !window.parent || window.parent === window) return
+    window.parent.postMessage({ source: 'aria-designer', type, ...payload }, '*')
+  }, [embeddedMode])
+
+  // Autosave local draft on canvas changes (skip in embedded mode).
+  useEffect(() => {
+    if (embeddedMode) {
+      // Notify parent of graph changes
+      postToParent('graph-changed', { nodeCount: nodes.length, edgeCount: edges.length })
+      return
+    }
     const workflow = buildWorkflowJson(nodes, edges)
     localStorage.setItem('aria-workflow-autosave', JSON.stringify(workflow))
-  }, [nodes, edges])
+  }, [nodes, edges, embeddedMode, postToParent])
+
+  // Listen for commands from parent window (e.g., request current graph).
+  useEffect(() => {
+    if (!embeddedMode) return
+    const handler = (e) => {
+      if (e.data?.target !== 'aria-designer') return
+      if (e.data.type === 'get-graph') {
+        const workflow = buildWorkflowJson(nodes, edges)
+        postToParent('graph-data', { workflow })
+      }
+      if (e.data.type === 'load-graph' && e.data.graphJson) {
+        try {
+          const gj = typeof e.data.graphJson === 'string' ? JSON.parse(e.data.graphJson) : e.data.graphJson
+          if (gj.schema_version === 'workflow_graph.v1' || gj.nodes) {
+            loadWorkflowJsonRef.current?.(gj)
+            setStatusMsg('Loaded morph candidate')
+            postToParent('graph-loaded', {
+              name: gj.name || 'morph candidate',
+              nodeCount: (gj.nodes || []).length,
+              edgeCount: (gj.edges || []).length,
+            })
+          }
+        } catch (err) {
+          setStatusMsg(`Failed to load morph candidate: ${err.message}`)
+        }
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [embeddedMode, nodes, edges, postToParent])
+
+  // URL param handling — load a workflow from research pipeline when embedded.
+  // Supports: ?import_result_id=res_xxx&readonly=1&embedded=1
+  const urlParamsHandled = useRef(false)
+  useEffect(() => {
+    if (urlParamsHandled.current || components.length === 0) return
+    const params = new URLSearchParams(window.location.search)
+    const resultId = params.get('import_result_id')
+    const isReadOnly = params.get('readonly') === '1'
+    const isEmbedded = params.get('embedded') === '1'
+
+    if (isReadOnly) setReadOnly(true)
+    if (isEmbedded) setEmbeddedMode(true)
+
+    if (resultId) {
+      urlParamsHandled.current = true
+      setStatusMsg(`Importing architecture ${resultId}...`)
+      fetch(`${API_BASE}/api/v1/import/survivors/${resultId}`, { method: 'POST' })
+        .then((r) => {
+          if (!r.ok) throw new Error(`Import failed: ${r.status}`)
+          return r.json()
+        })
+        .then((data) => {
+          const wf = data.workflow || data
+          if (wf.schema_version === 'workflow_graph.v1') {
+            loadWorkflowJsonRef.current?.(wf)
+            setStatusMsg(`Loaded architecture: ${wf.name || resultId}`)
+            // Post directly — postToParent may have stale embeddedMode=false
+            if (isEmbedded && window.parent && window.parent !== window) {
+              window.parent.postMessage({
+                source: 'aria-designer',
+                type: 'graph-loaded',
+                resultId,
+                name: wf.name,
+                nodeCount: (wf.nodes || []).length,
+                edgeCount: (wf.edges || []).length,
+              }, '*')
+            }
+          } else {
+            setStatusMsg(`Import returned unexpected format`)
+          }
+        })
+        .catch((err) => {
+          console.error('URL param import failed:', err)
+          setStatusMsg(`Failed to import ${resultId}: ${err.message}`)
+        })
+    }
+  }, [components, postToParent])
+
+  useEffect(() => () => {
+    Object.values(validateTimersRef.current).forEach((t) => clearTimeout(t))
+  }, [])
 
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) || null,
@@ -163,6 +292,7 @@ function DesignerApp() {
     { label: 'Tropical Block', value: '/examples/tropical_block.json' },
     { label: 'Transformer Mini', value: '/examples/transformer_mini.json' },
     { label: 'SSM Stack', value: '/examples/ssm_stack.json' },
+    { label: 'Hybrid Attn+SSM+MoE', value: '/examples/hybrid_attn_ssm_moe.json' },
   ]), [])
 
   const onConnect = useCallback(
@@ -174,11 +304,13 @@ function DesignerApp() {
   const onDragOver = useCallback((e) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
+    setIsDragging(true)
   }, [])
 
   const onDrop = useCallback(
     (e) => {
       e.preventDefault()
+      setIsDragging(false)
       const raw = e.dataTransfer.getData('application/aria-component')
       if (!raw) return
 
@@ -199,6 +331,7 @@ function DesignerApp() {
           outputs: comp.outputs || [],
           params: comp.params || {},
           paramValues: {},
+          paramErrors: {},
           performance: comp.performance || {},
           manifest: comp,
         },
@@ -209,7 +342,6 @@ function DesignerApp() {
     [screenToFlowPosition, setNodes]
   )
 
-  // Click palette item to add (fallback for non-drag)
   const onAddFromPalette = useCallback(
     (comp) => {
       const newId = `n_${++nodeIdCounter}`
@@ -226,6 +358,7 @@ function DesignerApp() {
           outputs: comp.outputs || [],
           params: comp.params || {},
           paramValues: {},
+          paramErrors: {},
           performance: comp.performance || {},
           manifest: comp,
         },
@@ -236,26 +369,68 @@ function DesignerApp() {
     [setNodes]
   )
 
+  const validateNodeConfig = useCallback((nodeId, componentId, config) => {
+    if (!componentId) return
+    const timerKey = String(nodeId)
+    if (validateTimersRef.current[timerKey]) {
+      clearTimeout(validateTimersRef.current[timerKey])
+    }
+    validateTimersRef.current[timerKey] = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/components/${componentId}/validate-config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config }),
+        })
+        const data = await res.json()
+        const paramErrors = {}
+        for (const err of data?.errors || []) {
+          if (!err?.param) continue
+          if (!paramErrors[err.param]) paramErrors[err.param] = []
+          paramErrors[err.param].push(err.message || 'Invalid value')
+        }
+        setNodes((prev) =>
+          prev.map((n) =>
+            n.id === nodeId
+              ? { ...n, data: { ...n.data, paramErrors } }
+              : n
+          )
+        )
+      } catch {
+        // API offline: keep local editor usable.
+      }
+    }, 250)
+  }, [setNodes])
+
   // Update node param
   const onParamChange = useCallback(
     (nodeId, paramName, value) => {
+      let nextComponentId = ''
+      let nextParamValues = {}
       setNodes((prev) =>
         prev.map((n) =>
           n.id === nodeId
-            ? { ...n, data: { ...n.data, paramValues: { ...n.data.paramValues, [paramName]: value } } }
+            ? (() => {
+                nextParamValues = { ...n.data.paramValues, [paramName]: value }
+                nextComponentId = String(n.data?.componentId || '').split('/').pop()
+                return { ...n, data: { ...n.data, paramValues: nextParamValues } }
+              })()
             : n
         )
       )
+      if (nextComponentId) {
+        validateNodeConfig(nodeId, nextComponentId, nextParamValues)
+      }
     },
-    [setNodes]
+    [setNodes, validateNodeConfig]
   )
 
   const [isRunDisabled, setIsRunDisabled] = useState(false)
   
-  // Real-time connection validation
+  // Real-time connection validation (prevents cycles, duplicates, port conflicts)
   const isValidConnection = useCallback((connection) => {
-    return validateConnection(connection, nodes)
-  }, [nodes])
+    return validateConnection(connection, nodes, edges)
+  }, [nodes, edges])
 
   // Live graph validation effect
   useEffect(() => {
@@ -321,6 +496,10 @@ function DesignerApp() {
   const handleValidate = useCallback(async () => {
     const workflow = buildWorkflowJson(nodes, edges)
     setWorkflowStage('validate')
+    setStepStatus((s) => ({ ...s, validate: 'running' }))
+    setValidateUi({ inProgress: true, last: 'idle', issues: 0 })
+    setStatusMsg('Validating workflow...')
+    setRunStatus({ phase: 'running', message: 'Validation in progress...', metrics: null })
     clearNodeHighlights()
     try {
       let data
@@ -341,8 +520,10 @@ function DesignerApp() {
       }
 
       if (data.success === true || data.valid === true) {
-        setStatusMsg('Valid graph')
-        setRunStatus({ phase: 'idle', message: 'Validation passed', metrics: null })
+        setStepStatus((s) => ({ ...s, validate: 'pass' }))
+        setValidateUi({ inProgress: false, last: 'pass', issues: 0 })
+        setStatusMsg('Validation passed: no issues found')
+        setRunStatus({ phase: 'success', message: 'Validation passed', metrics: { issues: 0 } })
         return
       }
 
@@ -365,9 +546,14 @@ function DesignerApp() {
       const globalErrors = data.global_errors || []
       const issueErrors = (data.issues || []).map((i) => i.message).filter(Boolean)
       const messages = [...globalErrors, ...issueErrors]
+      const issueCount = Object.values(errorMap).reduce((acc, arr) => acc + (arr?.length || 0), 0) || messages.length || 1
+      setStepStatus((s) => ({ ...s, validate: 'fail' }))
+      setValidateUi({ inProgress: false, last: 'fail', issues: issueCount })
       setStatusMsg(messages.length > 0 ? `Validation failed: ${messages.join('; ')}` : 'Validation failed')
-      setRunStatus({ phase: 'failed', message: 'Validation failed', metrics: null })
+      setRunStatus({ phase: 'failed', message: 'Validation failed', metrics: { issues: issueCount } })
     } catch {
+      setStepStatus((s) => ({ ...s, validate: 'fail' }))
+      setValidateUi({ inProgress: false, last: 'fail', issues: 1 })
       setStatusMsg('Validation failed (API offline)')
       setRunStatus({ phase: 'failed', message: 'Validation failed (API offline)', metrics: null })
     }
@@ -376,7 +562,9 @@ function DesignerApp() {
   const handleCompile = useCallback(async () => {
     const workflow = buildWorkflowJson(nodes, edges)
     setWorkflowStage('compile')
+    setStepStatus((s) => ({ ...s, compile: 'running' }))
     clearNodeHighlights()
+    setStatusMsg('Compiling workflow...')
     setRunStatus({ phase: 'compiling', message: 'Compiling workflow...', metrics: null })
     try {
       let data
@@ -400,6 +588,7 @@ function DesignerApp() {
 
       const compiled = data.success === true || data.compiled === true
       if (compiled) {
+        setStepStatus((s) => ({ ...s, compile: 'pass' }))
         if (usedDesignerApi) {
           setStatusMsg(`Compiled successfully: ${data.n_ops || 0} ops, ${data.param_count || 0} params`)
           setRunStatus({
@@ -422,6 +611,7 @@ function DesignerApp() {
           })
         }
       } else {
+        setStepStatus((s) => ({ ...s, compile: 'fail' }))
         const err = data.error || 'Compilation failed'
         const nodeMatch = String(err).match(/node\\s+([a-zA-Z0-9_:-]+)/i)
         if (nodeMatch && nodeMatch[1]) {
@@ -431,6 +621,7 @@ function DesignerApp() {
         setRunStatus({ phase: 'failed', message: `Compile failed: ${err}`, metrics: null })
       }
     } catch {
+      setStepStatus((s) => ({ ...s, compile: 'fail' }))
       setStatusMsg('Compilation failed (API offline)')
       setRunStatus({ phase: 'failed', message: 'Compile failed (API offline)', metrics: null })
     }
@@ -438,6 +629,7 @@ function DesignerApp() {
 
   const handleSave = useCallback(async () => {
     const workflow = buildWorkflowJson(nodes, edges)
+    setStatusMsg('Saving workflow...')
     try {
       try {
         const res = await fetch(`${DESIGNER_API_BASE}/api/designer/save`, {
@@ -467,6 +659,7 @@ function DesignerApp() {
     const workflow = buildWorkflowJson(nodes, edges)
     try {
       setWorkflowStage('run')
+      setStepStatus((s) => ({ ...s, test: 'running' }))
       clearNodeHighlights()
       setStatusMsg('Running preview...')
       setRunStatus({ phase: 'running', message: 'Running forward pass...', metrics: null })
@@ -490,6 +683,7 @@ function DesignerApp() {
       }
 
       if (data.success === true) {
+        setStepStatus((s) => ({ ...s, test: 'pass' }))
         if (usedDesignerApi && data.metrics) {
           setStatusMsg(
             `Run complete — params ${data.metrics.param_count || 0}, FLOPs/token ${data.metrics.flops_per_token || 0}, ` +
@@ -524,6 +718,7 @@ function DesignerApp() {
           }))
         }
       } else {
+        setStepStatus((s) => ({ ...s, test: 'fail' }))
         const err = data.error || 'Run failed'
         const nodeMatch = String(err).match(/node\\s+([a-zA-Z0-9_:-]+)/i)
         if (nodeMatch && nodeMatch[1]) {
@@ -533,6 +728,7 @@ function DesignerApp() {
         setRunStatus({ phase: 'failed', message: `Run failed: ${err}`, metrics: null })
       }
     } catch {
+      setStepStatus((s) => ({ ...s, test: 'fail' }))
       setStatusMsg('Preview failed (API offline)')
       setRunStatus({ phase: 'failed', message: 'Run failed (API offline)', metrics: null })
     }
@@ -553,10 +749,13 @@ function DesignerApp() {
     if (deepRunAbortRef.current) deepRunAbortRef.current.abort()
     const controller = new AbortController()
     deepRunAbortRef.current = controller
+    setWorkflowStage('deep-run')
+    setStepStatus((s) => ({ ...s, run: 'running' }))
 
     const workflow = buildWorkflowJson(nodes, edges)
     setEvalState({ stages: [], status: 'running', totalTimeMs: null, error: null })
     setRightPanelTab('results')
+    setStatusMsg('Deep Run: starting...')
     setRunStatus({ phase: 'running', message: 'Deep Run: starting...', metrics: null })
 
     // Mark all nodes as running
@@ -651,17 +850,20 @@ function DesignerApp() {
                 }
               } else if (eventType === 'done') {
                 const succeeded = payload.status === 'success'
+                setStepStatus((s) => ({ ...s, run: succeeded ? 'pass' : 'fail' }))
+                const doneMsg = succeeded
+                  ? `Deep Run complete (${(payload.total_time_ms / 1000).toFixed(1)}s)`
+                  : `Deep Run failed: ${payload.error || payload.status}`
                 setEvalState((prev) => ({
                   ...prev,
                   status: payload.status,
                   totalTimeMs: payload.total_time_ms,
                   error: payload.error || null,
                 }))
+                setStatusMsg(doneMsg)
                 setRunStatus({
                   phase: succeeded ? 'success' : 'failed',
-                  message: succeeded
-                    ? `Deep Run complete (${(payload.total_time_ms / 1000).toFixed(1)}s)`
-                    : `Deep Run failed: ${payload.error || payload.status}`,
+                  message: doneMsg,
                   metrics: null,
                 })
 
@@ -691,9 +893,13 @@ function DesignerApp() {
       }
     } catch (err) {
       if (err.name === 'AbortError') {
+        setStepStatus((s) => ({ ...s, run: 'idle' }))
+        setStatusMsg('Deep Run cancelled')
         setRunStatus({ phase: 'idle', message: 'Deep Run cancelled', metrics: null })
         setAllNodeEvalStatus(null, null)
       } else {
+        setStepStatus((s) => ({ ...s, run: 'fail' }))
+        setStatusMsg(`Deep Run failed: ${err.message}`)
         setEvalState((prev) => ({ ...prev, status: 'error', error: err.message }))
         setRunStatus({ phase: 'failed', message: `Deep Run failed: ${err.message}`, metrics: null })
         setAllNodeEvalStatus('fail', err.message)
@@ -715,6 +921,7 @@ function DesignerApp() {
 
   const handleExportPython = useCallback(async () => {
     const workflow = buildWorkflowJson(nodes, edges)
+    setStatusMsg('Exporting Python...')
     try {
       const res = await fetch(`${DESIGNER_API_BASE}/api/designer/export/python`, {
         method: 'POST',
@@ -787,6 +994,7 @@ function DesignerApp() {
           outputs: comp?.outputs || fallbackOutputs,
           params: comp?.params || {},
           paramValues: n.params || {},
+          paramErrors: {},
           performance: comp?.performance || {},
           manifest: comp || {},
           help_md: comp?.help_md || '',
@@ -819,9 +1027,15 @@ function DesignerApp() {
       requestAnimationFrame(() => {
         setEdges(nextEdges)
         setStatusMsg(`Loaded workflow: ${workflow.name || workflow.workflow_id}`)
+        // Third frame: fit view after edges are rendered (important for embedded)
+        requestAnimationFrame(() => {
+          fitView({ padding: 0.15, duration: 200 })
+        })
       })
     })
-  }, [components, setEdges, setNodes])
+  }, [components, setEdges, setNodes, fitView])
+
+  loadWorkflowJsonRef.current = loadWorkflowJson
 
   const handleImportFile = useCallback((e) => {
     const file = e.target.files?.[0]
@@ -851,6 +1065,7 @@ function DesignerApp() {
   }, [loadWorkflowJson])
 
   const handleReloadComponents = useCallback(async () => {
+    setStatusMsg('Reloading components...')
     try {
       const res = await fetch(`${API_BASE}/api/v1/components/reload`, { method: 'POST' })
       const data = await res.json()
@@ -863,9 +1078,21 @@ function DesignerApp() {
     }
   }, [])
 
+  const handleClearCanvas = useCallback(() => {
+    if (window.confirm('Are you sure you want to clear the entire canvas? This cannot be undone.')) {
+      setNodes([])
+      setEdges([])
+      setSelectedNodeId(null)
+      setWorkflowStage('idle')
+      setStatusMsg('Canvas cleared')
+      setRunStatus({ phase: 'idle', message: 'Idle', metrics: null })
+    }
+  }, [setNodes, setEdges])
+
   const handleAskAriaSuggest = useCallback(async () => {
     const workflow = buildWorkflowJson(nodes, edges)
     setAriaLoading(true)
+    setStatusMsg('Fetching Aria suggestions...')
     try {
       const res = await fetch(`${API_BASE}/api/v1/aria/suggest-components`, {
         method: 'POST',
@@ -888,6 +1115,7 @@ function DesignerApp() {
     if (!prompt) return
     const workflow = buildWorkflowJson(nodes, edges)
     setAriaLoading(true)
+    setStatusMsg('Generating Aria patch...')
 
     // Preferred path: backend-generated deterministic patch proposal.
     try {
@@ -983,6 +1211,7 @@ function DesignerApp() {
 
   // Patch Application
   const handleApplyPatch = useCallback(async (proposalId) => {
+    setStatusMsg('Applying patch...')
     try {
       const res = await fetch(`${API_BASE}/api/v1/aria/apply-patch`, {
         method: 'POST',
@@ -1033,13 +1262,17 @@ function DesignerApp() {
       // Skip if typing in an input
       const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT'
 
-      // Delete / Backspace — remove selected nodes
+      // Delete / Backspace — remove selected nodes and edges
       if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput) {
-        const selected = nodes.filter((n) => n.selected)
-        if (selected.length > 0) {
+        const selectedNodes = nodes.filter((n) => n.selected)
+        const selectedEdges = edges.filter((e) => e.selected)
+        
+        if (selectedNodes.length > 0 || selectedEdges.length > 0) {
           e.preventDefault()
-          deleteElements({ nodes: selected })
-          setSelectedNodeId(null)
+          deleteElements({ nodes: selectedNodes, edges: selectedEdges })
+          if (selectedNodes.some(n => n.id === selectedNodeId)) {
+            setSelectedNodeId(null)
+          }
         }
         return
       }
@@ -1071,19 +1304,31 @@ function DesignerApp() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleSave, handleCompile, handlePreview, nodes, deleteElements])
+  }, [handleSave, handleCompile, handlePreview, nodes, edges, deleteElements, selectedNodeId])
 
   const isCanvasEmpty = nodes.length === 0
+  const stepGlyph = (status, busy = false) => {
+    if (busy || status === 'running') return '↻'
+    if (status === 'pass') return '✓'
+    if (status === 'fail') return '✕'
+    return '•'
+  }
 
   return (
-    <div className="page">
-      <Palette components={components} onDragStart={() => {}} />
+    <div className={`page ${embeddedMode ? 'embedded-mode' : ''}`}>
+      {!embeddedMode && (
+        <Palette
+          components={components}
+          onDragStart={() => {}}
+          constraints={paletteConstraints}
+        />
+      )}
 
       <main className="canvas-wrap">
         <header className="topbar">
           <div>
-            <h1>Aria Designer</h1>
-            <p>Graph authoring workspace for user + Aria co-design</p>
+            <h1>{embeddedMode ? 'Architecture Viewer' : 'Aria Designer'}</h1>
+            {!embeddedMode && <p>Graph authoring workspace for user + Aria co-design</p>}
           </div>
           <div className="actions">
             <input
@@ -1094,23 +1339,53 @@ function DesignerApp() {
               style={{ display: 'none' }}
             />
             <div className="toolbar-group workflow">
-              <button className={workflowStage === 'validate' ? 'active' : ''} onClick={handleValidate}>Validate</button>
-              <button className={workflowStage === 'compile' ? 'active' : ''} onClick={handleCompile}>Compile</button>
               <button 
-                className={`primary ${workflowStage === 'run' ? 'active' : ''}`} 
+                className={`step-btn step-state-${stepStatus.validate} ${workflowStage === 'validate' ? 'active' : ''} ${validateUi.inProgress ? 'busy' : ''}`} 
+                onClick={handleValidate}
+                disabled={validateUi.inProgress}
+                title="Step 1: Verify graph structure, ports, and parameters without execution."
+              >
+                <span className="step-label-row">
+                  <span className={`step-glyph ${(validateUi.inProgress || stepStatus.validate === 'running') ? 'step-glyph-spin' : ''}`}>
+                    {stepGlyph(stepStatus.validate, validateUi.inProgress)}
+                  </span>
+                  <span>{validateUi.inProgress ? 'Step 1: Validating...' : 'Step 1: Validate'}</span>
+                </span>
+              </button>
+              <span className={`step-sep step-sep-${stepStatus.validate}`} aria-hidden="true">▶</span>
+              <button 
+                className={`step-btn step-state-${stepStatus.compile} ${workflowStage === 'compile' ? 'active' : ''}`} 
+                onClick={handleCompile}
+                title="Step 2: Convert visual graph into a runnable PyTorch module."
+              >
+                <span className="step-label-row">
+                  <span className={`step-glyph ${stepStatus.compile === 'running' ? 'step-glyph-spin' : ''}`}>{stepGlyph(stepStatus.compile)}</span>
+                  <span>Step 2: Compile</span>
+                </span>
+              </button>
+              <span className={`step-sep step-sep-${stepStatus.compile}`} aria-hidden="true">▶</span>
+              <button 
+                className={`step-btn step-state-${stepStatus.test} ${workflowStage === 'run' ? 'active' : ''}`} 
                 onClick={handlePreview}
                 disabled={isRunDisabled}
-                title={isRunDisabled ? "Fix validation errors to run" : "Run forward pass"}
+                title={isRunDisabled ? "Fix validation errors to run" : "Step 3: Run forward pass with dummy data to verify shapes and latency."}
               >
-                Run
+                <span className="step-label-row">
+                  <span className={`step-glyph ${stepStatus.test === 'running' ? 'step-glyph-spin' : ''}`}>{stepGlyph(stepStatus.test)}</span>
+                  <span>Step 3: Test</span>
+                </span>
               </button>
+              <span className={`step-sep step-sep-${stepStatus.test}`} aria-hidden="true">▶</span>
               <button
-                className={evalState.status === 'running' ? 'active' : ''}
+                className={`step-btn step-state-${stepStatus.run} ${(workflowStage === 'deep-run' || evalState.status === 'running') ? 'active' : ''}`}
                 onClick={handleDeepRun}
                 disabled={isRunDisabled}
-                title="Full pipeline: profile + sandbox + fingerprint + novelty"
+                title="Step 4: Execute full micro-training pipeline (Stage 1) to evaluate loss ratio and novelty."
               >
-                Deep Run
+                <span className="step-label-row">
+                  <span className={`step-glyph ${stepStatus.run === 'running' ? 'step-glyph-spin' : ''}`}>{stepGlyph(stepStatus.run)}</span>
+                  <span>Step 4: Run</span>
+                </span>
               </button>
             </div>
             <div className="toolbar-group files">
@@ -1133,15 +1408,29 @@ function DesignerApp() {
                   <option key={ex.value} value={ex.value}>{ex.label}</option>
                 ))}
               </select>
-              <button onClick={handleReloadComponents}>Reload</button>
+              <button onClick={handleReloadComponents} title="Reload component library from disk">Reload</button>
+              <button onClick={handleClearCanvas} style={{color: '#ff5050'}} title="Clear all nodes and edges from the canvas">Clear</button>
             </div>
+            {workflowStage !== 'idle' && runStatus.phase !== 'idle' && (
+              <div className={`validation-banner ${
+                ['running', 'compiling'].includes(runStatus.phase) ? 'running'
+                : runStatus.phase === 'success' ? 'pass'
+                : runStatus.phase === 'failed' ? 'fail'
+                : 'running'
+              }`}>
+                {runStatus.message}
+              </div>
+            )}
             <div className="toolbar-group ai">
               <button className="primary" onClick={() => setShowAskAriaModal(true)}>Ask Aria</button>
             </div>
           </div>
         </header>
 
-        <div className="canvas" ref={reactFlowWrapper}>
+        <div className="canvas" ref={reactFlowWrapper}
+          onDragEnter={() => setIsDragging(true)}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false) }}
+        >
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -1172,7 +1461,7 @@ function DesignerApp() {
             />
             <Background gap={15} color="rgba(255,255,255,0.12)" />
           </ReactFlow>
-          {isCanvasEmpty && <EmptyState onLoadTemplate={handleLoadExample} />}
+          {isCanvasEmpty && !isDragging && <EmptyState onLoadTemplate={handleLoadExample} />}
           <ZoomControls nodes={nodes} edges={edges} setNodes={setNodes} />
         </div>
 
@@ -1188,57 +1477,61 @@ function DesignerApp() {
         </footer>
       </main>
 
-      <aside className="panel right">
-        <div className="panel-tabs">
-          <button
-            className={rightPanelTab === 'inspector' ? 'active' : ''}
-            onClick={() => {
-              setRightPanelTab('inspector')
-              setPreviewPatch(null)
-              setNodes(nds => nds.map(n => ({ ...n, className: '' })))
-            }}
-          >
-            Properties
-          </button>
-          <button
-            className={rightPanelTab === 'proposals' ? 'active' : ''}
-            onClick={() => setRightPanelTab('proposals')}
-          >
-            Proposals {proposals.length > 0 ? `(${proposals.length})` : ''}
-          </button>
-          <button
-            className={rightPanelTab === 'results' ? 'active' : ''}
-            onClick={() => setRightPanelTab('results')}
-          >
-            Results
-          </button>
-        </div>
+      {!embeddedMode && (
+        <aside className="panel right">
+          <div className="panel-tabs">
+            <button
+              className={rightPanelTab === 'inspector' ? 'active' : ''}
+              onClick={() => {
+                setRightPanelTab('inspector')
+                setPreviewPatch(null)
+                setNodes(nds => nds.map(n => ({ ...n, className: '' })))
+              }}
+            >
+              Properties
+            </button>
+            <button
+              className={rightPanelTab === 'proposals' ? 'active' : ''}
+              onClick={() => setRightPanelTab('proposals')}
+            >
+              Proposals {proposals.length > 0 ? `(${proposals.length})` : ''}
+            </button>
+            <button
+              className={rightPanelTab === 'results' ? 'active' : ''}
+              onClick={() => setRightPanelTab('results')}
+            >
+              Results
+            </button>
+          </div>
 
-        {rightPanelTab === 'results' ? (
-          <RunResultsPanel evalState={evalState} />
-        ) : rightPanelTab === 'proposals' ? (
-          <PatchPanel
-            proposals={proposals}
-            onApply={handleApplyPatch}
-            onReject={handleRejectPatch}
-            onPreview={handlePreviewPatch}
-            onClose={() => {
-              setRightPanelTab('inspector')
-              setPreviewPatch(null)
-              setNodes(nds => nds.map(n => ({ ...n, className: '' })))
-            }}
-          />
-        ) : (
-          <Inspector
-            selectedNode={selectedNode}
-            allComponents={components}
-            nodeCount={nodes.length}
-            edgeCount={edges.length}
-            onParamChange={onParamChange}
-            helpRequest={helpRequest}
-          />
-        )}
-      </aside>
+          {rightPanelTab === 'results' ? (
+            <RunResultsPanel evalState={evalState} />
+          ) : rightPanelTab === 'proposals' ? (
+            <PatchPanel
+              proposals={proposals}
+              onApply={handleApplyPatch}
+              onReject={handleRejectPatch}
+              onPreview={handlePreviewPatch}
+              onClose={() => {
+                setRightPanelTab('inspector')
+                setPreviewPatch(null)
+                setNodes(nds => nds.map(n => ({ ...n, className: '' })))
+              }}
+            />
+          ) : (
+            <ErrorBoundary name="Inspector">
+              <Inspector
+                selectedNode={selectedNode}
+                allComponents={components}
+                nodeCount={nodes.length}
+                edgeCount={edges.length}
+                onParamChange={onParamChange}
+                helpRequest={helpRequest}
+              />
+            </ErrorBoundary>
+          )}
+        </aside>
+      )}
 
       <AskAriaModal
         open={showAskAriaModal}

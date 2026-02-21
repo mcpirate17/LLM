@@ -1,0 +1,56 @@
+id: layerdrop
+version: 1.0.0
+name: Layerdrop
+category: routing
+tags:
+- stochastic
+- compute_routing
+status: approved
+description: Random layer dropping during training
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Random layer dropping during training
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Random layer dropping during training
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

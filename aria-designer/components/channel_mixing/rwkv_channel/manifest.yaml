@@ -1,0 +1,57 @@
+id: rwkv_channel
+version: 1.0.0
+name: Rwkv Channel
+category: channel_mixing
+tags:
+- linear_complexity
+- recurrent
+- channel_mixing
+status: approved
+description: RWKV-style channel mixing (shift + multiply)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  RWKV-style channel mixing (shift + multiply)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  RWKV-style channel mixing (shift + multiply)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

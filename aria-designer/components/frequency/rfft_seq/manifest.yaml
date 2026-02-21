@@ -1,0 +1,53 @@
+id: rfft_seq
+version: 1.0.0
+name: Real FFT along sequence dimension
+category: frequency
+tags:
+- frequency
+status: approved
+description: Real FFT along sequence dimension
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: complex_tensor
+  shape:
+  - B
+  - S_half
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Real FFT along sequence dimension
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:complex_tensor[B, S_half, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Real FFT along sequence dimension
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,57 @@
+id: moe_topk
+version: 1.0.0
+name: Moe Topk
+category: channel_mixing
+tags:
+- moe
+- sparse_compute
+- channel_mixing
+status: approved
+description: Mixture of Experts with top-k routing
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Mixture of Experts with top-k routing
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Mixture of Experts with top-k routing
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

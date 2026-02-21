@@ -16,10 +16,32 @@ import sqlite3
 import subprocess
 import time
 import uuid
+import zlib
+from contextlib import contextmanager
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    from .preregistration import PreregistrationError, validate_preregistration
+except Exception:  # direct-module loading fallback for test harness
+    import importlib.util as _importlib_util
+    import sys as _sys
+
+    _prereg_path = Path(__file__).with_name("preregistration.py")
+    _prereg_spec = _importlib_util.spec_from_file_location(
+        "_notebook_preregistration_fallback",
+        str(_prereg_path),
+    )
+    _prereg_mod = _importlib_util.module_from_spec(_prereg_spec)
+    assert _prereg_spec is not None and _prereg_spec.loader is not None
+    _sys.modules[_prereg_spec.name] = _prereg_mod
+    _prereg_spec.loader.exec_module(_prereg_mod)
+    PreregistrationError = _prereg_mod.PreregistrationError
+    validate_preregistration = _prereg_mod.validate_preregistration
+
+LOGGER = logging.getLogger(__name__)
 
 
 NOTEBOOK_SCHEMA = """
@@ -32,6 +54,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     -- Hypothesis
     hypothesis TEXT,
     research_question TEXT,
+    preregistration_id TEXT,
 
     -- Configuration
     config_json TEXT NOT NULL,
@@ -55,6 +78,58 @@ CREATE TABLE IF NOT EXISTS experiments (
     started_at REAL,
     completed_at REAL,
     duration_seconds REAL
+);
+
+CREATE TABLE IF NOT EXISTS hypothesis_preregistrations (
+    preregistration_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    experiment_id TEXT REFERENCES experiments(experiment_id),
+    experiment_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'registered', -- 'registered' | 'linked' | 'completed'
+    hypothesis_json TEXT NOT NULL,
+    analysis_plan_json TEXT NOT NULL,
+    falsification_json TEXT NOT NULL,
+    confounders_json TEXT NOT NULL,
+    exploratory INTEGER DEFAULT 0,
+    created_by TEXT,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS preregistration_deviations (
+    deviation_id TEXT PRIMARY KEY,
+    preregistration_id TEXT REFERENCES hypothesis_preregistrations(preregistration_id),
+    experiment_id TEXT REFERENCES experiments(experiment_id),
+    timestamp REAL NOT NULL,
+    deviation_type TEXT NOT NULL, -- 'exploratory'
+    rationale TEXT NOT NULL,
+    details_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS healer_tasks (
+    task_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    experiment_id TEXT REFERENCES experiments(experiment_id),
+    trigger_type TEXT NOT NULL,
+    trigger_payload_json TEXT,
+    scope TEXT NOT NULL,
+    reproduction_steps_json TEXT,
+    acceptance_tests_json TEXT,
+    model_endpoint TEXT,
+    sandbox_policy_json TEXT,
+    state TEXT NOT NULL, -- 'open'|'reproducing'|'patch_proposed'|'verifying'|'completed'|'failed'|'blocked'
+    patch_summary TEXT,
+    risk_assessment TEXT,
+    result_json TEXT,
+    completed_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS healer_task_events (
+    event_id TEXT PRIMARY KEY,
+    task_id TEXT REFERENCES healer_tasks(task_id),
+    timestamp REAL NOT NULL,
+    state TEXT,
+    message TEXT NOT NULL,
+    payload_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS entries (
@@ -119,6 +194,8 @@ CREATE TABLE IF NOT EXISTS program_results (
     error_type TEXT,
     error_message TEXT,
     stage_at_death TEXT,
+    regression_gate_pass INTEGER,
+    regression_gate_reason TEXT,
 
     -- Training metrics (Stage 1)
     initial_loss REAL,
@@ -131,6 +208,10 @@ CREATE TABLE IF NOT EXISTS program_results (
     grad_norm_std REAL,
     n_train_steps INTEGER,
     final_lr REAL,
+    perf_traces_json TEXT,
+    gpu_starvation_json TEXT,
+    kernel_timing_json TEXT,
+    queue_telemetry_json TEXT,
 
     -- Fingerprint metrics
     fp_interaction_locality REAL,
@@ -184,8 +265,26 @@ CREATE TABLE IF NOT EXISTS program_results (
     pruning_active_params_estimate INTEGER,
     pruning_error TEXT,
 
+    -- Performance telemetry
+    perf_report_json TEXT,
+    kernel_timings_json TEXT,
+    starvation_report_json TEXT,
+
     -- Baseline comparison
-    baseline_loss_ratio REAL
+    baseline_loss_ratio REAL,
+
+    -- Novelty calibration + validity
+    novelty_raw_score REAL,
+    novelty_z_score REAL,
+    novelty_reference_version TEXT,
+    novelty_valid_for_promotion INTEGER,
+    novelty_validity_reason TEXT,
+    novelty_requires_justification INTEGER,
+    cka_probe_protocol_hash TEXT,
+    cka_reference_quality TEXT,
+
+    -- External benchmarks
+    external_benchmarks_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS metrics_log (
@@ -324,7 +423,85 @@ CREATE TABLE IF NOT EXISTS decisions (
     rationale TEXT NOT NULL,
     evidence_ids TEXT,
     alternatives_considered TEXT,
+    evidence_pack_json TEXT,
     outcome TEXT
+);
+
+CREATE TABLE IF NOT EXISTS attribution_reports (
+    report_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    hypothesis_id TEXT REFERENCES hypotheses(hypothesis_id),
+    supporting_experiments TEXT,
+    ablation_experiments TEXT,
+    outcome TEXT,
+    report_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS novelty_calibration (
+    calibration_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    reference_version TEXT NOT NULL,
+    cka_source TEXT,
+    cka_artifact_version TEXT,
+    probe_protocol_hash TEXT,
+    n_runs INTEGER NOT NULL,
+    noise_floor_mean REAL,
+    noise_floor_std REAL,
+    confidence_low REAL,
+    confidence_high REAL,
+    distribution_json TEXT,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS selection_decisions (
+    decision_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    context TEXT NOT NULL,
+    experiment_id TEXT,
+    candidate_pool_summary_json TEXT,
+    score_breakdown_json TEXT,
+    policy_json TEXT,
+    reason TEXT,
+    chosen_experiments_json TEXT,
+    trigger_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS selection_family_stats (
+    family TEXT PRIMARY KEY,
+    n_trials INTEGER DEFAULT 0,
+    cumulative_reward REAL DEFAULT 0.0,
+    mean_reward REAL DEFAULT 0.0,
+    last_reward REAL,
+    last_updated REAL
+);
+
+CREATE TABLE IF NOT EXISTS selection_insight_trials (
+    trial_id TEXT PRIMARY KEY,
+    decision_id TEXT REFERENCES selection_decisions(decision_id),
+    timestamp REAL NOT NULL,
+    context TEXT NOT NULL,
+    source_experiment_id TEXT,
+    insight_ids_json TEXT NOT NULL,
+    chosen_result_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reward REAL,
+    outcome TEXT,
+    resolved_timestamp REAL,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS selection_insight_interactions (
+    insight_a TEXT NOT NULL,
+    insight_b TEXT NOT NULL,
+    n_trials INTEGER DEFAULT 0,
+    n_supported INTEGER DEFAULT 0,
+    n_not_supported INTEGER DEFAULT 0,
+    cumulative_reward REAL DEFAULT 0.0,
+    mean_reward REAL DEFAULT 0.0,
+    last_reward REAL,
+    last_outcome TEXT,
+    last_updated REAL,
+    PRIMARY KEY (insight_a, insight_b)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_base (
@@ -344,8 +521,17 @@ CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
 CREATE INDEX IF NOT EXISTS idx_hypotheses_campaign ON hypotheses(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status);
 CREATE INDEX IF NOT EXISTS idx_hypotheses_experiment ON hypotheses(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_prereg_experiment ON hypothesis_preregistrations(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_healer_tasks_experiment ON healer_tasks(experiment_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_healer_tasks_state ON healer_tasks(state, timestamp);
 CREATE INDEX IF NOT EXISTS idx_decisions_campaign ON decisions(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_type ON decisions(decision_type);
+CREATE INDEX IF NOT EXISTS idx_attribution_hypothesis ON attribution_reports(hypothesis_id);
+CREATE INDEX IF NOT EXISTS idx_novelty_calibration_ref ON novelty_calibration(reference_version, timestamp);
+CREATE INDEX IF NOT EXISTS idx_selection_decisions_context ON selection_decisions(context);
+CREATE INDEX IF NOT EXISTS idx_selection_insight_trials_status ON selection_insight_trials(status, timestamp);
+CREATE INDEX IF NOT EXISTS idx_selection_insight_trials_context ON selection_insight_trials(context, timestamp);
+CREATE INDEX IF NOT EXISTS idx_selection_insight_interactions_reward ON selection_insight_interactions(mean_reward DESC, n_trials DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_base(status);
 
@@ -363,6 +549,44 @@ CREATE TABLE IF NOT EXISTS aria_chat (
 
 CREATE INDEX IF NOT EXISTS idx_aria_chat_session ON aria_chat(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_aria_chat_compacted ON aria_chat(session_id, compacted);
+
+CREATE TABLE IF NOT EXISTS report_snapshots (
+    snapshot_key TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    query_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    latest_completed_ts REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_snapshots_scope_updated ON report_snapshots(scope, updated_at);
+
+CREATE TABLE IF NOT EXISTS workflow_definitions (
+    workflow_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    graph_json TEXT NOT NULL,
+    metadata_json TEXT,
+    author TEXT DEFAULT 'user'
+);
+
+CREATE TABLE IF NOT EXISTS designer_run_lineage (
+    run_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    workflow_version INTEGER,
+    graph_fingerprint TEXT,
+    status TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'aria-designer',
+    total_time_ms REAL,
+    metrics_json TEXT,
+    payload_json TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_designer_lineage_workflow ON designer_run_lineage(workflow_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_designer_lineage_status ON designer_run_lineage(status, updated_at DESC);
 """
 
 # Columns added in the schema expansion — used for migration
@@ -394,9 +618,18 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "grad_norm_std": "REAL",
     "n_train_steps": "INTEGER",
     "final_lr": "REAL",
+    "perf_traces_json": "TEXT",
+    "gpu_starvation_json": "TEXT",
+    "kernel_timing_json": "TEXT",
+    "queue_telemetry_json": "TEXT",
+    "perf_report_json": "TEXT",
+    "kernel_timings_json": "TEXT",
+    "starvation_report_json": "TEXT",
     "fp_interaction_locality": "REAL",
     "fp_interaction_sparsity": "REAL",
     "fp_interaction_symmetry": "REAL",
+    "regression_gate_pass": "INTEGER",
+    "regression_gate_reason": "TEXT",
     "fp_interaction_hierarchy": "REAL",
     "fp_intrinsic_dim": "REAL",
     "fp_isotropy": "REAL",
@@ -450,12 +683,22 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "routing_expert_utilization_json": "TEXT",
     # Novelty calibration
     "novelty_confidence": "REAL",
+    "novelty_raw_score": "REAL",
+    "novelty_z_score": "REAL",
+    "novelty_reference_version": "TEXT",
+    "novelty_valid_for_promotion": "INTEGER",
+    "novelty_validity_reason": "TEXT",
+    "novelty_requires_justification": "INTEGER",
     # CKA provenance
     "cka_source": "TEXT",
     "cka_artifact_version": "TEXT",
+    "cka_probe_protocol_hash": "TEXT",
+    "cka_reference_quality": "TEXT",
     # Diagnostic tasks
     "diagnostic_tasks_json": "TEXT",
     "diagnostic_score": "REAL",
+    # External benchmarks
+    "external_benchmarks_json": "TEXT",
 }
 
 
@@ -474,14 +717,20 @@ class LabNotebook:
     """Electronic lab notebook for the AI scientist."""
 
     _cached_code_version: Optional[str] = None
+    _last_report_snapshot_cleanup_at: float = 0.0
 
     def __init__(self, db_path: str | Path = "research/lab_notebook.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path))
+        # Enable WAL mode for high-concurrency performance
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.row_factory = sqlite3.Row
+        self._batch_depth = 0
+        self._program_results_columns: Optional[set[str]] = None
         self.conn.executescript(NOTEBOOK_SCHEMA)
-        self.conn.commit()
+        self._maybe_commit()
         self._migrate()
 
     def _migrate(self):
@@ -491,7 +740,7 @@ class LabNotebook:
             self.conn.execute("SELECT llm_analysis FROM experiments LIMIT 1")
         except sqlite3.OperationalError:
             self.conn.execute("ALTER TABLE experiments ADD COLUMN llm_analysis TEXT")
-            self.conn.commit()
+            self._maybe_commit()
 
         # Migrate program_results: add new columns if missing
         existing = {
@@ -542,6 +791,21 @@ class LabNotebook:
             CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON leaderboard(composite_score);
             CREATE INDEX IF NOT EXISTS idx_leaderboard_result ON leaderboard(result_id);
         """)
+        # Migrate decisions: add evidence_pack_json if missing
+        try:
+            decision_cols = {
+                row[1] for row in
+                self.conn.execute("PRAGMA table_info(decisions)").fetchall()
+            }
+        except sqlite3.OperationalError:
+            decision_cols = set()
+        if "evidence_pack_json" not in decision_cols:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE decisions ADD COLUMN evidence_pack_json TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
         # Migrate op_success_rates: add avg_novelty_confidence if missing
         osr_cols = {
             row[1] for row in
@@ -560,6 +824,10 @@ class LabNotebook:
         if "campaign_id" not in exp_cols:
             self.conn.execute(
                 "ALTER TABLE experiments ADD COLUMN campaign_id TEXT"
+            )
+        if "preregistration_id" not in exp_cols:
+            self.conn.execute(
+                "ALTER TABLE experiments ADD COLUMN preregistration_id TEXT"
             )
 
         # Migrate hypotheses: add metadata_json if missing
@@ -585,6 +853,14 @@ class LabNotebook:
             self.conn.execute(
                 "ALTER TABLE campaigns ADD COLUMN successor_campaign_id TEXT"
             )
+        self._program_results_columns = None
+
+    def _get_program_results_columns(self) -> set[str]:
+        """Return current program_results columns for defensive inserts."""
+        if self._program_results_columns is None:
+            rows = self.conn.execute("PRAGMA table_info(program_results)").fetchall()
+            self._program_results_columns = {str(row[1]) for row in rows}
+        return self._program_results_columns
 
     @classmethod
     def _detect_code_version(cls) -> str:
@@ -612,7 +888,6 @@ class LabNotebook:
             pass
 
         cls._cached_code_version = "unknown"
-        return cls._cached_code_version
 
         # Migrate leaderboard: add campaign_id if missing
         lb_cols = {
@@ -623,17 +898,54 @@ class LabNotebook:
             self.conn.execute(
                 "ALTER TABLE leaderboard ADD COLUMN campaign_id TEXT"
             )
+        return cls._cached_code_version
 
-        self.conn.commit()
+        self._maybe_commit()
 
     def close(self):
         self.conn.close()
+
+    def _compress(self, data: Any) -> bytes:
+        """JSON-encode and zlib-compress data."""
+        return zlib.compress(json.dumps(data).encode("utf-8"))
+
+    def _decompress(self, blob: Any) -> Any:
+        """Decompress zlib blob and JSON-decode with fallback for raw strings."""
+        if not blob:
+            return None
+        if not isinstance(blob, bytes):
+            # Already a string (old data)
+            try:
+                return json.loads(blob)
+            except (json.JSONDecodeError, TypeError):
+                return blob
+        try:
+            return json.loads(zlib.decompress(blob).decode("utf-8"))
+        except (zlib.error, json.JSONDecodeError, UnicodeDecodeError):
+            # Fallback for old uncompressed bytes data if any
+            return json.loads(blob.decode("utf-8"))
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
         self.close()
+
+    @contextmanager
+    def batch(self):
+        """Context manager to batch multiple writes into a single commit."""
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0:
+                self._maybe_commit()
+
+    def _maybe_commit(self):
+        """Commit unless inside a batch() context."""
+        if self._batch_depth == 0:
+            self.conn.commit()
 
     def cleanup_stale_experiments(
         self,
@@ -700,8 +1012,56 @@ class LabNotebook:
             "WHERE experiment_id = ?",
             updates,
         )
-        self.conn.commit()
+        self._maybe_commit()
         return len(all_ids)
+
+    def purge_junk_programs(self, *, dry_run: bool = False) -> Dict[str, Any]:
+        """Delete Stage 0 failure program results that carry no useful data.
+
+        Targets results where stage0_passed = 0 or NULL, excluding any that
+        somehow passed stage1 (safety guard).
+
+        Returns dict with 'deleted' or 'would_delete' count and 'dry_run' flag.
+        """
+        junk_query = """
+            SELECT result_id, experiment_id FROM program_results
+            WHERE (stage0_passed = 0 OR stage0_passed IS NULL)
+              AND (stage1_passed != 1 OR stage1_passed IS NULL)
+        """
+        junk_rows = self.conn.execute(junk_query).fetchall()
+        count = len(junk_rows)
+
+        if dry_run or count == 0:
+            return {"would_delete": count, "dry_run": True}
+
+        junk_ids = [r["result_id"] for r in junk_rows]
+        affected_experiments = {r["experiment_id"] for r in junk_rows if r["experiment_id"]}
+
+        # Cascade delete in foreign-key dependency order
+        batch_size = 500
+        for i in range(0, len(junk_ids), batch_size):
+            batch = junk_ids[i : i + batch_size]
+            placeholders = ",".join("?" * len(batch))
+            self.conn.execute(
+                f"DELETE FROM training_curves WHERE result_id IN ({placeholders})", batch
+            )
+            self.conn.execute(
+                f"DELETE FROM leaderboard WHERE result_id IN ({placeholders})", batch
+            )
+            self.conn.execute(
+                f"DELETE FROM program_results WHERE result_id IN ({placeholders})", batch
+            )
+
+        self._maybe_commit()
+
+        # Recalculate op success rates for affected experiments
+        for exp_id in affected_experiments:
+            try:
+                self.update_op_success_rates(exp_id)
+            except Exception:
+                pass  # non-critical
+
+        return {"deleted": count, "dry_run": False}
 
     def get_resumable_experiment(self, experiment_id: str) -> Optional[Dict]:
         """Get experiment data for resume if status is 'running' or 'failed'.
@@ -726,6 +1086,280 @@ class LabNotebook:
             "started_at": row["started_at"],
         }
 
+    # ── Hypothesis Preregistration ──
+
+    def create_preregistration(
+        self,
+        experiment_type: str,
+        preregistration: Dict[str, Any],
+        created_by: str = "runner",
+        notes: Optional[str] = None,
+    ) -> str:
+        """Create a structured preregistration entry."""
+        validate_preregistration(preregistration)
+        prereg_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO hypothesis_preregistrations
+            (preregistration_id, timestamp, experiment_type, status,
+             hypothesis_json, analysis_plan_json, falsification_json,
+             confounders_json, exploratory, created_by, notes)
+            VALUES (?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                prereg_id,
+                now,
+                experiment_type,
+                json.dumps(preregistration.get("hypothesis") or {}),
+                json.dumps(preregistration.get("analysis_plan") or {}),
+                json.dumps(preregistration.get("falsification_conditions") or []),
+                json.dumps(preregistration.get("confounders_checklist") or []),
+                int(bool(preregistration.get("exploratory"))),
+                created_by,
+                notes,
+            ),
+        )
+        self._maybe_commit()
+        return prereg_id
+
+    def get_preregistration(self, preregistration_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM hypothesis_preregistrations WHERE preregistration_id = ?",
+            (preregistration_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        for field in ("hypothesis_json", "analysis_plan_json", "falsification_json", "confounders_json"):
+            raw = out.get(field)
+            if raw:
+                try:
+                    out[field] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+        return out
+
+    def get_preregistration_for_experiment(self, experiment_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT preregistration_id FROM experiments WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+        if not row or not row["preregistration_id"]:
+            return None
+        return self.get_preregistration(row["preregistration_id"])
+
+    def get_preregistration_deviations(self, experiment_id: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM preregistration_deviations
+               WHERE experiment_id = ?
+               ORDER BY timestamp DESC""",
+            (experiment_id,),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            if d.get("details_json"):
+                try:
+                    d["details_json"] = json.loads(d["details_json"])
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            out.append(d)
+        return out
+
+    def log_preregistration_deviation(
+        self,
+        experiment_id: str,
+        rationale: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Record explicit exploratory deviation from preregistered plan."""
+        exp = self.conn.execute(
+            "SELECT preregistration_id FROM experiments WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+        prereg_id = exp["preregistration_id"] if exp else None
+        dev_id = str(uuid.uuid4())[:12]
+        self.conn.execute(
+            """INSERT INTO preregistration_deviations
+            (deviation_id, preregistration_id, experiment_id, timestamp,
+             deviation_type, rationale, details_json)
+            VALUES (?, ?, ?, ?, 'exploratory', ?, ?)""",
+            (
+                dev_id,
+                prereg_id,
+                experiment_id,
+                time.time(),
+                rationale,
+                json.dumps(details or {}),
+            ),
+        )
+        self._maybe_commit()
+        return dev_id
+
+    # ── Code Healer ──
+
+    def create_healer_task(
+        self,
+        experiment_id: Optional[str],
+        trigger_type: str,
+        scope: str,
+        reproduction_steps: List[str],
+        acceptance_tests: List[str],
+        model_endpoint: Optional[str],
+        sandbox_policy: Dict[str, Any],
+        trigger_payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        task_id = f"heal-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO healer_tasks
+            (task_id, timestamp, experiment_id, trigger_type, trigger_payload_json,
+             scope, reproduction_steps_json, acceptance_tests_json, model_endpoint,
+             sandbox_policy_json, state)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+            (
+                task_id,
+                now,
+                experiment_id,
+                trigger_type,
+                json.dumps(trigger_payload or {}),
+                scope,
+                json.dumps(reproduction_steps or []),
+                json.dumps(acceptance_tests or []),
+                model_endpoint,
+                json.dumps(sandbox_policy or {}),
+            ),
+        )
+        self._maybe_commit()
+        return task_id
+
+    def update_healer_task(
+        self,
+        task_id: str,
+        state: Optional[str] = None,
+        patch_summary: Optional[str] = None,
+        risk_assessment: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+        completed: bool = False,
+    ) -> None:
+        sets: List[str] = []
+        params: List[Any] = []
+        if state is not None:
+            sets.append("state = ?")
+            params.append(state)
+        if patch_summary is not None:
+            sets.append("patch_summary = ?")
+            params.append(patch_summary)
+        if risk_assessment is not None:
+            sets.append("risk_assessment = ?")
+            params.append(risk_assessment)
+        if result is not None:
+            sets.append("result_json = ?")
+            params.append(json.dumps(result))
+        if completed:
+            sets.append("completed_at = ?")
+            params.append(time.time())
+        if not sets:
+            return
+        params.append(task_id)
+        self.conn.execute(
+            f"UPDATE healer_tasks SET {', '.join(sets)} WHERE task_id = ?",
+            params,
+        )
+        self._maybe_commit()
+
+    def add_healer_event(
+        self,
+        task_id: str,
+        message: str,
+        state: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        event_id = str(uuid.uuid4())[:12]
+        self.conn.execute(
+            """INSERT INTO healer_task_events
+            (event_id, task_id, timestamp, state, message, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                event_id,
+                task_id,
+                time.time(),
+                state,
+                message,
+                json.dumps(payload or {}),
+            ),
+        )
+        self._maybe_commit()
+        return event_id
+
+    def get_healer_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM healer_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        for field in (
+            "trigger_payload_json",
+            "reproduction_steps_json",
+            "acceptance_tests_json",
+            "sandbox_policy_json",
+            "result_json",
+        ):
+            raw = out.get(field)
+            if raw:
+                try:
+                    out[field] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+        return out
+
+    def get_recent_healer_tasks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM healer_tasks
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in (
+                "trigger_payload_json",
+                "reproduction_steps_json",
+                "acceptance_tests_json",
+                "sandbox_policy_json",
+                "result_json",
+            ):
+                raw = item.get(key)
+                if raw:
+                    try:
+                        item[key] = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        pass
+            out.append(item)
+        return out
+
+    def get_healer_events(self, task_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM healer_task_events
+               WHERE task_id = ?
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (task_id, limit),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw = item.get("payload_json")
+            if raw:
+                try:
+                    item["payload_json"] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            out.append(item)
+        return out
+
     # ── Experiments ──
 
     def start_experiment(
@@ -735,8 +1369,12 @@ class LabNotebook:
         hypothesis: Optional[str] = None,
         research_question: Optional[str] = None,
         hypothesis_metadata: Optional[Dict] = None,
+        preregistration_id: Optional[str] = None,
+        require_preregistration: bool = False,
     ) -> str:
         """Start a new experiment. Returns experiment ID."""
+        if require_preregistration and not preregistration_id:
+            raise PreregistrationError("Experiment start blocked: missing preregistration_id.")
         exp_id = str(uuid.uuid4())[:12]
         now = time.time()
         config_payload = dict(config)
@@ -745,12 +1383,19 @@ class LabNotebook:
         self.conn.execute(
             """INSERT INTO experiments
             (experiment_id, timestamp, experiment_type, status, hypothesis,
-             research_question, config_json, started_at)
-            VALUES (?, ?, ?, 'running', ?, ?, ?, ?)""",
-            (exp_id, now, experiment_type, hypothesis, research_question,
+             research_question, preregistration_id, config_json, started_at)
+            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)""",
+            (exp_id, now, experiment_type, hypothesis, research_question, preregistration_id,
              json.dumps(config_payload), now),
         )
-        self.conn.commit()
+        if preregistration_id:
+            self.conn.execute(
+                """UPDATE hypothesis_preregistrations
+                   SET experiment_id = ?, status = 'linked'
+                   WHERE preregistration_id = ?""",
+                (exp_id, preregistration_id),
+            )
+        self._maybe_commit()
 
         # Log entry
         source = (hypothesis_metadata or {}).get("source", "unknown")
@@ -792,6 +1437,7 @@ class LabNotebook:
         aria_mood: str = "contemplative",
         insights: Optional[List[str]] = None,
         llm_analysis: Optional[str] = None,
+        exploratory_deviation_reason: Optional[str] = None,
     ):
         """Mark an experiment as completed with results."""
         now = time.time()
@@ -818,7 +1464,7 @@ class LabNotebook:
                 completed_at = ?,
                 duration_seconds = ?
             WHERE experiment_id = ?""",
-            (json.dumps(results),
+            (self._compress(results),
              results.get("total", 0),
              results.get("stage0_passed", 0),
              results.get("stage05_passed", 0),
@@ -826,12 +1472,37 @@ class LabNotebook:
              results.get("best_loss_ratio"),
              results.get("best_novelty_score"),
              aria_summary, aria_mood,
-             json.dumps(insights or []),
+             self._compress(insights or []),
              llm_analysis,
              now, duration,
              experiment_id),
         )
-        self.conn.commit()
+        self._maybe_commit()
+
+        prereg = self.get_preregistration_for_experiment(experiment_id)
+        is_exploratory = bool(exploratory_deviation_reason)
+        if is_exploratory:
+            self.log_preregistration_deviation(
+                experiment_id,
+                rationale=exploratory_deviation_reason or "Post-hoc exploratory deviation.",
+                details={"source": "complete_experiment"},
+            )
+        self.add_entry(ExperimentEntry(
+            entry_type="analysis",
+            title="Post-hoc Analysis Link",
+            content=(
+                "Analysis linked to preregistration."
+                if prereg
+                else "Analysis has no preregistration link and is exploratory."
+            ),
+            experiment_id=experiment_id,
+            tags=["analysis_traceability"],
+            metadata={
+                "preregistration_id": prereg.get("preregistration_id") if prereg else None,
+                "analysis_mode": "exploratory" if is_exploratory or not prereg else "confirmatory",
+                "deviation_reason": exploratory_deviation_reason,
+            },
+        ))
 
     def fail_experiment(self, experiment_id: str, error: str):
         """Mark an experiment as failed."""
@@ -840,7 +1511,7 @@ class LabNotebook:
                aria_summary = ? WHERE experiment_id = ?""",
             (time.time(), f"FAILED: {error}", experiment_id),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def cancel_experiment(self, experiment_id: str) -> bool:
         """Cancel a running experiment by marking it as failed.
@@ -860,7 +1531,7 @@ class LabNotebook:
                WHERE experiment_id = ?""",
             (time.time(), experiment_id),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return True
 
     # ── Entries ──
@@ -877,7 +1548,7 @@ class LabNotebook:
              entry.entry_type, entry.title, entry.content,
              json.dumps(entry.metadata), ",".join(entry.tags)),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return entry_id
 
     # ── Program Results ──
@@ -899,7 +1570,7 @@ class LabNotebook:
             "extreme_input_passed", "random_input_passed",
             "has_nan_output", "has_inf_output", "has_nan_grad", "has_zero_grad",
             "graph_has_gradient_path", "graph_uses_math_spaces",
-            "graph_uses_frequency_domain",
+            "graph_uses_frequency_domain", "regression_gate_pass",
         }
         for f in bool_fields:
             if f in kwargs and kwargs[f] is not None:
@@ -908,6 +1579,19 @@ class LabNotebook:
         # Handle legacy 'throughput' -> 'throughput_tok_s' alias
         if "throughput" in kwargs:
             kwargs.setdefault("throughput_tok_s", kwargs.pop("throughput"))
+        valid_columns = self._get_program_results_columns()
+        unknown_cols: List[str] = []
+        filtered_kwargs: Dict[str, Any] = {}
+        for col, val in kwargs.items():
+            if col in valid_columns:
+                filtered_kwargs[col] = val
+            else:
+                unknown_cols.append(col)
+        if unknown_cols:
+            LOGGER.warning(
+                "Dropping unknown program_results columns: %s",
+                ", ".join(sorted(unknown_cols)),
+            )
 
         # Build column list dynamically from what's provided
         base_cols = ["result_id", "experiment_id", "timestamp",
@@ -917,7 +1601,7 @@ class LabNotebook:
 
         extra_cols = []
         extra_vals = []
-        for col, val in kwargs.items():
+        for col, val in filtered_kwargs.items():
             extra_cols.append(col)
             extra_vals.append(val)
 
@@ -930,7 +1614,7 @@ class LabNotebook:
             f"INSERT INTO program_results ({col_str}) VALUES ({placeholders})",
             all_vals,
         )
-        self.conn.commit()
+        self._maybe_commit()
         return result_id
 
     # ── Training Curves ──
@@ -951,7 +1635,7 @@ class LabNotebook:
               d.get("grad_norm"), d.get("step_time_ms"))
              for i, d in enumerate(curve)],
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_training_curve(self, result_id: str) -> List[Dict]:
         """Get per-step training data for a program."""
@@ -1056,7 +1740,7 @@ class LabNotebook:
                 (op_name, stats["n_used"], stats["n_s0"], stats["n_s05"],
                  stats["n_s1"], avg_lr, avg_nov, avg_nov_conf, now),
             )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_op_success_rates(self) -> List[Dict]:
         """Get all op success rates."""
@@ -1100,7 +1784,7 @@ class LabNotebook:
              json.dumps(new_weights) if new_weights else None,
              evidence),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_learning_log(self, limit: int = 100) -> List[Dict]:
         """Get recent learning log entries."""
@@ -1163,7 +1847,7 @@ class LabNotebook:
             (time.time(), experiment_id, metric_name, value,
              json.dumps(metadata) if metadata else None),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     # ── Insights ──
 
@@ -1185,7 +1869,7 @@ class LabNotebook:
             (insight_id, time.time(), experiment_id, category,
              content, confidence, evidence),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return insight_id
 
     def supersede_insight(self, insight_id: str) -> None:
@@ -1194,7 +1878,7 @@ class LabNotebook:
             "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
             (insight_id,),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     # ── Queries ──
 
@@ -1207,9 +1891,9 @@ class LabNotebook:
             return None
         d = dict(row)
         if d.get("results_json"):
-            d["results"] = json.loads(d["results_json"])
+            d["results"] = self._decompress(d["results_json"])
         if d.get("insights_json"):
-            d["insights"] = json.loads(d["insights_json"])
+            d["insights"] = self._decompress(d["insights_json"])
         return d
 
     def get_recent_experiments(self, n: int = 20) -> List[Dict]:
@@ -1347,6 +2031,148 @@ class LabNotebook:
         rows = self.conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
+    # ── Workflow Definitions ──
+
+    def save_workflow_definition(
+        self,
+        workflow_id: str,
+        name: str,
+        graph_json: str,
+        metadata: Optional[Dict] = None,
+        author: str = "user",
+    ) -> None:
+        """Save a visual designer workflow definition."""
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO workflow_definitions
+               (workflow_id, name, timestamp, graph_json, metadata_json, author)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(workflow_id) DO UPDATE SET
+                 name = excluded.name,
+                 timestamp = excluded.timestamp,
+                 graph_json = excluded.graph_json,
+                 metadata_json = excluded.metadata_json,
+                 author = excluded.author""",
+            (workflow_id, name, now, graph_json, json.dumps(metadata or {}), author),
+        )
+        self._maybe_commit()
+
+    def get_workflow_definition(self, workflow_id: str) -> Optional[Dict]:
+        """Get a specific workflow definition."""
+        row = self.conn.execute(
+            "SELECT * FROM workflow_definitions WHERE workflow_id = ?",
+            (workflow_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if d.get("metadata_json"):
+            try:
+                d["metadata"] = json.loads(d["metadata_json"])
+            except (json.JSONDecodeError, TypeError):
+                d["metadata"] = {}
+        return d
+
+    def list_workflow_definitions(self, limit: int = 50) -> List[Dict]:
+        """List recent workflow definitions."""
+        rows = self.conn.execute(
+            """SELECT workflow_id, name, timestamp, author
+               FROM workflow_definitions
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Designer Run Lineage ──
+
+    def save_designer_run_lineage(
+        self,
+        run_id: str,
+        workflow_id: str,
+        *,
+        workflow_version: Optional[int] = None,
+        graph_fingerprint: Optional[str] = None,
+        status: str = "unknown",
+        source: str = "aria-designer",
+        total_time_ms: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        created_at: Optional[float] = None,
+    ) -> None:
+        """Upsert lineage metadata for runs produced by Aria Designer."""
+        now = time.time()
+        created_ts = float(created_at) if created_at is not None else now
+        self.conn.execute(
+            """INSERT INTO designer_run_lineage
+               (run_id, workflow_id, workflow_version, graph_fingerprint, status, source,
+                total_time_ms, metrics_json, payload_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET
+                 workflow_id = excluded.workflow_id,
+                 workflow_version = excluded.workflow_version,
+                 graph_fingerprint = excluded.graph_fingerprint,
+                 status = excluded.status,
+                 source = excluded.source,
+                 total_time_ms = excluded.total_time_ms,
+                 metrics_json = excluded.metrics_json,
+                 payload_json = excluded.payload_json,
+                 updated_at = excluded.updated_at""",
+            (
+                run_id,
+                workflow_id,
+                workflow_version,
+                graph_fingerprint,
+                status,
+                source,
+                total_time_ms,
+                json.dumps(metrics or {}),
+                json.dumps(payload or {}),
+                created_ts,
+                now,
+            ),
+        )
+        self._maybe_commit()
+
+    def get_designer_run_lineage(self, run_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM designer_run_lineage WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        try:
+            d["metrics"] = json.loads(d.get("metrics_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            d["metrics"] = {}
+        try:
+            d["payload"] = json.loads(d.get("payload_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            d["payload"] = {}
+        return d
+
+    def list_designer_run_lineage(
+        self, *, workflow_id: Optional[str] = None, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM designer_run_lineage"
+        params: List[Any] = []
+        if workflow_id:
+            query += " WHERE workflow_id = ?"
+            params.append(workflow_id)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(int(max(1, limit)))
+        rows = self.conn.execute(query, params).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["metrics"] = json.loads(d.get("metrics_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                d["metrics"] = {}
+            out.append(d)
+        return out
+
     def get_insights(self, category: Optional[str] = None,
                      status: str = "active", limit: int = 50) -> List[Dict]:
         query = "SELECT * FROM insights WHERE status = ?"
@@ -1379,10 +2205,34 @@ class LabNotebook:
         ).fetchone()
         if row is None:
             return None
-        d = dict(row)
-        # Parse stored JSON fields
-        for json_field in ("graph_json", "fingerprint_json",
-                           "training_program_json", "graph_category_histogram"):
+        return self._parse_program_json_fields(dict(row))
+
+    def get_program_details(self, result_ids: List[str]) -> List[Dict]:
+        """Batch fetch full details for multiple program results."""
+        ids = [rid for rid in result_ids if rid]
+        if not ids:
+            return []
+        placeholders = ",".join(["?"] * len(ids))
+        rows = self.conn.execute(
+            f"SELECT * FROM program_results WHERE result_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        by_id = {}
+        for row in rows:
+            d = self._parse_program_json_fields(dict(row))
+            by_id[d.get("result_id")] = d
+        return [by_id.get(rid) for rid in ids]
+
+    @staticmethod
+    def _parse_program_json_fields(d: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse known JSON fields for program results in-place."""
+        json_fields = (
+            "graph_json", "fingerprint_json", "training_program_json",
+            "graph_category_histogram", "external_benchmarks_json",
+            "perf_report_json", "kernel_timings_json", "starvation_report_json",
+            "diagnostic_tasks_json"
+        )
+        for json_field in json_fields:
             val = d.get(json_field)
             if val and isinstance(val, str):
                 try:
@@ -1390,6 +2240,200 @@ class LabNotebook:
                 except (json.JSONDecodeError, TypeError):
                     pass
         return d
+
+    def set_external_benchmarks(self, result_id: str, payload: Any) -> bool:
+        """Store external benchmark payload for a program result."""
+        if not result_id:
+            return False
+        try:
+            serialized = json.dumps(payload) if payload is not None else None
+        except (TypeError, ValueError):
+            return False
+        cur = self.conn.execute(
+            "UPDATE program_results SET external_benchmarks_json = ? WHERE result_id = ?",
+            (serialized, result_id),
+        )
+        self._maybe_commit()
+        return cur.rowcount > 0
+
+    def get_latest_completed_experiment_timestamp(self) -> float:
+        row = self.conn.execute(
+            "SELECT MAX(timestamp) AS latest_ts FROM experiments WHERE status = 'completed'"
+        ).fetchone()
+        if not row:
+            return 0.0
+        try:
+            return float(row["latest_ts"] or 0.0)
+        except Exception:
+            return 0.0
+
+    def get_report_snapshot(
+        self,
+        snapshot_key: str,
+        scope: str,
+        min_latest_completed_ts: float,
+    ) -> Optional[Dict[str, Any]]:
+        if not snapshot_key:
+            return None
+        row = self.conn.execute(
+            """SELECT payload_json, latest_completed_ts
+               FROM report_snapshots
+               WHERE snapshot_key = ? AND scope = ?""",
+            (snapshot_key, scope),
+        ).fetchone()
+        if not row:
+            return None
+        cached_latest = float(row["latest_completed_ts"] or 0.0)
+        if cached_latest < float(min_latest_completed_ts or 0.0):
+            return None
+        payload = row["payload_json"]
+        if not payload:
+            return None
+        try:
+            parsed = json.loads(payload)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def save_report_snapshot(
+        self,
+        snapshot_key: str,
+        scope: str,
+        query: Dict[str, Any],
+        payload: Dict[str, Any],
+        latest_completed_ts: float,
+    ) -> None:
+        if not snapshot_key or not scope:
+            return
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO report_snapshots (
+                   snapshot_key, scope, query_json, payload_json,
+                   latest_completed_ts, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(snapshot_key) DO UPDATE SET
+                   scope = excluded.scope,
+                   query_json = excluded.query_json,
+                   payload_json = excluded.payload_json,
+                   latest_completed_ts = excluded.latest_completed_ts,
+                   updated_at = excluded.updated_at""",
+            (
+                snapshot_key,
+                scope,
+                json.dumps(query or {}, sort_keys=True, separators=(",", ":")),
+                json.dumps(payload or {}, separators=(",", ":")),
+                float(latest_completed_ts or 0.0),
+                now,
+                now,
+            ),
+        )
+        self._maybe_commit()
+
+        cleanup_interval_seconds = 300.0
+        last_cleanup = float(self.__class__._last_report_snapshot_cleanup_at or 0.0)
+        if (now - last_cleanup) >= cleanup_interval_seconds:
+            try:
+                ttl_seconds = int(os.environ.get("ARIA_REPORT_SNAPSHOT_TTL_SECONDS", str(7 * 24 * 3600)))
+            except Exception:
+                ttl_seconds = 7 * 24 * 3600
+            try:
+                max_rows_per_scope = int(os.environ.get("ARIA_REPORT_SNAPSHOT_MAX_ROWS_PER_SCOPE", "400"))
+            except Exception:
+                max_rows_per_scope = 400
+            self.cleanup_report_snapshots(
+                ttl_seconds=max(60, ttl_seconds),
+                max_rows_per_scope=max(20, max_rows_per_scope),
+            )
+            self.__class__._last_report_snapshot_cleanup_at = now
+
+    def cleanup_report_snapshots(
+        self,
+        ttl_seconds: int = 7 * 24 * 3600,
+        max_rows_per_scope: int = 400,
+    ) -> Dict[str, int]:
+        ttl = max(60, int(ttl_seconds or 0))
+        cap = max(1, int(max_rows_per_scope or 0))
+        cutoff = time.time() - float(ttl)
+
+        stats = {
+            "deleted_expired": 0,
+            "deleted_capped": 0,
+            "remaining": 0,
+        }
+
+        cur = self.conn.execute(
+            "DELETE FROM report_snapshots WHERE updated_at < ?",
+            (cutoff,),
+        )
+        stats["deleted_expired"] = int(cur.rowcount or 0)
+
+        scopes = self.conn.execute(
+            "SELECT DISTINCT scope FROM report_snapshots"
+        ).fetchall()
+        for row in scopes:
+            scope = row[0]
+            if not scope:
+                continue
+            cur = self.conn.execute(
+                """DELETE FROM report_snapshots
+                   WHERE snapshot_key IN (
+                       SELECT snapshot_key
+                       FROM report_snapshots
+                       WHERE scope = ?
+                       ORDER BY updated_at DESC
+                       LIMIT -1 OFFSET ?
+                   )""",
+                (scope, cap),
+            )
+            stats["deleted_capped"] += int(cur.rowcount or 0)
+
+        remaining_row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM report_snapshots"
+        ).fetchone()
+        stats["remaining"] = int(remaining_row["n"] or 0) if remaining_row else 0
+        self._maybe_commit()
+        return stats
+
+    def get_report_snapshot_stats(self) -> Dict[str, Any]:
+        now = time.time()
+        rows = self.conn.execute(
+            """SELECT scope,
+                      COUNT(*) AS count,
+                      MIN(updated_at) AS oldest_updated_at,
+                      MAX(updated_at) AS newest_updated_at
+               FROM report_snapshots
+               GROUP BY scope
+               ORDER BY count DESC, scope ASC"""
+        ).fetchall()
+
+        scopes: List[Dict[str, Any]] = []
+        total = 0
+        oldest_seen: Optional[float] = None
+        newest_seen: Optional[float] = None
+        for row in rows:
+            count = int(row["count"] or 0)
+            oldest = float(row["oldest_updated_at"] or 0.0)
+            newest = float(row["newest_updated_at"] or 0.0)
+            total += count
+            if oldest > 0 and (oldest_seen is None or oldest < oldest_seen):
+                oldest_seen = oldest
+            if newest > 0 and (newest_seen is None or newest > newest_seen):
+                newest_seen = newest
+
+            scopes.append({
+                "scope": row["scope"],
+                "count": count,
+                "oldest_age_seconds": round(max(0.0, now - oldest), 2) if oldest > 0 else None,
+                "newest_age_seconds": round(max(0.0, now - newest), 2) if newest > 0 else None,
+            })
+
+        return {
+            "total_snapshots": total,
+            "n_scopes": len(scopes),
+            "oldest_age_seconds": round(max(0.0, now - oldest_seen), 2) if oldest_seen else None,
+            "newest_age_seconds": round(max(0.0, now - newest_seen), 2) if newest_seen else None,
+            "scopes": scopes,
+        }
 
     def get_failure_analysis(self, experiment_id: str) -> Dict:
         """Get failure analysis data for an experiment."""
@@ -1464,8 +2508,8 @@ class LabNotebook:
             return str(config_mode or row.get("experiment_type") or "unknown")
 
         rows = self.conn.execute(
-            """SELECT experiment_id, timestamp, experiment_type, config_json, n_programs_generated,
-                      n_stage0_passed, n_stage05_passed, n_stage1_passed,
+            """SELECT experiment_id, timestamp, experiment_type, config_json, results_json,
+                      n_programs_generated, n_stage0_passed, n_stage05_passed, n_stage1_passed,
                       best_loss_ratio, best_novelty_score, duration_seconds
                FROM experiments
                WHERE status = 'completed'
@@ -1478,6 +2522,21 @@ class LabNotebook:
         total_stage1 = 0
         for r in rows:
             d = dict(r)
+            
+            # Extract perf report if available
+            results_json = d.get("results_json")
+            if results_json:
+                try:
+                    res = self._decompress(results_json)
+                    perf = res.get("perf_report")
+                    if isinstance(perf, dict):
+                        d["avg_step_time_ms"] = perf.get("trace_avg_ms", {}).get("forward_pass", 0) + \
+                                               perf.get("trace_avg_ms", {}).get("backward_pass", 0)
+                        d["avg_throughput_tok_s"] = perf.get("avg_throughput_tok_s", 0)
+                        d["gpu_starvation_ms"] = perf.get("gpu_starvation", {}).get("total_stall_ms", 0)
+                except Exception:
+                    pass
+
             n_programs = max(int(d.get("n_programs_generated") or 0), 0)
             n_stage1 = max(int(d.get("n_stage1_passed") or 0), 0)
             total = max(n_programs, 1)
@@ -1568,6 +2627,41 @@ class LabNotebook:
             "SELECT description FROM learning_log ORDER BY timestamp DESC LIMIT 1"
         ).fetchone()
 
+        avg_step_time = self.conn.execute(
+            "SELECT AVG(avg_step_time_ms) FROM program_results WHERE avg_step_time_ms IS NOT NULL"
+        ).fetchone()[0]
+        avg_throughput = self.conn.execute(
+            "SELECT AVG(throughput_tok_s) FROM program_results WHERE throughput_tok_s IS NOT NULL"
+        ).fetchone()[0]
+        latest_perf_report = None
+        latest_perf_row = self.conn.execute(
+            """SELECT experiment_id, completed_at, results_json
+               FROM experiments
+               WHERE status = 'completed'
+                 AND results_json IS NOT NULL
+               ORDER BY completed_at DESC
+               LIMIT 1"""
+        ).fetchone()
+        if latest_perf_row and latest_perf_row["results_json"]:
+            try:
+                latest_results = json.loads(latest_perf_row["results_json"])
+                perf_report = latest_results.get("perf_report") if isinstance(latest_results, dict) else None
+                if isinstance(perf_report, dict):
+                    queue = perf_report.get("queue_telemetry") or {}
+                    kernel_hotspots = perf_report.get("kernel_hotspots") or []
+                    top_kernel = kernel_hotspots[0] if kernel_hotspots else None
+                    latest_perf_report = {
+                        "experiment_id": latest_perf_row["experiment_id"],
+                        "completed_at": latest_perf_row["completed_at"],
+                        "programs_profiled": int(perf_report.get("programs_profiled", 0) or 0),
+                        "avg_submit_wait_ms": float(queue.get("submit_wait_avg_ms", 0.0) or 0.0),
+                        "avg_scheduling_wait_ms": float(queue.get("scheduling_wait_avg_ms", 0.0) or 0.0),
+                        "gpu_starvation_events": int((perf_report.get("gpu_starvation") or {}).get("event_count", 0) or 0),
+                        "top_kernel": top_kernel,
+                    }
+            except (TypeError, ValueError, json.JSONDecodeError):
+                latest_perf_report = None
+
         return {
             "total_experiments": total_exp,
             "completed_experiments": completed,
@@ -1579,6 +2673,9 @@ class LabNotebook:
             "active_insights": n_insights,
             "learning_events": n_learning_events,
             "latest_learning": latest_learning[0] if latest_learning else None,
+            "avg_step_time_ms": avg_step_time or 0,
+            "avg_throughput_tok_s": avg_throughput or 0,
+            "latest_perf_report": latest_perf_report,
         }
 
     # ── Leaderboard ──
@@ -1729,12 +2826,13 @@ class LabNotebook:
                  composite, tier, tags, notes),
             )
 
-        self.conn.commit()
+        self._maybe_commit()
         return entry_id
 
     def get_leaderboard(self, tier: Optional[str] = None,
                         limit: int = 50,
-                        sort_by: str = "composite_score") -> List[Dict]:
+                        sort_by: str = "composite_score",
+                        include_family: bool = True) -> List[Dict]:
         """Get leaderboard entries, optionally filtered by tier."""
         valid_sorts = {"composite_score", "screening_loss_ratio",
                        "investigation_loss_ratio", "validation_loss_ratio",
@@ -1760,17 +2858,19 @@ class LabNotebook:
         if tier:
             query += " AND l.tier = ?"
             params.append(tier)
+        oversample = max(limit * 6, 200)
         query += f" ORDER BY l.{sort_by} DESC NULLS LAST LIMIT ?"
-        params.append(limit)
+        params.append(oversample)
 
         rows = self.conn.execute(query, params).fetchall()
         results = []
         for r in rows:
             d = dict(r)
-            d["architecture_family"] = self._classify_architecture_family(
-                graph_json=d.get("_graph_json"),
-                routing_mode=d.get("_routing_mode"),
-            )
+            if include_family:
+                d["architecture_family"] = self._classify_architecture_family(
+                    graph_json=d.get("_graph_json"),
+                    routing_mode=d.get("_routing_mode"),
+                )
             d.pop("_graph_json", None)
             d.pop("_routing_mode", None)
             d["arch_spec_json"] = d.pop("_arch_spec_json", None)
@@ -1779,6 +2879,7 @@ class LabNotebook:
             d["novelty_confidence"] = d.pop("_novelty_confidence", None)
             d["cka_source"] = d.pop("_cka_source", None)
             d["routing_confidence_mean"] = d.pop("_routing_confidence_mean", None)
+            
             if d.get("investigation_best_training"):
                 try:
                     d["investigation_best_training_parsed"] = json.loads(
@@ -1808,7 +2909,17 @@ class LabNotebook:
         for entry in deduped:
             entry.pop("_graph_fingerprint", None)
 
-        return deduped
+        return deduped[:limit]
+
+    def get_leaderboard_entry(self, result_id: str) -> Optional[Dict]:
+        """Fetch a single leaderboard entry by result_id."""
+        if not result_id:
+            return None
+        rows = self.conn.execute(
+            "SELECT * FROM leaderboard WHERE result_id = ?",
+            (result_id,),
+        ).fetchone()
+        return dict(rows) if rows else None
 
     def get_investigated_fingerprints(self) -> set:
         """Return fingerprints that have already been investigated or beyond."""
@@ -1947,7 +3058,7 @@ class LabNotebook:
             f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",
             params,
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     # ── Campaigns ──
 
@@ -1965,7 +3076,7 @@ class LabNotebook:
             (campaign_id, now, title, objective, success_criteria,
              parent_id, now),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return campaign_id
 
     def get_campaign(self, campaign_id: str) -> Optional[Dict]:
@@ -2001,7 +3112,7 @@ class LabNotebook:
             f"UPDATE campaigns SET {', '.join(sets)} WHERE campaign_id = ?",
             params,
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_campaign_experiments(self, campaign_id: str) -> List[Dict]:
         """Get all experiments for a campaign."""
@@ -2134,7 +3245,7 @@ class LabNotebook:
                     "UPDATE hypotheses SET child_hypotheses = ? WHERE hypothesis_id = ?",
                     (json.dumps(children), parent_id),
                 )
-        self.conn.commit()
+        self._maybe_commit()
         return hypothesis_id
 
     def resolve_hypothesis(self, hypothesis_id: str, status: str,
@@ -2148,7 +3259,7 @@ class LabNotebook:
             WHERE hypothesis_id = ?""",
             (status, evidence, summary, confidence_after, hypothesis_id),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_hypothesis_chain(self, hypothesis_id: str,
                              max_depth: int = 500) -> List[Dict]:
@@ -2208,21 +3319,24 @@ class LabNotebook:
                         decision_type: str, subject: str,
                         rationale: str,
                         evidence_ids: Optional[List[str]] = None,
-                        alternatives: Optional[List[Dict]] = None) -> str:
+                        alternatives: Optional[List[Dict]] = None,
+                        evidence_pack: Optional[Dict] = None) -> str:
         """Record a go/no-go or other decision. Returns decision_id."""
         decision_id = str(uuid.uuid4())[:12]
         now = time.time()
         self.conn.execute(
             """INSERT INTO decisions
             (decision_id, campaign_id, timestamp, decision_type,
-             subject, rationale, evidence_ids, alternatives_considered)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+             subject, rationale, evidence_ids, alternatives_considered,
+             evidence_pack_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (decision_id, campaign_id, now, decision_type, subject,
              rationale,
              json.dumps(evidence_ids) if evidence_ids else None,
-             json.dumps(alternatives) if alternatives else None),
+             json.dumps(alternatives) if alternatives else None,
+             json.dumps(evidence_pack) if evidence_pack else None),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return decision_id
 
     def get_decisions(self, campaign_id: Optional[str] = None,
@@ -2247,8 +3361,399 @@ class LabNotebook:
                         d[f] = json.loads(d[f])
                     except (json.JSONDecodeError, TypeError):
                         pass
+            if d.get("evidence_pack_json"):
+                try:
+                    d["evidence_pack"] = json.loads(d["evidence_pack_json"])
+                except (json.JSONDecodeError, TypeError):
+                    d["evidence_pack"] = None
             results.append(d)
         return results
+
+    # ── Selection Decisions / Family Bandit Stats ──
+
+    def record_selection_decision(
+        self,
+        context: str,
+        candidate_pool_summary: Dict[str, Any],
+        score_breakdown: List[Dict[str, Any]],
+        policy: Dict[str, Any],
+        reason: str,
+        chosen_experiments: List[Dict[str, Any]],
+        experiment_id: Optional[str] = None,
+        trigger: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Record one evidence-based experiment-selection decision."""
+        decision_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO selection_decisions
+            (decision_id, timestamp, context, experiment_id,
+             candidate_pool_summary_json, score_breakdown_json,
+             policy_json, reason, chosen_experiments_json, trigger_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                decision_id,
+                now,
+                context,
+                experiment_id,
+                json.dumps(candidate_pool_summary or {}),
+                json.dumps(score_breakdown or []),
+                json.dumps(policy or {}),
+                reason or "",
+                json.dumps(chosen_experiments or []),
+                json.dumps(trigger or {}),
+            ),
+        )
+        self._maybe_commit()
+        return decision_id
+
+    def get_selection_decisions(
+        self,
+        context: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return selection decisions newest first."""
+        query = "SELECT * FROM selection_decisions WHERE 1=1"
+        params: List[Any] = []
+        if context:
+            query += " AND context = ?"
+            params.append(context)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in (
+                "candidate_pool_summary_json",
+                "score_breakdown_json",
+                "policy_json",
+                "chosen_experiments_json",
+                "trigger_json",
+            ):
+                raw = item.get(key)
+                if raw:
+                    try:
+                        item[key] = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        pass
+            out.append(item)
+        return out
+
+    def get_selection_family_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Return family bandit stats keyed by family name."""
+        rows = self.conn.execute(
+            "SELECT * FROM selection_family_stats"
+        ).fetchall()
+        return {r["family"]: dict(r) for r in rows}
+
+    def update_selection_family_stats(self, family: str, reward: float) -> None:
+        """Update per-family running reward estimate for UCB/uncertainty."""
+        family_name = (family or "Unknown").strip() or "Unknown"
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO selection_family_stats
+            (family, n_trials, cumulative_reward, mean_reward, last_reward, last_updated)
+            VALUES (?, 1, ?, ?, ?, ?)
+            ON CONFLICT(family) DO UPDATE SET
+                n_trials = n_trials + 1,
+                cumulative_reward = cumulative_reward + excluded.last_reward,
+                mean_reward = (cumulative_reward + excluded.last_reward) * 1.0
+                              / (n_trials + 1),
+                last_reward = excluded.last_reward,
+                last_updated = excluded.last_updated
+            """,
+            (family_name, float(reward), float(reward), float(reward), now),
+        )
+        self._maybe_commit()
+
+    def record_selection_insight_trial(
+        self,
+        decision_id: str,
+        context: str,
+        insight_ids: List[str],
+        chosen_result_ids: List[str],
+        source_experiment_id: Optional[str] = None,
+    ) -> str:
+        """Record one insight-bundle trial tied to a selection decision."""
+        trial_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        cleaned_insights = sorted({
+            str(i).strip() for i in (insight_ids or []) if str(i).strip()
+        })
+        cleaned_results = sorted({
+            str(r).strip() for r in (chosen_result_ids or []) if str(r).strip()
+        })
+        self.conn.execute(
+            """INSERT INTO selection_insight_trials
+               (trial_id, decision_id, timestamp, context, source_experiment_id,
+                insight_ids_json, chosen_result_ids_json, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')""",
+            (
+                trial_id,
+                decision_id,
+                now,
+                context or "",
+                source_experiment_id,
+                json.dumps(cleaned_insights),
+                json.dumps(cleaned_results),
+            ),
+        )
+        self._maybe_commit()
+        return trial_id
+
+    def get_pending_selection_insight_trials(
+        self,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return unresolved insight-bundle trials."""
+        rows = self.conn.execute(
+            """SELECT * FROM selection_insight_trials
+               WHERE status = 'pending'
+               ORDER BY timestamp ASC
+               LIMIT ?""",
+            (max(1, int(limit)),),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("insight_ids_json", "chosen_result_ids_json", "metadata_json"):
+                raw = item.get(key)
+                if not raw:
+                    continue
+                try:
+                    item[key] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            out.append(item)
+        return out
+
+    def resolve_selection_insight_trial(
+        self,
+        trial_id: str,
+        reward: float,
+        outcome: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Resolve a trial and update pairwise insight interaction stats."""
+        row = self.conn.execute(
+            "SELECT * FROM selection_insight_trials WHERE trial_id = ?",
+            (trial_id,),
+        ).fetchone()
+        if row is None:
+            return
+        trial = dict(row)
+        if str(trial.get("status") or "") == "resolved":
+            return
+        now = time.time()
+        reward_value = float(reward or 0.0)
+        outcome_text = str(outcome or "inconclusive").strip() or "inconclusive"
+        self.conn.execute(
+            """UPDATE selection_insight_trials
+               SET status = 'resolved',
+                   reward = ?,
+                   outcome = ?,
+                   resolved_timestamp = ?,
+                   metadata_json = ?
+               WHERE trial_id = ?""",
+            (
+                reward_value,
+                outcome_text,
+                now,
+                json.dumps(metadata or {}),
+                trial_id,
+            ),
+        )
+
+        try:
+            insight_ids = json.loads(trial.get("insight_ids_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            insight_ids = []
+        cleaned = sorted({
+            str(i).strip() for i in (insight_ids or []) if str(i).strip()
+        })
+        if not cleaned:
+            self._maybe_commit()
+            return
+
+        # Track singleton and pair interactions. Singleton uses (id, id).
+        pairs: List[Tuple[str, str]] = []
+        for insight_id in cleaned:
+            pairs.append((insight_id, insight_id))
+        for i in range(len(cleaned)):
+            for j in range(i + 1, len(cleaned)):
+                a, b = cleaned[i], cleaned[j]
+                if a > b:
+                    a, b = b, a
+                pairs.append((a, b))
+
+        supported_inc = 1 if outcome_text == "supported" else 0
+        not_supported_inc = 1 if outcome_text == "not_supported" else 0
+        for insight_a, insight_b in pairs:
+            self.conn.execute(
+                """INSERT INTO selection_insight_interactions
+                   (insight_a, insight_b, n_trials, n_supported, n_not_supported,
+                    cumulative_reward, mean_reward, last_reward, last_outcome, last_updated)
+                   VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(insight_a, insight_b) DO UPDATE SET
+                     n_trials = n_trials + 1,
+                     n_supported = n_supported + excluded.n_supported,
+                     n_not_supported = n_not_supported + excluded.n_not_supported,
+                     cumulative_reward = cumulative_reward + excluded.last_reward,
+                     mean_reward = (cumulative_reward + excluded.last_reward) / (n_trials + 1),
+                     last_reward = excluded.last_reward,
+                     last_outcome = excluded.last_outcome,
+                     last_updated = excluded.last_updated""",
+                (
+                    insight_a,
+                    insight_b,
+                    supported_inc,
+                    not_supported_inc,
+                    reward_value,
+                    reward_value,
+                    reward_value,
+                    outcome_text,
+                    now,
+                ),
+            )
+        self._maybe_commit()
+
+    def get_selection_insight_interactions(
+        self,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return learned insight interaction stats sorted by confidence/reward."""
+        rows = self.conn.execute(
+            """SELECT * FROM selection_insight_interactions
+               ORDER BY n_trials DESC, mean_reward DESC
+               LIMIT ?""",
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Novelty Calibration ──
+
+    def record_novelty_calibration(
+        self,
+        reference_version: str,
+        n_runs: int,
+        distribution: Dict[str, Any],
+        noise_floor_mean: Optional[float] = None,
+        noise_floor_std: Optional[float] = None,
+        confidence_low: Optional[float] = None,
+        confidence_high: Optional[float] = None,
+        cka_source: Optional[str] = None,
+        cka_artifact_version: Optional[str] = None,
+        probe_protocol_hash: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Persist novelty baseline calibration stats."""
+        calibration_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO novelty_calibration
+            (calibration_id, timestamp, reference_version, cka_source,
+             cka_artifact_version, probe_protocol_hash, n_runs,
+             noise_floor_mean, noise_floor_std, confidence_low, confidence_high,
+             distribution_json, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                calibration_id,
+                now,
+                reference_version,
+                cka_source,
+                cka_artifact_version,
+                probe_protocol_hash,
+                int(max(1, n_runs)),
+                noise_floor_mean,
+                noise_floor_std,
+                confidence_low,
+                confidence_high,
+                json.dumps(distribution or {}),
+                json.dumps(metadata or {}),
+            ),
+        )
+        self._maybe_commit()
+        return calibration_id
+
+    def get_latest_novelty_calibration(
+        self,
+        reference_version: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the newest novelty calibration row, optionally by reference version."""
+        query = "SELECT * FROM novelty_calibration WHERE 1=1"
+        params: List[Any] = []
+        if reference_version:
+            query += " AND reference_version = ?"
+            params.append(reference_version)
+        query += " ORDER BY timestamp DESC LIMIT 1"
+        row = self.conn.execute(query, params).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        for key in ("distribution_json", "metadata_json"):
+            raw = out.get(key)
+            if raw:
+                try:
+                    out[key] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+        return out
+
+    # ── Attribution Reports ──
+
+    def record_attribution_report(
+        self,
+        hypothesis_id: Optional[str],
+        supporting_experiments: Optional[List[str]],
+        ablation_experiments: Optional[List[str]],
+        outcome: str,
+        report: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Persist an attribution report row linking evidence and ablations."""
+        report_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO attribution_reports
+            (report_id, timestamp, hypothesis_id, supporting_experiments,
+             ablation_experiments, outcome, report_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                report_id,
+                now,
+                hypothesis_id,
+                json.dumps(supporting_experiments or []),
+                json.dumps(ablation_experiments or []),
+                outcome,
+                json.dumps(report or {}),
+            ),
+        )
+        self._maybe_commit()
+        return report_id
+
+    def get_attribution_reports(self, hypothesis_id: Optional[str] = None,
+                                limit: int = 100) -> List[Dict]:
+        """Return attribution reports, newest first."""
+        query = "SELECT * FROM attribution_reports WHERE 1=1"
+        params: List[Any] = []
+        if hypothesis_id:
+            query += " AND hypothesis_id = ?"
+            params.append(hypothesis_id)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        out: List[Dict] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("supporting_experiments", "ablation_experiments", "report_json"):
+                raw = item.get(key)
+                if raw:
+                    try:
+                        item[key] = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        pass
+            out.append(item)
+        return out
 
     # ── Knowledge Base ──
 
@@ -2266,7 +3771,7 @@ class LabNotebook:
             (entry_id, now, category, title, content, confidence,
              json.dumps(evidence) if evidence else None, now),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return entry_id
 
     def get_knowledge(self, category: Optional[str] = None) -> List[Dict]:
@@ -2299,7 +3804,7 @@ class LabNotebook:
             WHERE entry_id = ?""",
             (now, entry_id),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def search_knowledge(self, query: str) -> List[Dict]:
         """Simple LIKE search on title + content."""
@@ -2390,7 +3895,7 @@ class LabNotebook:
             (mid, session_id, time.time(), role, text, label,
              json.dumps(metadata) if metadata else None),
         )
-        self.conn.commit()
+        self._maybe_commit()
         return mid
 
     def get_chat_history(
@@ -2432,4 +3937,4 @@ class LabNotebook:
             "UPDATE aria_chat SET summary_of = ? WHERE message_id = ?",
             (json.dumps(message_ids), summary_message_id),
         )
-        self.conn.commit()
+        self._maybe_commit()

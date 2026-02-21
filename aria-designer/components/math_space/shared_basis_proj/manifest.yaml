@@ -1,0 +1,56 @@
+id: shared_basis_proj
+version: 1.0.0
+name: Shared-basis projection (8 basis vectors)
+category: math_space
+tags:
+- math_space
+- learnable
+status: approved
+description: Shared-basis projection (8 basis vectors)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D*16
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Shared-basis projection (8 basis vectors)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Shared-basis projection (8 basis vectors)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

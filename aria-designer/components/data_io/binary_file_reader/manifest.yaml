@@ -1,0 +1,69 @@
+id: binary_file_reader
+version: 1.0.0
+name: Binary File Reader
+category: data_io
+tags:
+- data
+- io
+- source
+status: approved
+description: Reads raw binary data and reshapes it into a tensor.
+inputs: []
+outputs:
+- name: data
+  dtype: tensor
+  shape:
+  - '*'
+params:
+  file_path:
+    type: string
+    default: data.bin
+    format: file
+    description: Path to raw binary file.
+  dtype:
+    type: enum
+    options:
+    - float32
+    - float16
+    - int32
+    - uint8
+    default: float32
+    description: Select dtype (float32, float16, int32, uint8).
+  shape:
+    type: string
+    default: 1,1,256
+    description: Comma-separated output shape, e.g. 2,128,64.
+  offset_bytes:
+    type: integer
+    default: 0
+    constraints:
+      min: 0
+      max: 1073741824
+    description: Numeric value for offset bytes.
+  little_endian:
+    type: boolean
+    default: true
+    description: Enable or disable little endian.
+implementation:
+  native: kernel.c
+  python: kernel_fallback.py
+performance:
+  has_params: false
+help_md: '### Technical
+
+  Reads bytes from disk and interprets them as a typed tensor.
+
+
+  Inputs: none.
+
+
+  Outputs: `data:tensor[*]`.
+
+
+  ### Plain Language
+
+  Use this when your data already exists as raw binary dumps.
+
+  Configure dtype and shape so bytes map to the expected tensor layout.
+
+  '

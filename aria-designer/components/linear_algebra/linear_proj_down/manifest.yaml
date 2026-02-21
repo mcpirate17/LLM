@@ -1,0 +1,54 @@
+id: linear_proj_down
+version: 1.0.0
+name: Learned linear projection (D -> D//2)
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+status: approved
+description: Learned linear projection (D -> D//2)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_in
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_out
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D//2
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Learned linear projection (D -> D//2)
+
+
+  Inputs: x:tensor[B, S, D_in].
+
+  Outputs: y:tensor[B, S, D_out].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Learned linear projection (D -> D//2)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

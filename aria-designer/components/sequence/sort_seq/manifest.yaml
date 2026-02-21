@@ -1,0 +1,58 @@
+id: sort_seq
+version: 1.0.0
+name: Sort along sequence dim by learned key
+category: sequence
+tags:
+- sequence
+status: approved
+description: Sort along sequence dim by learned key
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: idx
+  dtype: index
+  shape:
+  - B
+  - S
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Sort along sequence dim by learned key
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D], idx:index[B, S].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Sort along sequence dim by learned key
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

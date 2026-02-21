@@ -1,0 +1,53 @@
+id: square
+version: 1.0.0
+name: 'Square: x^2'
+category: math
+tags:
+- elementwise_unary
+status: approved
+description: 'Square: x^2'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Square: x^2
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Square: x^2
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

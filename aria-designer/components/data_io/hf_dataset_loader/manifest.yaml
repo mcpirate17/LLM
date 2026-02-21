@@ -1,0 +1,55 @@
+id: hf_dataset_loader
+version: 1.0.0
+name: Hugging Face Dataset
+category: data_io
+tags:
+- io
+- dataset
+- hf
+status: approved
+description: Loads a dataset from Hugging Face Hub (streaming supported).
+inputs: []
+outputs:
+- name: dataset
+  dtype: dataset
+params:
+  path:
+    type: string
+    default: wikitext
+    description: Dataset name on HF Hub
+  name:
+    type: string
+    default: wikitext-2-v1
+    description: Config name
+  split:
+    type: string
+    default: train
+    description: Configuration for split.
+  streaming:
+    type: boolean
+    default: true
+    description: Enable or disable streaming.
+implementation:
+  python: kernel_fallback.py
+performance:
+  has_params: false
+help_md: '### Technical
+
+  Loads a dataset from Hugging Face Hub (streaming supported).
+
+
+  Inputs: none.
+
+  Outputs: dataset:dataset.
+
+  Params: path, name, split, streaming.
+
+
+  ### Plain Language
+
+  Loads a dataset from Hugging Face Hub (streaming supported).
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

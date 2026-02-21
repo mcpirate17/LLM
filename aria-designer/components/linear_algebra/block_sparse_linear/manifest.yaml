@@ -1,0 +1,72 @@
+id: block_sparse_linear
+version: 1.0.0
+name: Block-sparse linear projection with configurable block density
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+status: approved
+description: Block-sparse linear projection with configurable block density
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_in
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_out
+params:
+  block_size:
+    type: integer
+    default: 32
+    constraints:
+      min: 8
+      max: 128
+    description: Numeric value for block size.
+  block_density:
+    type: float
+    default: 0.25
+    constraints:
+      min: 0.05
+      max: 1.0
+    description: Numeric value for block density.
+  out_dim:
+    type: integer
+    default: null
+    description: Output dim (null=same as input)
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D//4
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Block-sparse linear projection with configurable block density
+
+
+  Inputs: x:tensor[B, S, D_in].
+
+  Outputs: y:tensor[B, S, D_out].
+
+  Params: block_size, block_density, out_dim.
+
+
+  ### Plain Language
+
+  Block-sparse linear projection with configurable block density
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,104 @@
+id: input
+version: 1.0.0
+name: Input
+category: io
+tags:
+- io
+- source
+status: approved
+description: Model input (token embeddings)
+inputs: []
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  source_type:
+    type: enum
+    default: random
+    options:
+    - random
+    - synthetic
+    - binary
+    - file
+    description: Input source mode for generated or file-backed data.
+  batch_size:
+    type: integer
+    default: 2
+    constraints:
+      min: 1
+      max: 8192
+    description: Batch dimension B.
+  seq_len:
+    type: integer
+    default: 16
+    constraints:
+      min: 1
+      max: 65536
+    description: Sequence length S.
+  seed:
+    type: integer
+    default: 42
+    constraints:
+      min: 0
+      max: 2147483647
+    description: Random seed used for synthetic/random generation.
+  synthetic_pattern:
+    type: enum
+    default: gaussian
+    options:
+    - gaussian
+    - uniform
+    - sine
+    - sawtooth
+    - impulse
+    description: Pattern used when source_type is synthetic.
+  file_path:
+    type: string
+    default: ''
+    format: file
+    description: File path used when source_type is file or binary.
+  dim:
+    type: integer
+    default: 256
+    constraints:
+      min: 1
+      max: 65536
+    description: Embedding dimension D.
+  vocab_size:
+    type: integer
+    default: 32000
+    description: Vocabulary size V.
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: vocab_size * D
+help_md: '### Technical
+
+  Model input (token embeddings)
+
+
+  Inputs: none.
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: source_type, batch_size, seq_len, seed, synthetic_pattern, file_path, dim, vocab_size.
+
+
+  ### Plain Language
+
+  Model input (token embeddings)
+
+
+  Use this as your workflow entry point.
+
+  Choose whether to generate random/synthetic inputs or read from a file.
+
+  '

@@ -739,7 +739,7 @@ Risk/blocker: wrapper depends on subprocess calls to existing tool scripts; path
 Done: hardened `tools/cka_artifact_integrity.py` to resolve helper script paths via repo-root (default derived from file location), support `--repo-root`, and surface subprocess stdout/stderr on failure; wrapper now runs correctly even when invoked outside repo cwd.
 Now doing: continuing #28/#43 planning stewardship with operator tooling stabilized.
 Next 2 min: available to wire this integrity flow into a reusable task/automation entry.
-Tests run/result: portability smoke test from `/tmp` passed using `python /home/tim/Projects/LLM/research/tools/cka_artifact_integrity.py --artifact-dir /tmp/cka_pack_test3 --scaffold-if-missing --strict`.
+Tests run/result: portability smoke test from `/tmp` passed using `python tools/cka_artifact_integrity.py --artifact-dir /tmp/cka_pack_test3 --scaffold-if-missing --strict`.
 Risk/blocker: wrapper still assumes sibling tools exist under `<repo-root>/tools`.
 
 ### GitHub Copilot — sync 37

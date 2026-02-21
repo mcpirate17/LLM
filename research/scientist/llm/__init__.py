@@ -8,12 +8,15 @@ no backend is configured.
 
 from . import context, prompts
 from .backend import LLMBackend, LLMResponse, create_backend, create_backend_from_config
+from .decision import NextExperimentDecisionPlanner, NextExperimentPlannerConfig
 
 __all__ = [
 	"LLMBackend",
 	"LLMResponse",
 	"create_backend",
 	"create_backend_from_config",
+	"NextExperimentDecisionPlanner",
+	"NextExperimentPlannerConfig",
 	"context",
 	"prompts",
 ]

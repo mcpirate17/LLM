@@ -1,0 +1,57 @@
+id: cross_attention_pool
+version: 1.0.0
+name: Cross Attention Pool
+category: mixing
+tags:
+- subquadratic
+- bottleneck
+- token_mixing
+status: approved
+description: Cross-attend to a small set of learned queries
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Cross-attend to a small set of learned queries
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Cross-attend to a small set of learned queries
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
 import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
-import { programScore, programScoreBreakdown } from '../utils/scores';
+import { candidateScore, candidateScoreBreakdown } from '../utils/scoringEngine';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import useRenderPerf from '../hooks/useRenderPerf';
 
@@ -71,7 +71,7 @@ function programQualityFlags(program) {
 const COLUMNS_FULL = [
   { key: 'score', label: 'Score' },
   { key: 'rating', label: 'Rating' },
-  { key: 'graph_fingerprint', label: 'Fingerprint' },
+  { key: 'graph_fingerprint', label: 'Program Fingerprint ID' },
   { key: 'novelty_score', label: 'Novelty' },
   { key: 'structural_novelty', label: 'Structural' },
   { key: 'behavioral_novelty', label: 'Behavioral' },
@@ -83,13 +83,25 @@ const COLUMNS_FULL = [
 
 const COLUMNS_COMPACT = [
   { key: 'score', label: 'Score' },
-  { key: 'graph_fingerprint', label: 'Fingerprint' },
+  { key: 'rating', label: 'Rating' },
+  { key: 'graph_fingerprint', label: 'Program Fingerprint ID' },
   { key: 'novelty_score', label: 'Novelty' },
   { key: 'loss_ratio', label: 'Loss Ratio' },
-  { key: 'param_count', label: 'Params' },
 ];
 
-function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAdd, onQueueRemove, queuedResultIds, eligibilityByResultId }) {
+const PROGRAM_FINGERPRINT_HEADER_TOOLTIP = 'Architecture identity for each program row; the same fingerprint can appear multiple times when rerun.';
+
+function TopPrograms({
+  programs,
+  compact,
+  onSelectProgram,
+  totalCount,
+  onQueueAdd,
+  onQueueRemove,
+  queuedResultIds,
+  eligibilityByResultId,
+  onOpenInDesigner,
+}) {
   useRenderPerf(compact ? 'TopPrograms(compact)' : 'TopPrograms');
 
   const [sortKey, setSortKey] = useState(() => {
@@ -140,7 +152,7 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
     if (!programs) return [];
     return programs.map(p => ({
       ...p,
-      _score: programScore(p),
+      _score: candidateScore(p),
       _rating: programRating(p),
     }));
   }, [programs]);
@@ -167,7 +179,37 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
     return arr;
   }, [augmented, sortKey, sortDesc]);
 
+  const leadingFingerprints = useMemo(() => {
+    const groups = new Map();
+    for (const p of augmented) {
+      const fp = String(p.graph_fingerprint || '').trim();
+      if (!fp) continue;
+      const current = groups.get(fp) || {
+        fingerprint: fp,
+        count: 0,
+        bestScore: -Infinity,
+        bestLossRatio: null,
+        bestNovelty: null,
+      };
+      current.count += 1;
+      if (p._score > current.bestScore) {
+        current.bestScore = p._score;
+        current.bestLossRatio = p.loss_ratio;
+        current.bestNovelty = p.novelty_score;
+      }
+      groups.set(fp, current);
+    }
+    return [...groups.values()]
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return b.bestScore - a.bestScore;
+      })
+      .slice(0, 10);
+  }, [augmented]);
+
   const columns = compact ? COLUMNS_COMPACT : COLUMNS_FULL;
+  const showRating = columns.some(col => col.key === 'rating');
+  const showParamCount = columns.some(col => col.key === 'param_count');
 
   if (!programs || programs.length === 0) {
     return (
@@ -183,17 +225,45 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
   return (
     <div className="card">
       <div className="card-title">
-        Top Programs {compact
+        Candidate Programs (Raw Survivors) {compact
           ? `(${programs.length}${totalCount > programs.length ? ` of ${totalCount}` : ''})`
           : `— ${programs.length} Survivors`}
       </div>
       {!compact && (
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-          Raw survivor view: these are Stage-1-passing programs ordered by selected metric, useful for broad exploration.
-          For decision-ready candidates with tiered evidence, use Leaderboard (Curated).
+          Raw survivor view: each row is one Stage-1-passing candidate program run.
+          Program Fingerprint ID is the architecture identity for that row (not a separate object), so the same fingerprint can appear on multiple rows when rerun.
+          For sortable decision-ready tiers with promotion evidence, use the <span style={{ color: 'var(--accent-blue)', textDecoration: 'underline', cursor: 'pointer' }} onClick={() => onSelectProgram && onSelectProgram('_QUALIFIED_TAB_')}>Qualified Models</span> tab.
           Lower loss ratio = learned faster. Higher novelty = more structurally different from known architectures.
           Click any row to inspect full graph and metrics.
         </p>
+      )}
+      {!compact && leadingFingerprints.length > 0 && (
+        <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Fingerprint Leaderboard (Deduplicated Architecture IDs)</div>
+          <table className="data-table" style={{ margin: 0 }}>
+            <thead>
+              <tr>
+                <th>Fingerprint (ID)</th>
+                <th>Appearances</th>
+                <th>Best Score</th>
+                <th>Best Loss</th>
+                <th>Best Novelty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leadingFingerprints.slice(0, 6).map((row) => (
+                <tr key={row.fingerprint}>
+                  <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{row.fingerprint.slice(0, 10)}</td>
+                  <td>{row.count}</td>
+                  <td>{Number(row.bestScore || 0).toFixed(0)}</td>
+                  <td>{row.bestLossRatio != null ? Number(row.bestLossRatio).toFixed(4) : '--'}</td>
+                  <td>{row.bestNovelty != null ? Number(row.bestNovelty).toFixed(3) : '--'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       <table className="data-table">
         <thead>
@@ -202,6 +272,7 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
               <th
                 key={col.key}
                 onClick={() => handleSort(col.key)}
+                title={col.key === 'graph_fingerprint' ? PROGRAM_FINGERPRINT_HEADER_TOOLTIP : undefined}
                 style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
               >
                 {col.label}
@@ -237,11 +308,11 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
                 style={{ cursor: onSelectProgram ? 'pointer' : 'default' }}
                 onClick={() => onSelectProgram && onSelectProgram(p.result_id)}>
                 <td style={{ fontWeight: 600, color: scoreColor(score) }}>
-                  <span title={`Loss ${(programScoreBreakdown(p).loss || 0).toFixed(1)}/35 | Novelty ${(programScoreBreakdown(p).novelty || 0).toFixed(1)}/25 | Baseline ${(programScoreBreakdown(p).baseline || 0).toFixed(1)}/25 | Throughput ${(programScoreBreakdown(p).throughput || 0).toFixed(1)}/15`}>
+                  <span title={Object.entries(candidateScoreBreakdown(p)).map(([k, v]) => `${k} ${Number(v || 0).toFixed(1)}`).join(' | ')}>
                     {score}
                   </span>
                 </td>
-                {!compact && (
+                {showRating && (
                   <td title={rating.tip}>
                     <span style={{
                       display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
@@ -284,7 +355,11 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
                   {p.result_id && (onQueueAdd || onQueueRemove) && (
                     <button
                       className="refresh-btn"
-                      style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4 }}
+                      style={{
+                        fontSize: 10, padding: '1px 5px', marginLeft: 4,
+                        opacity: !isQueued && !queueEligible ? 0.5 : 1,
+                        cursor: !isQueued && !queueEligible ? 'not-allowed' : 'pointer',
+                      }}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (isQueued) {
@@ -315,6 +390,26 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
                           : queueAddTitle}
                     >
                       {isQueued ? 'Queued' : !queueEligible ? 'Ineligible' : queueAddLabel}
+                    </button>
+                  )}
+                  {p.result_id && onOpenInDesigner && (
+                    <button
+                      className="refresh-btn"
+                      style={{
+                        fontSize: 10,
+                        padding: '1px 5px',
+                        marginLeft: 4,
+                        borderColor: 'var(--accent-purple)',
+                        color: 'var(--accent-purple)',
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenInDesigner(p.result_id);
+                      }}
+                      aria-label={`Open ${p.result_id} in designer`}
+                      title="Open architecture in visual designer"
+                    >
+                      Designer
                     </button>
                   )}
                 </td>
@@ -366,7 +461,9 @@ function TopPrograms({ programs, compact, onSelectProgram, totalCount, onQueueAd
                     </div>
                   )}
                 </td>
-                <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : 'not available'}</td>
+                {showParamCount && (
+                  <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : 'not available'}</td>
+                )}
                 {!compact && <td title={p.most_similar_to || 'not available'}>{p.most_similar_to || '--'}</td>}
                 {!compact && <td>{p.throughput_tok_s ? `${Number(p.throughput_tok_s).toFixed(0)} tok/s` : 'not measured'}</td>}
               </tr>

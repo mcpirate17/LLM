@@ -1,0 +1,54 @@
+id: topk_gate
+version: 1.0.0
+name: 'Sparse gating: project to 2 gate scores, weight feature halves'
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+status: approved
+description: 'Sparse gating: project to 2 gate scores, weight feature halves'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*2
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Sparse gating: project to 2 gate scores, weight feature halves
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Sparse gating: project to 2 gate scores, weight feature halves
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "component_manifest.v1",
+  "title": "Aria Designer Component Manifest",
+  "type": "object",
+  "required": ["id", "version", "name", "category", "inputs", "outputs", "implementation"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,63}$",
+      "description": "Unique component identifier (snake_case)"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Human-readable display name"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "math", "linear_algebra", "structural", "routing",
+        "mixing", "channel_mixing", "normalization", "positional",
+        "blocks", "io", "representation", "topology",
+        "sequence", "frequency", "functional",
+        "math_space", "data_io", "data_transform", "control_flow"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "approved", "deprecated", "quarantined"],
+      "default": "draft"
+    },
+    "description": {
+      "type": "string",
+      "default": ""
+    },
+    "help_md": {
+      "type": "string",
+      "default": "",
+      "description": "Optional help text (Markdown) shown in the UI inspector."
+    },
+    "inputs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/port" },
+      "minItems": 0
+    },
+    "outputs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/port" },
+      "minItems": 1
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/param" },
+      "default": {}
+    },
+    "implementation": {
+      "$ref": "#/$defs/implementation"
+    },
+    "performance": {
+      "$ref": "#/$defs/performance",
+      "default": {}
+    },
+    "limits": {
+      "$ref": "#/$defs/limits",
+      "default": {}
+    },
+    "constraints": {
+      "$ref": "#/$defs/constraints",
+      "default": {}
+    }
+  },
+  "$defs": {
+    "port": {
+      "type": "object",
+      "required": ["name", "dtype"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "dtype": {
+          "type": "string",
+          "enum": ["tensor", "scalar", "index", "mask", "complex_tensor"]
+        },
+        "shape": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Symbolic shape e.g. ['B', 'S', 'D']"
+        },
+        "required": { "type": "boolean", "default": true },
+        "description": { "type": "string", "default": "" }
+      }
+    },
+    "param": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["integer", "float", "boolean", "string", "enum"]
+        },
+        "default": {},
+        "description": { "type": "string", "default": "" },
+        "options": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Valid values for enum type"
+        },
+        "constraints": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "number" },
+            "max": { "type": "number" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "native": {
+          "type": ["string", "null"],
+          "description": "Path to C kernel source (e.g. kernel.c)"
+        },
+        "rust": {
+          "type": ["string", "null"],
+          "description": "Path to Rust kernel source (e.g. kernel.rs)"
+        },
+        "cython": {
+          "type": ["string", "null"],
+          "description": "Path to Cython source (e.g. kernel.pyx)"
+        },
+        "python": {
+          "type": ["string", "null"],
+          "description": "Path to Python fallback (e.g. kernel_fallback.py)"
+        }
+      }
+    },
+    "performance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "has_params": { "type": "boolean", "default": false },
+        "param_formula": { "type": "string", "default": "0" },
+        "preserves_gradient": { "type": "boolean", "default": true },
+        "numerically_risky": { "type": "boolean", "default": false },
+        "flops_formula": { "type": "string", "default": "0" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_memory_mb": { "type": "integer", "default": 2048 },
+        "max_time_ms": { "type": "integer", "default": 5000 },
+        "deterministic": { "type": "boolean", "default": true }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "incompatible_with": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,53 @@
+id: sign_ste
+version: 1.0.0
+name: Sign with straight-through estimator
+category: math
+tags:
+- elementwise_unary
+status: approved
+description: Sign with straight-through estimator
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: false
+  numerically_risky: false
+help_md: '### Technical
+
+  Sign with straight-through estimator
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Sign with straight-through estimator
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

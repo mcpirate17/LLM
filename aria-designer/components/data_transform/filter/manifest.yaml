@@ -1,0 +1,81 @@
+id: filter
+version: 1.0.0
+name: Filter Tensor
+category: data_transform
+tags:
+- data
+- transform
+- filter
+status: approved
+description: Filters tensors by rows, tokens, or features using a comparison rule.
+inputs:
+- name: data
+  dtype: tensor
+  shape:
+  - '*'
+outputs:
+- name: filtered
+  dtype: tensor
+  shape:
+  - '*'
+params:
+  filter_scope:
+    type: enum
+    options:
+    - row
+    - token
+    - feature
+    default: row
+    description: 'Scope to filter: batch rows, sequence tokens, or feature channels.'
+  col_index:
+    type: integer
+    default: 0
+    constraints:
+      min: 0
+      max: 65535
+    description: Column/feature index used for row scope in rank-2 tensors.
+  operator:
+    type: enum
+    options:
+    - '>'
+    - <
+    - '>='
+    - <=
+    - ==
+    - '!='
+    default: '>'
+    description: Select operator (>, <, >=, <=, ==, !=).
+  value:
+    type: float
+    default: 0.0
+    description: Threshold/comparison value.
+implementation:
+  native: kernel.c
+  python: kernel_fallback.py
+performance:
+  has_params: true
+help_md: '### Technical
+
+  Applies comparison-based filtering on tensors.
+
+
+  Inputs: `data:tensor[*]`.
+
+
+  Outputs: `filtered:tensor[*]`.
+
+
+  Filter modes:
+
+  - `row`: keep rows based on one feature value
+
+  - `token`: keep sequence positions by token-level score
+
+  - `feature`: keep channels by feature-level score
+
+
+  ### Plain Language
+
+  Use this to drop unwanted rows/tokens/features before downstream blocks.
+
+  '

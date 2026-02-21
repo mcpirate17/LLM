@@ -1,0 +1,25 @@
+{
+  "model_endpoints": [
+    {"name": "local_ollama", "kind": "local", "url": "http://127.0.0.1:11434", "default": true},
+    {"name": "local_llamacpp", "kind": "local", "url": "http://127.0.0.1:8080"},
+    {"name": "remote_agent", "kind": "remote", "url": "https://agent.example.invalid"}
+  ],
+  "allowed_commands": [
+    "python -m pytest",
+    "python tools/novelty_integrity_check.py",
+    "python -m py_compile",
+    "rg"
+  ],
+  "allowed_paths": [
+    "scientist",
+    "eval",
+    "training",
+    "synthesis",
+    "search",
+    "tests",
+    "tools",
+    "healer"
+  ],
+  "max_auto_patch_files": 8,
+  "require_tests_on_behavior_change": true
+}

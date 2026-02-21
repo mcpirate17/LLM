@@ -1,0 +1,42 @@
+id: dataset_map
+version: 1.0.0
+name: Map Dataset
+category: data_transform
+tags:
+- data
+- map
+status: approved
+description: Transforms a dataset using a Python function.
+inputs:
+- name: dataset
+  dtype: dataset
+outputs:
+- name: mapped
+  dtype: dataset
+params:
+  function_body:
+    type: string
+    default: x
+    description: 'Python expression for mapping (input: x)'
+implementation:
+  python: kernel_fallback.py
+help_md: '### Technical
+
+  Transforms a dataset using a Python function.
+
+
+  Inputs: dataset:dataset.
+
+  Outputs: mapped:dataset.
+
+  Params: function_body.
+
+
+  ### Plain Language
+
+  Transforms a dataset using a Python function.
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

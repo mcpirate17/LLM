@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExperimentSelectionDecision",
+  "type": "object",
+  "required": [
+    "decision_id",
+    "timestamp",
+    "context",
+    "candidate_pool_summary",
+    "score_breakdown",
+    "policy",
+    "reason",
+    "chosen_experiments"
+  ],
+  "properties": {
+    "decision_id": {"type": "string"},
+    "timestamp": {"type": "number"},
+    "context": {"type": "string"},
+    "experiment_id": {"type": ["string", "null"]},
+    "candidate_pool_summary": {"type": "object"},
+    "score_breakdown": {"type": "array", "items": {"type": "object"}},
+    "policy": {"type": "object"},
+    "reason": {"type": "string"},
+    "chosen_experiments": {"type": "array", "items": {"type": "object"}},
+    "trigger": {"type": ["object", "null"]}
+  }
+}

@@ -1,0 +1,6 @@
+# Test-only dependencies (not needed for production API)
+pytest>=8.0
+httpx>=0.27               # async test client for FastAPI
+jsonschema>=4.20          # manifest schema validation
+pyyaml>=6.0               # manifest parsing
+torch>=2.2.0; sys_platform != 'emscripten'   # CPU-only; CI uses --index-url for CPU wheel

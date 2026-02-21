@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
+import { trendScore, trendScoreBreakdown } from '../utils/scoringEngine';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+import apiService from '../services/apiService';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -171,70 +173,72 @@ function MiniChart({ data, valueKey, label, color, formatValue, weightEvents, ba
   );
 }
 
-/**
- * Score a trend data point (experiment) 0-100.
- * Weights: S1 pass rate (35%), best loss ratio (30%), best novelty (25%), efficiency (10%)
- */
-function trendScore(d) {
-  // S1 pass rate: scaled so 10% = max
-  const stabilizedS1Rate = d.adjusted_s1_pass_rate != null
-    ? d.adjusted_s1_pass_rate
-    : (d.s1_pass_rate || 0);
-  const passRate = Math.min(stabilizedS1Rate / 0.10, 1.0) * 35;
-
-  // Loss ratio: lower is better
-  const lossScore = d.best_loss_ratio != null
-    ? Math.max(0, 1 - (d.best_loss_ratio - 0.2) / 0.8) * 30
-    : 0;
-
-  // Novelty
-  const noveltyScore = d.best_novelty_score != null
-    ? Math.min(d.best_novelty_score, 1.0) * 25
-    : 0;
-
-  // Efficiency: more programs per second = better, normalize to ~2 prog/s
-  const efficiency = (d.duration_seconds && d.n_programs_generated)
-    ? Math.min((d.n_programs_generated / d.duration_seconds) / 2, 1.0) * 10
-    : 0;
-
-  const reliabilityMultiplier = 0.5 + 0.5 * (d.trend_weight != null ? d.trend_weight : 1.0);
-  return Math.round(Math.max(0, Math.min(100, (passRate + lossScore + noveltyScore + efficiency) * reliabilityMultiplier)));
-}
-
-function trendScoreBreakdown(d) {
-  const stabilizedS1Rate = d.adjusted_s1_pass_rate != null
-    ? d.adjusted_s1_pass_rate
-    : (d.s1_pass_rate || 0);
-  const passRate = Math.min(stabilizedS1Rate / 0.10, 1.0) * 35;
-  const lossScore = d.best_loss_ratio != null
-    ? Math.max(0, 1 - (d.best_loss_ratio - 0.2) / 0.8) * 30
-    : 0;
-  const noveltyScore = d.best_novelty_score != null
-    ? Math.min(d.best_novelty_score, 1.0) * 25
-    : 0;
-  const efficiency = (d.duration_seconds && d.n_programs_generated)
-    ? Math.min((d.n_programs_generated / d.duration_seconds) / 2, 1.0) * 10
-    : 0;
-  const reliabilityMultiplier = 0.5 + 0.5 * (d.trend_weight != null ? d.trend_weight : 1.0);
-  return {
-    passRate,
-    loss: lossScore,
-    novelty: noveltyScore,
-    efficiency,
-    reliabilityMultiplier,
-  };
-}
-
 function metricText(value, fallbackReason, formatter) {
   if (value == null) return fallbackReason;
   return formatter(value);
+}
+
+function RegressionBaselineChart({ points, frontier }) {
+  if (!Array.isArray(points) || points.length === 0) return null;
+  const W = 440;
+  const H = 180;
+  const PAD = 28;
+  const xs = points.map((p) => Number(p.throughput_tok_s || 0));
+  const ys = points.map((p) => Number(p.baseline_loss_ratio || 0));
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const yMin = Math.min(...ys);
+  const yMax = Math.max(...ys);
+  const xRange = (xMax - xMin) || 1;
+  const yRange = (yMax - yMin) || 1;
+
+  const project = (x, y) => ({
+    x: PAD + ((x - xMin) / xRange) * (W - PAD * 2),
+    y: H - PAD - ((y - yMin) / yRange) * (H - PAD * 2),
+  });
+  const frontierPath = (frontier || [])
+    .map((p, i) => {
+      const pt = project(Number(p.throughput_tok_s || 0), Number(p.baseline_loss_ratio || 0));
+      return `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`;
+    })
+    .join(' ');
+
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
+      <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
+      <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
+      <text x={W / 2} y={H - 6} textAnchor="middle" fontSize={10} fill="var(--text-muted)">Throughput (tok/s)</text>
+      <text x={8} y={H / 2} transform={`rotate(-90 8 ${H / 2})`} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
+        Baseline Ratio (lower is better)
+      </text>
+      {points.map((p, idx) => {
+        const pt = project(Number(p.throughput_tok_s || 0), Number(p.baseline_loss_ratio || 0));
+        const beats = Number(p.baseline_loss_ratio || 0) < 1.0;
+        return (
+          <circle
+            key={`${p.result_id || idx}`}
+            cx={pt.x}
+            cy={pt.y}
+            r={3}
+            fill={beats ? 'var(--accent-green)' : 'var(--accent-yellow)'}
+            opacity={0.85}
+          >
+            <title>
+              {`${(p.result_id || '').slice(0, 12)} | baseline=${Number(p.baseline_loss_ratio || 0).toFixed(3)} | throughput=${Math.round(Number(p.throughput_tok_s || 0))} tok/s`}
+            </title>
+          </circle>
+        );
+      })}
+      {frontierPath && <path d={frontierPath} fill="none" stroke="var(--accent-red)" strokeWidth={1.5} strokeDasharray="4 3" />}
+    </svg>
+  );
 }
 
 
 const COLUMNS = [
   { key: '_score', label: 'Score' },
   { key: 'experiment_id', label: 'ID' },
-  { key: 's1_pass_rate', label: 'S1 Rate' },
+  { key: 's1_pass_rate', label: 'S1 Rate (per-exp)' },
   { key: 'trend_confidence', label: 'Confidence' },
   { key: 'best_loss_ratio', label: 'Best Loss' },
   { key: 'best_novelty_score', label: 'Best Novelty' },
@@ -273,6 +277,11 @@ function TrendCharts({ onSelectExperiment }) {
   });
   const [lastUpdated, setLastUpdated] = useState(null);
   const [copiedValue, copyText] = useCopyToClipboard();
+  const [regressionVsBaseline, setRegressionVsBaseline] = useState({
+    points: [],
+    pareto_frontier: [],
+    summary: null,
+  });
 
   useEffect(() => {
     try {
@@ -285,9 +294,10 @@ function TrendCharts({ onSelectExperiment }) {
 
     const fetchTrendContext = async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/trends/context`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = await response.json();
+        const [payload, regressionPayload] = await Promise.all([
+          apiService.getTrends(),
+          apiService.getRegressionVsBaseline().catch(() => null),
+        ]);
         if (!active) return;
 
         const trendsData = Array.isArray(payload?.trends) ? payload.trends : [];
@@ -304,6 +314,13 @@ function TrendCharts({ onSelectExperiment }) {
             .filter(event => event.timestamp != null)
         );
         setLastUpdated(payload?.generated_at ? new Date(payload.generated_at * 1000) : new Date());
+        if (regressionPayload && Array.isArray(regressionPayload.points)) {
+          setRegressionVsBaseline({
+            points: regressionPayload.points,
+            pareto_frontier: regressionPayload.pareto_frontier || [],
+            summary: regressionPayload.summary || null,
+          });
+        }
         setError(null);
       } catch (e) {
         if (!active) return;
@@ -362,9 +379,24 @@ function TrendCharts({ onSelectExperiment }) {
         const improved = (deltaS1 != null && deltaS1 > 0) || (deltaLoss != null && deltaLoss < 0);
         const degraded = (deltaS1 != null && deltaS1 < 0) || (deltaLoss != null && deltaLoss > 0);
         const verdict = improved && !degraded ? 'improved' : degraded && !improved ? 'regressed' : 'mixed';
+        const windowCount = event?.after_window?.n_experiments ?? 0;
+        const summaryParts = [];
+        if (deltaS1 != null) {
+          summaryParts.push(`S1 ${deltaS1 >= 0 ? 'improved' : 'declined'} by ${Math.abs(deltaS1 * 100).toFixed(1)}%`);
+        }
+        if (deltaLoss != null) {
+          summaryParts.push(`loss ${deltaLoss <= 0 ? 'improved' : 'worsened'} by ${Math.abs(deltaLoss).toFixed(4)}`);
+        }
+        if (deltaNovelty != null) {
+          summaryParts.push(`novelty ${deltaNovelty >= 0 ? 'up' : 'down'} ${Math.abs(deltaNovelty).toFixed(3)}`);
+        }
+        const summary = summaryParts.length > 0
+          ? `Grammar adapted → ${summaryParts.join(', ')} over next ${windowCount} experiment${windowCount === 1 ? '' : 's'}.`
+          : 'Grammar adapted → insufficient delta data.';
         return {
           ...event,
           verdict,
+          summary,
         };
       });
   }, [adaptationEvents]);
@@ -397,13 +429,16 @@ function TrendCharts({ onSelectExperiment }) {
         <MiniChart
           data={trends}
           valueKey="adjusted_s1_pass_rate"
-          label="Stage 1 Pass Rate"
+          label="Stage 1 Pass Rate (per-experiment, Bayesian-adjusted)"
           color="var(--accent-green, #3fb950)"
           formatValue={v => `${(v * 100).toFixed(1)}%`}
           weightEvents={weightEvents}
           bandLowerKey="s1_confidence_lower"
           bandUpperKey="s1_confidence_upper"
         />
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: -12, paddingLeft: 4 }}>
+          Per-experiment S1 rate (Bayesian-adjusted) — differs from the global all-time pass rate shown on the Overview tab.
+        </div>
         <MiniChart
           data={trends}
           valueKey="best_novelty_score"
@@ -477,6 +512,11 @@ function TrendCharts({ onSelectExperiment }) {
                     windows: {event?.before_window?.n_experiments ?? 0} → {event?.after_window?.n_experiments ?? 0}
                   </span>
                 </div>
+                {event.summary && (
+                  <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                    {event.summary}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -485,6 +525,26 @@ function TrendCharts({ onSelectExperiment }) {
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
         Stage-1 trend uses stabilized pass-rate estimates weighted by experiment size and mode; shaded region shows 95% confidence band.
       </div>
+      {Array.isArray(regressionVsBaseline.points) && regressionVsBaseline.points.length > 0 && (
+        <div className="card" style={{ marginBottom: 14, padding: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text-primary)' }}>
+            Regression vs Baseline (Accuracy/Speed Tradeoff)
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Scatter of Stage-1 survivors by throughput vs baseline ratio. Dashed red line is Pareto frontier.
+          </div>
+          <RegressionBaselineChart
+            points={regressionVsBaseline.points.slice(0, 120)}
+            frontier={regressionVsBaseline.pareto_frontier || []}
+          />
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+            {(regressionVsBaseline.summary?.n_points || 0)} points ·
+            {' '}{(regressionVsBaseline.summary?.n_beating_baseline || 0)} beating baseline ·
+            {' '}best ratio {Number(regressionVsBaseline.summary?.best_baseline_ratio || 0).toFixed(3)} ·
+            {' '}best throughput {Math.round(Number(regressionVsBaseline.summary?.best_throughput_tok_s || 0))} tok/s
+          </div>
+        </div>
+      )}
 
       {/* Data table */}
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>

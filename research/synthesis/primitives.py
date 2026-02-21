@@ -29,6 +29,7 @@ class OpCategory(Enum):
     LINEAR_ALGEBRA = "linear_algebra"
     STRUCTURAL = "structural"
     PARAMETERIZED = "parameterized"
+    MIXING = "mixing"
     SEQUENCE = "sequence"
     FREQUENCY = "frequency"
     MATH_SPACE = "math_space"
@@ -139,10 +140,16 @@ def safe_eval_formula(formula: str) -> int:
 # ── The Primitive Registry ────────────────────────────────────────────
 
 PRIMITIVE_REGISTRY: Dict[str, PrimitiveOp] = {}
+OPCODE_MAP: Dict[str, int] = {"input": 0}
+REVERSE_OPCODE_MAP: Dict[int, str] = {0: "input"}
 
 
 def _register(op: PrimitiveOp) -> PrimitiveOp:
     PRIMITIVE_REGISTRY[op.name] = op
+    if op.name not in OPCODE_MAP:
+        opcode = len(OPCODE_MAP)
+        OPCODE_MAP[op.name] = opcode
+        REVERSE_OPCODE_MAP[opcode] = op.name
     return op
 
 
@@ -264,6 +271,10 @@ _register(PrimitiveOp("linear_proj_down", OpCategory.PARAMETERIZED, 1, "linear",
 _register(PrimitiveOp("linear_proj_up", OpCategory.PARAMETERIZED, 1, "linear",
                        has_params=True, param_formula="D//2*D",
                        description="Learned linear projection (D//2 -> D)"))
+_register(PrimitiveOp("fused_linear_gelu", OpCategory.PARAMETERIZED, 1, "linear",
+                       has_params=True, param_formula="D*D",
+                       description="Fused Linear + Bias + GELU (Triton-accelerated)",
+                       config_keys=("out_dim",)))
 _register(PrimitiveOp("learnable_scale", OpCategory.PARAMETERIZED, 1, "scale",
                        has_params=True, param_formula="D",
                        description="Learnable per-dimension scale"))
@@ -288,6 +299,9 @@ _register(PrimitiveOp("block_sparse_linear", OpCategory.PARAMETERIZED, 1, "linea
                        has_params=True, param_formula="D*D//4",
                        description="Block-sparse linear projection with configurable block density",
                        config_keys=("block_size", "block_density", "out_dim")))
+_register(PrimitiveOp("rmsnorm", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D",
+                       description="Root Mean Square Layer Normalization (Triton-accelerated)"))
 _register(PrimitiveOp("semi_structured_2_4_linear", OpCategory.PARAMETERIZED, 1, "linear",
                        has_params=True, param_formula="D*D//2",
                        description="Semi-structured 2:4 sparse linear projection with compatibility gating",
@@ -320,6 +334,39 @@ _register(PrimitiveOp("rfft_seq", OpCategory.FREQUENCY, 1, "rfft",
                        description="Real FFT along sequence dimension"))
 _register(PrimitiveOp("irfft_seq", OpCategory.FREQUENCY, 1, "irfft",
                        description="Inverse real FFT along sequence dim"))
+
+# ── Mixing Operations ─────────────────────────────────────────────────
+
+_register(PrimitiveOp("softmax_attention", OpCategory.MIXING, 1, "identity",
+                       has_params=True, param_formula="D*D*3",
+                       description="Standard Softmax Self-Attention"))
+_register(PrimitiveOp("linear_attention", OpCategory.MIXING, 1, "identity",
+                       has_params=True, param_formula="D*D*3",
+                       description="Linear-complexity Attention (kernel-based)"))
+_register(PrimitiveOp("graph_attention", OpCategory.MIXING, 1, "identity",
+                       has_params=True, param_formula="D*D",
+                       description="Graph-based sequence mixing with learned adjacency"))
+_register(PrimitiveOp("fourier_mixing", OpCategory.MIXING, 1, "identity",
+                       description="Unparameterized global mixing via FFT"))
+_register(PrimitiveOp("state_space", OpCategory.MIXING, 1, "identity",
+                       has_params=True, param_formula="D*4",
+                       description="State-space sequence mixer (Mamba-style)"))
+_register(PrimitiveOp("conv_only", OpCategory.MIXING, 1, "identity",
+                       has_params=True, param_formula="D*3",
+                       description="Depthwise convolutional sequence mixer"))
+
+# ── Channel Mixing ────────────────────────────────────────────────────
+
+_register(PrimitiveOp("swiglu_mlp", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D*3.5",
+                       description="SwiGLU MLP channel mixer"))
+_register(PrimitiveOp("rwkv_channel", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D*2",
+                       description="RWKV-style time-mixing channel update"))
+_register(PrimitiveOp("moe_topk", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D*8",
+                       description="Sparse Mixture-of-Experts channel mixer",
+                       config_keys=("num_experts", "top_k")))
 
 # ── Functional (operator-learning / neural-field) ────────────────────
 
@@ -361,4 +408,9 @@ def list_by_n_inputs(n: int) -> List[PrimitiveOp]:
 
 def register_external_primitive(op: PrimitiveOp) -> None:
     """Register a primitive from external sources (e.g., math spaces)."""
-    PRIMITIVE_REGISTRY[op.name] = op
+    if op.name not in PRIMITIVE_REGISTRY:
+        PRIMITIVE_REGISTRY[op.name] = op
+        if op.name not in OPCODE_MAP:
+            opcode = len(OPCODE_MAP)
+            OPCODE_MAP[op.name] = opcode
+            REVERSE_OPCODE_MAP[opcode] = op.name

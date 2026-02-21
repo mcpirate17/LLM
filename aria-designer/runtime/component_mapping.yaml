@@ -1,0 +1,145 @@
+version: 1
+
+# Alias map from aria-designer component leaf IDs to research primitive names.
+aliases:
+  relu_op: relu
+  gelu_op: gelu
+  silu_op: silu
+  linear: linear_proj
+  linear_down: linear_proj_down
+  linear_up: linear_proj_up
+  state_space: selective_scan
+  rmsnorm_pre: rmsnorm
+  layernorm_pre: rmsnorm
+  softmax_attention: local_window_attn
+  swiglu_mlp: fused_linear_gelu
+  block_sparse: block_sparse_linear
+  semi_structured_2_4: semi_structured_2_4_linear
+  structured_sparse: nm_sparse_linear
+  dense_matrix: linear_proj
+  low_rank: linear_proj
+  shared_basis: basis_expansion
+  basis_expansion_layer: basis_expansion
+  conv1d_glu: conv1d_seq
+  compressed_attention: local_window_attn
+  cross_attention_pool: graph_attention
+  random_feature_attention: linear_attention
+  differentiable_sort: sort_seq
+  integral_kernel_mixing: integral_kernel
+  mod_topk: topk_gate
+  implicit_fixed_point: fixed_point_iter
+  kan_spline: basis_expansion
+  polynomial_expansion: basis_expansion
+  product_key_memory: moe_topk
+  hash_trick: basis_expansion
+  hypernetwork: linear_proj
+  kronecker: outer_product
+  polynomial: basis_expansion
+  dynamic_norm: norm_last
+  group_norm: rmsnorm
+  sigmoid_norm: norm_last
+  alibi: learnable_bias
+  convolutional: conv1d_seq
+  learned_absolute: learnable_bias
+  random_fourier: fourier_mixing
+  rope: fourier_mixing
+  binary_hash: sign_ste
+  complex_valued: fourier_mixing
+  mixture_embedding: moe_topk
+  multi_resolution: basis_expansion
+  quaternion: multi_head_mix
+  residual_quantized: sign_ste
+  sparse_topk: topk_gate
+  join: concat
+
+# Optional semantic notes for aliases that are intentionally approximate
+# (not strict equivalence), surfaced in execution-capability + compile/eval warnings.
+approximate_alias_notes:
+  softmax_attention: "Mapped to local_window_attn for bridge compatibility; attention pattern differs."
+  state_space: "Mapped to selective_scan; exact state-space formulation may differ."
+  low_rank: "Mapped to linear_proj for bridge compatibility; low-rank factorization is approximated."
+  shared_basis: "Mapped to basis_expansion as an approximation of shared-basis parametrization."
+  implicit_fixed_point: "Mapped to fixed_point_iter; solver semantics are approximate."
+  kan_spline: "Mapped to basis_expansion; spline basis/gating semantics are approximate."
+  polynomial_expansion: "Mapped to basis_expansion; polynomial order semantics are approximate."
+  product_key_memory: "Mapped to moe_topk; key-value memory retrieval semantics are approximate."
+  hash_trick: "Mapped to basis_expansion; hashing collision behavior is not preserved."
+  hypernetwork: "Mapped to linear_proj; generated-weights semantics are approximate."
+  kronecker: "Mapped to outer_product; exact Kronecker structure is approximate."
+  polynomial: "Mapped to basis_expansion; exact polynomial operator semantics are approximate."
+  dynamic_norm: "Mapped to norm_last; dynamic adaptation semantics are approximate."
+  group_norm: "Mapped to rmsnorm; group partition semantics are approximate."
+  sigmoid_norm: "Mapped to norm_last; sigmoid-weighted normalization semantics are approximate."
+  alibi: "Mapped to learnable_bias; ALiBi positional bias semantics are approximate."
+  convolutional: "Mapped to conv1d_seq; exact positional encoding semantics are approximate."
+  learned_absolute: "Mapped to learnable_bias; learned absolute position table semantics are approximate."
+  random_fourier: "Mapped to fourier_mixing; random feature sampling semantics are approximate."
+  rope: "Mapped to fourier_mixing; rotational embedding semantics are approximate."
+  binary_hash: "Mapped to sign_ste; binary hashing semantics are approximate."
+  complex_valued: "Mapped to fourier_mixing; complex arithmetic semantics are approximate."
+  mixture_embedding: "Mapped to moe_topk; embedding mixture semantics are approximate."
+  multi_resolution: "Mapped to basis_expansion; multi-scale semantics are approximate."
+  quaternion: "Mapped to multi_head_mix; quaternion algebra semantics are approximate."
+  residual_quantized: "Mapped to sign_ste; quantization + residual codebook semantics are approximate."
+  sparse_topk: "Mapped to topk_gate; sparse embedding semantics are approximate."
+  join: "Mapped to concat in bridge mode; key-based relational join semantics are approximate."
+
+# Execution class controls expected lowering path for components that are not
+# directly mapped to PRIMITIVE_REGISTRY.
+category_execution_class:
+  blocks: composite
+  channel_mixing: primitive_candidate
+  data_io: data_control
+  data_transform: data_control
+  control_flow: control
+  mixing: primitive_candidate
+  routing: control
+  representation: primitive_candidate
+  positional: primitive_candidate
+  normalization: primitive_candidate
+  linear_algebra: primitive_candidate
+  io: data_control
+
+# Optional per-component execution-class override.
+component_execution_class: {}
+
+# Components that should lower as passthrough (identity wire-through) in the
+# research bridge until dedicated lowering is implemented.
+passthrough_components:
+  - sequential
+  - loop
+  - uniform
+  - layerdrop
+  - early_exit
+  - token_merging
+  - cascade
+  - adaptive_recursion
+  - speculative
+  - dense_float
+  - none
+  - identity_skip
+  - no_norm
+  - dataset_map
+  - dataset_filter
+  - filter
+  - split_train_val_test
+  - file_writer
+
+# Components that lower to graph inputs during research-bridge conversion.
+source_components:
+  - random_data_source
+  - synthetic_data_source
+  - file_loader
+  - binary_file_reader
+  - hf_dataset_loader
+  - csv_reader
+
+# Components lowered to explicit primitive templates in bridge conversion.
+template_lowered_components:
+  - u_net
+  - hourglass
+  - dense_net
+  - fractal
+  - parallel_streams
+  - feedback_loop
+  - mixture_of_paths

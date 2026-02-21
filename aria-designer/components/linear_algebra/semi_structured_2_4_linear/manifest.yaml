@@ -1,0 +1,58 @@
+id: semi_structured_2_4_linear
+version: 1.0.0
+name: Semi-structured 2:4 sparse linear projection with compatibility gating
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+status: approved
+description: Semi-structured 2:4 sparse linear projection with compatibility gating
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_in
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D_out
+params:
+  out_dim:
+    type: integer
+    default: null
+    description: Output dim (null=same as input)
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D//2
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Semi-structured 2:4 sparse linear projection with compatibility gating
+
+
+  Inputs: x:tensor[B, S, D_in].
+
+  Outputs: y:tensor[B, S, D_out].
+
+  Params: out_dim.
+
+
+  ### Plain Language
+
+  Semi-structured 2:4 sparse linear projection with compatibility gating
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

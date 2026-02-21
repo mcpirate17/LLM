@@ -1,0 +1,56 @@
+id: exp_map
+version: 1.0.0
+name: 'Exponential map: Euclidean -> Poincare ball'
+category: math_space
+tags:
+- math_space
+- numerically_risky
+status: approved
+description: 'Exponential map: Euclidean -> Poincare ball'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+limits:
+  deterministic: true
+help_md: '### Technical
+
+  Exponential map: Euclidean -> Poincare ball
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Exponential map: Euclidean -> Poincare ball
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

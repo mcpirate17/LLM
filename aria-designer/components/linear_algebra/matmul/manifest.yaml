@@ -1,0 +1,59 @@
+id: matmul
+version: 1.0.0
+name: Batched matrix multiply
+category: linear_algebra
+tags:
+- linear_algebra
+status: approved
+description: Batched matrix multiply
+inputs:
+- name: a
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: b
+  dtype: tensor
+  shape:
+  - B
+  - D
+  - K
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - K
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Batched matrix multiply
+
+
+  Inputs: a:tensor[B, S, D], b:tensor[B, D, K].
+
+  Outputs: y:tensor[B, S, K].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Batched matrix multiply
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

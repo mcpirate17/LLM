@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { scoreColor } from '../utils/format';
 import { reliabilityColor } from '../utils/colors';
 import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
-import { leaderboardEntryScore, leaderboardEntryScoreBreakdown } from '../utils/scores';
+import { candidateScore, candidateScoreBreakdown, promotionEvidence } from '../utils/scoringEngine';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const LEADERBOARD_PREFS_KEY = 'aria_leaderboard_prefs_v1';
@@ -143,6 +143,7 @@ function decisionGate(entry) {
     label: decisionReady ? 'Decision-Ready' : 'Exploratory',
     color: decisionReady ? 'var(--accent-green)' : 'var(--accent-yellow)',
     missing,
+    checks,
   };
 }
 
@@ -175,53 +176,6 @@ function candidateEligibility(entry) {
   };
 }
 
-function promotionEvidence(entry) {
-  const seenRuns = Number(entry?.cross_run_stability?.seen_runs || 0);
-  const baselineRatioValue = Number(entry?.validation_baseline_ratio);
-  const stdValue = Number(entry?.validation_multi_seed_std);
-  const baselineRatio = Number.isFinite(baselineRatioValue) ? baselineRatioValue : null;
-  const std = Number.isFinite(stdValue) ? stdValue : null;
-  const checks = {
-    baselineEvidence: baselineRatio != null,
-    baselineBeat: baselineRatio != null && baselineRatio < 1.0,
-    multiSeedStd: std != null,
-    boundedStd: std != null && std <= 0.12,
-    ckaArtifactBacked: entry?.cka_source === 'artifact',
-    repeatObserved: seenRuns >= 3,
-  };
-  const totalChecks = Object.keys(checks).length;
-  const evidenceCount = Object.values(checks).filter(Boolean).length;
-  const completeness = evidenceCount / totalChecks;
-  const stdSignal = std == null ? 0 : std <= 0.05 ? 1 : std <= 0.12 ? 0.65 : std <= 0.2 ? 0.35 : 0.1;
-  const repeatSignal = seenRuns >= 5 ? 1 : seenRuns >= 3 ? 0.65 : seenRuns >= 2 ? 0.4 : seenRuns >= 1 ? 0.2 : 0;
-  const margin = baselineRatio == null ? null : 1 - baselineRatio;
-  const marginSignal = margin == null ? 0 : margin >= 0.1 ? 1 : margin > 0 ? 0.7 : 0.15;
-  const score = Math.round((completeness * 0.5 + stdSignal * 0.2 + repeatSignal * 0.2 + marginSignal * 0.1) * 100);
-  const confidence = score >= 75
-    ? { label: 'High', color: 'var(--accent-green)' }
-    : score >= 45
-      ? { label: 'Moderate', color: 'var(--accent-yellow)' }
-      : { label: 'Low', color: 'var(--accent-red)' };
-  const uncertaintyLabel = std == null
-    ? 'unknown'
-    : std <= 0.05 ? 'tight'
-      : std <= 0.12 ? 'bounded'
-        : 'high';
-  const missing = Object.entries(checks)
-    .filter(([, ok]) => !ok)
-    .map(([name]) => name);
-  return {
-    ...confidence,
-    score,
-    seenRuns,
-    std,
-    uncertaintyLabel,
-    evidenceCount,
-    totalChecks,
-    missing,
-  };
-}
-
 function reproducibilityPacketStatus(entry) {
   const spec = parseArchSpec(entry?.arch_spec_json);
   const checks = [
@@ -249,25 +203,142 @@ function reproducibilityPacketStatus(entry) {
   };
 }
 
-function TierBadge({ tier }) {
+function TierBadge({ tier, entry }) {
+  if (!tier) return null;
+
+  const gate = decisionGate(entry || {});
+  const checkLabels = {
+    screeningEvidence: 'Screening evidence',
+    investigationEvidence: 'Investigation evidence',
+    robustnessFloor: 'Robustness \u2265 0.50',
+    validationEvidence: 'Validation evidence',
+    baselineBeatsReference: 'Baseline < 1.0',
+    consistencyBounded: 'Multi-seed std \u2264 0.12',
+  };
+
+  const tooltipLines = ['Promotion criteria:'];
+  Object.entries(gate.checks).forEach(([name, ok]) => {
+    tooltipLines.push(`${ok ? '\u2713' : '\u2717'} ${checkLabels[name] || name}`);
+  });
+
+  if (tier !== 'breakthrough' && gate.missing.length > 0) {
+    tooltipLines.push('');
+    tooltipLines.push(`Missing for breakthrough: ${gate.missing.map(m => checkLabels[m] || m).join(', ')}`);
+  }
+
+  const tooltip = tooltipLines.join('\n');
+
   return (
-    <span style={{
-      padding: '2px 8px',
-      borderRadius: 4,
-      fontSize: 11,
-      fontWeight: 600,
-      color: TIER_COLORS[tier] || 'var(--text-muted)',
-      background: `${TIER_COLORS[tier] || 'var(--text-muted)'}22`,
-      border: `1px solid ${TIER_COLORS[tier] || 'var(--border)'}`,
-      textTransform: 'uppercase',
-    }}>
+    <span
+      title={tooltip}
+      style={{
+        padding: '2px 8px',
+        borderRadius: 4,
+        fontSize: 11,
+        fontWeight: 600,
+        color: TIER_COLORS[tier] || 'var(--text-muted)',
+        background: `${TIER_COLORS[tier] || 'var(--text-muted)'}22`,
+        border: `1px solid ${TIER_COLORS[tier] || 'var(--border)'}`,
+        textTransform: 'uppercase',
+        cursor: 'help',
+      }}
+    >
       {TIER_LABELS[tier] || tier}
     </span>
   );
 }
 
+function ScoreBreakdown({ entry }) {
+  const [show, setShow] = useState(false);
+  const breakdown = candidateScoreBreakdown(entry, TIER_ORDER);
+  const score = candidateScore(entry, TIER_ORDER);
+
+  const keyMap = {
+    sLoss: { label: 'Screening Loss', color: 'var(--accent-blue)' },
+    iLoss: { label: 'Investigation Loss', color: '#1f6feb' },
+    loss: { label: 'Loss', color: 'var(--accent-blue)' },
+    novelty: { label: 'Novelty', color: 'var(--accent-purple)' },
+    vBase: { label: 'Baseline', color: 'var(--accent-green)' },
+    baseline: { label: 'Baseline', color: 'var(--accent-green)' },
+    robust: { label: 'Robustness', color: 'var(--accent-yellow)' },
+    consistency: { label: 'Consistency', color: '#d29922' },
+    tierBonus: { label: 'Tier Bonus', color: 'var(--accent-orange)' },
+    throughput: { label: 'Throughput', color: 'var(--text-muted)' }
+  };
+
+  const components = Object.entries(breakdown)
+    .filter(([, weight]) => weight > 0)
+    .map(([key, weight]) => ({
+      key,
+      weight,
+      ...(keyMap[key] || { label: key, color: 'var(--border)' })
+    }));
+
+  const total = components.reduce((acc, c) => acc + (Number(c.weight) || 0), 0) || 1;
+
+  return (
+    <div
+      style={{ minWidth: 80, position: 'relative', display: 'inline-block' }}
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      <div style={{ fontWeight: 600, color: scoreColor(score), marginBottom: 4 }}>
+        {score}
+      </div>
+      <div style={{ display: 'flex', height: 4, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+        {components.map(c => (
+          <div
+            key={c.key}
+            style={{
+              width: `${c.weight}%`,
+              background: c.color,
+              height: '100%'
+            }}
+          />
+        ))}
+      </div>
+      {show && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          marginTop: 8,
+          padding: '10px 12px',
+          background: '#161b22',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          boxShadow: '0 6px 16px rgba(0,0,0,0.45)',
+          zIndex: 1000,
+          minWidth: 220,
+          fontSize: 11,
+          color: 'var(--text-primary)',
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Score Breakdown</div>
+          {components.map(c => (
+            <div key={`break-${c.key}`} style={{ marginBottom: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span>{c.label}</span>
+                <span>{Number(c.weight).toFixed(1)}</span>
+              </div>
+              <div style={{ height: 4, background: 'var(--bg-tertiary)', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{ width: `${(c.weight / total) * 100}%`, height: '100%', background: c.color }} />
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Internal composite only.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const COLUMNS = [
-  { key: '_score', label: 'Score' },
+  {
+    key: '_score',
+    label: 'Score',
+    title: 'Internal 0-100 composite for relative ranking only; not a claim of GPT-level replacement or external benchmark parity.',
+  },
   { key: 'tier', label: 'Tier' },
   { key: '_stability', label: 'Stability' },
   { key: 'model_source', label: 'Source' },
@@ -295,6 +366,7 @@ function Leaderboard({
   onQueueRemove,
   queuedResultIds,
   eligibilityByResultId,
+  onOpenInDesigner,
 }) {
   const leaderboardPrefs = (() => {
     try {
@@ -320,6 +392,7 @@ function Leaderboard({
     return typeof leaderboardPrefs?.sortDesc === 'boolean' ? leaderboardPrefs.sortDesc : true;
   });
   const [actionError, setActionError] = useState(null);
+  const [expandedRowId, setExpandedRowId] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [searchQuery, setSearchQuery] = useState(() => {
     return typeof leaderboardPrefs?.searchQuery === 'string' ? leaderboardPrefs.searchQuery : '';
@@ -445,7 +518,7 @@ function Leaderboard({
       const compression = compressionSummary(e);
       return {
         ...e,
-        _score: leaderboardEntryScore(e, TIER_ORDER),
+        _score: candidateScore(e, TIER_ORDER),
         _compression_ratio: compression.ratio,
         _compression_summary: compression,
       };
@@ -498,13 +571,14 @@ function Leaderboard({
   return (
     <div className="card" style={{ padding: 16 }}>
       <div className="card-title" style={{ marginBottom: 12 }}>
-        Decision Leaderboard
+        Qualified Models
         <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>
           {rawEntries.length} entries
         </span>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
         Ranked candidates with tiered evidence — click any row for details.
+        For broad survivor browsing, use the <span style={{ color: 'var(--accent-blue)', textDecoration: 'underline', cursor: 'pointer' }} onClick={() => onSelectProgram && onSelectProgram('_CANDIDATES_TAB_')}>Candidates (All)</span> tab.
         <span style={{ marginLeft: 8, fontSize: 11 }}>
           Updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'loading'}
           {' · '}Stability (window {stabilityWindow}): {stabilitySummary.stable || 0} stable, {stabilitySummary.up || 0} up, {stabilitySummary.down || 0} down, {stabilitySummary.new || 0} new
@@ -522,6 +596,7 @@ function Leaderboard({
           <p style={{ margin: '4px 0' }}>S.Loss = screening loss ratio, I.Loss = investigation loss ratio, V.Loss = validation loss ratio, V.Base {'<'} 1 means better than baseline.</p>
           <p style={{ margin: '4px 0' }}>Decision gate: rows are <strong>Decision-Ready</strong> only when screening+investigation+validation metrics are present, robustness ≥ 0.50, baseline ratio {'<'} 1.00, and multi-seed std ≤ 0.12.</p>
           <p style={{ margin: '4px 0' }}>Metric quality chips show source and reliability: <strong>artifact-backed</strong> vs <strong>heuristic</strong>, with reliability bands from available validation depth and confidence.</p>
+          <p style={{ margin: '4px 0' }}>External early-research benchmark: Open LLM Leaderboard (MMLU, ARC, HellaSwag, TruthfulQA, Winogrande, GSM8K) via lm-eval harness.</p>
         </div>
       </details>
 
@@ -557,7 +632,11 @@ function Leaderboard({
         <button
           onClick={fetchLeaderboard}
           aria-label="Refresh leaderboard"
-          style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}
+          style={{
+            marginLeft: 'auto', fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+            border: '1px solid var(--border)', borderRadius: 4,
+            background: 'transparent', color: 'var(--text-secondary)',
+          }}
         >
           Refresh
         </button>
@@ -637,6 +716,7 @@ function Leaderboard({
                     aria-label={col.key === '_actions'
                       ? 'Actions column'
                       : `Sort leaderboard by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
+                    title={col.title}
                     style={{
                       ...thStyle,
                       cursor: col.key === '_actions' ? 'default' : 'pointer',
@@ -673,9 +753,11 @@ function Leaderboard({
                 const queueAddTitle = queueIntent === 'validation'
                   ? 'Add to validation queue'
                   : 'Add to investigation queue';
+                const rowId = entry.entry_id || entry.result_id || i;
+                const isExpanded = expandedRowId === rowId;
                 return (
                 <tr
-                  key={entry.entry_id}
+                  key={rowId}
                   ref={isHighlighted ? highlightRef : undefined}
                   style={{
                     borderBottom: '1px solid var(--border)',
@@ -688,12 +770,8 @@ function Leaderboard({
                   onClick={() => onSelectProgram && onSelectProgram(entry.result_id)}
                 >
                   <td style={tdStyle}>{i + 1}</td>
-                  <td style={{ ...tdStyle, fontWeight: 600, color: scoreColor(entry._score) }}>
-                    <span title={Object.entries(leaderboardEntryScoreBreakdown(entry, TIER_ORDER)).map(([k, v]) => `${k} ${Number(v || 0).toFixed(1)}`).join(' | ')}>
-                      {entry._score}
-                    </span>
-                  </td>
-                  <td style={tdStyle}><TierBadge tier={entry.tier} /></td>
+                  <td style={tdStyle}><ScoreBreakdown entry={entry} /></td>
+                  <td style={tdStyle}><TierBadge tier={entry.tier} entry={entry} /></td>
                   <td style={tdStyle}>
                     {(() => {
                       const s = entry.cross_run_stability || {};
@@ -779,84 +857,72 @@ function Leaderboard({
                     </div>
                   </td>
                   <td style={tdStyle}>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
-                      {chips.map(chip => (
-                        <span
-                          key={`${entry.entry_id}-${chip.label}`}
-                          title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
-                          style={{
-                            fontSize: 10,
-                            padding: '1px 5px',
-                            borderRadius: 4,
-                            border: `1px solid ${reliabilityColor(chip.reliability)}55`,
-                            color: reliabilityColor(chip.reliability),
-                            background: `${reliabilityColor(chip.reliability)}22`,
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {chip.label}: {chip.source}
-                        </span>
-                      ))}
-                    </div>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
-                      {flags.map(flag => (
-                        <span
-                          key={`${entry.entry_id}-${flag.label}`}
-                          title={flag.detail ? `${flag.label} — ${flag.detail}` : `Quality flag: ${flag.label}`}
-                          style={{
-                            fontSize: 10,
-                            padding: '1px 5px',
-                            borderRadius: 4,
-                            border: `1px solid ${reliabilityColor(flag.tone)}55`,
-                            color: reliabilityColor(flag.tone),
-                            background: `${reliabilityColor(flag.tone)}15`,
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {flag.label}
-                        </span>
-                      ))}
-                    </div>
-                    <div
-                      style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: promotion.color }}
-                      title={`Evidence checks ${promotion.evidenceCount}/${promotion.totalChecks}; missing: ${promotion.missing.length ? promotion.missing.join(', ') : 'none'}`}
-                    >
-                      Promotion confidence: {promotion.label} ({promotion.score}%)
-                    </div>
                     <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                      Uncertainty {promotion.uncertaintyLabel}; runs {promotion.seenRuns}; std {promotion.std != null ? promotion.std.toFixed(3) : 'n/a'}
+                      Quality: {promotion.label} · Repro: {reproPacket.label}
                     </div>
-                    <div
-                      style={{ marginTop: 2, fontSize: 10, color: reproPacket.color }}
-                      title={reproPacket.missing.length ? `Missing packet fields: ${reproPacket.missing.join(', ')}` : 'Reproducibility packet has all required fields'}
-                    >
-                      Repro packet: {reproPacket.label} ({reproPacket.readyCount}/{reproPacket.totalChecks})
-                    </div>
+                    {isExpanded && (
+                      <>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
+                          {chips.map(chip => (
+                            <span
+                              key={`${rowId}-${chip.label}`}
+                              title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                              style={{
+                                fontSize: 10,
+                                padding: '1px 5px',
+                                borderRadius: 4,
+                                border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                                color: reliabilityColor(chip.reliability),
+                                background: `${reliabilityColor(chip.reliability)}22`,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {chip.label}: {chip.source}
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
+                          {flags.map(flag => (
+                            <span
+                              key={`${rowId}-${flag.label}`}
+                              title={flag.detail ? `${flag.label} — ${flag.detail}` : `Quality flag: ${flag.label}`}
+                              style={{
+                                fontSize: 10,
+                                padding: '1px 5px',
+                                borderRadius: 4,
+                                border: `1px solid ${reliabilityColor(flag.tone)}55`,
+                                color: reliabilityColor(flag.tone),
+                                background: `${reliabilityColor(flag.tone)}15`,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {flag.label}
+                            </span>
+                          ))}
+                        </div>
+                        <div
+                          style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: promotion.color }}
+                          title={`Evidence checks ${promotion.evidenceCount}/${promotion.totalChecks}; missing: ${promotion.missing.length ? promotion.missing.join(', ') : 'none'}`}
+                        >
+                          Promotion confidence: {promotion.label} ({promotion.score}%)
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                          Uncertainty {promotion.uncertaintyLabel}; runs {promotion.seenRuns}; std {promotion.std != null ? promotion.std.toFixed(3) : 'n/a'}
+                        </div>
+                        <div
+                          style={{ marginTop: 2, fontSize: 10, color: reproPacket.color }}
+                          title={reproPacket.missing.length ? `Missing packet fields: ${reproPacket.missing.join(', ')}` : 'Reproducibility packet has all required fields'}
+                        >
+                          Repro packet: {reproPacket.label} ({reproPacket.readyCount}/{reproPacket.totalChecks})
+                        </div>
+                      </>
+                    )}
                   </td>
                   <td style={tdStyle} onClick={e => e.stopPropagation()}>
-                    <div style={{ marginBottom: 4 }}>
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 600,
-                          textTransform: 'uppercase',
-                          padding: '2px 6px',
-                          borderRadius: 4,
-                          color: gate.color,
-                          background: `${gate.color}22`,
-                          border: `1px solid ${gate.color}55`,
-                        }}
-                        title={gate.decisionReady
-                          ? 'All evidence checks passed.'
-                          : `Missing checks: ${gate.missing.join(', ')}`}
-                      >
-                        {gate.label}
-                      </span>
-                    </div>
                     {eligibility.investigationEligible && (
                       <button
                         onClick={() => handleInvestigate([entry.result_id])}
-                        style={actionBtnStyle}
+                        style={{ ...actionBtnStyle, background: 'rgba(63, 185, 80, 0.12)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
                         title="Deep study with multiple training programs"
                       >
                         Investigate
@@ -874,7 +940,7 @@ function Leaderboard({
                     {eligibility.validationEligible && (
                       <button
                         onClick={() => handleValidate([entry.result_id])}
-                        style={{ ...actionBtnStyle, borderColor: 'var(--accent-purple)', color: 'var(--accent-purple)' }}
+                        style={{ ...actionBtnStyle, background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
                         title="Publication-grade multi-seed validation"
                       >
                         Validate
@@ -889,52 +955,97 @@ function Leaderboard({
                         Investigation failed
                       </span>
                     )}
-                    {entry.result_id && (onQueueAdd || onQueueRemove) && (
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
                       <button
-                        onClick={() => {
-                          if (isQueued) {
-                            onQueueRemove && onQueueRemove(entry.result_id);
-                            return;
-                          }
-                          if (!eligibility.queueEligible) {
-                            return;
-                          }
-                          onQueueAdd && onQueueAdd({
-                            resultId: entry.result_id,
-                            fingerprint: entry.graph_fingerprint,
-                            source: 'leaderboard',
-                            architectureFamily: entry.architecture_family,
-                            intent: queueIntent,
-                            queueEligible: eligibility.queueEligible,
-                            investigationEligible: eligibility.investigationEligible,
-                            validationEligible: eligibility.validationEligible,
-                            queueReason: eligibility.queueReason,
-                          });
-                        }}
-                        disabled={!isQueued && !eligibility.queueEligible}
+                        onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
                         style={{
                           ...actionBtnStyle,
-                          marginTop: 4,
-                          borderColor: !isQueued && !eligibility.queueEligible
-                            ? 'var(--border)'
-                            : isQueued
-                              ? 'var(--accent-yellow)'
-                              : 'var(--accent-blue)',
-                          color: !isQueued && !eligibility.queueEligible
-                            ? 'var(--text-muted)'
-                            : isQueued
-                              ? 'var(--accent-yellow)'
-                              : 'var(--accent-blue)',
-                          opacity: !isQueued && !eligibility.queueEligible ? 0.6 : 1,
+                          borderColor: 'var(--accent-blue)',
+                          color: 'var(--accent-blue)',
+                          background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
                         }}
-                        title={isQueued
-                          ? 'Remove from investigation queue'
-                          : !eligibility.queueEligible
-                            ? 'Not eligible for investigation/validation queue actions'
-                            : queueAddTitle}
                       >
-                        {isQueued ? 'Queued' : !eligibility.queueEligible ? 'Ineligible' : queueAddLabel}
+                        {isExpanded ? 'Hide details' : 'Details'}
                       </button>
+                      {onOpenInDesigner && (
+                        <button
+                          onClick={() => onOpenInDesigner(entry.result_id)}
+                          style={{ ...actionBtnStyle, background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
+                          title="Open architecture in visual designer"
+                        >
+                          Designer
+                        </button>
+                      )}
+                    </div>
+                    {isExpanded && (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ marginBottom: 4 }}>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              textTransform: 'uppercase',
+                              padding: '2px 6px',
+                              borderRadius: 4,
+                              color: gate.color,
+                              background: `${gate.color}22`,
+                              border: `1px solid ${gate.color}55`,
+                            }}
+                            title={gate.decisionReady
+                              ? 'All evidence checks passed.'
+                              : `Missing checks: ${gate.missing.join(', ')}`}
+                          >
+                            {gate.label}
+                          </span>
+                        </div>
+                        {entry.result_id && (onQueueAdd || onQueueRemove) && (
+                          <button
+                            onClick={() => {
+                              if (isQueued) {
+                                onQueueRemove && onQueueRemove(entry.result_id);
+                                return;
+                              }
+                              if (!eligibility.queueEligible) {
+                                return;
+                              }
+                              onQueueAdd && onQueueAdd({
+                                resultId: entry.result_id,
+                                fingerprint: entry.graph_fingerprint,
+                                source: 'leaderboard',
+                                architectureFamily: entry.architecture_family,
+                                intent: queueIntent,
+                                queueEligible: eligibility.queueEligible,
+                                investigationEligible: eligibility.investigationEligible,
+                                validationEligible: eligibility.validationEligible,
+                                queueReason: eligibility.queueReason,
+                              });
+                            }}
+                            disabled={!isQueued && !eligibility.queueEligible}
+                            style={{
+                              ...actionBtnStyle,
+                              marginTop: 4,
+                              borderColor: !isQueued && !eligibility.queueEligible
+                                ? 'var(--border)'
+                                : isQueued
+                                  ? 'var(--accent-yellow)'
+                                  : 'var(--accent-blue)',
+                              color: !isQueued && !eligibility.queueEligible
+                                ? 'var(--text-muted)'
+                                : isQueued
+                                  ? 'var(--accent-yellow)'
+                                  : 'var(--accent-blue)',
+                              opacity: !isQueued && !eligibility.queueEligible ? 0.6 : 1,
+                            }}
+                            title={isQueued
+                              ? 'Remove from investigation queue'
+                              : !eligibility.queueEligible
+                                ? 'Not eligible for investigation/validation queue actions'
+                                : queueAddTitle}
+                          >
+                            {isQueued ? 'Queued' : !eligibility.queueEligible ? 'Ineligible' : queueAddLabel}
+                          </button>
+                        )}
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -964,11 +1075,11 @@ const tdStyle = {
 };
 
 const actionBtnStyle = {
-  padding: '2px 8px',
+  padding: '4px 10px',
   fontSize: 11,
-  border: '1px solid var(--accent-blue)',
+  border: '1px solid rgba(88, 166, 255, 0.4)',
   borderRadius: 4,
-  background: 'transparent',
+  background: 'rgba(88, 166, 255, 0.12)',
   color: 'var(--accent-blue)',
   cursor: 'pointer',
 };

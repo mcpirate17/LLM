@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aria_patch.v1.schema.json",
+  "title": "AriaPatchV1",
+  "type": "object",
+  "required": ["workflow_id", "base_version", "author", "rationale", "ops"],
+  "properties": {
+    "workflow_id": { "type": "string" },
+    "base_version": { "type": "integer", "minimum": 1 },
+    "author": { "type": "string", "const": "aria" },
+    "rationale": { "type": "string", "minLength": 1 },
+    "expected_impact": { "type": "object" },
+    "ops": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["op", "payload"],
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": ["add_node", "remove_node", "replace_node", "rewire", "mutate_param"]
+          },
+          "node_id": { "type": "string" },
+          "edge_id": { "type": "string" },
+          "payload": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

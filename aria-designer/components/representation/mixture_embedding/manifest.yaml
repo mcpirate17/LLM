@@ -1,0 +1,56 @@
+id: mixture_embedding
+version: 1.0.0
+name: Mixture Embedding
+category: representation
+tags:
+- mixture
+- token_representation
+status: approved
+description: Mixture of learned embedding prototypes
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Mixture of learned embedding prototypes
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Mixture of learned embedding prototypes
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

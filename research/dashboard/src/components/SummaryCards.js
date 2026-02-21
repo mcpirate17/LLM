@@ -1,8 +1,10 @@
 import React from 'react';
 import useRenderPerf from '../hooks/useRenderPerf';
+import { useAriaData } from '../hooks/useAriaData';
 
-function SummaryCards({ summary, learningTrend }) {
+function SummaryCards({ learningTrend }) {
   useRenderPerf('SummaryCards');
+  const { summary } = useAriaData() || {};
 
   if (!summary) return null;
 
@@ -10,6 +12,7 @@ function SummaryCards({ summary, learningTrend }) {
   const survColor = survRate > 0.05 ? 'green' : survRate > 0 ? 'yellow' : '';
   const novelty = summary.top_novelty_score || 0;
   const noveltyColor = novelty > 0.8 ? 'green' : novelty > 0.5 ? 'yellow' : 'purple';
+  const latestPerf = summary.latest_perf_report || null;
 
   // Build pass rate sub-text with trend arrow
   let passRateSub = survRate > 0.05 ? 'Strong throughput' : survRate > 0 ? 'Some candidates pass' : 'No passing candidates yet';
@@ -51,12 +54,20 @@ function SummaryCards({ summary, learningTrend }) {
       sub: novelty > 0.8 ? 'High structural novelty' : novelty > 0.5 ? 'Moderate novelty' : `${summary.active_insights} active insights`,
       color: noveltyColor,
     },
+    {
+      label: 'Perf Report',
+      value: latestPerf ? `${latestPerf.programs_profiled || 0} profiled` : '—',
+      sub: latestPerf
+        ? `queue ${Number(latestPerf.avg_scheduling_wait_ms || 0).toFixed(1)}ms, stalls ${latestPerf.gpu_starvation_events || 0}`
+        : (summary.avg_step_time_ms ? `${summary.avg_step_time_ms.toFixed(1)}ms step` : 'No perf data'),
+      color: latestPerf && Number(latestPerf.avg_scheduling_wait_ms || 0) < 10 ? 'green' : '',
+    },
   ];
 
   return (
     <div className="card">
       <div className="card-title">Research Summary</div>
-      <div className="summary-grid">
+      <div className="summary-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
         {cards.map((card, i) => (
           <div key={i} className="stat-card">
             <div className={`stat-value ${card.color}`}>{card.value}</div>

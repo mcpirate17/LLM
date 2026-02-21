@@ -1,0 +1,57 @@
+id: alibi
+version: 1.0.0
+name: Alibi
+category: positional
+tags:
+- relative
+- linear_bias
+- positional_encoding
+status: approved
+description: 'ALiBi: learned linear bias on attention scores'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  ALiBi: learned linear bias on attention scores
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  ALiBi: learned linear bias on attention scores
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

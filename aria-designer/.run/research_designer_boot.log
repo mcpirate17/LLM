@@ -1,0 +1,1030 @@
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [124540] using StatReload
+
+  VITE v5.4.21  ready in 72 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [124553]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:47964 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:47990 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47974 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48004 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48004 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48004 - "POST /api/v1/import/survivors/e6e50f7a-ea5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48004 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47974 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47974 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47974 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:58462 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58472 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58482 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58502 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58510 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58520 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58528 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58542 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58556 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58570 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58584 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58482 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58588 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58604 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:35816 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35822 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35840 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35838 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35842 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35858 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35872 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35884 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35898 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35906 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35908 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35910 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35918 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35922 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35924 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35930 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44724 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44720 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44736 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:44752 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:44770 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44778 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44780 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44740 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44724 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44810 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44818 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44778 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44754 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44794 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44780 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44818 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44832 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44838 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44842 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44724 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44860 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44872 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44844 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44872 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44890 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44900 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44888 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44900 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44902 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44908 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44912 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44872 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44928 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44932 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44944 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44922 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44932 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44932 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44922 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44956 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44960 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44932 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44970 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44972 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44990 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45004 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44988 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45018 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45004 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45034 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45040 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45004 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:45052 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45054 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45046 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+Failed to load CKA reference artifacts: Manifest missing required fields: ['schema_version', 'activation_shape']
+Using heuristic CKA fallback: Manifest missing required fields: ['schema_version', 'activation_shape']
+INFO:     127.0.0.1:45054 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45054 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:45070 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45082 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45066 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45098 - "PUT /api/v1/workflows/wf_mlwxyu3v HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45066 - "OPTIONS /api/v1/workflows/wf_mlwxyu3v HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45070 - "PUT /api/v1/workflows/wf_mlwxyu3v HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45082 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45108 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45124 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45082 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45106 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45124 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45124 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:45144 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45146 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45140 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45146 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45146 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:45166 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45174 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45150 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:45190 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45190 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45182 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45190 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45190 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45082 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44934 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44940 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44930 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44940 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44940 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:44950 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44954 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44948 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44954 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44954 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44960 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44962 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44980 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44980 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44978 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44980 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44978 - "POST /api/v1/import/survivors/e6e50f7a-ea5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35662 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44980 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44978 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44978 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44978 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44978 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:36144 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36150 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:36174 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36144 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:36192 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:36202 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36222 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36226 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36236 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36158 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36184 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36216 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36190 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36202 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36236 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36226 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36238 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36240 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36250 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36272 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36258 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36144 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36274 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36272 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36302 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36314 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36286 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36314 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46638 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46646 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46658 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36272 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46682 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46694 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46698 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46674 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46694 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46694 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46674 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46700 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46708 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46694 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46718 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44978 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46726 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46734 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46736 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46720 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46734 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46742 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46750 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46734 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46754 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46762 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46768 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46756 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46768 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46768 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:46780 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46794 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46774 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46804 - "PUT /api/v1/workflows/wf_mlwxzmmo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46774 - "OPTIONS /api/v1/workflows/wf_mlwxzmmo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46780 - "PUT /api/v1/workflows/wf_mlwxzmmo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46794 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46820 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46822 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:46832 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46838 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46808 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46830 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46822 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46838 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46822 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46860 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46870 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:46890 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46904 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46854 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46878 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46904 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46914 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46942 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46944 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46930 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46944 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46944 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46944 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46942 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:46954 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46962 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46946 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46962 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46946 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:40490 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40530 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40514 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40540 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40548 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40544 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40486 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40520 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40572 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40504 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40580 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40564 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40544 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40540 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40548 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40580 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40590 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40606 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40540 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40616 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40632 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40636 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40608 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40632 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40656 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40666 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40642 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40666 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40668 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40548 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40632 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40682 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40686 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40676 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40686 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40686 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40676 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40686 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50056 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50062 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50046 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50062 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50062 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:50084 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50096 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50078 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50096 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50096 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:50104 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50108 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50100 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50120 - "PUT /api/v1/workflows/wf_mlwy3of3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50100 - "OPTIONS /api/v1/workflows/wf_mlwy3of3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50104 - "PUT /api/v1/workflows/wf_mlwy3of3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50108 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50130 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50134 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:50138 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50146 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50126 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50136 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50134 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50134 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50164 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50164 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:50188 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50156 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50174 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50214 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50230 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50198 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:50232 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50230 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50230 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50208 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40548 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:50264 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50274 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50248 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50248 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50274 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:40548 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56002 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55984 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56000 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56004 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56014 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56016 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56036 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56044 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55992 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55970 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55954 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56030 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56004 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56016 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56044 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56014 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56014 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56004 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56016 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56044 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56046 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56056 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56064 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56094 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56106 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56050 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56116 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56080 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56050 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56064 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56132 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56080 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56106 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56148 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56156 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56172 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56184 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56196 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56168 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56168 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56184 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56184 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56168 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56198 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56214 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56226 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56232 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56200 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56200 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56226 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56240 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56248 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56250 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56252 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56268 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56278 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56256 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56256 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56294 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56296 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56278 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56282 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56282 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56296 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56314 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56318 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56298 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56298 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56328 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56336 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56350 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56366 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56320 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56320 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56348 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56378 - "PUT /api/v1/workflows/wf_mlwy478u HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56320 - "OPTIONS /api/v1/workflows/wf_mlwy478u HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56336 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56390 - "PUT /api/v1/workflows/wf_mlwy478u HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56348 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56404 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56416 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56366 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56398 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56398 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56366 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56348 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56432 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56444 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56444 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56424 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56448 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56466 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56454 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57110 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57156 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57144 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57202 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57198 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57186 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57172 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57212 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57120 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57186 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57120 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57198 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57212 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57106 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57134 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57164 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57202 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57186 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57198 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57226 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57212 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57230 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57236 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57252 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57246 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57268 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57276 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57246 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57232 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57276 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57280 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57286 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57266 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57246 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57292 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57312 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57276 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57302 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57330 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57346 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57362 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57368 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57346 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57398 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57398 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57322 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57398 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57404 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57410 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57384 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57346 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57434 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57438 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57384 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57454 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57450 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57438 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57398 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57470 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57422 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57492 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57514 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60144 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60146 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60208 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60238 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42036 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:37818 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37842 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37868 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37850 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37872 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37912 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37896 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37930 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37938 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37896 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37912 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37846 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37854 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37938 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37940 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:37956 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37970 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37980 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37990 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37990 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37912 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37980 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37896 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37970 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37954 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37990 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37994 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37972 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38002 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37970 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37990 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38004 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38010 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38022 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38028 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38028 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38038 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38018 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38040 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38044 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38028 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38050 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38056 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38070 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38078 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38086 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38106 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38118 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38078 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38058 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38118 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38120 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38102 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38078 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38132 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38118 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38138 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38140 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38146 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38152 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38176 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38188 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38196 - "PUT /api/v1/workflows/wf_mlwy5qzb HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38188 - "OPTIONS /api/v1/workflows/wf_mlwy5qzb HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38176 - "PUT /api/v1/workflows/wf_mlwy5qzb HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38152 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38142 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38212 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38214 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38142 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38224 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38236 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38152 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38244 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38246 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38276 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38288 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38288 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38262 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38288 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59886 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59910 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59928 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59904 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59950 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59962 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59970 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59974 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59982 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59990 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60006 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60018 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59920 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59938 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60032 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59920 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59938 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60042 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59986 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59986 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59974 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60014 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59962 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60014 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60050 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60006 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60032 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60058 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60060 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60062 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60078 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60088 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60088 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60072 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60096 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60106 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60088 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60114 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60120 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60138 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60146 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60160 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60170 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60146 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60122 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60174 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:60146 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60196 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60204 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60212 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60212 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:60222 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60188 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60236 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:60244 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60254 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60212 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60254 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60240 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60240 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54752 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60254 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60032 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54770 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54778 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54770 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54786 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54786 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54808 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54814 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54756 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54814 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54792 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54786 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54814 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60254 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54826 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54832 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54838 - "PUT /api/v1/workflows/wf_mlwy6dcb HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54832 - "OPTIONS /api/v1/workflows/wf_mlwy6dcb HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54854 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54864 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54878 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54886 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54898 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56710 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56696 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56690 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56726 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56742 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56752 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56762 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56778 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56804 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56816 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56842 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56742 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56778 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56854 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56708 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56860 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56720 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56816 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56854 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56832 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56790 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56880 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56742 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56880 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56896 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56890 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56778 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56816 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56902 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56880 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56874 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56908 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56916 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56930 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56930 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56936 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56950 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56880 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56912 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45512 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45526 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56930 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45540 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45544 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45550 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45566 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45582 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45606 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45616 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45566 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45626 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45546 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45616 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45596 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45642 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45648 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45692 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45692 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45724 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45616 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45680 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45692 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45678 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45680 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45754 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45778 - "PUT /api/v1/workflows/wf_mlwy6qx6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45868 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:33474 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33512 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33500 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:33538 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33552 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33562 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33568 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33576 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33492 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33458 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33478 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33522 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33568 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33562 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33576 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33538 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33586 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33618 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33602 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33630 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33618 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33646 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33638 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33662 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33646 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33576 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33688 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33674 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33692 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33618 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33708 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33710 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33696 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33696 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33708 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33710 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33718 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33696 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33734 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33750 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33758 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33770 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33752 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33780 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33770 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33792 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33770 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33796 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33814 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33824 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33804 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33824 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33830 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33844 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33824 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:33854 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33858 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33866 - "PUT /api/v1/workflows/wf_mlwy838g HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33858 - "OPTIONS /api/v1/workflows/wf_mlwy838g HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33854 - "PUT /api/v1/workflows/wf_mlwy838g HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33846 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33872 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33902 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33918 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33934 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33886 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33962 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33976 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:33994 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33996 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33950 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33984 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:34008 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34022 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33976 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33996 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33996 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34034 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33976 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34038 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34028 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34038 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34038 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34038 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34034 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:47462 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47470 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47450 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47450 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47470 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55826 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:55846 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:55864 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55854 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55890 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55902 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55926 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55918 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55928 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55814 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55832 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55938 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55954 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55980 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55986 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55864 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55864 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55832 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55902 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55936 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55996 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55964 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55936 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55954 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56006 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56016 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56016 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56006 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56024 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56000 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56034 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56000 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56016 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56052 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56062 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56088 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56102 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56078 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56078 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56108 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56114 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56102 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56126 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56130 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56138 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56152 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56156 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56132 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56132 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56166 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56152 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56188 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56202 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56176 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56212 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56180 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56180 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56230 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56236 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56202 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56254 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56264 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56284 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56302 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56296 - "PUT /api/v1/workflows/wf_mlwy8hvr HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56264 - "OPTIONS /api/v1/workflows/wf_mlwy8hvr HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56254 - "PUT /api/v1/workflows/wf_mlwy8hvr HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56316 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56320 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56278 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56278 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56340 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56352 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56278 - "OPTIONS /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56356 - "POST /api/v1/workflows/evaluate/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56302 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56358 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56384 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56396 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56374 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56374 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK

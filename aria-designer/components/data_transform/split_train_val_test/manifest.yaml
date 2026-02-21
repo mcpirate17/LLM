@@ -1,0 +1,124 @@
+id: split_train_val_test
+version: 1.0.0
+name: Split Train/Val/Test
+category: data_transform
+tags:
+- data
+- transform
+- split
+- training
+status: approved
+description: Deterministically splits tabular/tensor rows into train, validation, and test subsets with optional stratification.
+inputs:
+- name: data
+  dtype: tensor
+  shape:
+  - '*'
+outputs:
+- name: train
+  dtype: tensor
+  shape:
+  - '*'
+- name: val
+  dtype: tensor
+  shape:
+  - '*'
+- name: test
+  dtype: tensor
+  shape:
+  - '*'
+params:
+  train_ratio:
+    type: float
+    default: 0.8
+    constraints:
+      min: 0.0
+      max: 1.0
+    description: Fraction of rows assigned to the training split.
+  val_ratio:
+    type: float
+    default: 0.1
+    constraints:
+      min: 0.0
+      max: 1.0
+    description: Fraction of rows assigned to the validation split.
+  test_ratio:
+    type: float
+    default: 0.1
+    constraints:
+      min: 0.0
+      max: 1.0
+    description: Fraction of rows assigned to the test split.
+  shuffle:
+    type: boolean
+    default: true
+    description: Shuffle rows before splitting (deterministic with seed).
+  seed:
+    type: integer
+    default: 42
+    constraints:
+      min: 0
+      max: 2147483647
+    description: Deterministic random seed used by shuffling/stratification.
+  stratify:
+    type: boolean
+    default: false
+    description: Preserve approximate class distribution using values from stratify_col.
+  stratify_col:
+    type: integer
+    default: 0
+    constraints:
+      min: 0
+      max: 65535
+    description: Feature column index used to derive stratification labels.
+  stratify_bins:
+    type: integer
+    default: 8
+    constraints:
+      min: 2
+      max: 1024
+    description: Number of bins for continuous stratification labels.
+  schema_validation:
+    type: enum
+    options:
+    - none
+    - strict
+    default: none
+    description: Strict mode enforces expected_feature_dim when set.
+  expected_feature_dim:
+    type: integer
+    default: -1
+    constraints:
+      min: -1
+      max: 1048576
+    description: Expected feature dimension for schema validation (-1 disables check).
+implementation:
+  python: kernel_fallback.py
+performance:
+  has_params: true
+help_md: '### Technical
+
+  Deterministically splits row-like data into train/val/test tensors.
+
+
+  Inputs: `data:tensor[*]`.
+
+  Outputs: `train:tensor[*]`, `val:tensor[*]`, `test:tensor[*]`.
+
+
+  Features:
+
+  - deterministic splits via `seed`
+
+  - optional stratification via `stratify=true` and `stratify_col`
+
+  - configurable ratio triplet (`train_ratio`, `val_ratio`, `test_ratio`)
+
+
+  ### Plain Language
+
+  Use this before model training to create reproducible train/validation/test subsets.
+
+  Turn on stratification when you want each split to keep similar class balance.
+
+  '

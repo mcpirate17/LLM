@@ -1,0 +1,95 @@
+id: random_data_source
+version: 1.0.0
+name: Random Data Source
+category: data_io
+tags:
+- data
+- io
+- source
+status: approved
+description: Generates random tensor data for prototyping and testing.
+inputs: []
+outputs:
+- name: data
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  batch_size:
+    type: integer
+    default: 2
+    constraints:
+      min: 1
+      max: 8192
+    description: Batch dimension B.
+  seq_len:
+    type: integer
+    default: 16
+    constraints:
+      min: 1
+      max: 65536
+    description: Sequence dimension S.
+  feature_dim:
+    type: integer
+    default: 128
+    constraints:
+      min: 1
+      max: 65536
+    description: Feature/channel dimension D.
+  distribution:
+    type: enum
+    options:
+    - gaussian
+    - uniform
+    - bernoulli
+    default: gaussian
+    description: Statistical distribution for generated values.
+  mean:
+    type: float
+    default: 0.0
+    description: Mean for gaussian distribution.
+  std:
+    type: float
+    default: 1.0
+    constraints:
+      min: 1.0e-06
+      max: 1000000.0
+    description: Standard deviation for gaussian distribution.
+  low:
+    type: float
+    default: -1.0
+    description: Lower bound for uniform distribution.
+  high:
+    type: float
+    default: 1.0
+    description: Upper bound for uniform distribution.
+  seed:
+    type: integer
+    default: 42
+    constraints:
+      min: 0
+      max: 2147483647
+    description: RNG seed for deterministic generation.
+implementation:
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  preserves_gradient: false
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Produces synthetic random tensors with configurable shape and distribution.
+
+  Inputs: none.
+
+  Outputs: `data:tensor[B, S, D]`.
+
+  ### Plain Language
+  Use this when you need test input data without reading files.
+
+  Typical usage:
+  - quick graph validation
+  - debugging shape flow
+  - smoke tests for new components
