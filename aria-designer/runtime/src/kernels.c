@@ -2061,3 +2061,860 @@ void aria_rmsnorm_backward_f32(const float *grad_out, const float *input,
         }
     }
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 1: Elementwise + Simple Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+void aria_maximum_f32(const float *a, const float *b, float *y, int64_t n) {
+#ifdef __AVX2__
+    {
+        int64_t vec_end = n - (n % 8);
+#ifdef ARIA_HAS_OPENMP
+        #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+        for (int64_t i = 0; i < vec_end; i += 8) {
+            __m256 va = _mm256_loadu_ps(a + i);
+            __m256 vb = _mm256_loadu_ps(b + i);
+            _mm256_storeu_ps(y + i, _mm256_max_ps(va, vb));
+        }
+        for (int64_t i = vec_end; i < n; i++) {
+            y[i] = fmaxf(a[i], b[i]);
+        }
+    }
+#else
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        y[i] = fmaxf(a[i], b[i]);
+    }
+#endif
+}
+
+void aria_minimum_f32(const float *a, const float *b, float *y, int64_t n) {
+#ifdef __AVX2__
+    {
+        int64_t vec_end = n - (n % 8);
+#ifdef ARIA_HAS_OPENMP
+        #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+        for (int64_t i = 0; i < vec_end; i += 8) {
+            __m256 va = _mm256_loadu_ps(a + i);
+            __m256 vb = _mm256_loadu_ps(b + i);
+            _mm256_storeu_ps(y + i, _mm256_min_ps(va, vb));
+        }
+        for (int64_t i = vec_end; i < n; i++) {
+            y[i] = fminf(a[i], b[i]);
+        }
+    }
+#else
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        y[i] = fminf(a[i], b[i]);
+    }
+#endif
+}
+
+void aria_div_safe_f32(const float *a, const float *b, float *y, int64_t n) {
+    static const float EPS = 1e-7f;
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        float denom = b[i];
+        /* Clamp tiny denominators to ±eps to avoid division by zero */
+        if (denom >= 0.0f && denom < EPS) denom = EPS;
+        else if (denom < 0.0f && denom > -EPS) denom = -EPS;
+        y[i] = a[i] / denom;
+    }
+}
+
+void aria_sign_ste_f32(const float *x, float *y, int64_t n) {
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        y[i] = x[i] > 0.0f ? 1.0f : -1.0f;
+    }
+}
+
+void aria_causal_mask_f32(const float *x, float *y,
+                           int64_t batch, int64_t seq, int64_t dim) {
+    /* For 3D tensor (B,S,D): zero out positions where feature index > seq index
+     * This is a simplified causal mask suitable for (B,S,S) attention patterns
+     * where dim==seq, zeroing the upper triangle. */
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(batch > ARIA_OMP_BATCH_THRESHOLD) schedule(static)
+#endif
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t i = 0; i < seq; i++) {
+            const float *xr = x + (b * seq + i) * dim;
+            float *yr = y + (b * seq + i) * dim;
+            for (int64_t j = 0; j < dim; j++) {
+                yr[j] = (j <= i) ? xr[j] : -1e9f;
+            }
+        }
+    }
+}
+
+void aria_softmax_seq_f32(const float *x, float *y,
+                            int64_t batch, int64_t seq, int64_t dim) {
+    /* Softmax along dim=1 (sequence dimension).
+     * Input: [batch, seq, dim], output same shape.
+     * For each (b, d), compute softmax over the seq dimension. */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t d = 0; d < dim; d++) {
+            /* Find max for numerical stability */
+            float max_val = -INFINITY;
+            for (int64_t s = 0; s < seq; s++) {
+                float v = x[(b * seq + s) * dim + d];
+                if (v > max_val) max_val = v;
+            }
+            /* Compute exp and sum */
+            float sum_exp = 0.0f;
+            for (int64_t s = 0; s < seq; s++) {
+                float e = expf(x[(b * seq + s) * dim + d] - max_val);
+                y[(b * seq + s) * dim + d] = e;
+                sum_exp += e;
+            }
+            /* Normalize */
+            float inv_sum = 1.0f / sum_exp;
+            for (int64_t s = 0; s < seq; s++) {
+                y[(b * seq + s) * dim + d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/* ── Tier 1 Backward Kernels ─────────────────────────────────────────── */
+
+void aria_maximum_backward_f32(const float *grad_out,
+                                const float *a, const float *b,
+                                float *grad_a, float *grad_b, int64_t n) {
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        if (a[i] >= b[i]) {
+            grad_a[i] = grad_out[i];
+            grad_b[i] = 0.0f;
+        } else {
+            grad_a[i] = 0.0f;
+            grad_b[i] = grad_out[i];
+        }
+    }
+}
+
+void aria_minimum_backward_f32(const float *grad_out,
+                                const float *a, const float *b,
+                                float *grad_a, float *grad_b, int64_t n) {
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        if (a[i] <= b[i]) {
+            grad_a[i] = grad_out[i];
+            grad_b[i] = 0.0f;
+        } else {
+            grad_a[i] = 0.0f;
+            grad_b[i] = grad_out[i];
+        }
+    }
+}
+
+void aria_div_safe_backward_f32(const float *grad_out,
+                                 const float *a, const float *b,
+                                 float *grad_a, float *grad_b, int64_t n) {
+    static const float EPS = 1e-7f;
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < n; i++) {
+        float denom = b[i];
+        if (denom >= 0.0f && denom < EPS) denom = EPS;
+        else if (denom < 0.0f && denom > -EPS) denom = -EPS;
+        /* d(a/b)/da = 1/b, d(a/b)/db = -a/b^2 */
+        grad_a[i] = grad_out[i] / denom;
+        grad_b[i] = -grad_out[i] * a[i] / (denom * denom);
+    }
+}
+
+void aria_outer_product_f32(const float *a, const float *b, float *y, int64_t n) {
+    /* Hadamard (elementwise) product — same as mul */
+    aria_mul_f32(a, b, y, n);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 2: Structural + Parameterized Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+void aria_sliding_window_mask_f32(const float *x, float *y,
+                                    int64_t batch, int64_t seq, int64_t dim,
+                                    int64_t window_size) {
+    /* Apply exponential distance decay: y[b,i,j] = x[b,i,j] * exp(-|i-j|/window)
+     * For dim==seq (attention pattern), this creates a windowed attention mask. */
+    float inv_window = 1.0f / (float)(window_size > 0 ? window_size : 1);
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t i = 0; i < seq; i++) {
+            const float *xr = x + (b * seq + i) * dim;
+            float *yr = y + (b * seq + i) * dim;
+            for (int64_t j = 0; j < dim; j++) {
+                int64_t dist = i - j;
+                if (dist < 0) dist = -dist;
+                yr[j] = xr[j] * expf(-(float)dist * inv_window);
+            }
+        }
+    }
+}
+
+void aria_sort_seq_f32(const float *x, float *y, int64_t *indices,
+                        int64_t batch, int64_t seq, int64_t dim) {
+    /* Sort along sequence dim by mean of features per position.
+     * Outputs sorted tensor and index permutation. */
+    typedef struct { float key; int64_t idx; } kv_t;
+    kv_t *buf = (kv_t *)malloc(seq * sizeof(kv_t));
+    if (!buf) return;
+
+    for (int64_t b = 0; b < batch; b++) {
+        /* Compute mean feature per sequence position as sort key */
+        for (int64_t s = 0; s < seq; s++) {
+            float sum = 0.0f;
+            const float *row = x + (b * seq + s) * dim;
+            for (int64_t d = 0; d < dim; d++) sum += row[d];
+            buf[s].key = sum / (float)dim;
+            buf[s].idx = s;
+        }
+        /* Insertion sort (stable, good for small seq) */
+        for (int64_t i = 1; i < seq; i++) {
+            kv_t tmp = buf[i];
+            int64_t j = i - 1;
+            while (j >= 0 && buf[j].key > tmp.key) {
+                buf[j + 1] = buf[j];
+                j--;
+            }
+            buf[j + 1] = tmp;
+        }
+        /* Write sorted output */
+        for (int64_t s = 0; s < seq; s++) {
+            int64_t src = buf[s].idx;
+            memcpy(y + (b * seq + s) * dim,
+                   x + (b * seq + src) * dim,
+                   dim * sizeof(float));
+            if (indices) indices[b * seq + s] = src;
+        }
+    }
+    free(buf);
+}
+
+void aria_argsort_seq_f32(const float *x, int64_t *indices,
+                            int64_t batch, int64_t seq, int64_t dim) {
+    aria_sort_seq_f32(x, NULL, indices, batch, seq, dim);
+}
+
+void aria_conv1d_seq_f32(const float *x, const float *weight, const float *bias,
+                          float *y, int64_t batch, int64_t seq, int64_t dim) {
+    /* Depthwise 1D conv with kernel_size=3, causal padding (left-pad by 2).
+     * weight: [dim, 3], bias: [dim] (may be NULL) */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            float *yr = y + (b * seq + s) * dim;
+            for (int64_t d = 0; d < dim; d++) {
+                float val = 0.0f;
+                for (int64_t k = 0; k < 3; k++) {
+                    int64_t src_s = s - 2 + k;  /* causal: left-pad by 2 */
+                    if (src_s >= 0 && src_s < seq) {
+                        val += x[(b * seq + src_s) * dim + d] * weight[d * 3 + k];
+                    }
+                }
+                yr[d] = bias ? val + bias[d] : val;
+            }
+        }
+    }
+}
+
+void aria_fused_linear_gelu_f32(const float *x, const float *W, const float *bias,
+                                  float *y, int64_t batch, int64_t dim_in, int64_t dim_out) {
+    /* y = GELU(x @ W^T + bias) */
+    aria_linear_f32(x, W, bias, y, batch, dim_in, dim_out);
+    /* Apply GELU in-place */
+    int64_t total = batch * dim_out;
+    for (int64_t i = 0; i < total; i++) {
+        float v = y[i];
+        float inner = GELU_COEFF * (v + GELU_CUBIC * v * v * v);
+        y[i] = 0.5f * v * (1.0f + tanhf(inner));
+    }
+}
+
+void aria_swiglu_f32(const float *x,
+                      const float *W_gate, const float *W_up, const float *W_down,
+                      const float *bias_gate, const float *bias_up, const float *bias_down,
+                      float *y, float *tmp_gate, float *tmp_up,
+                      int64_t batch, int64_t dim, int64_t hidden_dim) {
+    /* SwiGLU: gate = SiLU(x @ W_gate^T + b_gate)
+     *         up   = x @ W_up^T + b_up
+     *         h    = gate * up
+     *         y    = h @ W_down^T + b_down */
+    aria_linear_f32(x, W_gate, bias_gate, tmp_gate, batch, dim, hidden_dim);
+    aria_linear_f32(x, W_up, bias_up, tmp_up, batch, dim, hidden_dim);
+    /* SiLU on gate, then multiply */
+    int64_t h_total = batch * hidden_dim;
+    for (int64_t i = 0; i < h_total; i++) {
+        float g = tmp_gate[i];
+        tmp_gate[i] = (g / (1.0f + expf(-g))) * tmp_up[i];
+    }
+    aria_linear_f32(tmp_gate, W_down, bias_down, y, batch, hidden_dim, dim);
+}
+
+void aria_token_pool_restore_f32(const float *x, float *y,
+                                   int64_t batch, int64_t seq, int64_t dim) {
+    /* Pool adjacent pairs via mean, then restore via repeat */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            int64_t pair_idx = s / 2;
+            int64_t s0 = pair_idx * 2;
+            int64_t s1 = s0 + 1 < seq ? s0 + 1 : s0;
+            const float *r0 = x + (b * seq + s0) * dim;
+            const float *r1 = x + (b * seq + s1) * dim;
+            float *yr = y + (b * seq + s) * dim;
+            for (int64_t d = 0; d < dim; d++) {
+                yr[d] = 0.5f * (r0[d] + r1[d]);
+            }
+        }
+    }
+}
+
+void aria_selective_scan_f32(const float *x, const float *A, const float *B,
+                              const float *C, const float *D,
+                              float *y, int64_t batch, int64_t seq, int64_t dim) {
+    /* SSM state scan: h[t] = A * h[t-1] + B * x[t]; y[t] = C * h[t] + D * x[t]
+     * A,B,C: [dim], D: [dim] (all broadcast per-feature) */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t d = 0; d < dim; d++) {
+            float h = 0.0f;
+            float a = A[d], bv = B[d], cv = C[d], dv = D[d];
+            for (int64_t s = 0; s < seq; s++) {
+                float xv = x[(b * seq + s) * dim + d];
+                h = a * h + bv * xv;
+                y[(b * seq + s) * dim + d] = cv * h + dv * xv;
+            }
+        }
+    }
+}
+
+void aria_topk_gate_f32(const float *x, const float *W_gate, float *y,
+                          int64_t batch, int64_t seq, int64_t dim, int64_t k) {
+    /* Project to 2*k gate scores, take top-k, apply as sparse weighting.
+     * Simplified: project x[d] → 2 scores, use softmax of top-k as gate. */
+    if (k < 1) k = 1;
+    if (k > dim) k = dim;
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            const float *xr = x + (b * seq + s) * dim;
+            float *yr = y + (b * seq + s) * dim;
+            /* Compute gate score per feature: dot with W_gate row */
+            /* W_gate: [dim], acts as per-feature importance */
+            float max_score = -INFINITY;
+            for (int64_t d = 0; d < dim; d++) {
+                float score = xr[d] * W_gate[d];
+                yr[d] = score;  /* temp: store scores */
+                if (score > max_score) max_score = score;
+            }
+            /* Find k-th largest score via partial selection */
+            /* Simple approach: threshold at top-k */
+            float threshold = max_score;  /* will find true threshold */
+            if (k < dim) {
+                /* Count values above progressively lower thresholds */
+                /* Use a simple O(n*k) selection for small k */
+                float *scores_copy = (float *)malloc(dim * sizeof(float));
+                if (scores_copy) {
+                    for (int64_t d = 0; d < dim; d++) scores_copy[d] = yr[d];
+                    /* Partial sort: find k-th element */
+                    for (int64_t i = 0; i < k; i++) {
+                        int64_t max_idx = i;
+                        for (int64_t j = i + 1; j < dim; j++) {
+                            if (scores_copy[j] > scores_copy[max_idx]) max_idx = j;
+                        }
+                        float tmp = scores_copy[i];
+                        scores_copy[i] = scores_copy[max_idx];
+                        scores_copy[max_idx] = tmp;
+                    }
+                    threshold = scores_copy[k - 1];
+                    free(scores_copy);
+                }
+            }
+            /* Apply gating: zero out below threshold, softmax above */
+            float sum_exp = 0.0f;
+            for (int64_t d = 0; d < dim; d++) {
+                if (yr[d] >= threshold) {
+                    yr[d] = expf(yr[d] - max_score);
+                    sum_exp += yr[d];
+                } else {
+                    yr[d] = 0.0f;
+                }
+            }
+            float inv_sum = sum_exp > 0.0f ? 1.0f / sum_exp : 0.0f;
+            for (int64_t d = 0; d < dim; d++) {
+                yr[d] = xr[d] * yr[d] * inv_sum;
+            }
+        }
+    }
+}
+
+void aria_basis_expansion_f32(const float *x, const float *freqs, float *y,
+                                int64_t batch, int64_t seq, int64_t dim,
+                                int64_t n_bases) {
+    /* Sinusoidal basis expansion: y[d] = sum_k( sin(freq[k]*x[d]) + cos(freq[k]*x[d]) ) / n_bases
+     * freqs: [n_bases] */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            const float *xr = x + (b * seq + s) * dim;
+            float *yr = y + (b * seq + s) * dim;
+            for (int64_t d = 0; d < dim; d++) {
+                float sum = 0.0f;
+                float v = xr[d];
+                for (int64_t k = 0; k < n_bases; k++) {
+                    float phase = freqs[k] * v;
+                    sum += sinf(phase) + cosf(phase);
+                }
+                yr[d] = sum / (float)n_bases;
+            }
+        }
+    }
+}
+
+void aria_sparse_threshold_f32(const float *x, float *y,
+                                 int64_t batch, int64_t seq, int64_t dim) {
+    /* Adaptive threshold: per (batch, seq) position, compute median of |x|,
+     * zero out values below median. ~50% sparsity. */
+    float *abs_buf = (float *)malloc(dim * sizeof(float));
+    if (!abs_buf) { memcpy(y, x, batch * seq * dim * sizeof(float)); return; }
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            const float *xr = x + (b * seq + s) * dim;
+            float *yr = y + (b * seq + s) * dim;
+            /* Compute absolute values */
+            for (int64_t d = 0; d < dim; d++) abs_buf[d] = fabsf(xr[d]);
+            /* Find approximate median via partial sort (find dim/2-th element) */
+            int64_t mid = dim / 2;
+            for (int64_t i = 0; i <= mid; i++) {
+                int64_t min_idx = i;
+                for (int64_t j = i + 1; j < dim; j++) {
+                    if (abs_buf[j] < abs_buf[min_idx]) min_idx = j;
+                }
+                float tmp = abs_buf[i];
+                abs_buf[i] = abs_buf[min_idx];
+                abs_buf[min_idx] = tmp;
+            }
+            float threshold = abs_buf[mid];
+            /* Apply threshold */
+            for (int64_t d = 0; d < dim; d++) {
+                yr[d] = fabsf(xr[d]) >= threshold ? xr[d] : 0.0f;
+            }
+        }
+    }
+    free(abs_buf);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 3: Math Space Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ── Hyperbolic ──────────────────────────────────────────────────────── */
+
+void aria_exp_map_f32(const float *x, float *y, int64_t n, float c) {
+    /* Exponential map from tangent space at origin to Poincare ball.
+     * exp_0(v) = tanh(sqrt(c) * ||v|| / 2) * v / (sqrt(c) * ||v||)
+     * For simplicity, apply per-element: tanh(sqrt(c) * x) / sqrt(c), clamped. */
+    float sqrt_c = sqrtf(c > 0.0f ? c : 1.0f);
+    float inv_sqrt_c = 1.0f / sqrt_c;
+    for (int64_t i = 0; i < n; i++) {
+        float v = tanhf(sqrt_c * x[i]) * inv_sqrt_c;
+        /* Clamp to ball boundary */
+        if (v > 0.999f * inv_sqrt_c) v = 0.999f * inv_sqrt_c;
+        if (v < -0.999f * inv_sqrt_c) v = -0.999f * inv_sqrt_c;
+        y[i] = v;
+    }
+}
+
+void aria_log_map_f32(const float *x, float *y, int64_t n, float c) {
+    /* Logarithmic map from Poincare ball to tangent space.
+     * log_0(y) = atanh(sqrt(c) * ||y||) * y / (sqrt(c) * ||y||)
+     * Per-element: atanh(sqrt(c) * x) / sqrt(c), clamped input. */
+    float sqrt_c = sqrtf(c > 0.0f ? c : 1.0f);
+    float inv_sqrt_c = 1.0f / sqrt_c;
+    for (int64_t i = 0; i < n; i++) {
+        float v = sqrt_c * x[i];
+        /* Clamp to (-1, 1) for atanh domain */
+        if (v >= 0.999f) v = 0.999f;
+        if (v <= -0.999f) v = -0.999f;
+        y[i] = atanhf(v) * inv_sqrt_c;
+    }
+}
+
+void aria_poincare_add_f32(const float *x, const float *v, float *y,
+                             int64_t batch, int64_t dim, float c) {
+    /* Mobius addition: x ⊕ v in the Poincare ball.
+     * Full formula: ((1+2c<x,v>+c||v||^2)*x + (1-c||x||^2)*v) / (1+2c<x,v>+c^2||x||^2||v||^2)
+     * Applied per (batch) row. */
+    for (int64_t b = 0; b < batch; b++) {
+        const float *xb = x + b * dim;
+        const float *vb = v + b * dim;
+        float *yb = y + b * dim;
+
+        float xv = 0.0f, xx = 0.0f, vv = 0.0f;
+        for (int64_t d = 0; d < dim; d++) {
+            xv += xb[d] * vb[d];
+            xx += xb[d] * xb[d];
+            vv += vb[d] * vb[d];
+        }
+
+        float num_x = 1.0f + 2.0f * c * xv + c * vv;
+        float num_v = 1.0f - c * xx;
+        float denom = 1.0f + 2.0f * c * xv + c * c * xx * vv;
+        if (fabsf(denom) < 1e-7f) denom = 1e-7f;
+
+        for (int64_t d = 0; d < dim; d++) {
+            float val = (num_x * xb[d] + num_v * vb[d]) / denom;
+            /* Clamp to ball */
+            float max_norm = (1.0f / sqrtf(c > 0.0f ? c : 1.0f)) * 0.999f;
+            if (val > max_norm) val = max_norm;
+            if (val < -max_norm) val = -max_norm;
+            yb[d] = val;
+        }
+    }
+}
+
+void aria_hyp_linear_f32(const float *x, const float *W, float *y,
+                           int64_t batch, int64_t dim_in, int64_t dim_out, float c) {
+    /* Hyperbolic linear: log_map → linear → exp_map */
+    float *tmp = (float *)malloc(batch * dim_in * sizeof(float));
+    float *tmp2 = (float *)malloc(batch * dim_out * sizeof(float));
+    if (!tmp || !tmp2) {
+        free(tmp); free(tmp2);
+        memset(y, 0, batch * dim_out * sizeof(float));
+        return;
+    }
+    /* log_map */
+    aria_log_map_f32(x, tmp, batch * dim_in, c);
+    /* linear: tmp[batch, dim_in] @ W^T → tmp2[batch, dim_out] */
+    aria_linear_f32(tmp, W, NULL, tmp2, batch, dim_in, dim_out);
+    /* exp_map */
+    aria_exp_map_f32(tmp2, y, batch * dim_out, c);
+    free(tmp);
+    free(tmp2);
+}
+
+void aria_hyperbolic_norm_f32(const float *x, const float *gamma, const float *beta,
+                                float *y, int64_t batch, int64_t dim, float c, float eps) {
+    /* Manifold-aware normalization: log_map → LayerNorm → exp_map */
+    float *tmp = (float *)malloc(batch * dim * sizeof(float));
+    if (!tmp) { memcpy(y, x, batch * dim * sizeof(float)); return; }
+    aria_log_map_f32(x, tmp, batch * dim, c);
+    aria_layernorm_f32(tmp, gamma, beta, tmp, batch, dim, eps);
+    aria_exp_map_f32(tmp, y, batch * dim, c);
+    free(tmp);
+}
+
+void aria_hyp_tangent_nonlinear_f32(const float *x, float *y, int64_t n, float c) {
+    /* Apply tanh in the Poincare ball: log_map → tanh → exp_map (per-element) */
+    float sqrt_c = sqrtf(c > 0.0f ? c : 1.0f);
+    float inv_sqrt_c = 1.0f / sqrt_c;
+    for (int64_t i = 0; i < n; i++) {
+        /* log_map */
+        float v = sqrt_c * x[i];
+        if (v >= 0.999f) v = 0.999f;
+        if (v <= -0.999f) v = -0.999f;
+        float tangent = atanhf(v) * inv_sqrt_c;
+        /* tanh nonlinearity */
+        tangent = tanhf(tangent);
+        /* exp_map */
+        float result = tanhf(sqrt_c * tangent) * inv_sqrt_c;
+        if (result > 0.999f * inv_sqrt_c) result = 0.999f * inv_sqrt_c;
+        if (result < -0.999f * inv_sqrt_c) result = -0.999f * inv_sqrt_c;
+        y[i] = result;
+    }
+}
+
+/* ── P-adic ──────────────────────────────────────────────────────────── */
+
+void aria_padic_expand_f32(const float *x, const float *W, float *y,
+                             int64_t batch, int64_t dim, float p, int64_t n_digits) {
+    /* Multi-scale p-adic expansion: extract digits at different scales,
+     * project each, and sum. W: [n_digits * dim, dim] */
+    if (n_digits < 1) n_digits = 4;
+    for (int64_t b = 0; b < batch; b++) {
+        const float *xb = x + b * dim;
+        float *yb = y + b * dim;
+        memset(yb, 0, dim * sizeof(float));
+        for (int64_t k = 0; k < n_digits; k++) {
+            float scale = 1.0f;
+            for (int64_t kk = 0; kk < k; kk++) scale *= p;
+            /* Extract digit at scale k */
+            for (int64_t d = 0; d < dim; d++) {
+                float digit = fmodf(fabsf(xb[d] * scale), p) / p;
+                /* Accumulate: project digit through W[k*dim+d, :] */
+                const float *wrow = W + (k * dim + d) * dim;
+                for (int64_t o = 0; o < dim; o++) {
+                    yb[o] += digit * wrow[o];
+                }
+            }
+        }
+    }
+}
+
+void aria_padic_residual_f32(const float *x, const float *W, float *y,
+                               int64_t batch, int64_t dim, float p, int64_t n_digits) {
+    /* P-adic expansion + residual connection */
+    aria_padic_expand_f32(x, W, y, batch, dim, p, n_digits);
+    for (int64_t i = 0; i < batch * dim; i++) {
+        y[i] += x[i];
+    }
+}
+
+void aria_ultrametric_attention_f32(const float *x, float *y,
+                                      int64_t batch, int64_t seq, int64_t dim,
+                                      float p) {
+    /* Attention using p-adic (ultrametric) distance.
+     * For each (b), compute pairwise p-adic distance, apply softmax, aggregate values. */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t i = 0; i < seq; i++) {
+            const float *qi = x + (b * seq + i) * dim;
+            float *yi = y + (b * seq + i) * dim;
+            /* Compute attention scores via ultrametric distance */
+            float *scores = (float *)malloc(seq * sizeof(float));
+            if (!scores) { memcpy(yi, qi, dim * sizeof(float)); continue; }
+            float max_score = -INFINITY;
+            for (int64_t j = 0; j < seq; j++) {
+                const float *kj = x + (b * seq + j) * dim;
+                /* p-adic distance: max absolute difference of p-adic digits */
+                float dist = 0.0f;
+                for (int64_t d = 0; d < dim; d++) {
+                    float diff = fabsf(qi[d] - kj[d]);
+                    if (diff > dist) dist = diff;
+                }
+                scores[j] = -dist;  /* negative distance → similarity */
+                if (scores[j] > max_score) max_score = scores[j];
+            }
+            /* Softmax */
+            float sum_exp = 0.0f;
+            for (int64_t j = 0; j < seq; j++) {
+                scores[j] = expf(scores[j] - max_score);
+                sum_exp += scores[j];
+            }
+            float inv_sum = 1.0f / (sum_exp + 1e-7f);
+            /* Weighted aggregation */
+            memset(yi, 0, dim * sizeof(float));
+            for (int64_t j = 0; j < seq; j++) {
+                float w = scores[j] * inv_sum;
+                const float *vj = x + (b * seq + j) * dim;
+                for (int64_t d = 0; d < dim; d++) {
+                    yi[d] += w * vj[d];
+                }
+            }
+            free(scores);
+        }
+    }
+}
+
+/* ── Clifford ────────────────────────────────────────────────────────── */
+
+void aria_rotor_transform_f32(const float *x, const float *rotor, float *y,
+                                int64_t batch, int64_t dim) {
+    /* Simplified Clifford rotor transform: R·x·R̃
+     * rotor: [8] representing Cl(3,0) multivector components
+     * For general dim, apply rotation via 2x2 blocks.
+     * Simplified: rotor[0..3] as quaternion for pairs of dims. */
+    float r0 = rotor[0], r1 = rotor[1], r2 = rotor[2], r3 = rotor[3];
+    /* Normalize rotor */
+    float rnorm = sqrtf(r0*r0 + r1*r1 + r2*r2 + r3*r3 + 1e-8f);
+    r0 /= rnorm; r1 /= rnorm; r2 /= rnorm; r3 /= rnorm;
+
+    for (int64_t b = 0; b < batch; b++) {
+        const float *xb = x + b * dim;
+        float *yb = y + b * dim;
+        /* Apply rotation in pairs of 2 dims (like RoPE) */
+        int64_t d;
+        for (d = 0; d + 1 < dim; d += 2) {
+            float x0 = xb[d], x1 = xb[d + 1];
+            /* 2D rotation using rotor components */
+            float cos_th = r0 * r0 - r1 * r1;
+            float sin_th = 2.0f * r0 * r1;
+            yb[d]     = cos_th * x0 - sin_th * x1;
+            yb[d + 1] = sin_th * x0 + cos_th * x1;
+        }
+        /* Handle odd dimension */
+        if (d < dim) yb[d] = xb[d];
+    }
+}
+
+void aria_grade_select_f32(const float *x, float *y,
+                             int64_t batch, int64_t dim, int32_t grade) {
+    /* Select grade-k components from a multivector representation.
+     * Partition dim into grades: grade 0 = first dim/4, grade 1 = next dim/2, etc.
+     * Simplified: extract a contiguous slice corresponding to the grade. */
+    int64_t grade_size = dim / 4;
+    if (grade_size < 1) grade_size = 1;
+    int64_t start = grade * grade_size;
+    if (start >= dim) start = 0;
+    int64_t end = start + grade_size;
+    if (end > dim) end = dim;
+
+    for (int64_t b = 0; b < batch; b++) {
+        const float *xb = x + b * dim;
+        float *yb = y + b * dim;
+        for (int64_t d = 0; d < dim; d++) {
+            yb[d] = (d >= start && d < end) ? xb[d] : 0.0f;
+        }
+    }
+}
+
+void aria_grade_mix_f32(const float *x, const float *alpha, float *y,
+                          int64_t batch, int64_t dim) {
+    /* Blend grade components with learned mixing coefficients.
+     * alpha: [4] mixing weights for 4 grades. */
+    int64_t grade_size = dim / 4;
+    if (grade_size < 1) grade_size = 1;
+
+    for (int64_t b = 0; b < batch; b++) {
+        const float *xb = x + b * dim;
+        float *yb = y + b * dim;
+        for (int64_t d = 0; d < dim; d++) {
+            int64_t grade = d / grade_size;
+            if (grade >= 4) grade = 3;
+            yb[d] = xb[d] * alpha[grade];
+        }
+    }
+}
+
+void aria_clifford_attention_f32(const float *x, float *y,
+                                   int64_t batch, int64_t seq, int64_t dim) {
+    /* Geometric product attention: use dot product + outer (wedge) product
+     * for richer token similarity scores. */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t i = 0; i < seq; i++) {
+            const float *qi = x + (b * seq + i) * dim;
+            float *yi = y + (b * seq + i) * dim;
+            float *scores = (float *)malloc(seq * sizeof(float));
+            if (!scores) { memcpy(yi, qi, dim * sizeof(float)); continue; }
+            float max_score = -INFINITY;
+            for (int64_t j = 0; j < seq; j++) {
+                const float *kj = x + (b * seq + j) * dim;
+                /* Geometric product score = dot + ||wedge||
+                 * dot = sum(q*k), wedge_norm ≈ sqrt(sum((q_i*k_j - q_j*k_i)^2)) */
+                float dot = 0.0f, wedge_sq = 0.0f;
+                for (int64_t d = 0; d < dim; d++) {
+                    dot += qi[d] * kj[d];
+                }
+                /* Approximate wedge norm from adjacent pairs */
+                for (int64_t d = 0; d + 1 < dim; d += 2) {
+                    float w = qi[d] * kj[d+1] - qi[d+1] * kj[d];
+                    wedge_sq += w * w;
+                }
+                scores[j] = dot + sqrtf(wedge_sq + 1e-8f);
+                if (scores[j] > max_score) max_score = scores[j];
+            }
+            /* Scale */
+            float scale = 1.0f / sqrtf((float)dim);
+            /* Softmax */
+            float sum_exp = 0.0f;
+            for (int64_t j = 0; j < seq; j++) {
+                scores[j] = expf((scores[j] - max_score) * scale);
+                sum_exp += scores[j];
+            }
+            float inv_sum = 1.0f / (sum_exp + 1e-7f);
+            memset(yi, 0, dim * sizeof(float));
+            for (int64_t j = 0; j < seq; j++) {
+                float w = scores[j] * inv_sum;
+                const float *vj = x + (b * seq + j) * dim;
+                for (int64_t d = 0; d < dim; d++) {
+                    yi[d] += w * vj[d];
+                }
+            }
+            free(scores);
+        }
+    }
+}
+
+/* ── Spiking ─────────────────────────────────────────────────────────── */
+
+void aria_lif_neuron_f32(const float *x, float *y,
+                           int64_t batch, int64_t seq, int64_t dim,
+                           float tau, float threshold) {
+    /* Leaky Integrate-and-Fire: v[t] = tau*v[t-1] + x[t]; spike if v > threshold
+     * Output is spike (0 or 1) with STE semantics (gradient passes through). */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t d = 0; d < dim; d++) {
+            float v = 0.0f;
+            for (int64_t s = 0; s < seq; s++) {
+                v = tau * v + x[(b * seq + s) * dim + d];
+                float spike = (v > threshold) ? 1.0f : 0.0f;
+                y[(b * seq + s) * dim + d] = spike;
+                if (spike > 0.0f) v = 0.0f;  /* reset after spike */
+            }
+        }
+    }
+}
+
+void aria_spike_rate_code_f32(const float *x, float *y,
+                                int64_t batch, int64_t seq, int64_t dim) {
+    /* Bernoulli STE rate coding: spike probability = sigmoid(x),
+     * output = round(sigmoid(x)) with straight-through gradient. */
+    for (int64_t i = 0; i < batch * seq * dim; i++) {
+        float prob = 1.0f / (1.0f + expf(-x[i]));
+        y[i] = prob >= 0.5f ? 1.0f : 0.0f;
+    }
+}
+
+void aria_stdp_attention_f32(const float *x, float *y,
+                               int64_t batch, int64_t seq, int64_t dim,
+                               float tau_plus, float tau_minus) {
+    /* STDP-inspired causal attention: temporal decay kernel based on
+     * spike-timing dependent plasticity. Pre-synaptic before post = strengthen. */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t i = 0; i < seq; i++) {
+            const float *qi = x + (b * seq + i) * dim;
+            float *yi = y + (b * seq + i) * dim;
+            float *scores = (float *)malloc(seq * sizeof(float));
+            if (!scores) { memcpy(yi, qi, dim * sizeof(float)); continue; }
+            float max_score = -INFINITY;
+            for (int64_t j = 0; j < seq; j++) {
+                /* STDP kernel: causal (j <= i) with exponential decay */
+                float dt = (float)(i - j);
+                float stdp;
+                if (j <= i) {
+                    stdp = expf(-dt / tau_plus);  /* potentiation */
+                } else {
+                    stdp = -expf(dt / tau_minus);  /* depression */
+                }
+                /* Combine with dot product similarity */
+                float dot = 0.0f;
+                const float *kj = x + (b * seq + j) * dim;
+                for (int64_t d = 0; d < dim; d++) dot += qi[d] * kj[d];
+                scores[j] = dot * stdp / sqrtf((float)dim);
+                if (scores[j] > max_score) max_score = scores[j];
+            }
+            /* Softmax */
+            float sum_exp = 0.0f;
+            for (int64_t j = 0; j < seq; j++) {
+                scores[j] = expf(scores[j] - max_score);
+                sum_exp += scores[j];
+            }
+            float inv_sum = 1.0f / (sum_exp + 1e-7f);
+            memset(yi, 0, dim * sizeof(float));
+            for (int64_t j = 0; j < seq; j++) {
+                float w = scores[j] * inv_sum;
+                const float *vj = x + (b * seq + j) * dim;
+                for (int64_t d = 0; d < dim; d++) {
+                    yi[d] += w * vj[d];
+                }
+            }
+            free(scores);
+        }
+    }
+}

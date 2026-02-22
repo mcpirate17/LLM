@@ -314,6 +314,89 @@ class NativeRmsnorm(torch.autograd.Function):
         )
 
 
+# ── New Tier 1 binary ops ────────────────────────────────────────────
+
+class NativeMaximum(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, a, b):
+        shape = a.shape
+        a_np = _to_np_flat(a)
+        b_np = _to_np_flat(b)
+        ctx.save_for_backward(a, b)
+        y_np = dispatch_op_native("maximum", a_np, b_np)
+        return _to_tensor(y_np, device=a.device).reshape(shape)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        a, b = ctx.saved_tensors
+        shape = grad_output.shape
+        grad_np = _to_np_flat(grad_output)
+        a_np = _to_np_flat(a)
+        b_np = _to_np_flat(b)
+        grad_a_np, grad_b_np = dispatch_op_backward_native("maximum", grad_np, a_np, b_np)
+        dev = grad_output.device
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+
+
+class NativeMinimum(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, a, b):
+        shape = a.shape
+        a_np = _to_np_flat(a)
+        b_np = _to_np_flat(b)
+        ctx.save_for_backward(a, b)
+        y_np = dispatch_op_native("minimum", a_np, b_np)
+        return _to_tensor(y_np, device=a.device).reshape(shape)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        a, b = ctx.saved_tensors
+        shape = grad_output.shape
+        grad_np = _to_np_flat(grad_output)
+        a_np = _to_np_flat(a)
+        b_np = _to_np_flat(b)
+        grad_a_np, grad_b_np = dispatch_op_backward_native("minimum", grad_np, a_np, b_np)
+        dev = grad_output.device
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+
+
+class NativeDivSafe(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, a, b):
+        shape = a.shape
+        a_np = _to_np_flat(a)
+        b_np = _to_np_flat(b)
+        ctx.save_for_backward(a, b)
+        y_np = dispatch_op_native("div_safe", a_np, b_np)
+        return _to_tensor(y_np, device=a.device).reshape(shape)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        a, b = ctx.saved_tensors
+        shape = grad_output.shape
+        grad_np = _to_np_flat(grad_output)
+        a_np = _to_np_flat(a)
+        b_np = _to_np_flat(b)
+        grad_a_np, grad_b_np = dispatch_op_backward_native("div_safe", grad_np, a_np, b_np)
+        dev = grad_output.device
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+
+
+class NativeSignSte(torch.autograd.Function):
+    """Sign with straight-through estimator: forward = sign, backward = identity."""
+    @staticmethod
+    def forward(ctx, x):
+        shape = x.shape
+        x_np = _to_np_flat(x)
+        y_np = dispatch_op_native("sign_ste", x_np)
+        return _to_tensor(y_np, device=x.device).reshape(shape)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Straight-through: gradient passes through unchanged
+        return grad_output
+
+
 # ── Registry / dispatch ─────────────────────────────────────────────
 
 _NATIVE_AUTOGRAD_OPS = {
@@ -325,6 +408,10 @@ _NATIVE_AUTOGRAD_OPS = {
     "add": NativeAdd,
     "mul": NativeMul,
     "sub": NativeSub,
+    "maximum": NativeMaximum,
+    "minimum": NativeMinimum,
+    "div_safe": NativeDivSafe,
+    "sign_ste": NativeSignSte,
     "matmul": NativeMatmul,
     "softmax": NativeSoftmax,
     "layernorm": NativeLayernorm,

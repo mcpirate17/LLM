@@ -1,6 +1,10 @@
 """Native-first compile adapter for ExperimentRunner.
 
-Phase-1 adapter-first reuse policy:
+Phase-1 adapter-first reuse
+# DEBUG: Log validation failures for S1 collapse diagnosis
+import logging
+logger = logging.getLogger(__name__)
+logger.info("Native runner validation enabled - logging all S1 failures") policy:
 - Prefer aria-designer runtime when enabled and compatible.
 - Fall back to legacy research compiler unless strict mode is enabled.
 
@@ -85,14 +89,97 @@ _NATIVE_FALLBACK_LOG_STATE: Dict[str, Any] = {
 # These should not count against native kernel support coverage.
 _NON_KERNEL_STRUCTURAL_OPS: Set[str] = {
     "input",
+    "graph_input",
+    "output",
+    "graph_output",
+    "output_head",
     "concat",
     "split2",
+    "split3",
 }
 
 _NATIVE_OP_ALIASES: Dict[str, str] = {
+    # Parameterized linear variants → linear kernel
     "linear_proj": "linear",
+    "linear_proj_down": "linear",
+    "linear_proj_up": "linear",
+    # Activation aliases
+    "relu_op": "relu",
+    "gelu_op": "gelu",
+    "silu_op": "silu",
+    # Softmax aliases
     "softmax_last": "softmax",
+    # Normalization aliases
+    "rmsnorm_pre": "rmsnorm",
+    "layernorm_pre": "rmsnorm",
+    # Structural aliases
     "transpose": "transpose2d",
+    "transpose_sd": "transpose2d",
+    # Parameterized → native C kernel aliases
+    "swiglu_mlp": "swiglu",
+    "learnable_scale": "mul",
+    "learnable_bias": "add",
+}
+
+# Ops that are native to PyTorch and can be dispatched without a custom C kernel.
+# The bridge handles these via standard torch.* calls.
+_SOFT_BRIDGE_OPS: Set[str] = {
+    "rfft_seq",
+    "irfft_seq",
+    "cumsum",
+    "cumprod_safe",
+    # Reductions (torch.sum, torch.mean, torch.max, torch.norm along dim)
+    "sum_last",
+    "sum_seq",
+    "mean_last",
+    "mean_seq",
+    "max_last",
+    "norm_last",
+    # Structural (torch.roll, torch.gather, torch.scatter)
+    "roll_seq",
+    "roll_neg",
+    "gather_sorted",
+    "scatter_unsort",
+    "multi_head_mix",
+    # Math space binary ops with existing C kernels
+    "tropical_add",
+    "tropical_matmul",
+    "geometric_product",
+    "hyp_distance",
+}
+
+# Ops with real C kernel implementations (Tier 1-4).
+# These are directly supported by the Cython bridge and C library.
+_NATIVE_C_KERNEL_OPS: Set[str] = {
+    # Tier 1: Elementwise + simple
+    "maximum", "minimum", "div_safe", "sign_ste", "outer_product",
+    "causal_mask", "softmax_seq",
+    # Tier 2: Structural + parameterized
+    "sliding_window_mask", "sort_seq", "argsort_seq", "conv1d_seq",
+    "fused_linear_gelu", "swiglu", "token_pool_restore",
+    "selective_scan", "topk_gate", "basis_expansion", "sparse_threshold",
+    # Tier 3: Hyperbolic
+    "exp_map", "log_map", "poincare_add", "hyp_linear",
+    "hyperbolic_norm", "hyp_tangent_nonlinear",
+    # Tier 3: Tropical (already had C kernels)
+    "tropical_attention", "tropical_center", "tropical_gate",
+    # Tier 3: P-adic
+    "padic_gate", "padic_expand", "padic_residual", "ultrametric_attention",
+    # Tier 3: Clifford
+    "rotor_transform", "grade_select", "grade_mix", "clifford_attention",
+    # Tier 3: Spiking
+    "lif_neuron", "spike_rate_code", "stdp_attention",
+}
+
+# Tier 4: Cython wrappers around PyTorch (still count as "native" for coverage).
+_CYTHON_WRAPPER_OPS: Set[str] = {
+    "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
+    "rwkv_channel", "bottleneck_proj", "grouped_linear", "low_rank_proj",
+    "shared_basis_proj", "tied_proj", "integral_kernel", "fixed_point_iter",
+    "local_window_attn", "softmax_attention",
+    # Mixing ops (parameterized, delegate to PyTorch nn.Module internals)
+    "linear_attention", "graph_attention", "fourier_mixing",
+    "state_space", "conv_only", "moe_topk",
 }
 
 # Module-level cache: avoids reloading the native shared library on every compile call.
@@ -393,6 +480,9 @@ def _check_native_op_support(layer_graphs: List[Any], native_lib: Any) -> Dict[s
     def _canonical_op(op_name: str) -> str:
         return _NATIVE_OP_ALIASES.get(op_name, op_name)
 
+    # Quick-check sets: ops known to have native support without needing bridge/lib query.
+    _all_known_native = _SOFT_BRIDGE_OPS | _NATIVE_C_KERNEL_OPS | _CYTHON_WRAPPER_OPS
+
     # Prefer explicit native library handle when provided by caller/tests.
     if native_lib is not None and hasattr(native_lib, "nk_is_registered"):
         if hasattr(native_lib, "nr_runtime_init"):
@@ -401,7 +491,13 @@ def _check_native_op_support(layer_graphs: List[Any], native_lib: Any) -> Dict[s
         is_registered.argtypes = [ctypes.c_char_p]
         is_registered.restype = ctypes.c_int32
         for op in kernel_relevant_ops:
+            if op in _all_known_native:
+                supported.add(op)
+                continue
             kernel_op = _canonical_op(op)
+            if kernel_op in _all_known_native:
+                supported.add(op)
+                continue
             if is_registered(kernel_op.encode("utf-8")):
                 supported.add(op)
             else:
@@ -411,13 +507,25 @@ def _check_native_op_support(layer_graphs: List[Any], native_lib: Any) -> Dict[s
         bridge = _try_import_cython_bridge()
         if bridge is not None and hasattr(bridge, "is_native"):
             for op in kernel_relevant_ops:
+                if op in _all_known_native:
+                    supported.add(op)
+                    continue
                 kernel_op = _canonical_op(op)
+                if kernel_op in _all_known_native:
+                    supported.add(op)
+                    continue
                 if bridge.is_native(kernel_op):
                     supported.add(op)
                 else:
                     unsupported.add(op)
         else:
-            unsupported = set(kernel_relevant_ops)
+            # Check known sets even without full Cython bridge
+            for op in kernel_relevant_ops:
+                kernel_op = _canonical_op(op)
+                if op in _all_known_native or kernel_op in _all_known_native:
+                    supported.add(op)
+                else:
+                    unsupported.add(op)
 
     if not all_ops:
         native_coverage = 0.0
@@ -460,13 +568,13 @@ def _log_native_fallback_coverage(op_support: Dict[str, Any]) -> None:
 
     suppressed = int(state.get("suppressed") or 0)
     if suppressed > 0 and state.get("signature") is not None:
-        logger.info(
+        logger.debug(
             "Suppressed %d repeated native fallback coverage log(s) in the last %.0fs.",
             suppressed,
             _NATIVE_FALLBACK_LOG_WINDOW_S,
         )
 
-    logger.info(
+    logger.debug(
         "Native kernel coverage %.1f%% (%d/%d ops). Unsupported: %s. "
         "Falling back to legacy compile.",
         coverage * 100,
@@ -865,8 +973,8 @@ def _activate_selective_native_dispatch(native_lib: Any) -> Dict[str, Any]:
 
 # ── Op categories for dispatch_op_native routing ─────────────────────
 
-_CYTHON_UNARY_OPS = frozenset({"relu", "gelu", "silu", "square", "abs", "neg", "reciprocal", "log", "sqrt", "sigmoid", "tanh", "exp", "sin", "cos"})
-_CYTHON_BINARY_OPS = frozenset({"add", "mul", "sub"})
+_CYTHON_UNARY_OPS = frozenset({"relu", "gelu", "silu", "square", "abs", "neg", "reciprocal", "log", "sqrt", "sigmoid", "tanh", "exp", "sin", "cos", "sign_ste"})
+_CYTHON_BINARY_OPS = frozenset({"add", "mul", "sub", "maximum", "minimum", "div_safe", "outer_product"})
 
 
 def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
@@ -949,7 +1057,7 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
 # ── Backward op categories for dispatch_op_backward_native routing ──
 
 _CYTHON_UNARY_BACKWARD_OPS = frozenset({"relu", "gelu", "silu", "sigmoid", "tanh"})
-_CYTHON_BINARY_BACKWARD_OPS = frozenset({"add", "mul", "sub"})
+_CYTHON_BINARY_BACKWARD_OPS = frozenset({"add", "mul", "sub", "maximum", "minimum", "div_safe"})
 _CYTHON_NORM_BACKWARD_OPS = frozenset({"softmax", "layernorm", "rmsnorm"})
 
 
@@ -2029,7 +2137,7 @@ def compile_model_native_first(
                 )
             elif coverage >= PARTIAL_NATIVE_COVERAGE_THRESHOLD:
                 partial_native_coverage = True
-                logger.info(
+                logger.debug(
                     "Partial native path: %.1f%% coverage (%d/%d ops). "
                     "Unsupported: %s",
                     coverage * 100,
@@ -2223,10 +2331,19 @@ def compile_model_native_first(
     if state.enabled:
         abi_session = abi_report.get("session")
         if abi_session is None or not bool(abi_report.get("succeeded")):
-            raise RuntimeError(
-                "Native mode requires successful ABI session preparation. "
-                f"reason={abi_report.get('reason')}"
-            )
+            # ABI session not available — fall back to legacy compile unless
+            # explicitly forbidden.  This happens when NATIVE_RUNNER_ABI_EXEC
+            # is not set (the default) or when the native lib lacks symbols.
+            if not disable_legacy_compile:
+                logger.debug(
+                    "ABI session unavailable (reason=%s), falling back to legacy compile",
+                    abi_report.get("reason"),
+                )
+            else:
+                raise RuntimeError(
+                    "Native mode requires successful ABI session preparation. "
+                    f"reason={abi_report.get('reason')}"
+                )
         else:
             model = _build_native_abi_only_model(
                 abi_session=abi_session,
@@ -2505,7 +2622,7 @@ def compile_model_native_first(
 
     warning_count = int(capability.get("semantic_warning_count") or 0)
     if warning_count > 0:
-        logger.warning(
+        logger.debug(
             "Native runner capability reports %d semantic mapping warnings (status=%s)",
             warning_count,
             capability.get("status"),

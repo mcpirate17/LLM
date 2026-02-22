@@ -232,6 +232,140 @@ void aria_rmsnorm_backward_f32(const float *grad_out, const float *input,
                                 float *grad_in, float *grad_gamma,
                                 int64_t batch, int64_t dim, float eps);
 
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 1: Elementwise + Simple Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Binary elementwise */
+void aria_maximum_f32(const float *a, const float *b, float *y, int64_t n);
+void aria_minimum_f32(const float *a, const float *b, float *y, int64_t n);
+void aria_div_safe_f32(const float *a, const float *b, float *y, int64_t n);
+
+/* Unary elementwise */
+void aria_sign_ste_f32(const float *x, float *y, int64_t n);
+
+/* Structural */
+void aria_causal_mask_f32(const float *x, float *y,
+                           int64_t batch, int64_t seq, int64_t dim);
+
+/* Softmax along dim=1 (sequence dimension) */
+void aria_softmax_seq_f32(const float *x, float *y,
+                            int64_t batch, int64_t seq, int64_t dim);
+
+/* Backward kernels for Tier 1 */
+void aria_maximum_backward_f32(const float *grad_out,
+                                const float *a, const float *b,
+                                float *grad_a, float *grad_b, int64_t n);
+void aria_minimum_backward_f32(const float *grad_out,
+                                const float *a, const float *b,
+                                float *grad_a, float *grad_b, int64_t n);
+void aria_div_safe_backward_f32(const float *grad_out,
+                                 const float *a, const float *b,
+                                 float *grad_a, float *grad_b, int64_t n);
+
+/* Outer product (Hadamard) — reuse mul, but declare for clarity */
+void aria_outer_product_f32(const float *a, const float *b, float *y, int64_t n);
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 2: Structural + Parameterized Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** Sliding window exponential decay mask: y[b,i,j] = x[b,i,j] * exp(-|i-j|/window) */
+void aria_sliding_window_mask_f32(const float *x, float *y,
+                                    int64_t batch, int64_t seq, int64_t dim,
+                                    int64_t window_size);
+
+/** Sort along sequence dim (stable insertion sort for small seq) */
+void aria_sort_seq_f32(const float *x, float *y, int64_t *indices,
+                        int64_t batch, int64_t seq, int64_t dim);
+
+/** Argsort along sequence dim */
+void aria_argsort_seq_f32(const float *x, int64_t *indices,
+                            int64_t batch, int64_t seq, int64_t dim);
+
+/** Depthwise 1D conv along sequence dim, kernel=3 */
+void aria_conv1d_seq_f32(const float *x, const float *weight, const float *bias,
+                          float *y, int64_t batch, int64_t seq, int64_t dim);
+
+/** Fused linear + bias + GELU: y = GELU(x @ W^T + bias) */
+void aria_fused_linear_gelu_f32(const float *x, const float *W, const float *bias,
+                                  float *y, int64_t batch, int64_t dim_in, int64_t dim_out);
+
+/** SwiGLU MLP: gate proj + SiLU gate + up/down proj */
+void aria_swiglu_f32(const float *x,
+                      const float *W_gate, const float *W_up, const float *W_down,
+                      const float *bias_gate, const float *bias_up, const float *bias_down,
+                      float *y, float *tmp_gate, float *tmp_up,
+                      int64_t batch, int64_t dim, int64_t hidden_dim);
+
+/** Token pool-restore: pool adjacent pairs via mean, restore via repeat */
+void aria_token_pool_restore_f32(const float *x, float *y,
+                                   int64_t batch, int64_t seq, int64_t dim);
+
+/** Selective scan (SSM-style sequential state evolution) */
+void aria_selective_scan_f32(const float *x, const float *A, const float *B,
+                              const float *C, const float *D,
+                              float *y, int64_t batch, int64_t seq, int64_t dim);
+
+/** Top-k gating: project to k scores, sparse gate */
+void aria_topk_gate_f32(const float *x, const float *W_gate, float *y,
+                          int64_t batch, int64_t seq, int64_t dim, int64_t k);
+
+/** Sinusoidal basis expansion */
+void aria_basis_expansion_f32(const float *x, const float *freqs, float *y,
+                                int64_t batch, int64_t seq, int64_t dim,
+                                int64_t n_bases);
+
+/** Sparse threshold: zero values below adaptive median threshold */
+void aria_sparse_threshold_f32(const float *x, float *y,
+                                 int64_t batch, int64_t seq, int64_t dim);
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 3: Math Space Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Hyperbolic */
+void aria_exp_map_f32(const float *x, float *y, int64_t n, float c);
+void aria_log_map_f32(const float *x, float *y, int64_t n, float c);
+void aria_poincare_add_f32(const float *x, const float *v, float *y,
+                             int64_t batch, int64_t dim, float c);
+void aria_hyp_linear_f32(const float *x, const float *W, float *y,
+                           int64_t batch, int64_t dim_in, int64_t dim_out, float c);
+void aria_hyperbolic_norm_f32(const float *x, const float *gamma, const float *beta,
+                                float *y, int64_t batch, int64_t dim, float c, float eps);
+void aria_hyp_tangent_nonlinear_f32(const float *x, float *y, int64_t n, float c);
+
+/* Tropical (already have tropical_attention, tropical_center, tropical_gate in existing code) */
+
+/* P-adic */
+void aria_padic_expand_f32(const float *x, const float *W, float *y,
+                             int64_t batch, int64_t dim, float p, int64_t n_digits);
+void aria_padic_residual_f32(const float *x, const float *W, float *y,
+                               int64_t batch, int64_t dim, float p, int64_t n_digits);
+void aria_ultrametric_attention_f32(const float *x, float *y,
+                                      int64_t batch, int64_t seq, int64_t dim,
+                                      float p);
+
+/* Clifford */
+void aria_rotor_transform_f32(const float *x, const float *rotor, float *y,
+                                int64_t batch, int64_t dim);
+void aria_grade_select_f32(const float *x, float *y,
+                             int64_t batch, int64_t dim, int32_t grade);
+void aria_grade_mix_f32(const float *x, const float *alpha, float *y,
+                          int64_t batch, int64_t dim);
+void aria_clifford_attention_f32(const float *x, float *y,
+                                   int64_t batch, int64_t seq, int64_t dim);
+
+/* Spiking */
+void aria_lif_neuron_f32(const float *x, float *y,
+                           int64_t batch, int64_t seq, int64_t dim,
+                           float tau, float threshold);
+void aria_spike_rate_code_f32(const float *x, float *y,
+                                int64_t batch, int64_t seq, int64_t dim);
+void aria_stdp_attention_f32(const float *x, float *y,
+                               int64_t batch, int64_t seq, int64_t dim,
+                               float tau_plus, float tau_minus);
+
 #ifdef __cplusplus
 }
 #endif
