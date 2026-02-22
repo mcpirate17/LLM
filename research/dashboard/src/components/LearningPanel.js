@@ -5,6 +5,7 @@ import { useAriaData } from '../hooks/useAriaData';
 import { NarrativeProvider, useNarrative } from '../hooks/useNarrative';
 import { opScore, opScoreBreakdown } from '../utils/scoringEngine';
 import { filterRowsByQuery } from '../utils/tableFiltering';
+import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
