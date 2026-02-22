@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { lossColor, noveltyColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import apiService from '../services/apiService';
+import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -140,12 +141,18 @@ function TrainingCurve({ resultId }) {
   const losses = curve.map(c => c.loss).filter(l => l != null && isFinite(l));
   if (losses.length < 2) return null;
 
-  const minL = Math.min(...losses);
-  const maxL = Math.max(...losses);
+  const lossDefaults = CHART_DEFAULTS.training_loss;
+  const lossScale = getFixedScale('training.loss', losses, {
+    defaultMin: lossDefaults.min,
+    defaultMax: lossDefaults.max,
+  });
+  const minL = lossScale.min;
+  const maxL = lossScale.max;
   const rangeL = maxL - minL || 1;
 
-  const xScale = i => pad.l + (i / (losses.length - 1)) * (W - pad.l - pad.r);
-  const yScale = v => H - pad.b - ((v - minL) / rangeL) * (H - pad.t - pad.b);
+  const denom = Math.max(1, MAX_POINTS - 1);
+  const xScale = i => pad.l + (i / denom) * (W - pad.l - pad.r);
+  const yScale = v => H - pad.b - ((clampToScale(v, lossScale) - minL) / rangeL) * (H - pad.t - pad.b);
 
   const pathD = losses.map((l, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i)} ${yScale(l)}`).join(' ');
 
@@ -1994,8 +2001,11 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 </div>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                <RadarChart program={program} size={220} />
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
+                  Fingerprint Radar
+                </div>
+                <RadarChart program={program} size={260} />
               </div>
             </div>
 

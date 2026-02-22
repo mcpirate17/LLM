@@ -37,7 +37,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph, batch_generate
-from ..synthesis.compiler import compile_model
+# compile_model routed through native_runner.compile_model_native_first
+from .native_runner import (
+    compile_model_native_first as compile_model,
+    native_runner_capability_report,
+    record_native_abi_parity_result,
+)
 from ..synthesis.validator import validate_graph
 from ..synthesis.serializer import graph_to_json, graph_from_json, graph_summary
 from ..synthesis.primitives import get_primitive, list_primitives
@@ -81,6 +86,24 @@ from .llm.decision import NextExperimentDecisionPlanner
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+def _native_runner_progress_report() -> Dict[str, Any]:
+    try:
+        return native_runner_capability_report()
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "strict": False,
+            "designer_runtime_available": False,
+            "status": f"native_runner_report_error:{exc}",
+            "supported_ops": [],
+            "unsupported_ops": [],
+            "approximate_mappings": {},
+            "semantic_warnings": [],
+            "semantic_warning_count": 0,
+            "mapping_source": "",
+        }
 
 
 def _rebuild_graph_with_overrides(candidate_graph, overrides: Dict[int, Dict[str, Any]]):
@@ -422,6 +445,8 @@ class LiveProgress:
     archive_size: int = 0
     # Preflight hypothesis critique
     hypothesis_critique: Optional[Dict] = None
+    # Native runner adapter telemetry
+    native_runner: Dict[str, Any] = field(default_factory=_native_runner_progress_report)
 
     def to_dict(self) -> Dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -576,6 +601,66 @@ class ExperimentRunner:
                 max_seq_len=seq_len,
             )
         return None
+
+    @staticmethod
+    def _env_stage_set(name: str) -> Set[str]:
+        raw = str(os.environ.get(name, "") or "")
+        out: Set[str] = set()
+        for part in raw.split(","):
+            token = part.strip().lower()
+            if token:
+                out.add(token)
+        return out
+
+    def _safe_eval_for_stage(
+        self,
+        model: nn.Module,
+        *,
+        stage_tag: str,
+        batch_size: int,
+        seq_len: int,
+        vocab_size: int,
+        device: str,
+        run_stability_probe: bool = True,
+    ):
+        """Stage-aware safe_eval routing for ABI primary/probe cohorts.
+
+        Env controls:
+        - `NATIVE_RUNNER_ABI_PRIMARY_STAGES`: comma list (e.g. `fitness,candidate_gen`)
+        - `NATIVE_RUNNER_ABI_PROBE_STAGES`: comma list (default all via `*` fallback)
+        """
+        stage_key = str(stage_tag or "").strip().lower()
+        primary_stages = self._env_stage_set("NATIVE_RUNNER_ABI_PRIMARY_STAGES")
+        probe_stages = self._env_stage_set("NATIVE_RUNNER_ABI_PROBE_STAGES")
+
+        use_primary = ("*" in primary_stages) or (stage_key in primary_stages)
+        if probe_stages:
+            use_probe = ("*" in probe_stages) or (stage_key in probe_stages)
+        else:
+            # Preserve existing default behavior when no stage list configured.
+            use_probe = True
+
+        sandbox_result = safe_eval(
+            model,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            device=device,
+            run_stability_probe=run_stability_probe,
+            abi_infer_probe=use_probe,
+            abi_infer_primary=use_primary,
+            abi_infer_primary_no_grad=True,
+        )
+        abi_probe = getattr(sandbox_result, "native_abi_probe", None)
+        if isinstance(abi_probe, dict):
+            if bool(abi_probe.get("parity_attempted")):
+                record_native_abi_parity_result(abi_probe.get("parity_pass"))
+            with self._lock:
+                native_runner = dict(getattr(self._progress, "native_runner", {}) or {})
+                native_runner["abi_last_probe"] = dict(abi_probe)
+                native_runner["abi_last_stage"] = stage_key
+                self._progress.native_runner = native_runner
+        return sandbox_result
 
     def prescreen_run_config(
         self,
@@ -3257,8 +3342,9 @@ class ExperimentRunner:
                 llm_analysis=llm_analysis,
             )
 
-            # Update op success rates after experiment
+            # Update op success rates and failure signatures after experiment
             nb.update_op_success_rates(exp_id)
+            nb.update_failure_signatures(exp_id)
 
             # Save effective weights + S1 outcome for EMA continuity
             applied_w = results.get("applied_grammar_weights")
@@ -3885,7 +3971,18 @@ class ExperimentRunner:
             throughput = self._to_float(row.get("throughput_tok_s"), default=0.0)
             flops = self._to_float(row.get("flops_per_token"), default=0.0)
             mem = self._to_float(row.get("peak_memory_mb"), default=0.0)
-            efficiency_raw[rid] = throughput - (0.35 * flops) - (0.15 * mem)
+            
+            # Baseline targets from research
+            is_efficient_arch = family.startswith("MoE-") or family.startswith("Adaptive-") or "Mamba" in family
+            target_throughput = 10000.0 if is_efficient_arch else 5000.0
+            throughput_bonus = max(0.0, throughput / target_throughput)
+            
+            efficiency_raw[rid] = (throughput_bonus * 5.0) - (0.35 * flops) - (0.15 * mem)
+            
+            # Add adaptive savings bonus if available
+            savings = self._to_float(row.get("depth_savings_ratio"), default=0.0)
+            if savings > 0:
+                efficiency_raw[rid] += savings * 10.0
 
             stage0 = 1.0 if int(row.get("stage0_passed") or 0) == 1 else 0.0
             stage05 = 1.0 if int(row.get("stage05_passed") or 0) == 1 else 0.0
@@ -4557,6 +4654,14 @@ class ExperimentRunner:
                 except Exception as e:
                     logger.debug("Checkpoint save failed: %s", e)
 
+            # Purge empty failed experiments between cycles to prevent DB bloat.
+            try:
+                self.notebook.purge_empty_experiments()
+                self.notebook.compact_old_chat()
+                self.notebook.backfill_failure_signatures()
+            except Exception:
+                pass
+
             if config.rest_between_experiments > 0 and not self._stop_event.is_set():
                 time.sleep(config.rest_between_experiments)
 
@@ -5090,6 +5195,7 @@ class ExperimentRunner:
         if summary:
             logger.info("Aria summary: %s", summary[:200])
         nb.update_op_success_rates(exp_id)
+        nb.update_failure_signatures(exp_id)
         self._auto_recommend(results, config, hypothesis, nb)
 
         if (config.auto_report
@@ -5241,8 +5347,9 @@ class ExperimentRunner:
                 ).to(dev)
             except Exception:
                 continue
-            s0 = safe_eval(
+            s0 = self._safe_eval_for_stage(
                 model,
+                stage_tag="ablation",
                 batch_size=2,
                 seq_len=min(128, config.max_seq_len),
                 vocab_size=config.vocab_size,
@@ -5520,53 +5627,18 @@ class ExperimentRunner:
         })
 
         # Cap depth/ops for evolution to prevent recursion overflow
-        evo_max_depth = min(config.max_depth, 12)
-        evo_max_ops = min(config.max_ops, 20)
-
-        grammar = GrammarConfig(
-            max_depth=evo_max_depth,
-            max_ops=evo_max_ops,
-            model_dim=config.model_dim,
-            residual_prob=config.residual_prob,
-            split_prob=config.grammar_split_prob,
-            merge_prob=config.grammar_merge_prob,
-            risky_op_prob=config.grammar_risky_op_prob,
-            freq_domain_prob=config.grammar_freq_domain_prob,
-        )
-        grammar.category_weights["math_space"] = config.math_space_weight
         evo_config = EvolutionConfig(
             population_size=config.n_programs,
             n_generations=config.n_generations,
-            grammar_config=grammar,
+            grammar_config=self._build_grammar_config(config),
         )
 
         fitness_cache: dict = {}
         eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
         def on_evaluate(graph, fitness, sandbox_result, s1_result):
-            eval_counters["total"] += 1
-            if fitness > 0:
-                eval_counters["s0"] += 1
-            if fitness > 0.2:
-                eval_counters["s1"] += 1
-            try:
-                graph_metrics = self._extract_graph_metrics(graph)
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=graph.fingerprint(),
-                    graph_json=graph_to_json(graph),
-                    stage1_passed=fitness > 0.2,
-                    stage0_passed=fitness > 0,
-                    stage05_passed=fitness > 0,
-                    loss_ratio=1.0 - fitness if fitness > 0 else None,
-                    novelty_score=None,
-                    novelty_confidence=0.2,
-                    stage_at_death="survived" if fitness > 0.2 else "stage1",
-                    model_source="graph_synthesis",
-                    **graph_metrics,
-                )
-            except Exception as e:
-                logger.debug("Failed to record program result: %s", e)
+            self._on_program_evaluated(graph, fitness, sandbox_result, s1_result,
+                                       eval_counters, nb, exp_id, model_source="evolution")
 
         fitness_fn = self._make_fitness_fn(
             config, on_evaluate=on_evaluate, fitness_cache=fitness_cache)
@@ -5606,6 +5678,7 @@ class ExperimentRunner:
                 })
 
         nb.update_op_success_rates(exp_id)
+        nb.update_failure_signatures(exp_id)
         context = self._build_rich_context_for_experiment(
             results, config, hypothesis, nb)
         summary = self.aria.experiment_summary(results, context=context)
@@ -5667,17 +5740,7 @@ class ExperimentRunner:
         ns_max_depth = min(config.max_depth, 12)
         ns_max_ops = min(config.max_ops, 20)
 
-        grammar = GrammarConfig(
-            max_depth=ns_max_depth,
-            max_ops=ns_max_ops,
-            model_dim=config.model_dim,
-            residual_prob=config.residual_prob,
-            split_prob=config.grammar_split_prob,
-            merge_prob=config.grammar_merge_prob,
-            risky_op_prob=config.grammar_risky_op_prob,
-            freq_domain_prob=config.grammar_freq_domain_prob,
-        )
-        grammar.category_weights["math_space"] = config.math_space_weight
+        grammar = self._build_grammar_config(config)
         ns_config = NoveltySearchConfig(
             population_size=config.n_programs,
             n_generations=config.n_generations,
@@ -5691,29 +5754,8 @@ class ExperimentRunner:
         eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
         def on_evaluate(graph, fitness, sandbox_result, s1_result):
-            eval_counters["total"] += 1
-            if fitness > 0:
-                eval_counters["s0"] += 1
-            if fitness > 0.2:
-                eval_counters["s1"] += 1
-            try:
-                graph_metrics = self._extract_graph_metrics(graph)
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=graph.fingerprint(),
-                    graph_json=graph_to_json(graph),
-                    stage1_passed=fitness > 0.2,
-                    stage0_passed=fitness > 0,
-                    stage05_passed=fitness > 0,
-                    loss_ratio=1.0 - fitness if fitness > 0 else None,
-                    novelty_score=None,
-                    novelty_confidence=0.2,
-                    stage_at_death="survived" if fitness > 0.2 else "stage1",
-                    model_source="graph_synthesis",
-                    **graph_metrics,
-                )
-            except Exception as e:
-                logger.debug("Failed to record program result: %s", e)
+            self._on_program_evaluated(graph, fitness, sandbox_result, s1_result,
+                                       eval_counters, nb, exp_id, model_source="novelty")
 
         def combined_fitness_fn(graph):
             """Compile once, run sandbox + micro-train + fingerprint in one pass."""
@@ -5731,8 +5773,10 @@ class ExperimentRunner:
                     vocab_size=config.vocab_size,
                     max_seq_len=config.max_seq_len,
                 )
-                sandbox_result = safe_eval(
-                    model, batch_size=2,
+                sandbox_result = self._safe_eval_for_stage(
+                    model,
+                    stage_tag="novelty_fitness",
+                    batch_size=2,
                     seq_len=min(128, config.max_seq_len),
                     vocab_size=config.vocab_size,
                     device=dev_str,
@@ -5818,6 +5862,7 @@ class ExperimentRunner:
                 })
 
         nb.update_op_success_rates(exp_id)
+        nb.update_failure_signatures(exp_id)
         context = self._build_rich_context_for_experiment(
             results, config, hypothesis, nb)
         summary = self.aria.experiment_summary(results, context=context)
@@ -6827,6 +6872,14 @@ class ExperimentRunner:
         metrics["graph_uses_math_spaces"] = uses_math
         metrics["graph_uses_frequency_domain"] = uses_freq
 
+        # Z7: Sparsity Ledger
+        sparse_ops = {"block_sparse_linear", "nm_sparse_linear", "semi_structured_2_4_linear"}
+        dense_ops = {"linear_proj", "linear_proj_down", "linear_proj_up", "fused_linear_gelu"}
+        n_sparse = sum(1 for node in graph.nodes.values() if node.op_name in sparse_ops)
+        n_dense = sum(1 for node in graph.nodes.values() if node.op_name in dense_ops)
+        total_param_ops = n_sparse + n_dense
+        metrics["sparsity_ratio"] = n_sparse / total_param_ops if total_param_ops > 0 else 0.0
+
         return metrics
 
     def _extract_sandbox_metrics(self, sandbox_result) -> Dict:
@@ -6858,11 +6911,22 @@ class ExperimentRunner:
 
         return metrics
 
-    def _extract_sparse_metrics(self, model: Optional[nn.Module]) -> Dict:
-        """Extract sparse execution telemetry from compiled layer ops."""
-        if model is None or not hasattr(model, "layers"):
+    def _extract_architecture_telemetry(self, model: Optional[nn.Module]) -> Dict:
+        """Extract sparse, routing, and adaptive telemetry from compiled layer ops."""
+        if model is None:
             return {}
 
+        metrics: Dict[str, Any] = {}
+        routing_mode = None
+        spec = getattr(model, "spec", None)
+        if spec is not None:
+            choices = getattr(spec, "choices", None)
+            if isinstance(choices, dict):
+                routing_mode = choices.get("compute_routing")
+        if routing_mode:
+            metrics["routing_mode"] = routing_mode
+        
+        # 1. Sparse Telemetry
         telemetry_rows: List[Dict[str, Any]] = []
         total_calls = 0
         total_fallback_calls = 0
@@ -6873,65 +6937,194 @@ class ExperimentRunner:
         nm_total = 0
         sparse_active_params_estimate = 0.0
 
-        for layer in getattr(model, "layers", []):
+        # 2. Routing Telemetry (MoE)
+        rt_tokens_total = 0
+        rt_tokens_processed = 0
+        rt_entropy_sum = 0.0
+        rt_count = 0
+        rt_expert_counts: Optional[torch.Tensor] = None
+        
+        # 3. Adaptive Telemetry (MoD/MoR)
+        at_savings_sum = 0.0
+        at_depth_sum = 0.0
+        at_count = 0
+        recursion_savings_sum = 0.0
+        recursion_depth_sum = 0.0
+        recursion_count = 0
+        recursion_max_depth_sum = 0.0
+
+        layers = getattr(model, "layers", [])
+        for layer in layers:
+            # Check for routing/adaptive telemetry on the layer/routing itself (arch_builder style)
+            routing = getattr(layer, "routing", None)
+            if routing is not None:
+                # Routing (MoE)
+                rt = getattr(routing, "routing_telemetry", None)
+                if isinstance(rt, dict):
+                    rt_tokens_total += rt.get("tokens_total", 0)
+                    rt_tokens_processed += rt.get("tokens_processed", 0)
+                    rt_entropy_sum += rt.get("entropy_sum", 0.0)
+                    rt_count += rt.get("count", 0)
+                    ec = rt.get("expert_counts")
+                    if isinstance(ec, torch.Tensor):
+                        if rt_expert_counts is None: rt_expert_counts = ec.clone()
+                        else: rt_expert_counts += ec
+                
+                # Adaptive (MoD/MoR)
+                at = getattr(routing, "adaptive_telemetry", None)
+                if isinstance(at, dict):
+                    at_savings_sum += at.get("savings_sum", 0.0)
+                    at_depth_sum += at.get("depth_sum", 0.0)
+                    at_count += at.get("count", 0)
+                    if routing.__class__.__name__ == "AdaptiveRecursionRouting":
+                        recursion_savings_sum += at.get("savings_sum", 0.0)
+                        recursion_depth_sum += at.get("depth_sum", 0.0)
+                        recursion_count += at.get("count", 0)
+                        recursion_max_depth_sum += float(getattr(routing, "max_depth", 0)) * at.get("count", 0)
+
+            # Check for op-level telemetry (compiler style)
             ops = getattr(layer, "ops", None)
             if ops is None:
                 continue
             for compiled_op in ops.values():
+                # Sparse
                 sparse_telemetry = getattr(compiled_op, "sparse_telemetry", None)
-                if not sparse_telemetry:
-                    continue
-                has_weight = hasattr(compiled_op, "weight")
-                weight_params = float(compiled_op.weight.numel()) if has_weight else 0.0
-                for op_name, stats in sparse_telemetry.items():
-                    calls = int(stats.get("calls", 0) or 0)
-                    fallback_calls = int(stats.get("fallback_calls", 0) or 0)
-                    density_sum_local = float(stats.get("density_sum", 0.0) or 0.0)
-                    last_density = float(stats.get("last_density", 1.0) or 1.0)
-                    fallback_reason = stats.get("last_fallback_reason")
+                if sparse_telemetry:
+                    has_weight = hasattr(compiled_op, "weight")
+                    weight_params = float(compiled_op.weight.numel()) if has_weight else 0.0
+                    for op_name, stats in sparse_telemetry.items():
+                        calls = int(stats.get("calls", 0) or 0)
+                        total_calls += calls
+                        total_fallback_calls += int(stats.get("fallback_calls", 0) or 0)
+                        density_sum += float(stats.get("density_sum", 0.0) or 0.0)
+                        last_density = float(stats.get("last_density", 1.0) or 1.0)
+                        density_last_values.append(last_density)
+                        if stats.get("last_fallback_reason") == "kernel_unavailable":
+                            kernel_fallback_calls += int(stats.get("fallback_calls", 0) or 0)
+                        if op_name in ("nm_sparse_linear", "semi_structured_2_4_linear"):
+                            nm_total += 1
+                            if last_density <= 0.51: nm_compliant += 1
+                        if weight_params > 0.0:
+                            density_for_params = (float(stats.get("density_sum", 0.0)) / calls) if calls > 0 else last_density
+                            sparse_active_params_estimate += weight_params * density_for_params
+                        telemetry_rows.append({"op_name": op_name, "calls": calls, "last_density": last_density})
 
-                    total_calls += calls
-                    total_fallback_calls += fallback_calls
-                    density_sum += density_sum_local
-                    density_last_values.append(last_density)
-                    if fallback_reason == "kernel_unavailable":
-                        kernel_fallback_calls += fallback_calls
+                # Routing (MoE)
+                rt = getattr(compiled_op, "routing_telemetry", None)
+                if isinstance(rt, dict):
+                    rt_tokens_total += rt.get("tokens_total", 0)
+                    rt_tokens_processed += rt.get("tokens_processed", 0)
+                    rt_entropy_sum += rt.get("entropy_sum", 0.0)
+                    rt_count += rt.get("count", 0)
+                    ec = rt.get("expert_counts")
+                    if isinstance(ec, torch.Tensor):
+                        if rt_expert_counts is None: rt_expert_counts = ec.clone()
+                        else: rt_expert_counts += ec
 
-                    if op_name in ("nm_sparse_linear", "semi_structured_2_4_linear"):
-                        nm_total += 1
-                        if last_density <= 0.51:
-                            nm_compliant += 1
+                # Adaptive
+                at = getattr(compiled_op, "adaptive_telemetry", None)
+                if isinstance(at, dict):
+                    at_savings_sum += at.get("savings_sum", 0.0)
+                    at_depth_sum += at.get("depth_sum", 0.0)
+                    at_count += at.get("count", 0)
 
-                    if weight_params > 0.0:
-                        density_for_params = (density_sum_local / calls) if calls > 0 else last_density
-                        sparse_active_params_estimate += weight_params * density_for_params
+        # Finalize Sparse
+        if total_calls > 0:
+            metrics["sparse_density_mean"] = density_sum / max(total_calls, 1)
+            metrics["sparse_density_last"] = sum(density_last_values) / max(len(density_last_values), 1)
+            metrics["sparse_fallback_calls"] = total_fallback_calls
+            metrics["sparse_kernel_fallback_calls"] = kernel_fallback_calls
+            metrics["sparse_active_params_estimate"] = int(max(0.0, sparse_active_params_estimate))
+            metrics["sparse_telemetry_json"] = json.dumps(telemetry_rows)
+            if nm_total > 0: metrics["sparse_nm_compliance"] = nm_compliant / nm_total
 
-                    telemetry_rows.append({
-                        "op_name": op_name,
-                        "calls": calls,
-                        "fallback_calls": fallback_calls,
-                        "last_density": last_density,
-                        "last_fallback_reason": fallback_reason,
-                    })
+        # Finalize Routing
+        if rt_count > 0:
+            metrics["routing_tokens_total"] = rt_tokens_total
+            metrics["routing_tokens_processed"] = rt_tokens_processed
+            metrics["routing_utilization_entropy"] = rt_entropy_sum / rt_count
+            if rt_tokens_total > 0:
+                metrics["routing_drop_rate"] = max(0.0, 1.0 - (rt_tokens_processed / rt_tokens_total))
+            if rt_expert_counts is not None:
+                metrics["routing_expert_count"] = int(len(rt_expert_counts))
+                metrics["routing_expert_utilization_json"] = json.dumps(rt_expert_counts.cpu().tolist())
 
-        if total_calls == 0:
-            return {}
+        # Finalize Adaptive
+        if at_count > 0:
+            metrics["depth_savings_ratio"] = at_savings_sum / at_count
+            if at_depth_sum > 0:
+                metrics["effective_depth_ratio"] = at_depth_sum / (at_count * len(layers)) if len(layers) > 0 else 1.0
+        if recursion_count > 0:
+            metrics["recursion_savings_ratio"] = recursion_savings_sum / recursion_count
+            if recursion_depth_sum > 0:
+                avg_max_depth = recursion_max_depth_sum / recursion_count if recursion_max_depth_sum > 0 else None
+                if avg_max_depth and avg_max_depth > 0:
+                    metrics["recursion_depth_ratio"] = recursion_depth_sum / (recursion_count * avg_max_depth)
 
-        density_mean = density_sum / max(total_calls, 1)
-        density_last = sum(density_last_values) / max(len(density_last_values), 1)
-        nm_compliance = (nm_compliant / nm_total) if nm_total > 0 else None
-
-        metrics: Dict[str, Any] = {
-            "sparse_density_mean": density_mean,
-            "sparse_density_last": density_last,
-            "sparse_fallback_calls": total_fallback_calls,
-            "sparse_kernel_fallback_calls": kernel_fallback_calls,
-            "sparse_active_params_estimate": int(max(0.0, sparse_active_params_estimate)),
-            "sparse_telemetry_json": json.dumps(telemetry_rows),
-        }
-        if nm_compliance is not None:
-            metrics["sparse_nm_compliance"] = nm_compliance
         return metrics
+
+    @staticmethod
+    def _merge_s1_telemetry(program_metrics: Dict[str, Any], s1_result: Dict[str, Any]) -> None:
+        telemetry_keys = (
+            "routing_mode",
+            "routing_tokens_total",
+            "routing_tokens_processed",
+            "routing_tokens_skipped",
+            "routing_drop_rate",
+            "routing_utilization_entropy",
+            "routing_capacity_overflow_count",
+            "routing_confidence_mean",
+            "routing_confidence_std",
+            "routing_expert_utilization_json",
+            "routing_expert_count",
+            "depth_savings_ratio",
+            "effective_depth_ratio",
+            "recursion_savings_ratio",
+            "recursion_depth_ratio",
+        )
+        for key in telemetry_keys:
+            if key in s1_result and s1_result.get(key) is not None:
+                program_metrics[key] = s1_result.get(key)
+
+    def _on_program_evaluated(self, graph, fitness, sandbox_result, s1_result, 
+                              eval_counters, nb, exp_id, model_source="evolution"):
+        """Unified callback for recording results and updating counters during search."""
+        eval_counters["total"] += 1
+        if fitness > 0:
+            eval_counters["s0"] += 1
+        if fitness > 0.2:
+            eval_counters["s1"] += 1
+            
+        try:
+            graph_metrics = self._extract_graph_metrics(graph)
+            
+            # Extract sandbox metrics if available
+            if sandbox_result:
+                graph_metrics.update(self._extract_sandbox_metrics(sandbox_result))
+                
+            # Extract S1 and architecture telemetry if available
+            if s1_result:
+                # Basic training metrics
+                for k in ("initial_loss", "final_loss", "min_loss", "throughput", "avg_step_time_ms", "total_train_time_ms"):
+                    if k in s1_result: graph_metrics[k] = s1_result[k]
+                self._merge_s1_telemetry(graph_metrics, s1_result)
+
+            nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=graph.fingerprint(),
+                graph_json=graph_to_json(graph),
+                stage1_passed=fitness > 0.2,
+                stage0_passed=fitness > 0,
+                stage05_passed=fitness > 0,
+                loss_ratio=1.0 - fitness if fitness > 0 else None,
+                novelty_score=None,
+                novelty_confidence=0.2,
+                stage_at_death="survived" if fitness > 0.2 else "stage1",
+                model_source=model_source,
+                **graph_metrics,
+            )
+        except Exception as e:
+            logger.debug("Failed to record program result: %s", e)
 
     def _classify_stage_at_death(self, s0_passed: bool, s05_passed: bool,
                                   s1_passed: bool) -> str:
@@ -6981,6 +7174,14 @@ class ExperimentRunner:
             name: round(trace_totals[name] / max(1, trace_counts[name]), 4)
             for name in sorted(trace_totals.keys())
         }
+
+        # Aggregate throughput
+        throughput_vals = [
+            float(t.get("avg_throughput_tok_s", 0.0) or 0.0)
+            for t in perf_traces
+            if t.get("avg_throughput_tok_s") is not None
+        ]
+        avg_throughput = sum(throughput_vals) / len(throughput_vals) if throughput_vals else 0.0
 
         starvation_count = 0
         starvation_total_ms = 0.0
@@ -7034,6 +7235,7 @@ class ExperimentRunner:
             "generated_at": time.time(),
             "programs_profiled": len(perf_traces),
             "trace_avg_ms": trace_avg_ms,
+            "avg_throughput_tok_s": round(avg_throughput, 2),
             "gpu_starvation": {
                 "event_count": starvation_count,
                 "total_stall_ms": round(starvation_total_ms, 4),
@@ -7073,6 +7275,7 @@ class ExperimentRunner:
         program_metrics["n_train_steps"] = s1_result.get("n_train_steps")
         program_metrics["final_lr"] = s1_result.get("final_lr")
         program_metrics.update({k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")})
+        self._merge_s1_telemetry(program_metrics, s1_result)
         
         # Merge traces
         perf_report = s1_result.get("perf_report", s1_result.get("perf_traces"))
@@ -7266,6 +7469,19 @@ class ExperimentRunner:
             except Exception as e:
                 logger.warning("Failed computing excluded/weak ops for %s: %s", exp_id, e)
 
+            # Load failure-signature blocklist (op-pair bigrams with high fail rate)
+            failure_blocklist: Dict[str, float] = {}
+            try:
+                failure_blocklist = nb.get_failure_signature_blocklist()
+                if failure_blocklist:
+                    nb.log_learning_event(
+                        "failure_signatures_loaded",
+                        f"Loaded {len(failure_blocklist)} toxic op-pair patterns",
+                        signatures=sorted(failure_blocklist.keys())[:10],
+                    )
+            except Exception as e:
+                logger.warning("Failed loading failure signatures for %s: %s", exp_id, e)
+
             # Champion bias pass: nudge category weights toward proven winners.
             # This biases the search toward high-performing projection/sparse patterns
             # and known-good structural/sequence motifs without hard-coding op-level picks.
@@ -7300,18 +7516,7 @@ class ExperimentRunner:
             except Exception as e:
                 logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
 
-        grammar = GrammarConfig(
-            model_dim=config.model_dim,
-            max_depth=config.max_depth,
-            max_ops=config.max_ops,
-            residual_prob=config.residual_prob,
-            split_prob=config.grammar_split_prob,
-            merge_prob=config.grammar_merge_prob,
-            risky_op_prob=config.grammar_risky_op_prob,
-            freq_domain_prob=config.grammar_freq_domain_prob,
-            excluded_ops=excluded_ops,
-            op_weights=op_weights,
-        )
+        grammar = self._build_grammar_config(config, excluded_ops=excluded_ops, op_weights=op_weights)
         old_weights = dict(grammar.category_weights)
 
         if grammar_weights:
@@ -7430,12 +7635,19 @@ class ExperimentRunner:
             devices = ["cpu"]
             num_workers = 1
 
+        # Z12: Multi-node distributed workers
+        remote_workers = [
+            w.strip() for w in os.environ.get("ARIA_REMOTE_WORKERS", "").split(",")
+            if w.strip()
+        ]
+
         # Z6: Initialize asynchronous program orchestrator
         orchestrator = WorkerPoolOrchestrator(
-            train_fn=lambda g, c, s, d: self._micro_train_wrapper(g, c, s, d),
+            train_fn=lambda m, c, s, d: self._micro_train_async(m, c, s, d),
             num_workers=num_workers,
             max_queue_size=config.n_programs,
-            devices=devices
+            devices=devices,
+            remote_workers=remote_workers
         )
         candidate_batch_size = max(1, min(32, int(math.sqrt(max(1, config.n_programs)))))
         results["candidate_batch_size"] = candidate_batch_size
@@ -7450,6 +7662,29 @@ class ExperimentRunner:
                 self._progress.current_program = i + 1
                 self._progress.current_fingerprint = graph.fingerprint()[:10]
                 self._progress.elapsed_seconds = time.time() - t_start
+
+            # Pre-screen: skip graphs whose op-pair structure is toxic
+            if failure_blocklist:
+                bigrams = set()
+                for nid, node in graph.nodes.items():
+                    if node.is_input:
+                        continue
+                    for inp_id in node.input_ids:
+                        parent = graph.nodes.get(inp_id)
+                        if parent and not parent.is_input:
+                            bigrams.add(f"{parent.op_name}->{node.op_name}")
+                if bigrams:
+                    toxic_hits = sum(1 for bg in bigrams if bg in failure_blocklist)
+                    toxic_ratio = toxic_hits / len(bigrams)
+                    if toxic_ratio >= 0.5:
+                        results.setdefault("skipped_toxic", 0)
+                        results["skipped_toxic"] += 1
+                        self._emit_event("program_evaluated", {
+                            "index": i, "fingerprint": graph.fingerprint()[:10],
+                            "result": "skipped_toxic",
+                            "toxic_ratio": f"{toxic_ratio:.2f}",
+                        })
+                        continue
 
             # Collect all metrics for this program
             program_metrics: Dict[str, Any] = {}
@@ -7494,12 +7729,26 @@ class ExperimentRunner:
                     gc.collect()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                    
+                    # More aggressive reset every 50 to clear Torch Dynamo cache
+                    if i % 50 == 0:
+                        try:
+                            torch.compiler.reset()
+                        except (AttributeError, Exception):
+                            pass
+                    
                     time.sleep(0.1)
 
                 layer_graphs = [graph] * config.n_layers
                 model = compile_model(layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
-                sandbox_result = safe_eval(model, batch_size=2, seq_len=min(128, config.max_seq_len),
-                                         vocab_size=config.vocab_size, device=dev_str)
+                sandbox_result = self._safe_eval_for_stage(
+                    model,
+                    stage_tag="candidate_screening",
+                    batch_size=2,
+                    seq_len=min(128, config.max_seq_len),
+                    vocab_size=config.vocab_size,
+                    device=dev_str,
+                )
                 program_metrics.update(self._extract_sandbox_metrics(sandbox_result))
                 program_metrics["param_count"] = sandbox_result.param_count
                 
@@ -7543,7 +7792,8 @@ class ExperimentRunner:
                         "graph": graph,
                         "batch_id": i // candidate_batch_size,
                         "queue_kind": "candidate_screening",
-                    }
+                    },
+                    model=model # Reuse compiled model
                 )
                 
             except Exception as e:
@@ -7942,16 +8192,9 @@ class ExperimentRunner:
             "betas": betas,
         }
 
-    def _micro_train_wrapper(self, graph, config, seed, dev):
-        """Wrapper for orchestrator to compile and train a single graph."""
+    def _micro_train_async(self, model: nn.Module, config: RunConfig, seed: int, dev: torch.device) -> Dict:
+        """Async worker entry point for training a pre-compiled model."""
         try:
-            layer_graphs = [graph] * config.n_layers
-            model = compile_model(
-                layer_graphs,
-                vocab_size=config.vocab_size,
-                max_seq_len=config.max_seq_len,
-            ).to(dev)
-            
             return self._micro_train(model, config, dev, seed=seed)
         except Exception as e:
             return {"error": str(e), "passed": False}
@@ -8315,6 +8558,10 @@ class ExperimentRunner:
                 if collect_curve:
                     result["training_curve"] = training_curve
 
+                # Extract architecture-specific telemetry (MoE, MoD, MoR, etc.)
+                arch_telemetry = self._extract_architecture_telemetry(model)
+                result.update(arch_telemetry)
+
         except Exception as e:
             result["error"] = str(e)
 
@@ -8376,11 +8623,20 @@ class ExperimentRunner:
                     "traces": [],
                 }
             result["perf_report"] = result.get("perf_traces", fallback_perf)
+            # Ensure throughput is included in perf_report for experiment-level aggregation
+            if isinstance(result.get("throughput"), (int, float)):
+                result["perf_report"]["avg_throughput_tok_s"] = float(result["throughput"])
+            
             result["starvation_report"] = result.get("gpu_starvation", starvation_detector.get_summary())
             if "kernel_timing" in result:
                 result["kernel_timings_ms"] = result["kernel_timing"]
         except Exception as e:
             result["perf_error"] = str(e)
+
+        try:
+            result.update(self._extract_architecture_telemetry(model))
+        except Exception as e:
+            logger.debug("Architecture telemetry extract failed: %s", e)
 
         return result
 
@@ -9007,8 +9263,10 @@ class ExperimentRunner:
                         desc = describe_spec(spec)
 
                         # Quick smoke test
-                        sandbox_result = safe_eval(
-                            model, batch_size=2,
+                        sandbox_result = self._safe_eval_for_stage(
+                            model,
+                            stage_tag="morph_candidate_gen",
+                            batch_size=2,
                             seq_len=min(128, config.max_seq_len),
                             vocab_size=config.vocab_size,
                             device=dev_str,
@@ -9033,17 +9291,7 @@ class ExperimentRunner:
             return candidates
 
         # Default: graph_synthesis
-        grammar = GrammarConfig(
-            model_dim=config.model_dim,
-            max_depth=config.max_depth,
-            max_ops=config.max_ops,
-            residual_prob=config.residual_prob,
-            split_prob=config.grammar_split_prob,
-            merge_prob=config.grammar_merge_prob,
-            risky_op_prob=config.grammar_risky_op_prob,
-            freq_domain_prob=config.grammar_freq_domain_prob,
-        )
-        grammar.category_weights["math_space"] = config.math_space_weight
+        grammar = self._build_grammar_config(config)
 
         graphs = batch_generate(n, grammar)
         for graph in graphs:
@@ -9063,8 +9311,10 @@ class ExperimentRunner:
                     vocab_size=config.vocab_size,
                     max_seq_len=config.max_seq_len,
                 )
-                sandbox_result = safe_eval(
-                    model, batch_size=2,
+                sandbox_result = self._safe_eval_for_stage(
+                    model,
+                    stage_tag="graph_candidate_gen",
+                    batch_size=2,
                     seq_len=min(128, config.max_seq_len),
                     vocab_size=config.vocab_size,
                     device=dev_str,
@@ -9268,12 +9518,20 @@ class ExperimentRunner:
                 result["training_curve"] = training_curve
                 result["training_program_json"] = json.dumps(program.to_dict())
 
+                # Extract architecture-specific telemetry (MoE, MoD, MoR, etc.)
+                arch_telemetry = self._extract_architecture_telemetry(model)
+                result.update(arch_telemetry)
+
         except Exception as e:
             result["error"] = str(e)
 
         # Finalize performance reports
         try:
             result["perf_report"] = tracer.get_report()
+            # Ensure throughput is included in perf_report for experiment-level aggregation
+            if isinstance(result.get("throughput"), (int, float)):
+                result["perf_report"]["avg_throughput_tok_s"] = float(result["throughput"])
+                
             result["starvation_report"] = starvation_detector.get_summary()
             if kernel_timer.enabled:
                 result["kernel_timings_ms"] = kernel_timer.synchronize_and_get_timings()
@@ -10489,6 +10747,31 @@ class ExperimentRunner:
 
     # ── Auto-Escalation Pipeline ──
 
+    def _build_grammar_config(self, config: RunConfig, 
+                              excluded_ops: Optional[Set[str]] = None,
+                              op_weights: Optional[Dict[str, float]] = None) -> GrammarConfig:
+        """Create a GrammarConfig from a RunConfig with standardized defaults."""
+        from ..synthesis.grammar import GrammarConfig
+        
+        grammar = GrammarConfig(
+            model_dim=config.model_dim,
+            min_depth=config.min_depth,
+            max_depth=min(config.max_depth, 12),
+            max_ops=min(config.max_ops, 20),
+            residual_prob=config.residual_prob,
+            split_prob=config.grammar_split_prob,
+            merge_prob=config.grammar_merge_prob,
+            risky_op_prob=config.grammar_risky_op_prob,
+            freq_domain_prob=config.grammar_freq_domain_prob,
+            structured_sparsity_bias=getattr(config, "structured_sparsity_bias", 0.0),
+            excluded_ops=excluded_ops or set(),
+            op_weights=op_weights or {},
+        )
+        # Apply specialized weights
+        grammar.category_weights["math_space"] = config.math_space_weight
+        
+        return grammar
+
     def _auto_escalate(self, results: Dict, config: RunConfig,
                        nb: LabNotebook, phase: str = "screening"):
         """Auto-escalate candidates through the research pipeline.
@@ -10720,6 +11003,28 @@ class ExperimentRunner:
                 ),
                 metadata={"result_ids": candidate_ids, "evidence_pack": evidence_pack},
             ))
+
+            # Z7: Algorithmic Sparsity Bias Learning
+            try:
+                sparse_wins = [p for p in top if (p.get("sparsity_ratio") or 0) > 0.3]
+                dense_wins = [p for p in top if (p.get("sparsity_ratio") or 0) <= 0.3]
+                if sparse_wins and dense_wins:
+                    avg_sparse_loss = sum(p.get("loss_ratio", 1.0) for p in sparse_wins) / len(sparse_wins)
+                    avg_dense_loss = sum(p.get("loss_ratio", 1.0) for p in dense_wins) / len(dense_wins)
+                    
+                    if avg_sparse_loss < avg_dense_loss * 0.95: # 5% better
+                        delta = 0.1
+                        old_bias = config.grammar_config.structured_sparsity_bias
+                        config.grammar_config.update_bias(delta)
+                        nb.log_learning_event(
+                            event_type="grammar_adjustment",
+                            description=f"Boosted structured_sparsity_bias by {delta} due to sparse dominance.",
+                            old_weights={"bias": old_bias},
+                            new_weights={"bias": config.grammar_config.structured_sparsity_bias},
+                            evidence=f"avg_sparse_loss={avg_sparse_loss:.4f}, avg_dense_loss={avg_dense_loss:.4f}"
+                        )
+            except Exception as z7_err:
+                logger.debug("Z7 learning logic failed: %s", z7_err)
 
         elif phase == "investigation":
             # After investigation: queue validation if strong candidates
@@ -11109,8 +11414,10 @@ class ExperimentRunner:
                     vocab_size=config.vocab_size,
                     max_seq_len=config.max_seq_len,
                 )
-                sandbox_result = safe_eval(
-                    model, batch_size=2,
+                sandbox_result = self._safe_eval_for_stage(
+                    model,
+                    stage_tag="evolution_fitness",
+                    batch_size=2,
                     seq_len=min(128, config.max_seq_len),
                     vocab_size=config.vocab_size,
                     device=dev_str,
@@ -11160,17 +11467,7 @@ class ExperimentRunner:
         try:
             from ..search.evolution import EvolutionConfig, evolutionary_search
 
-            grammar = GrammarConfig(
-                model_dim=config.model_dim,
-                max_depth=min(config.max_depth, 12),
-                max_ops=min(config.max_ops, 20),
-                residual_prob=config.residual_prob,
-                split_prob=config.grammar_split_prob,
-                merge_prob=config.grammar_merge_prob,
-                risky_op_prob=config.grammar_risky_op_prob,
-                freq_domain_prob=config.grammar_freq_domain_prob,
-            )
-            grammar.category_weights["math_space"] = config.math_space_weight
+            grammar = self._build_grammar_config(config)
 
             evo_config = EvolutionConfig(
                 population_size=config.population_size,
@@ -11188,28 +11485,8 @@ class ExperimentRunner:
             eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
             def on_evaluate(graph, fitness, sandbox_result, s1_result):
-                eval_counters["total"] += 1
-                if fitness > 0:
-                    eval_counters["s0"] += 1
-                if fitness > 0.2:
-                    eval_counters["s1"] += 1
-                try:
-                    graph_metrics = self._extract_graph_metrics(graph)
-                    nb.record_program_result(
-                        experiment_id=exp_id,
-                        graph_fingerprint=graph.fingerprint(),
-                        graph_json=graph_to_json(graph),
-                        stage1_passed=fitness > 0.2,
-                        stage0_passed=fitness > 0,
-                        stage05_passed=fitness > 0,
-                        loss_ratio=1.0 - fitness if fitness > 0 else None,
-                        novelty_score=None,
-                        novelty_confidence=0.2,
-                        stage_at_death="survived" if fitness > 0.2 else "stage1",
-                        **graph_metrics,
-                    )
-                except Exception as e:
-                    logger.debug("Failed to record program result: %s", e)
+                self._on_program_evaluated(graph, fitness, sandbox_result, s1_result, 
+                                           eval_counters, nb, exp_id, model_source="evolution")
 
             fitness_fn = self._make_fitness_fn(
                 config, on_evaluate=on_evaluate, fitness_cache=fitness_cache)
@@ -11300,6 +11577,7 @@ class ExperimentRunner:
                     })
 
             nb.update_op_success_rates(exp_id)
+            nb.update_failure_signatures(exp_id)
 
             # Rich context for Aria
             context = self._build_rich_context_for_experiment(
@@ -11381,17 +11659,7 @@ class ExperimentRunner:
         try:
             from ..search.novelty_search import NoveltySearchConfig, novelty_search
 
-            grammar = GrammarConfig(
-                model_dim=config.model_dim,
-                max_depth=min(config.max_depth, 12),
-                max_ops=min(config.max_ops, 20),
-                residual_prob=config.residual_prob,
-                split_prob=config.grammar_split_prob,
-                merge_prob=config.grammar_merge_prob,
-                risky_op_prob=config.grammar_risky_op_prob,
-                freq_domain_prob=config.grammar_freq_domain_prob,
-            )
-            grammar.category_weights["math_space"] = config.math_space_weight
+            grammar = self._build_grammar_config(config)
 
             ns_config = NoveltySearchConfig(
                 archive_size=config.archive_size,
@@ -11412,28 +11680,8 @@ class ExperimentRunner:
             eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
             def on_evaluate(graph, fitness, sandbox_result, s1_result):
-                eval_counters["total"] += 1
-                if fitness > 0:
-                    eval_counters["s0"] += 1
-                if fitness > 0.2:
-                    eval_counters["s1"] += 1
-                try:
-                    graph_metrics = self._extract_graph_metrics(graph)
-                    nb.record_program_result(
-                        experiment_id=exp_id,
-                        graph_fingerprint=graph.fingerprint(),
-                        graph_json=graph_to_json(graph),
-                        stage1_passed=fitness > 0.2,
-                        stage0_passed=fitness > 0,
-                        stage05_passed=fitness > 0,
-                        loss_ratio=1.0 - fitness if fitness > 0 else None,
-                        novelty_score=None,
-                        novelty_confidence=0.2,
-                        stage_at_death="survived" if fitness > 0.2 else "stage1",
-                        **graph_metrics,
-                    )
-                except Exception as e:
-                    logger.debug("Failed to record program result: %s", e)
+                self._on_program_evaluated(graph, fitness, sandbox_result, s1_result, 
+                                           eval_counters, nb, exp_id, model_source="novelty")
 
             def combined_fitness_fn(graph):
                 """Compile once, run sandbox + micro-train + fingerprint in one pass."""
@@ -11450,8 +11698,10 @@ class ExperimentRunner:
                         vocab_size=config.vocab_size,
                         max_seq_len=config.max_seq_len,
                     )
-                    sandbox_result = safe_eval(
-                        model, batch_size=2,
+                    sandbox_result = self._safe_eval_for_stage(
+                        model,
+                        stage_tag="evolution_combined_fitness",
+                        batch_size=2,
                         seq_len=min(128, config.max_seq_len),
                         vocab_size=config.vocab_size,
                         device=dev_str,
@@ -11589,6 +11839,7 @@ class ExperimentRunner:
                 results["best_novelty_score"] = max(s["novelty"] for s in results["survivors"])
 
             nb.update_op_success_rates(exp_id)
+            nb.update_failure_signatures(exp_id)
 
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb)
@@ -11849,6 +12100,7 @@ class ExperimentRunner:
                             "max_grad_norm", "mean_grad_norm", "grad_norm_std",
                             "n_train_steps", "final_lr"]:
                     program_metrics[key] = s1_result.get(key)
+                self._merge_s1_telemetry(program_metrics, s1_result)
 
                 if s1_passed:
                     results["stage1_passed"] += 1

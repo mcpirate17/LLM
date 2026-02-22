@@ -91,7 +91,16 @@
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
         "dtype": {
           "type": "string",
-          "enum": ["tensor", "scalar", "index", "mask", "complex_tensor"]
+          "enum": [
+            "tensor",
+            "scalar",
+            "index",
+            "mask",
+            "complex_tensor",
+            "dataset",
+            "list",
+            "record"
+          ]
         },
         "shape": {
           "type": "array",
@@ -117,6 +126,14 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Valid values for enum type"
+        },
+        "format": {
+          "type": "string",
+          "description": "Optional UI/editor hint for rendering parameter input widgets"
+        },
+        "schema_source_param": {
+          "type": "string",
+          "description": "Optional parameter key used as schema source for schema-aware editors"
         },
         "constraints": {
           "type": "object",

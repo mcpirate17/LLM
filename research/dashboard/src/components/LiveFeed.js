@@ -216,34 +216,43 @@ function LiveFeed({ apiBase, experimentId = null }) {
       return;
     }
     if (!prev && connected && experimentId) {
-      apiService.getLiveFeed(experimentId, 120)
+      console.log(`LiveFeed: Reconnected. Re-fetching history for exp ${experimentId} to heal gaps.`);
+      apiService.getLiveFeed(experimentId, 150)
         .then((history) => {
           if (!Array.isArray(history) || history.length === 0) return;
           const normalizedHistory = history
             .map((event) => normalizeLiveFeedEvent(event))
             .filter(Boolean);
           if (normalizedHistory.length === 0) return;
+          
           setEvents((prevEvents) => {
+            // Merge and deduplicate by a combined key
             const merged = [...normalizedHistory, ...prevEvents];
             const seen = new Set();
             const deduped = [];
+            
+            // Sort by timestamp if available to ensure correct order
+            merged.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
             for (const evt of merged) {
               const key = [
                 evt.type,
                 evt.experiment_id || '',
                 evt.result_id || '',
+                evt.index || '',
                 evt.fingerprint || '',
                 evt.generation || '',
                 evt.ts || ''
               ].join('|');
+              
               if (seen.has(key)) continue;
               seen.add(key);
               deduped.push(evt);
             }
-            return deduped.slice(-100);
+            return deduped.slice(-150);
           });
         })
-        .catch(() => {});
+        .catch((err) => console.error('LiveFeed: Gap heal fetch failed', err));
     }
     prevConnectedRef.current = connected;
   }, [connected, experimentId]);
@@ -256,36 +265,42 @@ function LiveFeed({ apiBase, experimentId = null }) {
     >
       <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span>Live Feed</span>
-        <span className={`connection-dot ${connected ? 'connected' : ''}`}></span>
-        <span style={{
-          fontSize: 11,
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          color: connected ? 'var(--accent-green)' : 'var(--accent-yellow)',
-        }}>
-          {connected ? 'Live' : 'Reconnecting'}
-        </span>
-        {showControls && (
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className={`connection-dot ${connected ? 'connected' : ''}`}></span>
+          <span style={{
+            fontSize: 11,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            color: connected ? 'var(--accent-green)' : 'var(--accent-yellow)',
+            minWidth: 80,
+          }}>
+            {connected ? 'Live' : 'Reconnecting'}
+          </span>
           <button
-            className="refresh-btn"
-            style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
+            className={`refresh-btn ${!autoScroll ? 'active' : ''}`}
+            style={{ 
+              fontSize: 11, 
+              padding: '2px 8px', 
+              opacity: showControls ? 1 : 0, 
+              transition: 'opacity 0.2s',
+              pointerEvents: showControls ? 'auto' : 'none',
+              background: !autoScroll ? 'rgba(88, 166, 255, 0.15)' : 'var(--bg-tertiary)',
+              color: !autoScroll ? 'var(--accent-blue)' : 'var(--text-primary)',
+              borderColor: !autoScroll ? 'var(--accent-blue)' : 'var(--border)',
+            }}
             onClick={() => setAutoScroll(!autoScroll)}
           >
             {autoScroll ? 'Pause Scroll' : 'Resume Scroll'}
           </button>
-        )}
+        </div>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         Real-time stream of architectures being tested. Each line shows a generated computation graph and whether it passed or failed. Green = survived, red = failed at some stage.
       </p>
       {!connected && events.length > 0 && (
-        <div style={{
-          padding: '6px 12px', marginBottom: 8, borderRadius: 4,
-          background: 'rgba(248, 81, 73, 0.1)', border: '1px solid rgba(248, 81, 73, 0.3)',
-          fontSize: 12, color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent-red)', flexShrink: 0 }} />
-          Connection lost. Reconnecting...
+        <div className="reconnect-banner">
+          <span className="pulse-dot" />
+          Connection lost. Reconnecting and healing feed gaps...
         </div>
       )}
       <div className="feed-container" ref={feedRef}>

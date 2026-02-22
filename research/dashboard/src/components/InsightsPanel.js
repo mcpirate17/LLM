@@ -3,6 +3,7 @@ import { formatTime, scoreColor } from '../utils/format';
 import { confidenceColor } from '../utils/colors';
 import { insightScore } from '../utils/scoringEngine';
 import useRenderPerf from '../hooks/useRenderPerf';
+import { filterRowsByQuery } from '../utils/tableFiltering';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -57,7 +58,7 @@ function NegativeResultsSection() {
   if (!data) return null;
 
   const hasContent = (data.failed_ops?.length > 0) || (data.dominant_errors?.length > 0) ||
-    (data.anti_patterns?.length > 0) || (data.refuted_hypotheses?.length > 0);
+    (data.anti_patterns?.length > 0) || (data.toxic_bigrams?.length > 0) || (data.refuted_hypotheses?.length > 0);
   if (!hasContent) return null;
 
   return (
@@ -144,6 +145,26 @@ function NegativeResultsSection() {
             </div>
           )}
 
+          {/* Toxic Op-Pair Patterns */}
+          {data.toxic_bigrams?.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>
+                Toxic Patterns ({data.toxic_bigrams.length})
+              </div>
+              {data.toxic_bigrams.map(tb => (
+                <div key={tb.pattern} style={{
+                  display: 'flex', justifyContent: 'space-between', padding: '4px 0',
+                  borderBottom: '1px solid var(--border)', alignItems: 'center',
+                }}>
+                  <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--accent-red)' }}>{tb.pattern}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    penalty {tb.penalty.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Refuted Hypotheses */}
           {data.refuted_hypotheses?.length > 0 && (
             <div>
@@ -194,6 +215,7 @@ function InsightsPanel({ insights, compact }) {
     } catch {}
     return true;
   });
+  const [filterQuery, setFilterQuery] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [boostingId, setBoostingId] = useState(null);
   const [boostedIds, setBoostedIds] = useState(() => new Set());
@@ -244,8 +266,16 @@ function InsightsPanel({ insights, compact }) {
     return insights.map(ins => ({ ...ins, _score: insightScore(ins) }));
   }, [insights]);
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(augmented, filterQuery, [
+      'category',
+      'content',
+      'status',
+    ])
+  ), [augmented, filterQuery]);
+
   const sorted = useMemo(() => {
-    const arr = [...augmented];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va, vb;
       if (sortKey === '_score') {
@@ -268,7 +298,7 @@ function InsightsPanel({ insights, compact }) {
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [augmented, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   const columns = compact ? COLUMNS_COMPACT : COLUMNS_FULL;
 
@@ -285,8 +315,22 @@ function InsightsPanel({ insights, compact }) {
 
   return (
     <div className="card">
-      <div className="card-title">
-        Insights {compact ? `(${insights.length})` : `— ${insights.length} Active`}
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>Insights {compact ? `(${insights.length})` : `— ${insights.length} Active`}</span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter insights"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
       </div>
       {!compact && (
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>

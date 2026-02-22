@@ -4,6 +4,7 @@ import ProgramDetail from './ProgramDetail';
 import { formatTime, formatDuration } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
 import { candidateScore } from '../utils/scoringEngine';
+import { filterRowsByQuery } from '../utils/tableFiltering';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -88,8 +89,20 @@ function FunnelViz({ experiment }) {
 }
 
 function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram }) {
+  const [filterQuery, setFilterQuery] = useState('');
+
+  const filtered = useMemo(() => (
+    filterRowsByQuery(programs, filterQuery, [
+      'graph_fingerprint',
+      'result_id',
+      'architecture_name',
+      'program_id',
+      'notes',
+    ])
+  ), [programs, filterQuery]);
+
   const sorted = useMemo(() => {
-    const aug = programs.map(p => ({ ...p, _score: candidateScore(p), _rating: programRowRating(p) }));
+    const aug = filtered.map(p => ({ ...p, _score: candidateScore(p), _rating: programRowRating(p) }));
     aug.sort((a, b) => {
       let va, vb;
       if (sortKey === '_score') { va = a._score; vb = b._score; }
@@ -102,11 +115,27 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
       return sortDesc ? vb - va : va - vb;
     });
     return aug;
-  }, [programs, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   return (
     <div className="card">
-      <div className="card-title">All Programs ({programs.length})</div>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>All Programs ({programs.length})</span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter programs"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
         Every architecture tested in this experiment. P = passed, F = failed at that stage.
         Baseline {'<'} 1.0 means it outperformed a standard transformer of the same size.

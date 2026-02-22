@@ -2,6 +2,7 @@ import sys
 import os
 import torch
 import numpy as np
+import pytest
 
 # Add the parent directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -109,6 +110,41 @@ def test_multi_input_identity_falls_back_to_handler_forward():
 
     assert "add1" in outputs
     torch.testing.assert_close(outputs["add1"], a)
+
+
+def test_compile_rejects_unsupported_edge_dtype_pairing():
+    workflow_json = {
+        "schema_version": "workflow_graph.v1",
+        "workflow_id": "wf-dtype-mismatch",
+        "name": "Dtype Mismatch",
+        "nodes": [
+            {
+                "id": "n1",
+                "component_type": "data_transform/dataset_filter",
+                "params": {},
+                "ui_meta": {}
+            },
+            {
+                "id": "n2",
+                "component_type": "math/relu",
+                "params": {},
+                "ui_meta": {}
+            },
+        ],
+        "edges": [
+            {
+                "id": "e1",
+                "source": "n1",
+                "source_port": "filtered",
+                "target": "n2",
+                "target_port": "x"
+            }
+        ]
+    }
+
+    components_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "components"))
+    with pytest.raises(ValueError, match="Unsupported edge dtype pairing"):
+        compile_workflow(workflow_json, components_dir)
 
 if __name__ == "__main__":
     test_compile_and_run()

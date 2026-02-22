@@ -19,8 +19,19 @@ dashboard/package-lock.json
 # Runtime artifacts
 *.db
 *.db.bak
+*.db-wal
+*.db-shm
 *.log
 checkpoints/
+
+# Native runner build artifacts
+runtime/native/build/
+runtime/native/cython/build/
+runtime/native/rust/aria-scheduler/target/
+synthesis/build/
+
+# Test runner artifacts
+dashboard/test-results/
 
 # OS
 .DS_Store

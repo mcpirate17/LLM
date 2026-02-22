@@ -49,6 +49,75 @@ Lineage endpoints:
 - `GET /api/designer/lineage`
 - `GET /api/designer/lineage/<run_id>`
 
+Native runner telemetry endpoint:
+- `GET /api/native-runner/capability`
+  - includes `fallback_metrics` and backend-computed `cutover_gate` (`status`, `ready`, `checks`)
+  - useful for rollout decisions and dashboard parity/legacy/fallback health
+  - example response shape:
+
+```json
+{
+  "enabled": true,
+  "strict": false,
+  "designer_runtime_available": true,
+  "status": "ready",
+  "fallback_metrics": {
+    "total_compiles": 42,
+    "native_enabled_compiles": 42,
+    "fallback_compiles": 3,
+    "fallback_rate": 0.0714,
+    "legacy_compile_count": 3,
+    "legacy_compile_invocations": 3,
+    "max_allowed_fallback_rate": "0.10",
+    "max_allowed_legacy_compile_count": "5",
+    "max_allowed_legacy_compile_invocations": "5"
+  },
+  "cutover_gate": {
+    "ready": true,
+    "status": "ready",
+    "checks": [
+      { "name": "fallback_rate", "active": true, "pass": true, "actual": 0.0714, "limit": 0.1 },
+      { "name": "legacy_compile_invocations", "active": true, "pass": true, "actual": 3, "limit": 5 }
+    ]
+  }
+}
+```
+
+Native runner cutover env controls:
+- `NATIVE_RUNNER_MAX_FALLBACK_RATE` (0..1): fail when fallback ratio exceeds threshold
+- `NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS` (int): fail when legacy compile usage exceeds threshold
+- `NATIVE_RUNNER_REQUIRE_PARITY_PASS` (`1|0`): include sampled ABI parity as required cutover gate
+- `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE` (`1|0`): hard gate that rejects compile when legacy compile path would be used (use for final cutover canaries)
+- `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED` (`1|0`): rejects legacy compile whenever native-runner mode is enabled (`NATIVE_RUNNER_ENABLED=1`), while leaving disabled-mode fallback behavior unchanged
+- `NATIVE_RUNNER_ABI_MODEL_ONLY` (`1|0`): when native runner is enabled, build an inference-only model backed by runner ABI session instead of legacy compiler; requires successful ABI session preparation
+
+Deprecated (compatibility window before Phase-D removal):
+- `NATIVE_RUNNER_LEGACY_ONLY` (`1|0`): deprecated emergency bypass for native logic.
+- `fallback_metrics.legacy_compile_invocations`: deprecated alias of `fallback_metrics.legacy_compile_count`.
+
+Strict native no-legacy canary lane (CI/verification):
+- `NATIVE_RUNNER_ENABLED=1`
+- `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED=1`
+- `NATIVE_RUNNER_ABI_MODEL_ONLY=1`
+- verify with:
+  - `python -m research.tools.check_no_legacy_compile`
+  - `python -m research.tools.check_no_legacy_execution_paths`
+
+Execution mode classification (capability payload):
+- `native_abi_model_only`
+- `native_legacy_fallback`
+- `legacy_only`
+
+Legacy removal rollout plan:
+- `research/CUTOVER_REMOVAL_PLAN.md`
+
+Cutover gate helper:
+- `python -m research.tools.check_cutover_gate --base-url http://127.0.0.1:5000`
+- `python -m research.tools.check_cutover_gate --offline` (no API server required; reads local native-runner report)
+- `python -m research.tools.check_cutover_gate --offline --generate-parity-sample` (deterministically seeds one parity-pass sample for strict parity-gated canaries)
+- `python -m research.tools.check_cutover_gate --offline --generate-compile-sample` (runs one deterministic compile sample so legacy/fallback gates evaluate against real compile telemetry)
+- add `--allow-waiting` during observe phase
+
 ## Repo Layout
 
 - `scientist/` — runner, API, notebook, analytics, persona

@@ -72,6 +72,21 @@ export default function RunResultsPanel({ evalState }) {
   const compressionMetrics = stageMap.compression?.metrics
   const fingerprintMetrics = stageMap.fingerprint?.metrics
   const noveltyMetrics = stageMap.novelty?.metrics
+  const benchmarkMetrics = evalState?.benchmarking || stageMap.benchmarking?.metrics || null
+  const abiProbe = sandboxMetrics?.native_abi_probe || null
+  const abiParityAttempted = Boolean(abiProbe?.parity_attempted)
+  const abiParityPass = abiProbe?.parity_pass
+  const abiPrimaryUsed = Boolean(abiProbe?.primary_used)
+  const abiMode = abiProbe?.mode || (abiPrimaryUsed ? 'primary_forward_only' : 'probe_only')
+  const abiParityMaxAbs = Number(abiProbe?.parity_max_abs_diff)
+  const abiParityThreshold = Number(abiProbe?.parity_max_abs_threshold)
+  const abiSampleRate = Number(abiProbe?.parity_sample_rate)
+  const abiParityMaxAbsText = Number.isFinite(abiParityMaxAbs) ? abiParityMaxAbs.toExponential(2) : '-'
+  const abiParityThresholdText = Number.isFinite(abiParityThreshold) ? abiParityThreshold.toExponential(2) : '-'
+  const abiSampleRateText = Number.isFinite(abiSampleRate) ? `${Math.round(abiSampleRate * 100)}%` : '-'
+  const abiParityState = abiParityAttempted
+    ? (abiParityPass ? 'pass' : 'fail')
+    : (abiPrimaryUsed ? 'primary' : 'probe')
 
   // FLOPs by category chart data
   const chartData = useMemo(() => {
@@ -169,6 +184,54 @@ export default function RunResultsPanel({ evalState }) {
               <div className="stat-label">Stability</div>
             </div>
           </div>
+          {abiProbe && (
+            <div style={{ marginTop: 8, padding: '8px 10px', border: '1px solid #1f3147', borderRadius: 8, background: '#0f1928' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <strong style={{ fontSize: 12, color: '#d8e6f5' }}>ABI Gate</strong>
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: '2px 8px',
+                    borderRadius: 999,
+                    border: `1px solid ${
+                      abiParityState === 'pass' ? '#24d1a0'
+                        : abiParityState === 'fail' ? '#ff5050'
+                          : '#17a3ff'
+                    }`,
+                    color: abiParityState === 'pass' ? '#24d1a0'
+                      : abiParityState === 'fail' ? '#ff5050'
+                        : '#17a3ff',
+                    background: abiParityState === 'pass' ? 'rgba(36,209,160,0.12)'
+                      : abiParityState === 'fail' ? 'rgba(255,80,80,0.12)'
+                        : 'rgba(23,163,255,0.12)',
+                  }}
+                >
+                  {abiParityState === 'pass'
+                    ? 'parity pass'
+                    : abiParityState === 'fail'
+                      ? 'parity fail'
+                      : abiParityState === 'primary'
+                        ? 'primary (no parity sample)'
+                        : 'probe only'}
+                </span>
+              </div>
+              <div
+                style={{ marginTop: 4, fontSize: 10, color: '#8fa8c2' }}
+                title="Parity checks compare ABI logits vs torch forward logits on sampled runs. Pass when max abs drift is <= threshold."
+              >
+                Legend: pass if sampled parity max_abs &le; threshold; fail otherwise.
+              </div>
+              <div style={{ marginTop: 6, fontSize: 11, color: '#8fa8c2', lineHeight: 1.5 }}>
+                <div>Mode: <strong style={{ color: '#d8e6f5' }}>{abiMode}</strong></div>
+                <div>Sample rate: <strong style={{ color: '#d8e6f5' }}>{abiSampleRateText}</strong></div>
+                <div>Max abs drift: <strong style={{ color: '#d8e6f5' }}>{abiParityMaxAbsText}</strong></div>
+                <div>Threshold: <strong style={{ color: '#d8e6f5' }}>{abiParityThresholdText}</strong></div>
+                {abiProbe?.parity_reason ? (
+                  <div>Reason: <strong style={{ color: '#d8e6f5' }}>{String(abiProbe.parity_reason)}</strong></div>
+                ) : null}
+              </div>
+            </div>
+          )}
         </CollapsibleSection>
       )}
 
@@ -354,6 +417,89 @@ export default function RunResultsPanel({ evalState }) {
               </div>
             )}
           </div>
+        </CollapsibleSection>
+      )}
+
+      {benchmarkMetrics && (
+        <CollapsibleSection title="Benchmark Targets" defaultOpen>
+          <div className="metrics-grid" style={{ marginBottom: 8 }}>
+            <div className="stat">
+              <div className="stat-val">{Math.round((benchmarkMetrics.summary?.score || 0) * 100)}%</div>
+              <div className="stat-label">Target Score</div>
+            </div>
+            <div className="stat">
+              <div className="stat-val">{benchmarkMetrics.summary?.on_target ?? 0}</div>
+              <div className="stat-label">On Target</div>
+            </div>
+            <div className="stat">
+              <div className="stat-val">{benchmarkMetrics.summary?.off_target ?? 0}</div>
+              <div className="stat-label">Off Target</div>
+            </div>
+            <div className="stat">
+              <div className="stat-val">{benchmarkMetrics.summary?.not_measured ?? 0}</div>
+              <div className="stat-label">Not Measured</div>
+            </div>
+          </div>
+
+          {Array.isArray(benchmarkMetrics.targets) && benchmarkMetrics.targets.length > 0 && (
+            <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #1f3147', borderRadius: 8 }}>
+              <table className="op-profile-table">
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Observed</th>
+                    <th>Target</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {benchmarkMetrics.targets.map((target) => {
+                    const statusColor = target.status === 'on_target'
+                      ? '#24d1a0'
+                      : target.status === 'off_target'
+                        ? '#ff5050'
+                        : '#8fa8c2'
+                    const statusLabel = target.status === 'on_target'
+                      ? 'on target'
+                      : target.status === 'off_target'
+                        ? 'off target'
+                        : 'not measured'
+                    return (
+                      <tr key={target.id}>
+                        <td>{target.label}</td>
+                        <td>{target.observed == null ? '-' : formatNum(target.observed)}</td>
+                        <td>{target.target == null ? '-' : formatNum(target.target)}</td>
+                        <td>
+                          <span style={{ color: statusColor, fontSize: 11 }}>{statusLabel}</span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {benchmarkMetrics.scaling_projection && (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+              <div>
+                Projected Mamba-scale avg accuracy at current params:
+                <strong style={{ color: 'var(--text)' }}> {
+                  benchmarkMetrics.scaling_projection.projected_mamba_avg_accuracy == null
+                    ? '-'
+                    : benchmarkMetrics.scaling_projection.projected_mamba_avg_accuracy.toFixed(2)
+                }</strong>
+              </div>
+              <div>
+                Delta vs Mamba-2.8B reference:
+                <strong style={{ color: 'var(--text)' }}> {
+                  benchmarkMetrics.scaling_projection.delta_vs_mamba_2p8b_avg == null
+                    ? '-'
+                    : benchmarkMetrics.scaling_projection.delta_vs_mamba_2p8b_avg.toFixed(2)
+                }</strong>
+              </div>
+            </div>
+          )}
         </CollapsibleSection>
       )}
     </div>

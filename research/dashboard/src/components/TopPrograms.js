@@ -5,6 +5,7 @@ import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
 import { candidateScore, candidateScoreBreakdown } from '../utils/scoringEngine';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import useRenderPerf from '../hooks/useRenderPerf';
+import { filterRowsByQuery } from '../utils/tableFiltering';
 
 const TOP_PROGRAMS_SORT_KEY = 'aria_top_programs_sort_v1';
 
@@ -128,6 +129,8 @@ function TopPrograms({
     }
   });
   const [copiedValue, copyText] = useCopyToClipboard();
+  const [filterQuery, setFilterQuery] = useState('');
+  const [fingerprintFilter, setFingerprintFilter] = useState('');
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
 
   useEffect(() => {
@@ -157,8 +160,19 @@ function TopPrograms({
     }));
   }, [programs]);
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(augmented, filterQuery, [
+      'graph_fingerprint',
+      'result_id',
+      'architecture_name',
+      'program_id',
+      'experiment_id',
+      'tags',
+    ])
+  ), [augmented, filterQuery]);
+
   const sorted = useMemo(() => {
-    const arr = [...augmented];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va, vb;
       if (sortKey === 'score') {
@@ -177,7 +191,7 @@ function TopPrograms({
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [augmented, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   const leadingFingerprints = useMemo(() => {
     const groups = new Map();
@@ -207,6 +221,10 @@ function TopPrograms({
       .slice(0, 10);
   }, [augmented]);
 
+  const filteredFingerprints = useMemo(() => (
+    filterRowsByQuery(leadingFingerprints, fingerprintFilter, ['fingerprint'])
+  ), [leadingFingerprints, fingerprintFilter]);
+
   const columns = compact ? COLUMNS_COMPACT : COLUMNS_FULL;
   const showRating = columns.some(col => col.key === 'rating');
   const showParamCount = columns.some(col => col.key === 'param_count');
@@ -224,10 +242,26 @@ function TopPrograms({
 
   return (
     <div className="card">
-      <div className="card-title">
-        Candidate Programs (Raw Survivors) {compact
-          ? `(${programs.length}${totalCount > programs.length ? ` of ${totalCount}` : ''})`
-          : `— ${programs.length} Survivors`}
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>
+          Candidate Programs (Raw Survivors) {compact
+            ? `(${programs.length}${totalCount > programs.length ? ` of ${totalCount}` : ''})`
+            : `— ${programs.length} Survivors`}
+        </span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter programs"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
       </div>
       {!compact && (
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
@@ -240,7 +274,23 @@ function TopPrograms({
       )}
       {!compact && leadingFingerprints.length > 0 && (
         <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Fingerprint Leaderboard (Deduplicated Architecture IDs)</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>Fingerprint Leaderboard (Deduplicated Architecture IDs)</div>
+            <input
+              value={fingerprintFilter}
+              onChange={(e) => setFingerprintFilter(e.target.value)}
+              placeholder="Filter fingerprints"
+              style={{
+                fontSize: 11,
+                padding: '4px 8px',
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                minWidth: 160,
+              }}
+            />
+          </div>
           <table className="data-table" style={{ margin: 0 }}>
             <thead>
               <tr>
@@ -252,7 +302,7 @@ function TopPrograms({
               </tr>
             </thead>
             <tbody>
-              {leadingFingerprints.slice(0, 6).map((row) => (
+              {filteredFingerprints.slice(0, 6).map((row) => (
                 <tr key={row.fingerprint}>
                   <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{row.fingerprint.slice(0, 10)}</td>
                   <td>{row.count}</td>

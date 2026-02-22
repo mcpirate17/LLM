@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
 import { promotionEvidence } from '../utils/scoringEngine';
+import { filterRowsByQuery } from '../utils/tableFiltering';
 import {
   reliabilityBand, wilsonInterval, decisionGate,
   reproducibilityPacketStatus,
@@ -45,6 +46,9 @@ export default function ReportDetail({
   const [trend, setTrend] = useState(scope?.params?.trend || 'all');
   const [queryLimit, setQueryLimit] = useState(20);
   const [declutterMode, setDeclutterMode] = useState(false);
+  const [stabilityFilter, setStabilityFilter] = useState('');
+  const [stabilitySortKey, setStabilitySortKey] = useState('latest_rank');
+  const [stabilitySortDesc, setStabilitySortDesc] = useState(true);
 
   const isAllTime = !scope?.params;
 
@@ -171,6 +175,36 @@ export default function ReportDetail({
   const architectureRerunTelemetry = data.architecture_rerun_telemetry || {};
   const stabilitySummary = crossRunStability.summary || {};
   const stabilityCandidates = crossRunStability.candidates || [];
+
+  const filteredStabilityCandidates = useMemo(() => (
+    filterRowsByQuery(stabilityCandidates, stabilityFilter, [
+      'graph_fingerprint',
+      'trend',
+      'latest_rank',
+      'previous_rank',
+    ])
+  ), [stabilityCandidates, stabilityFilter]);
+
+  const sortedStabilityCandidates = useMemo(() => {
+    const arr = [...filteredStabilityCandidates];
+    arr.sort((a, b) => {
+      const va = a?.[stabilitySortKey];
+      const vb = b?.[stabilitySortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') {
+        return stabilitySortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      }
+      return stabilitySortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filteredStabilityCandidates, stabilitySortKey, stabilitySortDesc]);
+
+  const handleStabilitySort = (key) => {
+    if (stabilitySortKey === key) setStabilitySortDesc(!stabilitySortDesc);
+    else { setStabilitySortKey(key); setStabilitySortDesc(true); }
+  };
 
   const totalProg = s.total_programs_evaluated || 0;
   const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;
@@ -550,19 +584,46 @@ export default function ReportDetail({
             <span>New: {stabilitySummary.new || 0}</span>
             <span>Window: {crossRunStability.window_size || 0} runs</span>
           </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+            <input
+              value={stabilityFilter}
+              onChange={(e) => setStabilityFilter(e.target.value)}
+              placeholder="Filter fingerprints"
+              style={{
+                fontSize: 11,
+                padding: '4px 8px',
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                minWidth: 160,
+              }}
+            />
+          </div>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-                  <th scope="col" style={{ padding: '6px' }}>Fingerprint</th>
-                  <th scope="col" style={{ padding: '6px' }}>Trend</th>
-                  <th scope="col" style={{ padding: '6px' }}>Latest Rank</th>
-                  <th scope="col" style={{ padding: '6px' }}>Previous Rank</th>
-                  <th scope="col" style={{ padding: '6px' }}>Seen Runs</th>
+                  <th scope="col" onClick={() => handleStabilitySort('graph_fingerprint')} style={{ padding: '6px', cursor: 'pointer' }}>
+                    Fingerprint{stabilitySortKey === 'graph_fingerprint' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  </th>
+                  <th scope="col" onClick={() => handleStabilitySort('trend')} style={{ padding: '6px', cursor: 'pointer' }}>
+                    Trend{stabilitySortKey === 'trend' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  </th>
+                  <th scope="col" onClick={() => handleStabilitySort('latest_rank')} style={{ padding: '6px', cursor: 'pointer' }}>
+                    Latest Rank{stabilitySortKey === 'latest_rank' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  </th>
+                  <th scope="col" onClick={() => handleStabilitySort('previous_rank')} style={{ padding: '6px', cursor: 'pointer' }}>
+                    Previous Rank{stabilitySortKey === 'previous_rank' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  </th>
+                  <th scope="col" onClick={() => handleStabilitySort('seen_runs')} style={{ padding: '6px', cursor: 'pointer' }}>
+                    Seen Runs{stabilitySortKey === 'seen_runs' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {stabilityCandidates.slice(0, 12).map(candidate => {
+                {sortedStabilityCandidates.slice(0, 12).map(candidate => {
                   const trendColor = candidate.trend === 'up'
                     ? 'var(--accent-green)'
                     : candidate.trend === 'down'
@@ -875,7 +936,7 @@ export default function ReportDetail({
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
             Choose candidates on this curve when you need better learning with limited compute budget.
           </p>
-          <EfficiencyChart frontier={frontier} />
+          <EfficiencyChart frontier={frontier} showLabels labelCount={6} />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
             {frontier.length} Pareto-optimal programs (lower loss, fewer FLOPs = better)
           </div>

@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { parseDesignerBridgeMessage } from '../utils/designerBridge';
 
-const DESIGNER_BASE = process.env.REACT_APP_DESIGNER_URL || 'http://127.0.0.1:5174';
+// Use same-origin proxy to avoid cross-origin iframe restrictions in Brave.
+// Falls back to direct URL if REACT_APP_DESIGNER_URL is explicitly set.
+const DESIGNER_BASE = process.env.REACT_APP_DESIGNER_URL || '/designer-proxy';
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const INTENTS = [
@@ -273,14 +276,19 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
   const [loading, setLoading] = useState(true);
   const [booting, setBooting] = useState(true);
   const [designerReady, setDesignerReady] = useState(false);
+  const [bridgeReady, setBridgeReady] = useState(false);
   const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [graphInfo, setGraphInfo] = useState(null);
   const [showMorph, setShowMorph] = useState(false);
   const [showLineage, setShowLineage] = useState(false);
+  const [bridgeStep, setBridgeStep] = useState('booting');
+  const [designerBase, setDesignerBase] = useState(DESIGNER_BASE);
+  const [fallbackTried, setFallbackTried] = useState(false);
   const iframeRef = useRef(null);
 
   const iframeSrc = resultId
-    ? `${DESIGNER_BASE}?import_result_id=${encodeURIComponent(resultId)}&embedded=1${readOnly ? '&readonly=1' : ''}`
+    ? `${designerBase}?embedded=1${readOnly ? '&readonly=1' : ''}&import_result_id=${encodeURIComponent(resultId)}`
     : null;
 
   // Auto-start designer backend
@@ -288,8 +296,12 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
     setLoading(true);
     setBooting(true);
     setDesignerReady(false);
+    setBridgeReady(false);
     setError(null);
+    setNotice(null);
     setGraphInfo(null);
+    setDesignerBase(DESIGNER_BASE);
+    setFallbackTried(false);
 
     let cancelled = false;
     (async () => {
@@ -304,10 +316,25 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
           throw new Error(data?.error || `HTTP ${res.status}`);
         }
         if (!cancelled) {
+          console.log('[ArchDrawer] designer ready, loading iframe');
+          try {
+            const probe = await fetch(`${DESIGNER_BASE}/`, { method: 'GET' });
+            if (!probe.ok) {
+              setDesignerBase(DESIGNER_DIRECT);
+              setNotice('Designer proxy bundle missing — using direct dev server.');
+              setFallbackTried(true);
+            }
+          } catch {
+            setDesignerBase(DESIGNER_DIRECT);
+            setNotice('Designer proxy unreachable — using direct dev server.');
+            setFallbackTried(true);
+          }
           setDesignerReady(true);
+          setBridgeStep('iframe-loading');
         }
       } catch (err) {
         if (!cancelled) {
+          console.warn('[ArchDrawer] ensure-running failed:', err?.message);
           setError(`Could not auto-start Aria Designer: ${err?.message || err}`);
           setLoading(false);
         }
@@ -351,23 +378,37 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
   // PostMessage listener — receive events from aria-designer iframe
   useEffect(() => {
     const handler = (e) => {
-      if (e.data?.source !== 'aria-designer') return;
-
-      switch (e.data.type) {
+      // Log all aria-designer messages for debugging
+      if (e.data?.source === 'aria-designer') {
+        console.log('[ArchDrawer] received message:', e.data.type, e.data);
+      }
+      const parsed = parseDesignerBridgeMessage(e.data);
+      switch (parsed.kind) {
+        case 'embedded-ready':
+          console.log('[ArchDrawer] bridge ready (embedded-ready received)');
+          setBridgeReady(true);
+          setBridgeStep('sending-load-result');
+          break;
         case 'graph-loaded':
+          console.log('[ArchDrawer] graph loaded:', parsed.graphInfo);
+          clearTimeout(iframeFallbackRef.current);
           setLoading(false);
-          setGraphInfo({
-            name: e.data.name,
-            nodeCount: e.data.nodeCount,
-            edgeCount: e.data.edgeCount,
-          });
-          if (onGraphLoaded) onGraphLoaded(e.data);
+          setError(null);
+          setGraphInfo(parsed.graphInfo);
+          setBridgeStep('done');
+          if (onGraphLoaded) onGraphLoaded(parsed.payload);
+          break;
+        case 'graph-load-error':
+          console.warn('[ArchDrawer] graph load error:', parsed.error);
+          setLoading(false);
+          setError(parsed.error);
+          setBridgeStep('error');
           break;
         case 'graph-changed':
           setGraphInfo(prev => prev ? {
             ...prev,
-            nodeCount: e.data.nodeCount,
-            edgeCount: e.data.edgeCount,
+            nodeCount: parsed.graphInfo.nodeCount,
+            edgeCount: parsed.graphInfo.edgeCount,
           } : null);
           break;
         case 'graph-data':
@@ -391,19 +432,99 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
     }
   }, []);
 
-  const handleIframeLoad = () => {
-    // Loading spinner stays until we get graph-loaded postMessage
-  };
+  // Since import_result_id is now in the iframe URL, the iframe imports
+  // directly via its own URL params effect (same as full-window mode).
+  // If the graph-loaded postMessage never arrives, show the iframe anyway.
+  const iframeFallbackRef = useRef(null);
+  const handleIframeLoad = useCallback(() => {
+    console.log('[ArchDrawer] iframe onLoad fired');
+    setBridgeStep('iframe-loaded');
+    // Give the iframe time to import + post graph-loaded.
+    // If the postMessage bridge fails, reveal the iframe after 8s.
+    clearTimeout(iframeFallbackRef.current);
+    iframeFallbackRef.current = setTimeout(() => {
+      setLoading(prev => {
+        if (prev) {
+          console.warn('[ArchDrawer] graph-loaded never received, revealing iframe anyway');
+          return false;
+        }
+        return prev;
+      });
+    }, 8000);
+  }, []);
+
+  // Send load-result immediately when bridge becomes ready, then
+  // retry every 2 s until the graph loads (or times out).
+  useEffect(() => {
+    if (!designerReady || !bridgeReady || !resultId || !loading || error) return undefined;
+    console.log('[ArchDrawer] sending load-result for', resultId);
+    setBridgeStep('importing');
+    sendToDesigner('load-result', { resultId });
+    const timer = setInterval(() => {
+      console.log('[ArchDrawer] retrying load-result for', resultId);
+      sendToDesigner('load-result', { resultId });
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [bridgeReady, designerReady, error, loading, resultId, sendToDesigner]);
+
+  useEffect(() => {
+    if (!designerReady || !resultId || !loading || error) return undefined;
+    const timer = setTimeout(() => {
+      console.warn('[ArchDrawer] timeout at step:', bridgeStep);
+      setLoading(false);
+      setError(`Timed out at step "${bridgeStep}". Check browser console for details.`);
+    }, 30000);
+    return () => clearTimeout(timer);
+  }, [designerReady, resultId, loading, error, bridgeStep]);
+
+  const handleRetry = useCallback(() => {
+    setLoading(true);
+    setBooting(true);
+    setDesignerReady(false);
+    setBridgeReady(false);
+    setError(null);
+    setGraphInfo(null);
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/designer/ensure-running`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force_restart: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
+        setDesignerReady(true);
+      } catch (err) {
+        setError(`Could not auto-start Aria Designer: ${err?.message || err}`);
+        setLoading(false);
+      } finally {
+        setBooting(false);
+      }
+    })();
+  }, [resultId]);
 
   const handleIframeError = () => {
+    if (!fallbackTried) {
+      setDesignerBase(DESIGNER_DIRECT);
+      setNotice('Designer proxy failed — retrying via direct dev server.');
+      setFallbackTried(true);
+      setLoading(true);
+      setBridgeReady(false);
+      setBridgeStep('iframe-loading');
+      return;
+    }
     setLoading(false);
     setError('Could not connect to Aria Designer after auto-start.');
   };
 
+  const DESIGNER_DIRECT = 'http://127.0.0.1:5174';
   const handleOpenFull = () => {
-    if (iframeSrc) {
+    if (resultId) {
       window.open(
-        `${DESIGNER_BASE}?import_result_id=${encodeURIComponent(resultId)}`,
+        `${DESIGNER_DIRECT}?import_result_id=${encodeURIComponent(resultId)}`,
         '_blank'
       );
     }
@@ -552,13 +673,41 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
           {(booting || loading) && (
             <div style={{
               position: 'absolute', inset: 0,
-              display: 'flex', justifyContent: 'center', alignItems: 'center',
+              display: 'flex', flexDirection: 'column',
+              justifyContent: 'center', alignItems: 'center',
               background: 'var(--bg-primary)',
               color: 'var(--text-secondary)',
               fontSize: 13,
+              gap: 6,
               zIndex: 1,
             }}>
-              {booting ? 'Starting Aria Designer\u2026' : 'Loading architecture...'}
+              <div>
+                {booting ? 'Starting Aria Designer\u2026'
+                  : bridgeStep === 'iframe-loading' ? 'Waiting for designer iframe\u2026'
+                  : bridgeStep === 'sending-load-result' ? 'Bridge connected, requesting architecture\u2026'
+                  : bridgeStep === 'importing' ? 'Importing architecture\u2026'
+                  : 'Loading architecture\u2026'}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                step: {bridgeStep}
+              </div>
+            </div>
+          )}
+
+          {notice && !error && (
+            <div style={{
+              position: 'absolute',
+              top: 10,
+              right: 12,
+              padding: '6px 10px',
+              borderRadius: 6,
+              fontSize: 11,
+              background: 'var(--bg-tertiary)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-secondary)',
+              zIndex: 2,
+            }}>
+              {notice}
             </div>
           )}
 
@@ -574,6 +723,21 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
               zIndex: 1,
             }}>
               <div>{error}</div>
+              <button
+                onClick={handleRetry}
+                style={{
+                  marginTop: 4,
+                  fontSize: 12,
+                  padding: '5px 16px',
+                  borderRadius: 4,
+                  border: '1px solid var(--accent-blue)',
+                  background: 'none',
+                  color: 'var(--accent-blue)',
+                  cursor: 'pointer',
+                }}
+              >
+                Retry
+              </button>
             </div>
           )}
 

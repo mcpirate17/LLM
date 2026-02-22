@@ -82,6 +82,14 @@ function AriaStatus({ aria }) {
           <span className="aria-stat-label">Focus</span>
           <span>{aria.research_focus}</span>
         </div>
+        {summary?.avg_depth_savings != null && (
+          <div className="aria-stat" title="Average compute savings from MoD/MoR/Sparse ops in recent survivors">
+            <span className="aria-stat-label">Efficiency</span>
+            <span style={{ color: summary.avg_depth_savings > 0.2 ? 'var(--accent-green)' : 'inherit' }}>
+              +{(summary.avg_depth_savings * 100).toFixed(1)}%
+            </span>
+          </div>
+        )}
       </div>
 
       {(totalExperiments != null || totalPrograms != null) && (

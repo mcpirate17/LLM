@@ -334,6 +334,7 @@ function Inspector({ selectedNode, allComponents, nodeCount, edgeCount, onParamC
 }
 
 function ParamInput({ name, schema, value, paramValues, onChange }) {
+  const [pickerMeta, setPickerMeta] = useState('')
   const isPathField = schema.type === 'string' && (
     schema.format === 'file' ||
     schema.format === 'path' ||
@@ -481,11 +482,29 @@ function ParamInput({ name, schema, value, paramValues, onChange }) {
           type="file"
           {...(schema.format === 'directory' ? { webkitdirectory: 'true', directory: 'true' } : {})}
           onChange={(e) => {
-            const file = e.target.files?.[0]
-            if (!file) return
-            onChange(file.name)
+            const files = Array.from(e.target.files || [])
+            const first = files[0]
+            if (!first) return
+
+            const inputReportedPath = String(e.target.value || '').replace(/^.*[\\/]/, '')
+            let selectedPath = first.webkitRelativePath || inputReportedPath || first.name
+
+            if (schema.format === 'directory' && files.length > 0) {
+              const relPath = first.webkitRelativePath || ''
+              const rootDir = relPath.includes('/') ? relPath.split('/')[0] : relPath
+              selectedPath = rootDir || selectedPath
+            }
+
+            onChange(selectedPath)
+            setPickerMeta(schema.format === 'directory'
+              ? `Picked folder: ${selectedPath}`
+              : `Picked file: ${selectedPath}`)
           }}
         />
+        <div className="param-help">
+          Picker autofills a detected name/path. You can always override manually in the text field.
+        </div>
+        {pickerMeta && <div className="file-picker-meta">{pickerMeta}</div>}
       </div>
     )
   }

@@ -4,6 +4,7 @@ import { discoveryScore, discoveryScoreBreakdown, promotionEvidence } from '../.
 import { scoreColor } from '../../utils/format';
 import { reliabilityColor } from '../../utils/colors';
 import RatingBadge from './RatingBadge';
+import { filterRowsByQuery } from '../../utils/tableFiltering';
 import {
   compressionSummary, metricChips, qkvUsageDescriptor,
   decisionGate, reproducibilityPacketStatus,
@@ -50,6 +51,7 @@ export default function DiscoveryRankings({
     } catch {}
     return true;
   });
+  const [filterQuery, setFilterQuery] = useState('');
   const [copiedValue, copyText] = useCopyToClipboard();
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
 
@@ -89,8 +91,18 @@ export default function DiscoveryRankings({
     else { setSortKey(key); setSortDesc(true); }
   };
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(sourceRows, filterQuery, [
+      'graph_fingerprint',
+      'result_id',
+      'display_name',
+      'architecture_family',
+      'most_similar_to',
+    ])
+  ), [sourceRows, filterQuery]);
+
   const sorted = useMemo(() => {
-    const aug = sourceRows.map(p => {
+    const aug = filtered.map(p => {
       const repeatCount = Number(p.repeat_count || p.group_repeat_count || 1);
       const repeatIndex = Number(p.group_repeat_index || 1);
       const lr = p.loss_ratio;
@@ -138,11 +150,27 @@ export default function DiscoveryRankings({
       return sortDesc ? vb - va : va - vb;
     });
     return aug;
-  }, [sourceRows, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   return (
     <div className="card">
-      <div className="card-title">Discovery Rankings</div>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>Discovery Rankings</span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter fingerprints / names"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 200,
+          }}
+        />
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         The strongest architectures discovered, ranked by a composite of learning speed, novelty, and baseline comparison.
         Higher score is better and is meant for triage (not a publication-grade metric).
@@ -237,7 +265,7 @@ export default function DiscoveryRankings({
               <tr key={p.result_id || i} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px', color: 'var(--text-muted)' }}>{i + 1}</td>
                 <td style={{ padding: '6px', fontWeight: 600, color: scoreColor(p._score) }}>
-                  <span title={`Loss ${(p._scoreBreakdown.loss || 0).toFixed(1)}/35 | Novelty ${(p._scoreBreakdown.novelty || 0).toFixed(1)}/25 | Baseline ${(p._scoreBreakdown.baseline || 0).toFixed(1)}/30 | ID ${(p._scoreBreakdown.id || 0).toFixed(1)}/10`}>
+                  <span title={`Loss ${(p._scoreBreakdown.loss || 0).toFixed(1)}/35 | Novelty ${(p._scoreBreakdown.novelty || 0).toFixed(1)}/25 | Baseline ${(p._scoreBreakdown.baseline || 0).toFixed(1)}/30 | ID ${(p._scoreBreakdown.id || 0).toFixed(1)}/10 | Efficiency ${(p._scoreBreakdown.efficiencyBonus || 0).toFixed(1)} | Routing ${(p._scoreBreakdown.routingBonus || 0).toFixed(1)} | Adaptive ${(p._scoreBreakdown.adaptiveBonus || 0).toFixed(1)}`}>
                     {p._score}
                   </span>
                 </td>

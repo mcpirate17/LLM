@@ -94,6 +94,9 @@ function ScoreCell({ entry }) {
     consistency: { label: 'Consistency', color: '#d29922' },
     tierBonus: { label: 'Tier Bonus', color: 'var(--accent-orange)' },
     throughput: { label: 'Throughput', color: 'var(--text-muted)' },
+    efficiencyBonus: { label: 'Efficiency', color: '#58a6ff' },
+    routingBonus: { label: 'Routing', color: '#3fb950' },
+    adaptiveBonus: { label: 'Adaptive Compute', color: '#c77dff' },
   };
 
   const components = Object.entries(breakdown)
@@ -265,6 +268,65 @@ function MetricRow({ label, value, color }) {
   );
 }
 
+// ── Fingerprint Leaderboard Chart ─────────────────────────────────
+
+function FingerprintLeaderboardChart({ entries }) {
+  if (!entries || entries.length < 2) return null;
+  
+  // Take top 15 for the chart
+  const top = entries.slice(0, 15);
+  const W = 600;
+  const H = 160;
+  const PAD_X = 40;
+  const PAD_Y = 20;
+  const barW = (W - 2 * PAD_X) / top.length - 8;
+  
+  const maxScore = Math.max(...top.map(e => e._score), 80);
+  
+  return (
+    <div style={{ marginBottom: 20, padding: '10px 0' }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', fontWeight: 600 }}>
+        Fingerprint Performance Ranking (Top {top.length})
+      </div>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
+        {/* Y-axis labels */}
+        {[0, 0.5, 1].map(frac => (
+          <text key={frac} x={PAD_X - 5} y={H - PAD_Y - frac * (H - 2 * PAD_Y)} 
+                fontSize={9} fill="var(--text-muted)" textAnchor="end" alignmentBaseline="middle">
+            {Math.round(frac * maxScore)}
+          </text>
+        ))}
+        
+        {/* Horizontal grid lines */}
+        {[0, 0.5, 1].map(frac => (
+          <line key={`grid-${frac}`} x1={PAD_X} y1={H - PAD_Y - frac * (H - 2 * PAD_Y)} 
+                x2={W - PAD_X} y2={H - PAD_Y - frac * (H - 2 * PAD_Y)} 
+                stroke="var(--border)" strokeWidth={0.5} strokeDasharray="2 2" />
+        ))}
+
+        {top.map((e, i) => {
+          const score = e._score || 0;
+          const barH = (score / maxScore) * (H - 2 * PAD_Y);
+          const x = PAD_X + i * (barW + 8);
+          const y = H - PAD_Y - barH;
+          const color = scoreColor(score);
+          
+          return (
+            <g key={e.result_id || i}>
+              <rect x={x} y={y} width={barW} height={barH} fill={`${color}88`} stroke={color} strokeWidth={1} rx={2} />
+              <text x={x + barW / 2} y={H - 5} fontSize={8} fill="var(--text-muted)" 
+                    textAnchor="middle" transform={`rotate(45 ${x + barW / 2} ${H - 5})`}>
+                {e.display_name?.slice(0, 8) || e.graph_fingerprint?.slice(0, 6)}
+              </text>
+              <title>{e.display_name || e.graph_fingerprint}: Score {score}</title>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 // ── Main Component ─────────────────────────────────────────────────
 
 const COLUMNS = [
@@ -309,6 +371,7 @@ function Discoveries({
   const [expandedRowId, setExpandedRowId] = useState(null);
   const [highlightId, setHighlightId] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [showChart, setShowChart] = useState(true);
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
   const highlightRef = useRef(null);
 
@@ -317,10 +380,10 @@ function Discoveries({
     try {
       if (typeof window === 'undefined') return;
       window.localStorage.setItem(DISCOVERIES_PREFS_KEY, JSON.stringify({
-        activeTier, sortKey, sortDesc, searchQuery,
+        activeTier, sortKey, sortDesc, searchQuery, showChart,
       }));
     } catch {}
-  }, [activeTier, sortKey, sortDesc, searchQuery]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showChart]);
 
   // Handle external highlight
   useEffect(() => {
@@ -424,7 +487,23 @@ function Discoveries({
       </div>
 
       {/* Summary bar */}
-      <SummaryBar tierCounts={tierCounts} />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <SummaryBar tierCounts={tierCounts} />
+        </div>
+        <button
+          className={`refresh-btn ${showChart ? 'active' : ''}`}
+          style={{ padding: '8px 12px', fontSize: 12 }}
+          onClick={() => setShowChart(!showChart)}
+          title={showChart ? 'Hide performance chart' : 'Show performance chart'}
+        >
+          {showChart ? 'Hide Chart' : 'Show Chart'}
+        </button>
+      </div>
+
+      {showChart && filtered.length > 0 && (
+        <FingerprintLeaderboardChart entries={filtered} />
+      )}
 
       {/* Tier filter tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -590,9 +669,18 @@ function Discoveries({
                           </button>
                           {onOpenInDesigner && (
                             <button
-                              onClick={() => onOpenInDesigner(entry.result_id)}
-                              style={{ ...actionBtnStyle, borderColor: 'var(--accent-purple)', color: 'var(--accent-purple)' }}
-                              title="Open architecture in visual designer"
+                              onClick={() => {
+                                if (entry.result_id) onOpenInDesigner(entry.result_id)
+                              }}
+                              disabled={!entry.result_id}
+                              style={{
+                                ...actionBtnStyle,
+                                borderColor: 'var(--accent-purple)',
+                                color: 'var(--accent-purple)',
+                                opacity: entry.result_id ? 1 : 0.5,
+                                cursor: entry.result_id ? 'pointer' : 'not-allowed',
+                              }}
+                              title={entry.result_id ? 'Open architecture in visual designer' : 'Designer unavailable: missing result ID'}
                             >
                               Designer
                             </button>

@@ -134,7 +134,7 @@ def run_dense_vs_structured_sparse_ablation(
 ) -> Dict[str, Any]:
     """Compare dense vs structured sparse linear ops on speed and training loss."""
     from ..synthesis.graph import ComputationGraph
-    from ..synthesis.compiler import compile_model
+    from ..scientist.native_runner import compile_model_native_first as compile_model
 
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     torch.manual_seed(13)

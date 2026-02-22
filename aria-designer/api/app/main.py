@@ -24,6 +24,7 @@ from .marketplace import search_marketplace, install_component
 from .diff import diff_graphs
 from .collaboration import collab_manager
 from .property_audit import audit_components
+from .benchmark_targets import benchmark_target_catalog, build_benchmark_analysis
 from .models import (
     ApplyPatchRequest,
     AskAriaPromptRequest,
@@ -32,6 +33,7 @@ from .models import (
     ComponentConfigValidateRequest,
     ComponentModel,
     RunWorkflowRequest,
+    SuggestComponentsRequest,
     ValidateWorkflowRequest,
     ValidateWorkflowResponse,
     ValidationIssue,
@@ -45,9 +47,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 try:
     from runtime.dispatch import KernelDispatcher
     from runtime.compiler import compile_workflow as runtime_compile
+    from runtime.port_dtypes import find_unsupported_edge_dtype_pairings
 except ImportError:
     KernelDispatcher = None
     runtime_compile = None
+    find_unsupported_edge_dtype_pairings = None
 
 try:
     from runtime.export import export_onnx
@@ -644,22 +648,41 @@ def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
         else:
             comp_cache[node.id] = comp
 
-    # Validate port type compatibility
-    for edge in workflow.edges:
-        src_comp = comp_cache.get(edge.source)
-        tgt_comp = comp_cache.get(edge.target)
-        
-        if src_comp and tgt_comp:
-            # Find port definitions
+    # Validate manifest-port dtype compatibility for all edges.
+    workflow_payload = workflow.model_dump()
+    if find_unsupported_edge_dtype_pairings is not None:
+        dtype_issues = find_unsupported_edge_dtype_pairings(
+            workflow_payload,
+            lambda component_type: db.get_component(component_type),
+        )
+        for issue in dtype_issues:
+            issues.append(ValidationIssue(
+                severity="error",
+                code="unsupported_edge_dtype_pairing",
+                message=issue["message"],
+                edge_id=issue.get("edge_id") or None,
+            ))
+    else:
+        for edge in workflow.edges:
+            src_comp = comp_cache.get(edge.source)
+            tgt_comp = comp_cache.get(edge.target)
+            if not src_comp or not tgt_comp:
+                continue
+
             src_port = next((p for p in src_comp.get("outputs", []) if p["name"] == edge.source_port), None)
             tgt_port = next((p for p in tgt_comp.get("inputs", []) if p["name"] == edge.target_port), None)
-            
-            if src_port and tgt_port:
-                if src_port["dtype"] != tgt_port["dtype"]:
-                    issues.append(ValidationIssue(
-                        severity="error", code="type_mismatch",
-                        message=f"Type mismatch on edge {edge.id}: {edge.source}({src_port['dtype']}) -> {edge.target}({tgt_port['dtype']})",
-                    ))
+            if src_port and tgt_port and src_port["dtype"] != tgt_port["dtype"]:
+                issues.append(ValidationIssue(
+                    severity="error",
+                    code="unsupported_edge_dtype_pairing",
+                    message=(
+                        f"Unsupported edge dtype pairing on edge {edge.id}: "
+                        f"{edge.source}.{edge.source_port} ({src_port['dtype']}) -> "
+                        f"{edge.target}.{edge.target_port} ({tgt_port['dtype']}). "
+                        "Supported pairings currently require matching source/target dtypes."
+                    ),
+                    edge_id=edge.id,
+                ))
 
     # Cycle detection and graph structure using native C validator if available
     if KernelDispatcher:
@@ -962,9 +985,9 @@ def reject_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/v1/aria/suggest-components")
-def get_suggestions(req: ValidateWorkflowRequest) -> List[Dict[str, Any]]:
+def get_suggestions(req: SuggestComponentsRequest) -> List[Dict[str, Any]]:
     """Suggest components based on current graph state."""
-    return suggest_components(req.workflow.model_dump())
+    return suggest_components(req.workflow.model_dump(), prompt=req.prompt)
 
 
 def _infer_component_from_prompt(prompt: str, fallback_suggestions: List[Dict[str, Any]]) -> Optional[str]:
@@ -1101,6 +1124,24 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
             "node_id": node_id,
             "payload": {key_raw: value},
         })
+
+    # Data/control optimization: "optimize data/control", "fix schema", etc.
+    if "optimize" in lower and ("data" in lower or "control" in lower or "workflow" in lower):
+        # Heuristic: ensure join/filter have reasonable defaults or explicit keys.
+        for node in nodes:
+            ctype = str(node.get("component_type", ""))
+            if "join" in ctype:
+                ops.append({
+                    "op": "mutate_param",
+                    "node_id": node["id"],
+                    "payload": {"join_type": "inner"}, # Safer default for optimization
+                })
+            if "filter" in ctype:
+                ops.append({
+                    "op": "mutate_param",
+                    "node_id": node["id"],
+                    "payload": {"filter_scope": "dataset_row"},
+                })
 
     # Add-node fallback: if no explicit edit pattern was found.
     if not ops:
@@ -1290,6 +1331,10 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
         seq_len=budget.get("seq_len", 128),
     )
     result_dict = result.to_dict()
+    result_dict["benchmarking"] = build_benchmark_analysis(
+        result_dict,
+        external_observed=budget.get("benchmark_observed"),
+    )
     run_id = f"eval_{uuid4().hex[:12]}"
     result_dict["run_id"] = run_id
     result_dict["semantic_warnings"] = semantic_warnings
@@ -1321,6 +1366,7 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
             "sandbox_passed": result_dict.get("sandbox_passed"),
             "overall_novelty": result_dict.get("overall_novelty"),
             "efficiency_score": result_dict.get("efficiency_score"),
+            "benchmark_target_score": (result_dict.get("benchmarking") or {}).get("summary", {}).get("score"),
         },
         "payload": result_dict,
         "created_at": _time_mod.time(),
@@ -1409,6 +1455,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                         "sandbox_passed": (accumulated.get("sandbox") or {}).get("passed"),
                         "overall_novelty": (accumulated.get("novelty") or {}).get("overall_novelty"),
                         "efficiency_score": (accumulated.get("compression") or {}).get("efficiency_score"),
+                        "benchmark_target_score": (accumulated.get("benchmarking") or {}).get("summary", {}).get("score"),
                     },
                     "payload": {
                         "error": error,
@@ -1418,6 +1465,12 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                     "created_at": _time_mod.time(),
                 }
                 lineage_synced = _sync_lineage_to_research(lineage_payload)
+
+        def _attach_benchmarking():
+            accumulated["benchmarking"] = build_benchmark_analysis(
+                accumulated,
+                external_observed=budget.get("benchmark_observed"),
+            )
 
         # Emit run_id so the client can poll REST later if the stream drops
         yield f"event: run_id\ndata: {_json({'run_id': run_id})}\n\n"
@@ -1448,8 +1501,9 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             elapsed = (_time.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'conversion', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
             total_ms = (_time.monotonic() - total_t0) * 1000
+            _attach_benchmarking()
             _persist_done("error", error=str(e), error_stage="conversion", total_ms=round(total_ms, 1))
-            yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'conversion', 'total_time_ms': round(total_ms, 1)})}\n\n"
+            yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'conversion', 'total_time_ms': round(total_ms, 1), 'benchmarking': accumulated.get('benchmarking')})}\n\n"
             return
 
         # --- Stage 2: profiling ---
@@ -1504,8 +1558,9 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             elapsed = (_time.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'compilation', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
             total_ms = (_time.monotonic() - total_t0) * 1000
+            _attach_benchmarking()
             _persist_done("error", error=str(e), error_stage="compilation", total_ms=round(total_ms, 1))
-            yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'compilation', 'total_time_ms': round(total_ms, 1)})}\n\n"
+            yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'compilation', 'total_time_ms': round(total_ms, 1), 'benchmarking': accumulated.get('benchmarking')})}\n\n"
             return
 
         # --- Stage 4: sandbox ---
@@ -1526,21 +1581,24 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "peak_memory_mb": float(getattr(sandbox, "peak_memory_mb", 0)),
                 "grad_norm": float(getattr(sandbox, "grad_norm", 0)),
                 "stability_score": float(getattr(sandbox, "stability_score", 0)),
+                "native_abi_probe": getattr(sandbox, "native_abi_probe", None),
             }
             accumulated["sandbox"] = metrics
             _persist_stage("sandbox", {"status": "done", "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'sandbox', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
             if not sandbox.passed:
                 total_ms = (_time.monotonic() - total_t0) * 1000
+                _attach_benchmarking()
                 _persist_done("failed_sandbox", error=getattr(sandbox, 'error', 'sandbox failed'), error_stage="sandbox", total_ms=round(total_ms, 1))
-                yield f"event: done\ndata: {_json({'status': 'failed_sandbox', 'error': getattr(sandbox, 'error', 'sandbox failed'), 'total_time_ms': round(total_ms, 1), 'result': accumulated})}\n\n"
+                yield f"event: done\ndata: {_json({'status': 'failed_sandbox', 'error': getattr(sandbox, 'error', 'sandbox failed'), 'total_time_ms': round(total_ms, 1), 'result': accumulated, 'benchmarking': accumulated.get('benchmarking')})}\n\n"
                 return
         except Exception as e:
             elapsed = (_time.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'sandbox', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
             total_ms = (_time.monotonic() - total_t0) * 1000
+            _attach_benchmarking()
             _persist_done("error", error=str(e), error_stage="sandbox", total_ms=round(total_ms, 1))
-            yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'sandbox', 'total_time_ms': round(total_ms, 1)})}\n\n"
+            yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'sandbox', 'total_time_ms': round(total_ms, 1), 'benchmarking': accumulated.get('benchmarking')})}\n\n"
             return
 
         # --- Stage 5: compression ---
@@ -1616,8 +1674,9 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
         # --- Done ---
         total_ms = (_time.monotonic() - total_t0) * 1000
+        _attach_benchmarking()
         _persist_done("success", total_ms=round(total_ms, 1))
-        yield f"event: done\ndata: {_json({'status': 'success', 'total_time_ms': round(total_ms, 1), 'result': accumulated})}\n\n"
+        yield f"event: done\ndata: {_json({'status': 'success', 'total_time_ms': round(total_ms, 1), 'result': accumulated, 'benchmarking': accumulated.get('benchmarking')})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1765,6 +1824,54 @@ def get_eval_run_sandbox(run_id: str) -> Dict[str, Any]:
         "run_id": run_id,
         **sandbox.get("metrics", {}),
     }
+
+
+@app.get("/api/v1/eval/runs/{run_id}/benchmarking")
+def get_eval_run_benchmarking(run_id: str) -> Dict[str, Any]:
+    """Get benchmark target comparison for a run.
+
+    Includes target table, on/off-target summary, and scaling projection.
+    """
+    run = _get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    if run.get("status") == "running":
+        raise HTTPException(status_code=409, detail="Benchmarking not final while run is still running")
+    result_payload = run.get("result") or {}
+    benchmarking = result_payload.get("benchmarking")
+    if not benchmarking:
+        stage_metrics = {
+            name: (stage.get("metrics") if isinstance(stage, dict) else None)
+            for name, stage in (run.get("stages") or {}).items()
+            if isinstance(stage, dict)
+        }
+        benchmarking = build_benchmark_analysis(stage_metrics)
+    return {
+        "run_id": run_id,
+        **benchmarking,
+    }
+
+
+@app.get("/api/v1/benchmarks/targets")
+def get_benchmark_targets(run_id: Optional[str] = Query(None, description="Optional run_id for live target comparison")) -> Dict[str, Any]:
+    """Return benchmark target catalog and optional run-specific comparison."""
+    payload: Dict[str, Any] = benchmark_target_catalog()
+    if run_id:
+        run = _get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+        result_payload = run.get("result") or {}
+        benchmarking = result_payload.get("benchmarking")
+        if not benchmarking:
+            stage_metrics = {
+                name: (stage.get("metrics") if isinstance(stage, dict) else None)
+                for name, stage in (run.get("stages") or {}).items()
+                if isinstance(stage, dict)
+            }
+            benchmarking = build_benchmark_analysis(stage_metrics)
+        payload["run_id"] = run_id
+        payload["analysis"] = benchmarking
+    return payload
 
 
 @app.post("/api/v1/workflows/profile")

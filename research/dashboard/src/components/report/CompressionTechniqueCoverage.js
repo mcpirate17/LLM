@@ -1,7 +1,11 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { parseArchSpec, COMPRESSION_FACTORS, WEIGHT_STORAGE_LABELS, TOKEN_REP_LABELS } from './reportUtils';
+import { filterRowsByQuery } from '../../utils/tableFiltering';
 
 export default function CompressionTechniqueCoverage({ programs }) {
+  const [sortKey, setSortKey] = useState('count');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
   const analysis = useMemo(() => {
     const byTechnique = {};
     let denseCount = 0;
@@ -33,7 +37,7 @@ export default function CompressionTechniqueCoverage({ programs }) {
       }
     }
 
-    const sorted = Object.entries(byTechnique)
+    const rows = Object.entries(byTechnique)
       .map(([technique, m]) => ({
         technique,
         label: WEIGHT_STORAGE_LABELS[technique] || TOKEN_REP_LABELS[technique] || technique,
@@ -44,11 +48,35 @@ export default function CompressionTechniqueCoverage({ programs }) {
         factor: COMPRESSION_FACTORS[technique] || 1.0,
         bestLoss: m.bestLoss < Infinity ? m.bestLoss : null,
         bestFingerprint: m.bestFingerprint,
-      }))
-      .sort((a, b) => b.count - a.count);
+      }));
 
-    return { sorted, denseCount, compressedCount, total: programs.length };
+    return { rows, denseCount, compressedCount, total: programs.length };
   }, [programs]);
+
+  const filtered = useMemo(() => (
+    filterRowsByQuery(analysis.rows, filterQuery, ['technique', 'label', 'bestFingerprint'])
+  ), [analysis.rows, filterQuery]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const va = a[sortKey];
+      const vb = b[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') {
+        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      }
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) setSortDesc(!sortDesc);
+    else { setSortKey(key); setSortDesc(true); }
+  };
 
   if (analysis.compressedCount === 0) return null;
 
@@ -81,21 +109,52 @@ export default function CompressionTechniqueCoverage({ programs }) {
         </div>
       </div>
 
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter techniques"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Technique</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>N</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>S1 Rate</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Avg Loss</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Avg Params</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Est. Ratio</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Best (Loss)</th>
+              <th onClick={() => handleSort('label')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Technique{sortKey === 'label' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('count')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                N{sortKey === 'count' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('s1Rate')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                S1 Rate{sortKey === 's1Rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Avg Loss{sortKey === 'avgLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgParams')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Avg Params{sortKey === 'avgParams' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('factor')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Est. Ratio{sortKey === 'factor' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('bestLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Best (Loss){sortKey === 'bestLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {analysis.sorted.map(row => (
+            {sorted.map(row => (
               <tr key={row.technique} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px 8px', fontWeight: 600, color: row.factor < 1 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>
                   {row.label}

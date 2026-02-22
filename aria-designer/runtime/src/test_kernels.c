@@ -127,6 +127,63 @@ static void test_rmsnorm(void) {
     ASSERT_NEAR(y[3], 4.0f / rms, 1e-4, "rmsnorm[3]");
 }
 
+static void test_softmax(void) {
+    float x[] = {1.0f, 2.0f, 3.0f};
+    float y[3];
+    aria_softmax_f32(x, y, 1, 3);
+    /* Probabilities must sum to 1 */
+    float sum = y[0] + y[1] + y[2];
+    ASSERT_NEAR(sum, 1.0f, 1e-5, "softmax:sum=1");
+    /* Ordering preserved */
+    tests_run++;
+    if (y[0] < y[1] && y[1] < y[2]) { tests_passed++; }
+    else { printf("FAIL: softmax:ordering\n"); }
+}
+
+static void test_layernorm(void) {
+    float x[] = {1.0f, 2.0f, 3.0f, 4.0f};  /* batch=2, dim=2 */
+    float w[] = {1.0f, 1.0f};
+    float b[] = {0.0f, 0.0f};
+    float y[4];
+    aria_layernorm_f32(x, w, b, y, 2, 2, 1e-5f);
+    /* Each pair should be normalized to mean ~0 */
+    ASSERT_NEAR(y[0] + y[1], 0.0f, 1e-4, "layernorm:mean0");
+    ASSERT_NEAR(y[2] + y[3], 0.0f, 1e-4, "layernorm:mean0[1]");
+}
+
+static void test_concat_split(void) {
+    float a[] = {1.0f, 2.0f};
+    float b[] = {3.0f, 4.0f, 5.0f};
+    const float *inputs[] = {a, b};
+    int64_t sizes[] = {2, 3};
+    float output[5];
+    aria_concat_f32(inputs, sizes, 2, output);
+    ASSERT_NEAR(output[0], 1.0f, 1e-6, "concat[0]");
+    ASSERT_NEAR(output[2], 3.0f, 1e-6, "concat[2]");
+    ASSERT_NEAR(output[4], 5.0f, 1e-6, "concat[4]");
+
+    /* Split back */
+    float out_a[2], out_b[3];
+    float *outputs[] = {out_a, out_b};
+    aria_split_f32(output, outputs, sizes, 2);
+    ASSERT_NEAR(out_a[0], 1.0f, 1e-6, "split[a][0]");
+    ASSERT_NEAR(out_a[1], 2.0f, 1e-6, "split[a][1]");
+    ASSERT_NEAR(out_b[0], 3.0f, 1e-6, "split[b][0]");
+    ASSERT_NEAR(out_b[2], 5.0f, 1e-6, "split[b][2]");
+}
+
+static void test_transpose(void) {
+    float x[] = {1, 2, 3, 4, 5, 6};  /* 2x3 matrix */
+    float y[6];  /* 3x2 result */
+    aria_transpose2d_f32(x, y, 2, 3);
+    ASSERT_NEAR(y[0], 1.0f, 1e-6, "transpose[0,0]");
+    ASSERT_NEAR(y[1], 4.0f, 1e-6, "transpose[0,1]");
+    ASSERT_NEAR(y[2], 2.0f, 1e-6, "transpose[1,0]");
+    ASSERT_NEAR(y[3], 5.0f, 1e-6, "transpose[1,1]");
+    ASSERT_NEAR(y[4], 3.0f, 1e-6, "transpose[2,0]");
+    ASSERT_NEAR(y[5], 6.0f, 1e-6, "transpose[2,1]");
+}
+
 /* ── Graph validator tests ─────────────────────────────────────────── */
 
 static void test_valid_dag(void) {
@@ -337,6 +394,10 @@ int main(void) {
     test_matmul();
     test_linear();
     test_rmsnorm();
+    test_softmax();
+    test_layernorm();
+    test_concat_split();
+    test_transpose();
 
     /* Graph validator tests */
     test_valid_dag();

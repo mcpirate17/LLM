@@ -23,4 +23,9 @@ dist/
 # Native build artifacts
 runtime/lib/*.so
 runtime/lib/*.dylib
+runtime/obj/
 *.o
+
+# Test runner artifacts
+e2e/test-results/
+test-results/

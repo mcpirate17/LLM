@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native_ir.v1",
+  "title": "Native Runner IR v1",
+  "type": "object",
+  "required": ["schema_version", "model_dim", "nodes", "edges", "output_node_id"],
+  "properties": {
+    "schema_version": {"const": "native_ir.v1"},
+    "model_dim": {"type": "integer", "minimum": 1},
+    "metadata": {"type": "object", "additionalProperties": true},
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "op_name", "input_ids", "config"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "op_name": {"type": "string", "minLength": 1},
+          "input_ids": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0}
+          },
+          "config": {"type": "object", "additionalProperties": true},
+          "is_input": {"type": "boolean"},
+          "is_output": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "target"],
+        "properties": {
+          "source": {"type": "integer", "minimum": 0},
+          "target": {"type": "integer", "minimum": 0},
+          "source_port": {"type": "string"},
+          "target_port": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "output_node_id": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": false
+}

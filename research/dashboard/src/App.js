@@ -26,6 +26,7 @@ import ActionQueue from './components/ActionQueue';
 import AriaChatPanel from './components/AriaChatPanel';
 import ArchitectureDrawer from './components/ArchitectureDrawer';
 import StatusBar from './components/StatusBar';
+import NativeProfilePanel from './components/NativeProfilePanel';
 import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
 import apiService from './services/apiService';
@@ -34,6 +35,31 @@ import './App.css';
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
 const AUTO_REPAIR_SHOW_COMPLETED_KEY = 'aria_auto_repair_show_completed_v1';
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="card" style={{ border: '1px solid var(--accent-red)', padding: 20 }}>
+          <h3 style={{ color: 'var(--accent-red)' }}>Component crashed</h3>
+          <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{this.state.error?.message}</p>
+          <button className="refresh-btn" onClick={() => this.setState({ hasError: false })}>Retry</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function normalizeQueue(items) {
   if (!Array.isArray(items)) return [];
@@ -152,6 +178,73 @@ const LOG_SUB_TABS = [
   { key: 'cycles', label: 'Cycles' },
 ];
 
+const ANALYTICS_SUB_TABS = [
+  { key: 'trends', label: 'Trends' },
+  { key: 'insights', label: 'Insights' },
+  { key: 'learning', label: 'Learning' },
+];
+
+function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onNavigateStrategy }) {
+  const [analyticsView, setAnalyticsView] = useState('trends');
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+        {ANALYTICS_SUB_TABS.map(st => (
+          <button
+            key={st.key}
+            className="refresh-btn"
+            style={{
+              fontSize: 12,
+              padding: '4px 12px',
+              fontWeight: analyticsView === st.key ? 700 : 400,
+              background: analyticsView === st.key ? 'var(--accent-blue)' : 'transparent',
+              color: analyticsView === st.key ? '#fff' : 'var(--text-secondary)',
+              borderColor: analyticsView === st.key ? 'var(--accent-blue)' : 'var(--border)',
+            }}
+            onClick={() => setAnalyticsView(st.key)}
+          >
+            {st.label}
+          </button>
+        ))}
+      </div>
+      {analyticsView === 'trends' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, alignItems: 'start' }}>
+          <ErrorBoundary>
+            <TrendCharts onSelectExperiment={onSelectExperiment} />
+          </ErrorBoundary>
+          <ErrorBoundary>
+            <div>
+              {tabErrors.insights && (
+                <div className="error-banner" style={{ marginBottom: 12 }}>
+                  Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
+                </div>
+              )}
+              <InsightsPanel insights={tabData.insights || data?.insights} compact />
+            </div>
+          </ErrorBoundary>
+        </div>
+      )}
+      {analyticsView === 'insights' && (
+        <ErrorBoundary>
+          <div>
+            {tabErrors.insights && (
+              <div className="error-banner" style={{ marginBottom: 12 }}>
+                Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
+              </div>
+            )}
+            <InsightsPanel insights={tabData.insights || data?.insights} />
+          </div>
+        </ErrorBoundary>
+      )}
+      {analyticsView === 'learning' && (
+        <ErrorBoundary>
+          <LearningPanel onNavigateStrategy={onNavigateStrategy} />
+        </ErrorBoundary>
+      )}
+    </>
+  );
+}
+
 function LogTab({ entries, entriesError, onSelectExperiment }) {
   const [logView, setLogView] = useState('notebook');
   return (
@@ -190,6 +283,69 @@ function LogTab({ entries, entriesError, onSelectExperiment }) {
   );
 }
 
+function QuickAnalyticsPreview({ deltas, learningTrajectory, summary, onOpenAnalytics }) {
+  const trend = learningTrajectory?.trend;
+  const trendLabel = trend === 'improving'
+    ? 'Improving'
+    : trend === 'declining'
+      ? 'Declining'
+      : trend === 'plateaued'
+        ? 'Plateaued'
+        : 'Insufficient data';
+  const trendColor = trend === 'improving'
+    ? 'var(--accent-green)'
+    : trend === 'declining'
+      ? 'var(--accent-red, #e74c3c)'
+      : 'var(--accent-yellow)';
+
+  const deltaLoss = deltas?.best_loss;
+  const deltaNovelty = deltas?.best_novelty;
+  const deltaStage1 = deltas?.stage1;
+  const deltaPrograms = deltas?.programs;
+
+  const routingEntropy = summary?.avg_routing_entropy;
+  const depthSavings = summary?.avg_depth_savings;
+  const avgThroughput = summary?.avg_throughput_tok_s;
+  const avgRecursionSavings = summary?.avg_recursion_savings;
+  const avgRoutingRetention = summary?.avg_routing_token_retention;
+
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <span>Quick Analytics</span>
+        <button className="refresh-btn" onClick={onOpenAnalytics} style={{ fontSize: 11 }}>
+          Open Analytics
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+        <div>
+          Trend: <strong style={{ color: trendColor }}>{trendLabel}</strong>
+          {learningTrajectory?.slope != null && (
+            <span style={{ color: trendColor }}> · {learningTrajectory.slope > 0 ? '+' : ''}{(learningTrajectory.slope * 100).toFixed(2)}%/exp</span>
+          )}
+        </div>
+        <div>
+          Δ Loss: {deltaLoss != null ? `${deltaLoss > 0 ? '+' : ''}${deltaLoss.toFixed(4)}` : 'n/a'} ·
+          Δ Novelty: {deltaNovelty != null ? `${deltaNovelty > 0 ? '+' : ''}${deltaNovelty.toFixed(3)}` : 'n/a'}
+        </div>
+        <div>
+          Δ S1 survivors: {deltaStage1 != null ? `${deltaStage1 > 0 ? '+' : ''}${deltaStage1}` : 'n/a'} ·
+          Δ Programs: {deltaPrograms != null ? `${deltaPrograms > 0 ? '+' : ''}${deltaPrograms}` : 'n/a'}
+        </div>
+        <div>
+          Avg throughput: {avgThroughput != null ? `${Math.round(avgThroughput).toLocaleString()} tok/s` : 'n/a'} ·
+          Routing entropy: {routingEntropy != null ? routingEntropy.toFixed(2) : 'n/a'} ·
+          Token retention: {avgRoutingRetention != null ? `${(avgRoutingRetention * 100).toFixed(1)}%` : 'n/a'}
+        </div>
+        <div>
+          Depth savings: {depthSavings != null ? `${(depthSavings * 100).toFixed(1)}%` : 'n/a'} ·
+          Recursion savings: {avgRecursionSavings != null ? `${(avgRecursionSavings * 100).toFixed(1)}%` : 'n/a'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [isRunning, setIsRunning] = useState(false);
   return (
@@ -204,18 +360,18 @@ function App() {
 function AppContent({ onRunningChange }) {
   const TAB_LABELS = {
     command: 'Command',
+    trends: 'Analytics',
     experiments: 'Experiments',
     discoveries: 'Discoveries',
-    trends: 'Trends',
     perf: 'Optimization',
     reports: 'Reports',
     log: 'Log',
   };
   const TAB_TIPS = {
     command: 'Control center — start/stop experiments, see live status (1)',
-    experiments: 'Browse all experiments and their results (2)',
-    discoveries: 'Best architectures found so far, ranked by tier (3)',
-    trends: 'Is the search improving over time? Charts + insights (4)',
+    trends: 'Analytics: trends, learning signals, and diagnostic charts (2)',
+    experiments: 'Browse all experiments and their results (3)',
+    discoveries: 'Best architectures found so far, ranked by tier (4)',
     perf: 'System performance and optimization metrics (5)',
     reports: 'Publishable findings, campaigns, and knowledge base (6)',
     log: 'Raw notebook entries and cycle timeline (7)',
@@ -332,7 +488,7 @@ function AppContent({ onRunningChange }) {
 
   // Global keyboard shortcuts
   useEffect(() => {
-    const TAB_KEYS = ['command', 'experiments', 'discoveries', 'trends', 'perf', 'reports', 'log'];
+    const TAB_KEYS = ['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'];
     const handler = (e) => {
       // Ignore when typing in inputs/textareas/selects
       const tag = (e.target.tagName || '').toLowerCase();
@@ -397,7 +553,7 @@ function AppContent({ onRunningChange }) {
 
   const fetchTabFreshData = useCallback(async (tab) => {
     const endpoints = {
-      experiments: '/api/experiments',
+      experiments: '/api/experiments?n=500',
       programs: '/api/programs?n=50&sort=novelty_score',
       entries: '/api/entries?n=50',
       insights: '/api/insights',
@@ -1155,7 +1311,7 @@ function AppContent({ onRunningChange }) {
       </header>
 
       <nav className="tab-nav">
-        {['command', 'experiments', 'discoveries', 'trends', 'perf', 'reports', 'log'].map(tab => (
+        {['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'].map(tab => (
           <button
             key={tab}
             className={`tab ${activeTab === tab ? 'active' : ''}`}
@@ -1297,6 +1453,12 @@ function AppContent({ onRunningChange }) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16, marginTop: 16 }}>
               <div>
                 <SummaryCards learningTrend={learningTrajectory} />
+                <QuickAnalyticsPreview
+                  deltas={data?.deltas}
+                  learningTrajectory={learningTrajectory}
+                  summary={data?.summary}
+                  onOpenAnalytics={() => setActiveTab('trends')}
+                />
               </div>
               <div className="card" style={{ padding: 12 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Activity</div>
@@ -1352,26 +1514,20 @@ function AppContent({ onRunningChange }) {
         )}
 
         {activeTab === 'trends' && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, alignItems: 'start' }}>
-              <TrendCharts onSelectExperiment={handleSelectExperiment} />
-              <div>
-                {tabErrors.insights && (
-                  <div className="error-banner" style={{ marginBottom: 12 }}>
-                    Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
-                  </div>
-                )}
-                <InsightsPanel insights={tabData.insights || data?.insights} compact />
-              </div>
-            </div>
-            <div style={{ marginTop: 16 }}>
-              <LearningPanel onNavigateStrategy={handleNavigateStrategy} />
-            </div>
-          </>
+          <AnalyticsTab
+            data={data}
+            tabData={tabData}
+            tabErrors={tabErrors}
+            onSelectExperiment={handleSelectExperiment}
+            onNavigateStrategy={handleNavigateStrategy}
+          />
         )}
 
         {activeTab === 'perf' && (
-          <PerfDashboard />
+          <>
+            <NativeProfilePanel />
+            <PerfDashboard />
+          </>
         )}
 
         {activeTab === 'reports' && (

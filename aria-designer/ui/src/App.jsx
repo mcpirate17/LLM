@@ -68,9 +68,9 @@ function DesignerApp() {
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [helpRequest, setHelpRequest] = useState(null)
-  const [readOnly, setReadOnly] = useState(false)
-  const [embeddedMode, setEmbeddedMode] = useState(false)
-  const [evalState, setEvalState] = useState({ stages: [], status: null, totalTimeMs: null, error: null })
+  const [readOnly, setReadOnly] = useState(() => new URLSearchParams(window.location.search).get('readonly') === '1')
+  const [embeddedMode, setEmbeddedMode] = useState(() => new URLSearchParams(window.location.search).get('embedded') === '1')
+  const [evalState, setEvalState] = useState({ stages: [], status: null, totalTimeMs: null, error: null, benchmarking: null })
   const [validateUi, setValidateUi] = useState({ inProgress: false, last: 'idle', issues: 0 })
   const [stepStatus, setStepStatus] = useState({
     validate: 'idle',
@@ -84,6 +84,61 @@ function DesignerApp() {
   const reactFlowWrapper = useRef(null)
   const importInputRef = useRef(null)
   const { screenToFlowPosition, deleteElements, fitView } = useReactFlow()
+
+  const importResultIntoCanvas = useCallback(async (resultId, options = {}) => {
+    const shouldNotifyParent = Boolean(options.notifyParent)
+    const rid = String(resultId || '').trim()
+    if (!rid) return
+    setStatusMsg(`Importing architecture ${rid}...`)
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 15000)
+      const resp = await fetch(`${API_BASE}/api/v1/import/survivors/${encodeURIComponent(rid)}`, {
+        method: 'POST',
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+      if (!resp.ok) {
+        throw new Error(`Import failed: ${resp.status}`)
+      }
+      const data = await resp.json()
+      const wf = data.workflow || data
+      if (!wf || (wf.schema_version !== 'workflow_graph.v1' && !Array.isArray(wf.nodes))) {
+        throw new Error('Import returned unexpected format')
+      }
+      loadWorkflowJsonRef.current?.(wf)
+      setStatusMsg(`Loaded architecture: ${wf.name || rid}`)
+      if (shouldNotifyParent && window.parent && window.parent !== window) {
+        console.log('[Designer] posting graph-loaded to parent for', rid, '(',
+          (wf.nodes || []).length, 'nodes,', (wf.edges || []).length, 'edges)')
+        window.parent.postMessage({
+          source: 'aria-designer',
+          type: 'graph-loaded',
+          resultId: rid,
+          name: wf.name,
+          nodeCount: (wf.nodes || []).length,
+          edgeCount: (wf.edges || []).length,
+        }, '*')
+      } else {
+        console.warn('[Designer] NOT posting graph-loaded:',
+          'notifyParent=', shouldNotifyParent,
+          'hasParent=', window.parent !== window)
+      }
+    } catch (err) {
+      const message = err?.name === 'AbortError'
+        ? 'Import timed out'
+        : (err?.message || String(err))
+      setStatusMsg(`Failed to import ${rid}: ${message}`)
+      if (shouldNotifyParent && window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          source: 'aria-designer',
+          type: 'graph-load-error',
+          resultId: rid,
+          error: `Failed to import ${rid}: ${message}`,
+        }, '*')
+      }
+    }
+  }, [])
 
   const clearNodeHighlights = useCallback(() => {
     setNodes((nds) => nds.map((n) => ({ ...n, className: '', data: { ...n.data, errors: [] } })))
@@ -166,7 +221,15 @@ function DesignerApp() {
 
   // PostMessage bridge — notify parent window of state changes in embedded mode.
   const postToParent = useCallback((type, payload = {}) => {
-    if (!embeddedMode || !window.parent || window.parent === window) return
+    if (!embeddedMode || !window.parent || window.parent === window) {
+      if (type === 'embedded-ready' || type === 'graph-loaded' || type === 'graph-load-error') {
+        console.warn('[Designer] postToParent BLOCKED:', type,
+          'embeddedMode=', embeddedMode,
+          'hasParent=', Boolean(window.parent),
+          'isTop=', window.parent === window)
+      }
+      return
+    }
     window.parent.postMessage({ source: 'aria-designer', type, ...payload }, '*')
   }, [embeddedMode])
 
@@ -181,14 +244,42 @@ function DesignerApp() {
     localStorage.setItem('aria-workflow-autosave', JSON.stringify(workflow))
   }, [nodes, edges, embeddedMode, postToParent])
 
+  // Keep refs for nodes/edges so the message handler can access current
+  // values without causing the effect to re-run on every graph change.
+  const nodesRef = useRef(nodes)
+  const edgesRef = useRef(edges)
+  useEffect(() => { nodesRef.current = nodes }, [nodes])
+  useEffect(() => { edgesRef.current = edges }, [edges])
+
+  // Post embedded-ready when entering embedded mode, with retries until parent
+  // sends load-result (indicating it received our ready signal).
+  const loadResultReceived = useRef(false)
+  useEffect(() => {
+    if (!embeddedMode) return
+    loadResultReceived.current = false
+    console.log('[Designer] posting embedded-ready to parent')
+    postToParent('embedded-ready', { readOnly: Boolean(readOnly) })
+    const retryInterval = setInterval(() => {
+      if (loadResultReceived.current) { clearInterval(retryInterval); return }
+      console.log('[Designer] retrying embedded-ready')
+      postToParent('embedded-ready', { readOnly: Boolean(readOnly) })
+    }, 1000)
+    return () => clearInterval(retryInterval)
+  }, [embeddedMode, postToParent, readOnly])
+
   // Listen for commands from parent window (e.g., request current graph).
   useEffect(() => {
     if (!embeddedMode) return
     const handler = (e) => {
       if (e.data?.target !== 'aria-designer') return
       if (e.data.type === 'get-graph') {
-        const workflow = buildWorkflowJson(nodes, edges)
+        const workflow = buildWorkflowJson(nodesRef.current, edgesRef.current)
         postToParent('graph-data', { workflow })
+      }
+      if (e.data.type === 'load-result' && e.data.resultId) {
+        loadResultReceived.current = true
+        console.log('[Designer] received load-result for', e.data.resultId)
+        importResultIntoCanvas(e.data.resultId, { notifyParent: true })
       }
       if (e.data.type === 'load-graph' && e.data.graphJson) {
         try {
@@ -209,7 +300,7 @@ function DesignerApp() {
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
-  }, [embeddedMode, nodes, edges, postToParent])
+  }, [embeddedMode, importResultIntoCanvas, postToParent])
 
   // URL param handling — load a workflow from research pipeline when embedded.
   // Supports: ?import_result_id=res_xxx&readonly=1&embedded=1
@@ -226,38 +317,9 @@ function DesignerApp() {
 
     if (resultId) {
       urlParamsHandled.current = true
-      setStatusMsg(`Importing architecture ${resultId}...`)
-      fetch(`${API_BASE}/api/v1/import/survivors/${resultId}`, { method: 'POST' })
-        .then((r) => {
-          if (!r.ok) throw new Error(`Import failed: ${r.status}`)
-          return r.json()
-        })
-        .then((data) => {
-          const wf = data.workflow || data
-          if (wf.schema_version === 'workflow_graph.v1') {
-            loadWorkflowJsonRef.current?.(wf)
-            setStatusMsg(`Loaded architecture: ${wf.name || resultId}`)
-            // Post directly — postToParent may have stale embeddedMode=false
-            if (isEmbedded && window.parent && window.parent !== window) {
-              window.parent.postMessage({
-                source: 'aria-designer',
-                type: 'graph-loaded',
-                resultId,
-                name: wf.name,
-                nodeCount: (wf.nodes || []).length,
-                edgeCount: (wf.edges || []).length,
-              }, '*')
-            }
-          } else {
-            setStatusMsg(`Import returned unexpected format`)
-          }
-        })
-        .catch((err) => {
-          console.error('URL param import failed:', err)
-          setStatusMsg(`Failed to import ${resultId}: ${err.message}`)
-        })
+      importResultIntoCanvas(resultId, { notifyParent: isEmbedded })
     }
-  }, [components, postToParent])
+  }, [components, importResultIntoCanvas, postToParent])
 
   useEffect(() => () => {
     Object.values(validateTimersRef.current).forEach((t) => clearTimeout(t))
@@ -753,7 +815,7 @@ function DesignerApp() {
     setStepStatus((s) => ({ ...s, run: 'running' }))
 
     const workflow = buildWorkflowJson(nodes, edges)
-    setEvalState({ stages: [], status: 'running', totalTimeMs: null, error: null })
+    setEvalState({ stages: [], status: 'running', totalTimeMs: null, error: null, benchmarking: null })
     setRightPanelTab('results')
     setStatusMsg('Deep Run: starting...')
     setRunStatus({ phase: 'running', message: 'Deep Run: starting...', metrics: null })
@@ -859,6 +921,7 @@ function DesignerApp() {
                   status: payload.status,
                   totalTimeMs: payload.total_time_ms,
                   error: payload.error || null,
+                  benchmarking: payload.benchmarking || payload.result?.benchmarking || prev.benchmarking || null,
                 }))
                 setStatusMsg(doneMsg)
                 setRunStatus({
@@ -1089,15 +1152,16 @@ function DesignerApp() {
     }
   }, [setNodes, setEdges])
 
-  const handleAskAriaSuggest = useCallback(async () => {
+  const handleAskAriaSuggest = useCallback(async (promptText = '') => {
     const workflow = buildWorkflowJson(nodes, edges)
+    const prompt = String(promptText || '').trim()
     setAriaLoading(true)
     setStatusMsg('Fetching Aria suggestions...')
     try {
       const res = await fetch(`${API_BASE}/api/v1/aria/suggest-components`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workflow }),
+        body: JSON.stringify({ workflow, prompt: prompt || undefined }),
       })
       const data = await res.json()
       const suggestions = Array.isArray(data) ? data : []
@@ -1114,6 +1178,17 @@ function DesignerApp() {
     const prompt = String(promptText || '').trim()
     if (!prompt) return
     const workflow = buildWorkflowJson(nodes, edges)
+    const benchmarkSummary = evalState?.benchmarking?.summary || null
+    const offTarget = Array.isArray(evalState?.benchmarking?.targets)
+      ? evalState.benchmarking.targets.filter((t) => t.status === 'off_target').slice(0, 4)
+      : []
+    const benchmarkContext = benchmarkSummary
+      ? `Benchmark context: score ${(benchmarkSummary.score ?? 0).toFixed(2)} with ${benchmarkSummary.on_target || 0} on-target and ${benchmarkSummary.off_target || 0} off-target metrics.`
+      : ''
+    const offTargetContext = offTarget.length > 0
+      ? `Highest-priority gaps: ${offTarget.map((t) => `${t.label} (observed=${t.observed ?? 'n/a'}, target=${t.target})`).join('; ')}.`
+      : ''
+    const effectivePrompt = [benchmarkContext, offTargetContext, prompt].filter(Boolean).join(' ')
     setAriaLoading(true)
     setStatusMsg('Generating Aria patch...')
 
@@ -1122,7 +1197,7 @@ function DesignerApp() {
       const res = await fetch(`${API_BASE}/api/v1/aria/generate-patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workflow, prompt, base_version: 1 }),
+        body: JSON.stringify({ workflow, prompt: effectivePrompt, base_version: 1 }),
       })
       const data = await res.json()
       if (res.ok && data.proposal_id) {
@@ -1183,7 +1258,7 @@ function DesignerApp() {
         workflow_id: workflow.workflow_id,
         base_version: 1,
         author: 'aria',
-        rationale: `Prompt: ${prompt}`,
+        rationale: `Prompt: ${effectivePrompt}`,
         expected_impact: { summary: 'User-directed change proposal' },
         ops,
       }
@@ -1207,7 +1282,7 @@ function DesignerApp() {
     } finally {
       setAriaLoading(false)
     }
-  }, [nodes, edges, ariaSuggestions])
+  }, [nodes, edges, ariaSuggestions, evalState])
 
   // Patch Application
   const handleApplyPatch = useCallback(async (proposalId) => {

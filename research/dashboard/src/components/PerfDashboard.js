@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, formatDuration } from '../utils/format';
 import apiService from '../services/apiService';
+import { filterRowsByQuery } from '../utils/tableFiltering';
+import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 
-function MiniPerfChart({ data, valueKey, label, color, formatValue, suffix = '' }) {
+const PERF_CHART_WINDOW = 30;
+
+function MiniPerfChart({ data, valueKey, label, color, formatValue, suffix = '', scaleKey }) {
   if (!data || data.length < 2) {
     return (
       <div style={{ textAlign: 'center', padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>
@@ -11,7 +15,8 @@ function MiniPerfChart({ data, valueKey, label, color, formatValue, suffix = '' 
     );
   }
 
-  const values = data.map(d => d[valueKey]).filter(v => v != null && v > 0);
+  const windowed = data.slice(-PERF_CHART_WINDOW);
+  const values = windowed.map(d => d[valueKey]).filter(v => v != null && v > 0);
   if (values.length < 2) return (
     <div style={{ textAlign: 'center', padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>
       Insufficient perf data for {label}
@@ -22,17 +27,24 @@ function MiniPerfChart({ data, valueKey, label, color, formatValue, suffix = '' 
   const H = 100;
   const PAD = 20;
 
-  const min = Math.min(...values) * 0.9;
-  const max = Math.max(...values) * 1.1;
+  const defaults = CHART_DEFAULTS[scaleKey] || { min: 0, max: 1 };
+  const scale = getFixedScale(`perf.${scaleKey}`, values, {
+    defaultMin: defaults.min,
+    defaultMax: defaults.max,
+  });
+  const min = scale.min;
+  const max = scale.max;
   const range = max - min || 1;
 
-  const points = data
+  const denom = Math.max(1, PERF_CHART_WINDOW - 1);
+  const points = windowed
     .map((d, i) => {
       const v = d[valueKey];
       if (v == null || v === 0) return null;
-      const x = PAD + (i / (data.length - 1)) * (W - 2 * PAD);
-      const y = H - PAD - ((v - min) / range) * (H - 2 * PAD);
-      return { x, y, v, idx: i };
+      const x = PAD + (i / denom) * (W - 2 * PAD);
+      const clamped = clampToScale(v, scale);
+      const y = H - PAD - ((clamped - min) / range) * (H - 2 * PAD);
+      return { x, y, v: clamped, idx: i };
     })
     .filter(Boolean);
 
@@ -71,6 +83,9 @@ function PerfDashboard() {
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [filterQuery, setFilterQuery] = useState('');
+  const [sortKey, setSortKey] = useState('avg_cuda_ms');
+  const [sortDesc, setSortDesc] = useState(true);
 
   useEffect(() => {
     apiService.getTrends()
@@ -96,6 +111,35 @@ function PerfDashboard() {
     }
   }, [trends]);
 
+  const filteredHotspots = useMemo(() => (
+    filterRowsByQuery(hotspots, filterQuery, ['op'])
+  ), [hotspots, filterQuery]);
+
+  const sortedHotspots = useMemo(() => {
+    const arr = [...filteredHotspots];
+    arr.sort((a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') {
+        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      }
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filteredHotspots, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) {
+      setSortDesc(!sortDesc);
+    } else {
+      setSortKey(key);
+      setSortDesc(true);
+    }
+  };
+
   if (loading) return <div className="card">Loading performance metrics...</div>;
   if (error) return <div className="card error">{error}</div>;
 
@@ -114,6 +158,7 @@ function PerfDashboard() {
             label="Avg Step Latency" 
             color="var(--accent-blue, #58a6ff)" 
             suffix="ms"
+            scaleKey="step_time_ms"
           />
           <MiniPerfChart 
             data={trends} 
@@ -121,6 +166,7 @@ function PerfDashboard() {
             label="Throughput" 
             color="var(--accent-green, #3fb950)" 
             suffix=" t/s"
+            scaleKey="throughput_tok_s"
           />
           <MiniPerfChart 
             data={trends} 
@@ -128,23 +174,56 @@ function PerfDashboard() {
             label="GPU Starvation" 
             color="var(--accent-red, #f85149)" 
             suffix="ms"
+            scaleKey="gpu_starvation_ms"
           />
         </div>
 
         {hotspots.length > 0 && (
           <div className="hotspots-section">
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Latest Kernel Hotspots</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>Latest Kernel Hotspots</div>
+              <input
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+                placeholder="Filter kernels"
+                style={{
+                  fontSize: 11,
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-tertiary)',
+                  color: 'var(--text-primary)',
+                  minWidth: 160,
+                }}
+              />
+            </div>
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Operation / Kernel</th>
-                  <th>Avg CUDA ms</th>
-                  <th>Avg CPU ms</th>
-                  <th>Avg Calls</th>
+                  <th onClick={() => handleSort('op')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                    Operation / Kernel{sortKey === 'op' && (
+                      <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>
+                    )}
+                  </th>
+                  <th onClick={() => handleSort('avg_cuda_ms')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                    Avg CUDA ms{sortKey === 'avg_cuda_ms' && (
+                      <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>
+                    )}
+                  </th>
+                  <th onClick={() => handleSort('avg_cpu_ms')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                    Avg CPU ms{sortKey === 'avg_cpu_ms' && (
+                      <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>
+                    )}
+                  </th>
+                  <th onClick={() => handleSort('avg_calls')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                    Avg Calls{sortKey === 'avg_calls' && (
+                      <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>
+                    )}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {hotspots.map((h, i) => (
+                {sortedHotspots.map((h, i) => (
                   <tr key={i}>
                     <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{h.op}</td>
                     <td style={{ color: h.avg_cuda_ms > 1.0 ? 'var(--accent-orange)' : 'inherit' }}>

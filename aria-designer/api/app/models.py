@@ -57,6 +57,11 @@ class ValidateWorkflowRequest(BaseModel):
     selected_node_id: Optional[str] = None
 
 
+class SuggestComponentsRequest(BaseModel):
+    workflow: WorkflowGraphModel
+    prompt: Optional[str] = None
+
+
 class CompileWorkflowRequest(BaseModel):
     workflow: WorkflowGraphModel
     target: Literal["cpu", "cuda", "auto"] = "auto"

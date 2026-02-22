@@ -81,6 +81,54 @@ function StatusBar({
     border: `1px solid ${color}40`,
   });
 
+  const nativeRunner = progress?.native_runner || null;
+  const nativeFallbackRate = Number(nativeRunner?.fallback_metrics?.fallback_rate);
+  const nativeFallbackLimitRaw = nativeRunner?.fallback_metrics?.max_allowed_fallback_rate;
+  const nativeFallbackLimit = nativeFallbackLimitRaw != null ? Number(nativeFallbackLimitRaw) : null;
+  const nativeLegacyUsed = Number(nativeRunner?.fallback_metrics?.legacy_compile_invocations || 0);
+  const nativeLegacyLimitRaw = nativeRunner?.fallback_metrics?.max_allowed_legacy_compile_invocations;
+  const nativeLegacyLimit = nativeLegacyLimitRaw != null ? Number(nativeLegacyLimitRaw) : null;
+  const nativeExecPath = nativeRunner?.execution_path;
+  const selectiveLayerBuild = nativeRunner?.selective_execution?.layer_build || {};
+  const selectiveApplied = Number(selectiveLayerBuild.applied_layers || 0);
+  const selectiveSkipped = Number(selectiveLayerBuild.skipped_layers || 0);
+  const abiLastProbe = nativeRunner?.abi_last_probe || null;
+  const abiParityAttempted = Boolean(abiLastProbe?.parity_attempted);
+  const abiParityPass = abiLastProbe?.parity_pass;
+  const abiParityMaxAbs = Number(abiLastProbe?.parity_max_abs_diff);
+  const abiParityMaxAbsText = Number.isFinite(abiParityMaxAbs) ? abiParityMaxAbs.toExponential(2) : null;
+  const abiParitySampleRate = Number(abiLastProbe?.parity_sample_rate);
+  const abiParitySampleRateText = Number.isFinite(abiParitySampleRate) ? `${Math.round(abiParitySampleRate * 100)}%` : null;
+  const abiParityThreshold = Number(abiLastProbe?.parity_max_abs_threshold);
+  const abiParityThresholdText = Number.isFinite(abiParityThreshold) ? abiParityThreshold.toExponential(2) : null;
+  const abiParityStrict = Boolean(abiLastProbe?.parity_strict);
+  const abiBadgeColor = abiParityAttempted
+    ? (abiParityPass ? 'var(--accent-green)' : 'var(--accent-red)')
+    : 'var(--accent-yellow)';
+  const backendCutover = nativeRunner?.cutover_gate || null;
+  const backendCutoverStatus = String(backendCutover?.status || '').toLowerCase();
+  const backendCutoverReady = typeof backendCutover?.ready === 'boolean' ? backendCutover.ready : null;
+  const cutoverChecks = [];
+  if (Number.isFinite(nativeFallbackLimit) && Number.isFinite(nativeFallbackRate)) {
+    cutoverChecks.push(nativeFallbackRate <= nativeFallbackLimit);
+  }
+  if (Number.isFinite(nativeLegacyLimit)) {
+    cutoverChecks.push(nativeLegacyUsed <= nativeLegacyLimit);
+  }
+  if (abiParityAttempted && abiParityPass != null) {
+    cutoverChecks.push(Boolean(abiParityPass));
+  }
+  const localCutoverReady = cutoverChecks.length > 0 ? cutoverChecks.every(Boolean) : null;
+  const cutoverReady = backendCutoverReady != null ? backendCutoverReady : localCutoverReady;
+  const cutoverState = backendCutoverStatus || (
+    cutoverReady == null ? 'pending' : (cutoverReady ? 'ready' : 'blocked')
+  );
+  const nativeSummary = nativeRunner
+    ? `Native ${nativeRunner.enabled ? 'on' : 'off'}${nativeRunner.strict ? ' (strict)' : ''}${
+      Number.isFinite(nativeFallbackRate) ? ` · fb ${(nativeFallbackRate * 100).toFixed(1)}%` : ''
+    }`
+    : null;
+
   return (
     <div className="card status-bar" style={{ padding: '10px 14px', marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
@@ -116,6 +164,39 @@ function StatusBar({
             <span style={{ color: trendLabel.color, fontWeight: 700, fontSize: 14 }}>{trendLabel.arrow}</span>
             <span style={{ color: trendLabel.color, fontSize: 11 }}>{trendLabel.text}</span>
           </div>
+        )}
+
+        {isRunning && nativeSummary && (
+          <span
+            style={badgeStyle(nativeRunner.enabled ? 'var(--accent-blue)' : 'var(--accent-red)')}
+            title={nativeRunner ? JSON.stringify(nativeRunner) : ''}
+          >
+            {nativeSummary}
+            {nativeExecPath ? ` · ${nativeExecPath}` : ''}
+            {nativeRunner?.selective_execution?.layer_exec_enabled ? ` · L ${selectiveApplied}/${selectiveSkipped}` : ''}
+          </span>
+        )}
+        {isRunning && nativeRunner && (
+          <span
+            style={badgeStyle(abiBadgeColor)}
+            title={
+              abiLastProbe
+                ? `ABI parity ${abiParityStrict ? 'strict' : 'observe'}${abiParitySampleRateText ? ` | sample ${abiParitySampleRateText}` : ''}${abiParityThresholdText ? ` | max_abs<=${abiParityThresholdText}` : ''}`
+                : 'No ABI probe telemetry yet.'
+            }
+          >
+            ABI {abiParityAttempted ? (abiParityPass ? 'parity-pass' : 'parity-fail') : 'pending'}
+            {abiParityMaxAbsText ? ` · ${abiParityMaxAbsText}` : ''}
+          </span>
+        )}
+        {isRunning && nativeRunner && (
+          <span style={badgeStyle(
+            cutoverState === 'pending'
+              ? 'var(--accent-blue)'
+              : (cutoverState === 'ready' ? 'var(--accent-green)' : 'var(--accent-red)')
+          )}>
+            Cutover {cutoverState}
+          </span>
         )}
       </div>
     </div>

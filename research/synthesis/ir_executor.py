@@ -29,6 +29,15 @@ class IRExecutor(nn.Module):
         self.output_node_idx = ir.output_node_idx
         self.configs = ir.configs
         
+        # Z8: Pre-calculate reference counts for memory management
+        self.consumer_counts = np.zeros(len(self.op_codes), dtype=np.int32)
+        for i in range(len(self.op_codes)):
+            if self.op_codes[i] == 0: continue
+            in1 = self.input_indices[i, 0]
+            in2 = self.input_indices[i, 1]
+            if in1 != -1: self.consumer_counts[in1] += 1
+            if in2 != -1: self.consumer_counts[in2] += 1
+
         self.ops = nn.ModuleList()
         # Map IR index to Module index in self.ops
         self.idx_to_op_idx = {}
@@ -76,9 +85,13 @@ class IRExecutor(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Lowered execution loop. torch.compile fuses this into a single kernel."""
         # node_outputs[i] stores the output of the i-th IR node
-        # Using a list instead of a dict for better compile behavior
-        # Initializing with a dummy tensor to help torch.compile track types
         node_outputs: List[Optional[torch.Tensor]] = [None] * len(self.op_codes)
+        
+        # Z8: Copy consumer counts to track liveness per-forward
+        # We use a list instead of numpy for better torch.compile compatibility
+        counts = list(self.consumer_counts)
+        output_idx = int(self.output_node_idx)
+        is_cuda = x.is_cuda
         
         for i in range(len(self.op_codes)):
             opcode = self.op_codes[i]
@@ -88,24 +101,35 @@ class IRExecutor(nn.Module):
                 continue
             
             # Get inputs
-            in1_idx = self.input_indices[i, 0]
-            in2_idx = self.input_indices[i, 1]
+            in1_idx = int(self.input_indices[i, 0])
+            in2_idx = int(self.input_indices[i, 1])
             
-            # This is the 'op switch' - torch.compile will try to optimize this
-            # but we use ModuleList indexing which is usually well-supported.
             op_idx = self.idx_to_op_idx.get(i)
             if op_idx is not None:
                 op = self.ops[op_idx]
                 
-                # Fetch actual tensors
                 t1 = node_outputs[in1_idx]
                 if in2_idx != -1:
                     t2 = node_outputs[in2_idx]
                     node_outputs[i] = op(t1, t2)
+                    
+                    # Decrement and reclaim in2 if done
+                    counts[in2_idx] -= 1
+                    if counts[in2_idx] <= 0 and in2_idx != output_idx:
+                        node_outputs[in2_idx] = None
                 else:
                     node_outputs[i] = op(t1)
+                
+                # Decrement and reclaim in1 if done
+                counts[in1_idx] -= 1
+                if counts[in1_idx] <= 0 and in1_idx != output_idx:
+                    node_outputs[in1_idx] = None
         
-        res = node_outputs[self.output_node_idx]
+        res = node_outputs[output_idx]
         if res is None:
             return x # Fallback
+            
+        # Optional: Final cleanup if needed
+        # node_outputs = [None] * len(node_outputs)
+        
         return res

@@ -1028,3 +1028,422 @@ INFO:     127.0.0.1:56384 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1"
 INFO:     127.0.0.1:56396 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56374 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56374 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56396 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42242 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42252 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [124553]
+INFO:     Stopping reloader process [124540]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [162686] using StatReload
+
+  VITE v5.4.21  ready in 72 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [162699]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54712 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54714 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54728 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54728 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54740 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54740 - "POST /api/v1/import/survivors/7fa5e85d-d11 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54740 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54728 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54728 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54728 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45252 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:45258 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45260 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45272 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45260 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45260 - "POST /api/v1/import/survivors/7fa5e85d-d11 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45260 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45288 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45272 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45260 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45272 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45258 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45258 - "POST /api/v1/import/survivors/66332c15-c29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45258 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56288 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56298 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56294 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56298 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56310 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56310 - "POST /api/v1/import/survivors/66332c15-c29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56310 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56310 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57326 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:57332 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57340 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57354 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57340 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57340 - "POST /api/v1/import/survivors/a5eff6c7-0d4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57340 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57354 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57354 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57354 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57354 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56548 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:56560 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56566 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "POST /api/v1/import/survivors/eafec6bf-b4b HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56562 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45648 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:45666 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45664 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45666 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45680 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45680 - "POST /api/v1/import/survivors/fb427cfb-1de HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45680 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45680 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45680 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55360 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:55372 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55404 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "POST /api/v1/import/survivors/66332c15-c29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55408 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37036 - "POST /api/v1/workflows/compile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37046 - "POST /api/v1/workflows/run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55388 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54928 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54950 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54934 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54950 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/import/survivors/e6e50f7a-ea5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33800 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:33814 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33834 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "POST /api/v1/import/survivors/6ddc7f1f-8bd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33822 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42716 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42722 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44732 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44736 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38704 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38708 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55278 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55290 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [162699]
+INFO:     Stopping reloader process [162686]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [253972] using StatReload
+
+  VITE v5.4.21  ready in 77 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [253985]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:59776 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50054 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50062 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55876 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55884 - "POST /api/v1/import/survivors/fd2c2063-f68 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59714 - "GET /health HTTP/1.1" 200 OK
+10:24:38 PM [vite] hmr update /src/App.jsx
+10:27:16 PM [vite] hmr update /src/App.jsx
+INFO:     127.0.0.1:39544 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:48052 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48058 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48058 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48066 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48066 - "POST /api/v1/import/survivors/e6e50f7a-ea5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48066 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48058 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48058 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54672 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45998 - "GET /health HTTP/1.1" 200 OK
+10:34:14 PM [vite] hmr update /src/App.jsx
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [253985]
+INFO:     Stopping reloader process [253972]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [269499] using StatReload
+
+  VITE v5.4.21  ready in 80 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [269512]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54726 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35428 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52712 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [269512]
+INFO:     Stopping reloader process [269499]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [48363] using StatReload
+
+  VITE v5.4.21  ready in 72 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [48376]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:36688 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:58604 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58590 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58604 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58610 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58610 - "POST /api/v1/import/survivors/e6e50f7a-ea5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58610 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58604 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58604 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58604 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58604 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34050 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49004 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49016 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59746 - "POST /api/v1/import/survivors/e6e50f7a-ea5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54230 - "OPTIONS /api/v1/import/survivors/test HTTP/1.1" 200 OK
+10:01:12 AM [vite] hmr update /src/App.jsx
+10:01:16 AM [vite] hmr update /src/App.jsx
+10:01:25 AM [vite] hmr update /src/App.jsx
+10:01:31 AM [vite] hmr update /src/App.jsx
+10:07:41 AM [vite] hmr update /src/App.jsx
+10:07:52 AM [vite] hmr update /src/App.jsx
+10:07:59 AM [vite] hmr update /src/App.jsx
+INFO:     127.0.0.1:42454 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42466 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [48376]
+INFO:     Stopping reloader process [48363]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [54047] using StatReload
+
+  VITE v5.4.21  ready in 72 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [54060]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:38314 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45578 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:52900 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52908 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52920 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52908 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52908 - "POST /api/v1/import/survivors/66332c15-c29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52908 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52920 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49522 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36942 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59782 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58490 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59930 - "POST /api/v1/import/survivors/e6e50f7a-ea5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44796 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36054 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49900 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53022 - "POST /api/v1/import/survivors/66332c15-c29 HTTP/1.1" 200 OK
+10:40:26 AM [vite] hmr update /src/components/Inspector.jsx
+10:40:30 AM [vite] hmr update /src/styles.css
+INFO:     127.0.0.1:33742 - "GET /health HTTP/1.1" 200 OK
+10:44:57 AM [vite] hmr update /src/components/Inspector.jsx
+10:44:57 AM [vite] hmr update /src/styles.css
+INFO:     127.0.0.1:35650 - "GET /health HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'app/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [54060]
+INFO:     Started server process [65458]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'app/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [65458]
+INFO:     Started server process [66091]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'app/models.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [66091]
+INFO:     Started server process [66588]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'app/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [66588]
+INFO:     Started server process [66661]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'app/suggestions.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [66661]
+INFO:     Started server process [66720]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+10:49:50 AM [vite] hmr update /src/components/AskAriaModal.jsx
+10:49:58 AM [vite] hmr update /src/App.jsx
+10:51:19 AM [vite] hmr update /src/App.jsx
+10:51:19 AM [vite] hmr update /src/components/AskAriaModal.jsx
+WARNING:  StatReload detected changes in 'app/models.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [66720]
+INFO:     Started server process [67538]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'app/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [67538]
+INFO:     Started server process [67618]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:47548 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43682 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:54664 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54670 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54670 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54670 - "POST /api/v1/import/survivors/5a12f6f7-64f HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54670 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60736 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58474 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:58480 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58486 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58480 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58494 - "GET /api/v1/components?status=approved HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58494 - "POST /api/v1/import/survivors/113a55b6-13c HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58494 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58480 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58480 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33788 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56298 - "GET /health HTTP/1.1" 200 OK

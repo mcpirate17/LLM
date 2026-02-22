@@ -1,7 +1,45 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
+import {
+  TELEMETRY_PRESET_KEYS,
+  clampCanaryCooldown,
+  inferTelemetryPreset,
+  normalizeTelemetryPresetForStorage,
+  applyTelemetryPresetSettings,
+} from './controlPanelTelemetryPresets';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
+const CANARY_PREFS_STORAGE_KEY = 'aria.controlpanel.canaryPrefs.v1';
+
+const readCanaryPrefs = () => {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return {};
+    const raw = window.localStorage.getItem(CANARY_PREFS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeCanaryPrefs = (prefs) => {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(CANARY_PREFS_STORAGE_KEY, JSON.stringify(prefs || {}));
+  } catch {
+    // Ignore persistence failures (private mode / storage limits)
+  }
+};
+
+const clearCanaryPrefs = () => {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.removeItem(CANARY_PREFS_STORAGE_KEY);
+  } catch {
+    // Ignore storage clear failures
+  }
+};
 
 const DEFAULT_CONFIG = {
   n_programs: 50,
@@ -237,6 +275,7 @@ function ControlPanel({
   const [llmSaving, setLlmSaving] = useState(false);
   const [llmMessage, setLlmMessage] = useState('');
   const [actionError, setActionError] = useState('');
+  const [showCutoverDetails, setShowCutoverDetails] = useState(false);
   // Scale-up state
   const [scaleUpUseTop, setScaleUpUseTop] = useState(true);
   const [scaleUpTopN, setScaleUpTopN] = useState(5);
@@ -245,6 +284,73 @@ function ControlPanel({
   const [scaleUpBatchSize, setScaleUpBatchSize] = useState(8);
   const [scaleUpSeqLen, setScaleUpSeqLen] = useState(512);
   const [prefillSummary, setPrefillSummary] = useState(null);
+  const [showCanarySummary, setShowCanarySummary] = useState(() => {
+    const prefs = readCanaryPrefs();
+    return typeof prefs.showCanarySummary === 'boolean' ? prefs.showCanarySummary : true;
+  });
+  const [showCanaryRefreshHint, setShowCanaryRefreshHint] = useState(() => {
+    const prefs = readCanaryPrefs();
+    return typeof prefs.showCanaryRefreshHint === 'boolean' ? prefs.showCanaryRefreshHint : true;
+  });
+  const [canaryRefreshing, setCanaryRefreshing] = useState(false);
+  const [canaryRefreshCooldownS, setCanaryRefreshCooldownS] = useState(0);
+  const [canaryCooldownSeconds, setCanaryCooldownSeconds] = useState(() => {
+    const prefs = readCanaryPrefs();
+    return clampCanaryCooldown(prefs.canaryCooldownSeconds);
+  });
+  const [nativeTelemetryExpanded, setNativeTelemetryExpanded] = useState(() => {
+    const prefs = readCanaryPrefs();
+    return typeof prefs.nativeTelemetryExpanded === 'boolean' ? prefs.nativeTelemetryExpanded : true;
+  });
+  const [canaryTelemetryPreset, setCanaryTelemetryPreset] = useState(() => {
+    const prefs = readCanaryPrefs();
+    const storedPreset = String(prefs.canaryTelemetryPreset || '').toLowerCase();
+    if (TELEMETRY_PRESET_KEYS.includes(storedPreset)) {
+      return storedPreset;
+    }
+    const fallbackCooldown = clampCanaryCooldown(prefs.canaryCooldownSeconds);
+    return inferTelemetryPreset({
+      showCanarySummary: typeof prefs.showCanarySummary === 'boolean' ? prefs.showCanarySummary : true,
+      showCanaryRefreshHint: typeof prefs.showCanaryRefreshHint === 'boolean' ? prefs.showCanaryRefreshHint : true,
+      nativeTelemetryExpanded: typeof prefs.nativeTelemetryExpanded === 'boolean' ? prefs.nativeTelemetryExpanded : true,
+      canaryCooldownSeconds: fallbackCooldown,
+    });
+  });
+  const [canaryPrefsNotice, setCanaryPrefsNotice] = useState('');
+
+  useEffect(() => {
+    writeCanaryPrefs({
+      showCanarySummary,
+      showCanaryRefreshHint,
+      canaryCooldownSeconds: clampCanaryCooldown(canaryCooldownSeconds),
+      nativeTelemetryExpanded,
+      canaryTelemetryPreset: normalizeTelemetryPresetForStorage(canaryTelemetryPreset),
+    });
+  }, [showCanarySummary, showCanaryRefreshHint, canaryCooldownSeconds, nativeTelemetryExpanded, canaryTelemetryPreset]);
+
+  useEffect(() => {
+    const inferred = inferTelemetryPreset({
+      showCanarySummary,
+      showCanaryRefreshHint,
+      nativeTelemetryExpanded,
+      canaryCooldownSeconds,
+    });
+    setCanaryTelemetryPreset((prev) => (prev === inferred ? prev : inferred));
+  }, [showCanarySummary, showCanaryRefreshHint, nativeTelemetryExpanded, canaryCooldownSeconds]);
+
+  useEffect(() => {
+    if (canaryRefreshCooldownS <= 0) return;
+    const timer = setTimeout(() => {
+      setCanaryRefreshCooldownS(prev => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [canaryRefreshCooldownS]);
+
+  useEffect(() => {
+    if (!canaryPrefsNotice) return;
+    const timer = setTimeout(() => setCanaryPrefsNotice(''), 2200);
+    return () => clearTimeout(timer);
+  }, [canaryPrefsNotice]);
 
   // Auto-populate recommendation from completed experiment
   useEffect(() => {
@@ -489,6 +595,53 @@ function ControlPanel({
     setLlmSaving(false);
   }, [llmForm]);
 
+  const handleRefreshCanaryNow = useCallback(async () => {
+    if (canaryRefreshing || canaryRefreshCooldownS > 0) return;
+    setActionError('');
+    setCanaryRefreshing(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/native-runner/canary/refresh`, { method: 'POST' });
+      const data = await (res.ok ? res.json() : null);
+      if (data?.native_runner_canary) {
+        setSystemStatus((prev) => ({
+          ...(prev || {}),
+          native_runner_canary: data.native_runner_canary,
+        }));
+      } else {
+        setActionError('Canary refresh returned no payload.');
+      }
+    } catch (e) {
+      setActionError('Canary refresh failed: ' + e.message);
+    } finally {
+      setCanaryRefreshing(false);
+      setCanaryRefreshCooldownS(clampCanaryCooldown(canaryCooldownSeconds));
+    }
+  }, [canaryRefreshing, canaryRefreshCooldownS, canaryCooldownSeconds]);
+
+  const handleResetCanaryPrefs = useCallback(() => {
+    clearCanaryPrefs();
+    setShowCanarySummary(true);
+    setShowCanaryRefreshHint(true);
+    setCanaryCooldownSeconds(8);
+    setCanaryRefreshCooldownS(0);
+    setNativeTelemetryExpanded(true);
+    setCanaryTelemetryPreset('default');
+    setActionError('');
+    setCanaryPrefsNotice('Canary preferences reset to defaults.');
+  }, []);
+
+  const handleTelemetryPresetChange = useCallback((preset) => {
+    const next = applyTelemetryPresetSettings(preset);
+    if (!next) return;
+    setShowCanarySummary(next.showCanarySummary);
+    setShowCanaryRefreshHint(next.showCanaryRefreshHint);
+    setNativeTelemetryExpanded(next.nativeTelemetryExpanded);
+    setCanaryCooldownSeconds(next.canaryCooldownSeconds);
+    setCanaryRefreshCooldownS(next.canaryRefreshCooldownS);
+    setCanaryTelemetryPreset(next.canaryTelemetryPreset);
+    setCanaryPrefsNotice(next.canaryPrefsNotice);
+  }, []);
+
   const isEvolutionMode = mode === 'evolve' || mode === 'novelty';
   const isScaleUpMode = mode === 'scale_up';
   const generationTotal = progress?.total_generations || 0;
@@ -497,6 +650,179 @@ function ControlPanel({
   const programCurrent = progress?.current_program || 0;
   const progressStatus = String(progress?.status || '').toLowerCase();
   const isGenerationProgress = generationTotal > 0;
+  const nativeRunner = progress?.native_runner || systemStatus?.native_runner || null;
+  const nativeFallback = nativeRunner?.fallback_metrics || {};
+  const nativeFallbackRateValue = Number(nativeFallback.fallback_rate);
+  const nativeFallbackRate = Number.isFinite(nativeFallbackRateValue)
+    ? `${(nativeFallbackRateValue * 100).toFixed(1)}%`
+    : null;
+  const nativeFallbackLimitRaw = nativeFallback.max_allowed_fallback_rate;
+  const nativeFallbackLimit = nativeFallbackLimitRaw != null ? Number(nativeFallbackLimitRaw) : null;
+  const nativeFallbackLimitText = Number.isFinite(nativeFallbackLimit)
+    ? `${(nativeFallbackLimit * 100).toFixed(1)}%`
+    : null;
+  const nativeProbeSuccesses = Number(nativeFallback.probe_successes || 0);
+  const nativeProbeFailures = Number(nativeFallback.probe_failures || 0);
+  const nativeLegacyCompiles = Number(nativeFallback.legacy_compile_invocations || 0);
+  const nativeLegacyCompileLimitRaw = nativeFallback.max_allowed_legacy_compile_invocations;
+  const nativeLegacyCompileLimit = nativeLegacyCompileLimitRaw != null ? Number(nativeLegacyCompileLimitRaw) : null;
+  const nativeLegacyCompileLimitText = Number.isFinite(nativeLegacyCompileLimit) ? String(nativeLegacyCompileLimit) : null;
+  const nativeProbeSummary = `${nativeProbeSuccesses} ok / ${nativeProbeFailures} fail`;
+  const nativeGuardrail = nativeRunner?.selective_guardrail || {};
+  const guardrailTriggered = Boolean(nativeGuardrail.triggered);
+  const guardrailThreshold = Number(nativeGuardrail.threshold || 0);
+  const guardrailConsecutive = Number(nativeGuardrail.consecutive_requested_not_candidate || 0);
+  const guardrailTriggerCount = Number(nativeGuardrail.trigger_count || 0);
+  const guardrailReason = nativeGuardrail.last_reason || null;
+  const guardrailHistory = Array.isArray(nativeGuardrail.history) ? nativeGuardrail.history.slice(-5).reverse() : [];
+  const guardrailTimelineEvents = Array.isArray(nativeGuardrail.history) ? nativeGuardrail.history.slice(-12) : [];
+  const guardrailSparkline = guardrailTimelineEvents
+    .map((entry) => {
+      const event = String(entry?.event || '').toLowerCase();
+      if (event === 'triggered') return '█';
+      if (event === 'cleared') return '░';
+      return '·';
+    })
+    .join('');
+  const guardrailSparklineTitle = guardrailTimelineEvents
+    .map((entry) => `${entry?.event || 'event'}${entry?.timestamp ? ` @ ${String(entry.timestamp)}` : ''}`)
+    .join(' | ');
+  const guardrailSparklineLegend = 'Legend: █ triggered, ░ cleared, · other';
+  const selectiveExec = nativeRunner?.selective_execution || {};
+  const selectiveLayerBuild = selectiveExec.layer_build || {};
+  const selectiveLayerResults = Array.isArray(selectiveLayerBuild.layer_results)
+    ? selectiveLayerBuild.layer_results.slice(0, 5)
+    : [];
+  const selectiveApplied = Number(selectiveLayerBuild.applied_layers || 0);
+  const selectiveSkipped = Number(selectiveLayerBuild.skipped_layers || 0);
+  const selectiveTotal = Number(selectiveLayerBuild.total_layers || 0);
+  const selectiveExecPath = nativeRunner?.execution_path || null;
+  const nativeCanary = systemStatus?.native_runner_canary || null;
+  const canaryEnabled = Boolean(nativeCanary?.enabled);
+  const canaryStatus = nativeCanary?.status || 'disabled';
+  const canaryProbeLatency = Number(nativeCanary?.probe_avg_latency_ms);
+  const canarySelectiveLatency = Number(nativeCanary?.selective_avg_latency_ms);
+  const canaryDeltaLatency = Number(nativeCanary?.latency_delta_ms);
+  const canaryProbeLatencyText = Number.isFinite(canaryProbeLatency) ? `${canaryProbeLatency.toFixed(3)}ms` : null;
+  const canarySelectiveLatencyText = Number.isFinite(canarySelectiveLatency) ? `${canarySelectiveLatency.toFixed(3)}ms` : null;
+  const canaryDeltaText = Number.isFinite(canaryDeltaLatency) ? `${canaryDeltaLatency >= 0 ? '+' : ''}${canaryDeltaLatency.toFixed(3)}ms` : null;
+  const canaryIterations = Number(nativeCanary?.iterations || 0);
+  const canarySeed = nativeCanary?.seed;
+  const canaryAgeSeconds = Number(nativeCanary?.age_s);
+  const canaryAgeText = Number.isFinite(canaryAgeSeconds) ? `${Math.round(canaryAgeSeconds)}s ago` : null;
+  const canaryCached = Boolean(nativeCanary?.cached);
+  const canaryPresetIsCustom = canaryTelemetryPreset === 'custom';
+  const abiLastProbe = nativeRunner?.abi_last_probe || null;
+  const abiLastStage = nativeRunner?.abi_last_stage || null;
+  const abiParityAttempted = Boolean(abiLastProbe?.parity_attempted);
+  const abiParityPass = abiLastProbe?.parity_pass;
+  const abiParityMaxAbs = Number(abiLastProbe?.parity_max_abs_diff);
+  const abiParityMaxAbsText = Number.isFinite(abiParityMaxAbs) ? abiParityMaxAbs.toExponential(2) : null;
+  const abiParitySampleRate = Number(abiLastProbe?.parity_sample_rate);
+  const abiParitySampleRateText = Number.isFinite(abiParitySampleRate) ? `${Math.round(abiParitySampleRate * 100)}%` : null;
+  const abiParityThreshold = Number(abiLastProbe?.parity_max_abs_threshold);
+  const abiParityThresholdText = Number.isFinite(abiParityThreshold) ? abiParityThreshold.toExponential(2) : null;
+  const abiParityStrict = Boolean(abiLastProbe?.parity_strict);
+  const abiPrimaryUsed = Boolean(abiLastProbe?.primary_used);
+  const abiProbeBadgeClass = !abiLastProbe
+    ? 'info'
+    : abiParityAttempted
+      ? (abiParityPass ? 'pass' : 'fail')
+      : (abiPrimaryUsed ? 'info' : 'warn');
+  const abiProbeSummary = !abiLastProbe
+    ? 'ABI: no probe'
+    : abiParityAttempted
+      ? `ABI parity: ${abiParityPass ? 'pass' : 'fail'}${abiParityMaxAbsText ? ` · max ${abiParityMaxAbsText}` : ''}`
+      : `ABI: ${abiPrimaryUsed ? 'primary' : 'probe-only'}${abiLastStage ? ` · ${abiLastStage}` : ''}`;
+  const backendCutover = nativeRunner?.cutover_gate || null;
+  const backendCutoverStatus = String(backendCutover?.status || '').toLowerCase();
+  const backendCutoverReady = typeof backendCutover?.ready === 'boolean' ? backendCutover.ready : null;
+  const cutoverChecks = [];
+  if (nativeLegacyCompileLimitText) {
+    cutoverChecks.push(nativeLegacyCompiles <= nativeLegacyCompileLimit);
+  }
+  if (nativeFallbackLimitText && Number.isFinite(nativeFallbackRateValue)) {
+    cutoverChecks.push(nativeFallbackRateValue <= nativeFallbackLimit);
+  }
+  if (abiParityAttempted && abiParityPass != null) {
+    cutoverChecks.push(Boolean(abiParityPass));
+  }
+  const localCutoverReady = cutoverChecks.length > 0 ? cutoverChecks.every(Boolean) : null;
+  const cutoverReady = backendCutoverReady != null ? backendCutoverReady : localCutoverReady;
+  const cutoverState = backendCutoverStatus || (
+    cutoverReady == null ? 'waiting' : (cutoverReady ? 'ready' : 'blocked')
+  );
+  const cutoverSummary = cutoverState === 'waiting'
+    ? 'Cutover: waiting for gates'
+    : `Cutover: ${cutoverState}`;
+  const backendCutoverChecks = Array.isArray(backendCutover?.checks) ? backendCutover.checks : [];
+  const cutoverRows = (backendCutoverChecks.length > 0
+    ? backendCutoverChecks
+    : [
+        nativeFallbackLimitText && Number.isFinite(nativeFallbackRateValue)
+          ? {
+              name: 'fallback_rate',
+              active: true,
+              pass: nativeFallbackRateValue <= nativeFallbackLimit,
+              actual: nativeFallbackRateValue,
+              limit: nativeFallbackLimit,
+            }
+          : null,
+        nativeLegacyCompileLimitText
+          ? {
+              name: 'legacy_compile_invocations',
+              active: true,
+              pass: nativeLegacyCompiles <= nativeLegacyCompileLimit,
+              actual: nativeLegacyCompiles,
+              limit: nativeLegacyCompileLimit,
+            }
+          : null,
+        abiParityAttempted && abiParityPass != null
+          ? {
+              name: 'parity',
+              active: true,
+              pass: Boolean(abiParityPass),
+              actual: Boolean(abiParityPass) ? 0 : 1,
+              limit: 0,
+            }
+          : null,
+      ].filter(Boolean)
+  ).map((check) => {
+    const key = String(check?.name || 'unknown');
+    const passState = check?.pass === true ? 'pass' : (check?.pass === false ? 'fail' : 'waiting');
+    const label = key === 'fallback_rate'
+      ? 'Fallback Rate'
+      : key === 'legacy_compile_invocations'
+        ? 'Legacy Compile Invocations'
+        : key === 'parity'
+          ? 'ABI Parity'
+          : key.replaceAll('_', ' ');
+    const formatValue = (value, metricName) => {
+      if (value == null) return 'n/a';
+      if (metricName === 'fallback_rate' && Number.isFinite(Number(value))) {
+        return `${(Number(value) * 100).toFixed(1)}%`;
+      }
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return Number.isInteger(value) ? String(value) : value.toFixed(4);
+      }
+      return String(value);
+    };
+    return {
+      key,
+      label,
+      passState,
+      actualText: formatValue(check?.actual, key),
+      limitText: formatValue(check?.limit, key),
+    };
+  });
+  const formatGuardrailTimestamp = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return String(value);
+    }
+    return parsed.toLocaleTimeString();
+  };
 
   const pct = isGenerationProgress
     ? (generationTotal > 0
@@ -598,6 +924,156 @@ function ControlPanel({
           <span className="sys-badge info">
             DB: {liveSummary?.total_experiments || systemStatus.database?.total_experiments || 0} exp
           </span>
+          {nativeRunner && (
+            <span className={`sys-badge ${nativeRunner.enabled ? 'info' : 'warn'}`}>
+              Native: {nativeRunner.status || (nativeRunner.enabled ? 'enabled' : 'disabled')}
+              {nativeRunner.strict ? ' · strict' : ''}
+              {nativeFallbackRate ? ` · fb ${nativeFallbackRate}` : ''}
+            </span>
+          )}
+          {nativeRunner?.selective_guardrail && (
+            <span
+              className={`sys-badge ${guardrailTriggered ? 'warn' : 'pass'}`}
+              title={guardrailSparkline ? `${guardrailSparklineLegend}${guardrailSparklineTitle ? ` | ${guardrailSparklineTitle}` : ''}` : guardrailSparklineLegend}
+            >
+              Guardrail: {guardrailTriggered ? 'active' : 'ok'}
+              {guardrailThreshold > 0 ? ` · ${guardrailConsecutive}/${guardrailThreshold}` : ''}
+              {guardrailSparkline ? ` · ${guardrailSparkline}` : ''}
+            </span>
+          )}
+          {nativeRunner && (
+            <span
+              className={`sys-badge ${abiProbeBadgeClass}`}
+              title={abiLastProbe ? JSON.stringify(abiLastProbe) : 'No ABI probe telemetry yet.'}
+            >
+              {abiProbeSummary}
+            </span>
+          )}
+          {nativeRunner && (
+            <span className={`sys-badge ${
+              cutoverState === 'waiting' ? 'info' : (cutoverState === 'ready' ? 'pass' : 'fail')
+            }`}>
+              {cutoverSummary}
+            </span>
+          )}
+          {nativeRunner && (
+            <button
+              type="button"
+              className="refresh-btn"
+              style={{ fontSize: 10, padding: '2px 8px' }}
+              onClick={() => setShowCutoverDetails((prev) => !prev)}
+              title="Show explicit cutover gate checks"
+            >
+              {showCutoverDetails ? 'Hide gate details' : 'Gate details'}
+            </button>
+          )}
+          {canaryEnabled && showCanarySummary && (
+            <span className={`sys-badge ${canaryStatus === 'ok' ? 'pass' : 'warn'}`}>
+              Canary: {canaryStatus}
+              {canaryDeltaText ? ` · ${canaryDeltaText}` : ''}
+              {canaryIterations > 0 ? ` · n=${canaryIterations}` : ''}
+            </span>
+          )}
+        </div>
+      )}
+
+      {systemStatus && !isRunning && canaryEnabled && (
+        <div style={{ marginTop: 6, marginBottom: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 12 }}>
+            Telemetry preset
+            <select
+              value={canaryTelemetryPreset}
+              onChange={(e) => handleTelemetryPresetChange(e.target.value)}
+              style={{ padding: '1px 4px', fontSize: 10 }}
+            >
+              <option value="compact">compact</option>
+              <option value="default">default</option>
+              <option value="debug">debug</option>
+              {canaryTelemetryPreset === 'custom' && <option value="custom">custom</option>}
+            </select>
+          </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 12 }}>
+            <input
+              type="checkbox"
+              checked={showCanarySummary}
+              onChange={(e) => setShowCanarySummary(e.target.checked)}
+            />
+            Show canary summary
+          </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={showCanaryRefreshHint}
+              onChange={(e) => setShowCanaryRefreshHint(e.target.checked)}
+            />
+            Show refresh hint
+          </label>
+          <label
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 12 }}
+            title="Manual canary refresh cooldown in seconds (0 to 60)."
+          >
+            Cooldown (s)
+            <input
+              type="number"
+              min={0}
+              max={60}
+              step={1}
+              value={canaryCooldownSeconds}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                const clamped = clampCanaryCooldown(next);
+                setCanaryCooldownSeconds(clamped);
+              }}
+              style={{ width: 56, padding: '1px 4px', fontSize: 10 }}
+              title="How long to wait before allowing another manual canary refresh."
+            />
+          </label>
+          <button
+            className="refresh-btn"
+            style={{ marginLeft: 12, fontSize: 10, padding: '2px 8px' }}
+            onClick={handleRefreshCanaryNow}
+            disabled={canaryRefreshing || canaryRefreshCooldownS > 0}
+          >
+            {canaryRefreshing
+              ? 'Refreshing canary...'
+              : canaryRefreshCooldownS > 0
+                ? `Refresh in ${canaryRefreshCooldownS}s`
+                : 'Refresh canary now'}
+          </button>
+          <button
+            className="refresh-btn"
+            style={{ marginLeft: 6, fontSize: 10, padding: '2px 8px' }}
+            onClick={handleResetCanaryPrefs}
+            title="Reset canary controls and telemetry preset to default values"
+          >
+            Reset canary prefs
+          </button>
+          {nativeRunner && (
+            <button
+              className="refresh-btn"
+              style={{ marginLeft: 6, fontSize: 10, padding: '2px 8px' }}
+              onClick={() => setNativeTelemetryExpanded(prev => !prev)}
+              title="Toggle compact or expanded native telemetry details"
+            >
+              {nativeTelemetryExpanded ? 'Compact native telemetry' : 'Expand native telemetry'}
+            </button>
+          )}
+          {showCanaryRefreshHint && (
+            <div style={{ marginTop: 4 }}>
+              Canary data updates via `/api/system/status`{canaryAgeText ? ` · ${canaryCached ? 'cached' : 'fresh'} ${canaryAgeText}` : ''}.
+              {canaryRefreshCooldownS > 0 ? ` Cooldown ${canaryRefreshCooldownS}s.` : ''}
+            </div>
+          )}
+          {canaryPresetIsCustom && (
+            <div style={{ marginTop: 4 }}>
+              Custom telemetry settings active. Choose compact/default/debug to restore a preset profile.
+            </div>
+          )}
+          {canaryPrefsNotice && (
+            <div style={{ marginTop: 4, color: 'var(--accent-green)' }}>
+              {canaryPrefsNotice}
+            </div>
+          )}
         </div>
       )}
 
@@ -1416,6 +1892,190 @@ function ControlPanel({
             </span>
           </div>
 
+          {nativeRunner && (
+            <div className="native-runner-card">
+              <div className="native-runner-header">
+                <span className={`badge ${nativeRunner.enabled ? 'running' : 'fail'}`}>
+                  Native runner
+                </span>
+                <span className="native-runner-status">{nativeRunner.status || 'unknown'}</span>
+                <button
+                  className="refresh-btn"
+                  style={{ marginLeft: 8, fontSize: 10, padding: '1px 6px' }}
+                  onClick={() => setNativeTelemetryExpanded(prev => !prev)}
+                  title="Toggle compact or expanded native telemetry details"
+                >
+                  {nativeTelemetryExpanded ? 'Compact' : 'Expand'}
+                </button>
+                <button
+                  className="refresh-btn"
+                  style={{ marginLeft: 6, fontSize: 10, padding: '1px 6px', opacity: canaryTelemetryPreset === 'compact' ? 1 : 0.75 }}
+                  onClick={() => handleTelemetryPresetChange('compact')}
+                  title="Apply compact telemetry preset"
+                >
+                  compact
+                </button>
+                <button
+                  className="refresh-btn"
+                  style={{ marginLeft: 4, fontSize: 10, padding: '1px 6px', opacity: canaryTelemetryPreset === 'default' ? 1 : 0.75 }}
+                  onClick={() => handleTelemetryPresetChange('default')}
+                  title="Apply default telemetry preset"
+                >
+                  default
+                </button>
+                <button
+                  className="refresh-btn"
+                  style={{ marginLeft: 4, fontSize: 10, padding: '1px 6px', opacity: canaryTelemetryPreset === 'debug' ? 1 : 0.75 }}
+                  onClick={() => handleTelemetryPresetChange('debug')}
+                  title="Apply debug telemetry preset"
+                >
+                  debug
+                </button>
+              </div>
+              <div className="native-runner-stats">
+                <span>Mode: <strong>{nativeRunner.strict ? 'strict' : 'non-strict'}</strong></span>
+                <span>Runtime: <strong>{nativeRunner.designer_runtime_available ? 'available' : 'missing'}</strong></span>
+                <span>Fallback: <strong>{nativeFallbackRate || 'n/a'}</strong></span>
+                {nativeFallbackLimitText && (
+                  <span>Fallback limit: <strong>{nativeFallbackLimitText}</strong></span>
+                )}
+                <span>Legacy compile: <strong>{nativeLegacyCompiles}</strong></span>
+                {nativeLegacyCompileLimitText && (
+                  <span>Legacy limit: <strong>{nativeLegacyCompileLimitText}</strong></span>
+                )}
+                <span>Probe: <strong>{nativeProbeSummary}</strong></span>
+                {nativeTelemetryExpanded && selectiveExecPath && (
+                  <span>Path: <strong>{selectiveExecPath}</strong></span>
+                )}
+                {nativeTelemetryExpanded && selectiveExec?.requested && (
+                  <span>
+                    Selective: <strong>{selectiveExec?.candidate ? 'candidate' : 'not-candidate'}</strong>
+                    {selectiveExec?.reason ? ` (${selectiveExec.reason})` : ''}
+                  </span>
+                )}
+                {nativeTelemetryExpanded && selectiveExec?.layer_exec_enabled && (
+                  <span>
+                    Layer exec: <strong>{selectiveExec?.layer_exec_strict ? 'strict' : 'non-strict'}</strong>
+                    {selectiveTotal > 0 ? ` · ${selectiveApplied} applied / ${selectiveSkipped} skipped / ${selectiveTotal} total` : ''}
+                  </span>
+                )}
+                {nativeRunner?.selective_guardrail && (
+                  <span>
+                    Guardrail: <strong>{guardrailTriggered ? 'active' : 'ok'}</strong>
+                    {guardrailThreshold > 0 ? ` (${guardrailConsecutive}/${guardrailThreshold})` : ''}
+                    {guardrailTriggerCount > 0 ? ` · trips ${guardrailTriggerCount}` : ''}
+                    {guardrailSparkline ? ` · ${guardrailSparkline}` : ''}
+                  </span>
+                )}
+                {nativeTelemetryExpanded && canaryEnabled && (
+                  <span>
+                    Canary: <strong>{canaryStatus}</strong>
+                    {canaryProbeLatencyText && canarySelectiveLatencyText
+                      ? ` · ${canaryProbeLatencyText} → ${canarySelectiveLatencyText}`
+                      : ''}
+                    {canaryDeltaText ? ` (${canaryDeltaText})` : ''}
+                    {canaryIterations > 0 ? ` · n=${canaryIterations}` : ''}
+                    {canarySeed != null ? ` · seed=${canarySeed}` : ''}
+                  </span>
+                )}
+                {nativeRunner && (
+                  <span>
+                    ABI: <strong>{abiParityAttempted ? (abiParityPass ? 'parity-pass' : 'parity-fail') : (abiPrimaryUsed ? 'primary' : 'probe-only')}</strong>
+                    {abiParityMaxAbsText ? ` · max ${abiParityMaxAbsText}` : ''}
+                    {abiLastStage ? ` · ${abiLastStage}` : ''}
+                  </span>
+                )}
+                {nativeRunner && nativeTelemetryExpanded && (
+                  <span>
+                    ABI gate: <strong>{abiParityStrict ? 'strict' : 'observe'}</strong>
+                    {abiParitySampleRateText ? ` · sample ${abiParitySampleRateText}` : ''}
+                    {abiParityThresholdText ? ` · max_abs≤${abiParityThresholdText}` : ''}
+                  </span>
+                )}
+                {nativeRunner && nativeTelemetryExpanded && (
+                  <span>
+                    Cutover gate: <strong>{cutoverState}</strong>
+                    {abiParityAttempted ? ` · parity ${abiParityPass ? 'pass' : 'fail'}` : ''}
+                    {nativeFallbackLimitText && nativeFallbackRate ? ` · fb ${nativeFallbackRate} / ${nativeFallbackLimitText}` : ''}
+                    {nativeLegacyCompileLimitText ? ` · legacy ${nativeLegacyCompiles}/${nativeLegacyCompileLimitText}` : ''}
+                  </span>
+                )}
+              </div>
+              {nativeTelemetryExpanded && guardrailTriggered && guardrailReason && (
+                <div className="native-runner-stats" style={{ marginTop: 4 }}>
+                  <span>Guardrail reason: <strong>{guardrailReason}</strong></span>
+                </div>
+              )}
+              {nativeTelemetryExpanded && showCutoverDetails && cutoverRows.length > 0 && (
+                <div className="native-cutover-details">
+                  <div className="native-cutover-details-title">Cutover Gate Checks</div>
+                  {cutoverRows.map((row) => (
+                    <div key={`cutover-check-${row.key}`} className="native-cutover-check-row">
+                      <span>{row.label}</span>
+                      <span className={`native-cutover-check-state ${row.passState}`}>
+                        {row.passState}
+                      </span>
+                      <span>actual: <strong>{row.actualText}</strong></span>
+                      <span>limit: <strong>{row.limitText}</strong></span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {nativeTelemetryExpanded && guardrailHistory.length > 0 && (
+                <div className="native-runner-stats" style={{ marginTop: 6, display: 'block' }}>
+                  <div style={{ marginBottom: 4 }}>
+                    <span>Guardrail history:</span>
+                    {guardrailSparkline && (
+                      <span
+                        style={{ marginLeft: 8, fontFamily: 'monospace' }}
+                        title={`${guardrailSparklineLegend}${guardrailSparklineTitle ? ` | ${guardrailSparklineTitle}` : ''}`}
+                      >
+                        {guardrailSparkline}
+                      </span>
+                    )}
+                  </div>
+                  {guardrailSparkline && (
+                    <div style={{ marginBottom: 2, color: 'var(--text-muted)' }}>
+                      {guardrailSparklineLegend}
+                    </div>
+                  )}
+                  {guardrailHistory.map((entry, index) => (
+                    <div key={`guardrail-history-${index}`} style={{ marginTop: 2 }}>
+                      <span>
+                        {entry?.event || 'event'}
+                        {entry?.timestamp ? ` @ ${formatGuardrailTimestamp(entry.timestamp)}` : ''}
+                        {entry?.source ? ` · ${entry.source}` : ''}
+                        {entry?.reason ? ` · ${entry.reason}` : ''}
+                        {entry?.consecutive_requested_not_candidate != null && entry?.threshold != null
+                          ? ` · ${entry.consecutive_requested_not_candidate}/${entry.threshold}`
+                          : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {nativeTelemetryExpanded && selectiveLayerResults.length > 0 && (
+                <div className="native-runner-stats" style={{ marginTop: 6, display: 'block' }}>
+                  <div style={{ marginBottom: 4 }}>
+                    <span>Selective layers:</span>
+                  </div>
+                  {selectiveLayerResults.map((entry, index) => (
+                    <div key={`selective-layer-${index}`} style={{ marginTop: 2 }}>
+                      <span>
+                        L{entry?.layer_index ?? '?'}
+                        {entry?.workflow_id ? ` · ${entry.workflow_id}` : ''}
+                        {entry?.input_node_id ? ` · in=${entry.input_node_id}` : ''}
+                        {entry?.applied ? ' · applied' : ' · skipped'}
+                        {!entry?.applied && entry?.skip_reason ? ` · ${entry.skip_reason}` : ''}
+                        {entry?.error ? ` · err=${entry.error}` : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Evolution-specific stats */}
           {isGenerationProgress ? (
             <div className="live-stats">
@@ -1501,6 +2161,53 @@ function ControlPanel({
               </span>
             )}
           </div>
+
+          {nativeRunner && (
+            <div className="best-scores" style={{ marginTop: 8 }}>
+              <span>
+                Native: <strong>{nativeRunner.status || 'unknown'}</strong>
+              </span>
+              <span>
+                Fallback rate: <strong>{nativeFallbackRate || '—'}</strong>
+              </span>
+              <span>
+                Probe ok/fail: <strong>{nativeProbeSummary}</strong>
+              </span>
+              {selectiveExecPath && (
+                <span>
+                  Path: <strong>{selectiveExecPath}</strong>
+                </span>
+              )}
+              {selectiveExec?.layer_exec_enabled && (
+                <span>
+                  Layers: <strong>{selectiveApplied} applied / {selectiveSkipped} skipped</strong>
+                </span>
+              )}
+              <span>
+                Fallbacks: <strong>{nativeFallback.fallback_compiles || 0}</strong>
+              </span>
+              <span>
+                Legacy compile: <strong>{nativeLegacyCompiles}</strong>
+              </span>
+              {nativeLegacyCompileLimitText && (
+                <span>
+                  Legacy limit: <strong>{nativeLegacyCompileLimitText}</strong>
+                </span>
+              )}
+              {nativeRunner?.selective_guardrail && (
+                <span>
+                  Guardrail: <strong>{guardrailTriggered ? 'active' : 'ok'}</strong>
+                  {guardrailTriggerCount > 0 ? ` (${guardrailTriggerCount} trips)` : ''}
+                </span>
+              )}
+              {canaryEnabled && (
+                <span>
+                  Canary: <strong>{canaryStatus}</strong>
+                  {canaryDeltaText ? ` (${canaryDeltaText})` : ''}
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Aria's message */}
           {progress?.aria_message && (

@@ -420,6 +420,54 @@ def test_validate_workflow_dangling_edge(client):
     assert data["valid"] is False
 
 
+def test_validate_workflow_unsupported_edge_dtype_pairing(client):
+    workflow = {
+        "workflow": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": "wf_dtype_pairing",
+            "name": "Dtype Pairing Test",
+            "nodes": [
+                {"id": "n1", "component_type": "dataset_filter", "params": {}, "ui_meta": {}},
+                {"id": "n2", "component_type": "relu", "params": {}, "ui_meta": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "source_port": "filtered", "target": "n2", "target_port": "x"}
+            ],
+        }
+    }
+    r = client.post("/api/v1/workflows/validate", json=workflow)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["valid"] is False
+    mismatch_issues = [i for i in data["issues"] if i.get("code") == "unsupported_edge_dtype_pairing"]
+    assert mismatch_issues
+    assert "Unsupported edge dtype pairing" in mismatch_issues[0]["message"]
+
+
+def test_aria_suggest_components_data_control_prompt(client):
+    workflow = {
+        "workflow": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": "wf_data_control_suggest",
+            "name": "Data Control Suggest",
+            "nodes": [
+                {"id": "src", "component_type": "io/input", "params": {}, "ui_meta": {}},
+            ],
+            "edges": [],
+        },
+        "prompt": "Optimize data/control workflow with better join/filter behavior and schema hygiene",
+    }
+
+    r = client.post("/api/v1/aria/suggest-components", json=workflow)
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+    assert len(data) > 0
+
+    reasons = [str(item.get("reason", "")).lower() for item in data]
+    assert any("schema" in reason or "join" in reason or "filter" in reason for reason in reasons)
+
+
 def test_save_and_get_workflow(client):
     workflow = {
         "schema_version": "workflow_graph.v1",
@@ -607,6 +655,9 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
     eval_data = r_eval.json()
     assert eval_data["status"] == "success"
     assert eval_data["graph_fingerprint"] == "fp_ai_learning_loop_v2"
+    assert "benchmarking" in eval_data
+    assert "summary" in eval_data["benchmarking"]
+    assert "targets" in eval_data["benchmarking"]
     assert eval_data["lineage_sync"]["attempted"] is True
     assert eval_data["lineage_sync"]["synced"] is True
 
@@ -616,3 +667,16 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
     assert lineage_payload["graph_fingerprint"] == "fp_ai_learning_loop_v2"
     assert lineage_payload["status"] == "success"
     assert lineage_payload["metrics"]["overall_novelty"] == 0.73
+
+
+def test_benchmark_target_catalog_endpoint(client):
+    r = client.get("/api/v1/benchmarks/targets")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["version"] == "benchmark_targets.v1"
+    assert isinstance(data.get("targets"), list)
+    assert len(data["targets"]) >= 8
+    ids = {t["id"] for t in data["targets"]}
+    assert "param_count" in ids
+    assert "total_flops_per_token" in ids
+    assert "mmlu_5shot" in ids

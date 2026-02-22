@@ -4,6 +4,8 @@ import { lossColor, noveltyColor } from '../utils/colors';
 import { trendScore, trendScoreBreakdown } from '../utils/scoringEngine';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import apiService from '../services/apiService';
+import { filterRowsByQuery } from '../utils/tableFiltering';
+import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -12,7 +14,9 @@ const API_BASE = process.env.REACT_APP_API_URL || '';
  * plus a sortable data table with per-experiment scores.
  */
 
-function MiniChart({ data, valueKey, label, color, formatValue, weightEvents, bandLowerKey, bandUpperKey }) {
+const TREND_CHART_WINDOW = 30;
+
+function MiniChart({ data, valueKey, label, color, formatValue, weightEvents, bandLowerKey, bandUpperKey, scaleKey, maxWidth }) {
   if (!data || data.length < 2) {
     return (
       <div style={{ textAlign: 'center', padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>
@@ -21,33 +25,41 @@ function MiniChart({ data, valueKey, label, color, formatValue, weightEvents, ba
     );
   }
 
-  const values = data.map(d => d[valueKey]).filter(v => v != null);
+  const windowed = data.slice(-TREND_CHART_WINDOW);
+  const values = windowed.map(d => d[valueKey]).filter(v => v != null && Number.isFinite(v));
   if (values.length < 2) return null;
 
   const W = 400;
   const H = 120;
   const PAD = 24;
 
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const defaults = CHART_DEFAULTS[scaleKey] || { min: 0, max: 1 };
+  const scale = getFixedScale(`trend.${scaleKey}`, values, {
+    defaultMin: defaults.min,
+    defaultMax: defaults.max,
+  });
+  const min = scale.min;
+  const max = scale.max;
   const range = max - min || 1;
 
-  const tMin = data[0]?.timestamp || 0;
-  const tMax = data[data.length - 1]?.timestamp || 1;
+  const tMin = windowed[0]?.timestamp || 0;
+  const tMax = windowed[windowed.length - 1]?.timestamp || 1;
   const tRange = tMax - tMin || 1;
 
-  const points = data
+  const denom = Math.max(1, TREND_CHART_WINDOW - 1);
+  const points = windowed
     .map((d, i) => {
       const v = d[valueKey];
       if (v == null) return null;
-      const x = PAD + (i / (data.length - 1)) * (W - 2 * PAD);
-      const y = H - PAD - ((v - min) / range) * (H - 2 * PAD);
+      const x = PAD + (i / denom) * (W - 2 * PAD);
+      const clamped = clampToScale(v, scale);
+      const y = H - PAD - ((clamped - min) / range) * (H - 2 * PAD);
       const lowerRaw = bandLowerKey ? d[bandLowerKey] : null;
       const upperRaw = bandUpperKey ? d[bandUpperKey] : null;
       const hasBand = lowerRaw != null && upperRaw != null;
-      const lower = hasBand ? Math.min(Math.max(lowerRaw, min), max) : null;
-      const upper = hasBand ? Math.min(Math.max(upperRaw, min), max) : null;
-      return { x, y, v, idx: i, lower, upper, hasBand };
+      const lower = hasBand ? clampToScale(lowerRaw, scale) : null;
+      const upper = hasBand ? clampToScale(upperRaw, scale) : null;
+      return { x, y, v: clamped, idx: i, lower, upper, hasBand };
     })
     .filter(Boolean);
 
@@ -74,24 +86,25 @@ function MiniChart({ data, valueKey, label, color, formatValue, weightEvents, ba
     sumXY += p.idx * p.v;
     sumXX += p.idx * p.idx;
   }
-  const denom = n * sumXX - sumX * sumX;
-  const slope = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+  const regDenom = n * sumXX - sumX * sumX;
+  const slope = regDenom !== 0 ? (n * sumXY - sumX * sumY) / regDenom : 0;
   const intercept = (sumY - slope * sumX) / n;
   const regY0 = intercept;
-  const regYN = intercept + slope * (data.length - 1);
-  const regPx0 = H - PAD - ((Math.min(Math.max(regY0, min), max) - min) / range) * (H - 2 * PAD);
-  const regPxN = H - PAD - ((Math.min(Math.max(regYN, min), max) - min) / range) * (H - 2 * PAD);
+  const regYN = intercept + slope * (windowed.length - 1);
+  const drawReg = regDenom !== 0 && Number.isFinite(regY0) && Number.isFinite(regYN);
+  const regPx0 = drawReg ? H - PAD - ((Math.min(Math.max(regY0, min), max) - min) / range) * (H - 2 * PAD) : 0;
+  const regPxN = drawReg ? H - PAD - ((Math.min(Math.max(regYN, min), max) - min) / range) * (H - 2 * PAD) : 0;
 
   // Compute weight event marker positions with before/after comparison
   const markers = (weightEvents || [])
     .filter(e => e.timestamp >= tMin && e.timestamp <= tMax)
     .map(e => {
-      const x = PAD + ((e.timestamp - tMin) / tRange) * (W - 2 * PAD);
+      const x = PAD + ((e.timestamp - tMin) / (tRange || 1)) * (W - 2 * PAD);
       // Find experiments before and after this weight event
-      const eventIdx = data.findIndex(d => (d.timestamp || 0) >= e.timestamp);
-      const before = data.slice(Math.max(0, eventIdx - 3), eventIdx)
+      const eventIdx = windowed.findIndex(d => (d.timestamp || 0) >= e.timestamp);
+      const before = windowed.slice(Math.max(0, eventIdx - 3), eventIdx)
         .map(d => d[valueKey]).filter(v => v != null);
-      const after = data.slice(eventIdx, eventIdx + 3)
+      const after = windowed.slice(eventIdx, eventIdx + 3)
         .map(d => d[valueKey]).filter(v => v != null);
       const avgBefore = before.length > 0 ? before.reduce((a, b) => a + b, 0) / before.length : null;
       const avgAfter = after.length > 0 ? after.reduce((a, b) => a + b, 0) / after.length : null;
@@ -114,7 +127,7 @@ function MiniChart({ data, valueKey, label, color, formatValue, weightEvents, ba
         {label}
       </div>
       <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}
-        style={{ width: '100%', height: 'auto', maxWidth: W }}>
+        style={{ width: '100%', height: 'auto', maxWidth: maxWidth || W }}>
         {/* Grid lines */}
         {[0, 0.25, 0.5, 0.75, 1].map(frac => {
           const y = H - PAD - frac * (H - 2 * PAD);
@@ -130,8 +143,10 @@ function MiniChart({ data, valueKey, label, color, formatValue, weightEvents, ba
         })}
 
         {/* Regression trend line */}
-        <line x1={PAD} y1={regPx0} x2={PAD + (data.length - 1) / (data.length - 1) * (W - 2 * PAD)} y2={regPxN}
-          stroke={color} strokeWidth={1.5} strokeDasharray="6 3" opacity={0.5} />
+        {drawReg && (
+          <line x1={PAD} y1={regPx0} x2={PAD + (windowed.length - 1) / denom * (W - 2 * PAD)} y2={regPxN}
+            stroke={color} strokeWidth={1.5} strokeDasharray="6 3" opacity={0.5} />
+        )}
 
         {/* Optional confidence band */}
         {bandPathD && (
@@ -185,16 +200,26 @@ function RegressionBaselineChart({ points, frontier }) {
   const PAD = 28;
   const xs = points.map((p) => Number(p.throughput_tok_s || 0));
   const ys = points.map((p) => Number(p.baseline_loss_ratio || 0));
-  const xMin = Math.min(...xs);
-  const xMax = Math.max(...xs);
-  const yMin = Math.min(...ys);
-  const yMax = Math.max(...ys);
+  const xDefaults = CHART_DEFAULTS.throughput_tok_s;
+  const yDefaults = CHART_DEFAULTS.baseline_ratio;
+  const xScale = getFixedScale('trend.throughput_tok_s', xs, {
+    defaultMin: xDefaults.min,
+    defaultMax: xDefaults.max,
+  });
+  const yScale = getFixedScale('trend.baseline_ratio', ys, {
+    defaultMin: yDefaults.min,
+    defaultMax: yDefaults.max,
+  });
+  const xMin = xScale.min;
+  const xMax = xScale.max;
+  const yMin = yScale.min;
+  const yMax = yScale.max;
   const xRange = (xMax - xMin) || 1;
   const yRange = (yMax - yMin) || 1;
 
   const project = (x, y) => ({
-    x: PAD + ((x - xMin) / xRange) * (W - PAD * 2),
-    y: H - PAD - ((y - yMin) / yRange) * (H - PAD * 2),
+    x: PAD + ((clampToScale(x, xScale) - xMin) / xRange) * (W - PAD * 2),
+    y: H - PAD - ((clampToScale(y, yScale) - yMin) / yRange) * (H - PAD * 2),
   });
   const frontierPath = (frontier || [])
     .map((p, i) => {
@@ -242,6 +267,31 @@ const COLUMNS = [
   { key: 'trend_confidence', label: 'Confidence' },
   { key: 'best_loss_ratio', label: 'Best Loss' },
   { key: 'best_novelty_score', label: 'Best Novelty' },
+  {
+    key: 'avg_throughput_tok_s',
+    label: 'Avg Throughput',
+    tooltip: 'Average per-program throughput (tok/s). Falls back to perf report if available.'
+  },
+  {
+    key: 'avg_routing_token_retention',
+    label: 'Routing Retention',
+    tooltip: 'Share of tokens processed by routing modules (higher is better).'
+  },
+  {
+    key: 'avg_routing_utilization_entropy',
+    label: 'Routing Entropy',
+    tooltip: 'Load-balance entropy across experts (higher = more balanced).'
+  },
+  {
+    key: 'avg_depth_savings_ratio',
+    label: 'Depth Savings',
+    tooltip: 'MoD savings vs full depth (higher = more compute saved).'
+  },
+  {
+    key: 'avg_recursion_savings_ratio',
+    label: 'Recursion Savings',
+    tooltip: 'MoR savings vs max recursion (higher = more compute saved).'
+  },
   { key: 'n_programs_generated', label: 'Programs' },
   { key: 'n_stage1_passed', label: 'S1 Pass' },
   { key: 'duration_seconds', label: 'Duration' },
@@ -275,6 +325,7 @@ function TrendCharts({ onSelectExperiment }) {
     } catch {}
     return true;
   });
+  const [filterQuery, setFilterQuery] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [copiedValue, copyText] = useCopyToClipboard();
   const [regressionVsBaseline, setRegressionVsBaseline] = useState({
@@ -352,8 +403,17 @@ function TrendCharts({ onSelectExperiment }) {
     return trends.map(d => ({ ...d, _score: trendScore(d) }));
   }, [trends]);
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(augmented, filterQuery, [
+      'experiment_id',
+      'hypothesis',
+      'experiment_type',
+      'status',
+    ])
+  ), [augmented, filterQuery]);
+
   const sorted = useMemo(() => {
-    const arr = [...augmented];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va = a[sortKey], vb = b[sortKey];
       if (va == null && vb == null) return 0;
@@ -365,7 +425,7 @@ function TrendCharts({ onSelectExperiment }) {
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [augmented, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   const adaptationTimeline = useMemo(() => {
     if (!adaptationEvents || adaptationEvents.length === 0) return [];
@@ -425,7 +485,7 @@ function TrendCharts({ onSelectExperiment }) {
         to generate better architectures. Decreasing loss ratio means the survivors are learning
         faster. These trends show whether the system's self-improvement loop is working.
       </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginBottom: 24 }}>
+      <div style={{ marginBottom: 8 }}>
         <MiniChart
           data={trends}
           valueKey="adjusted_s1_pass_rate"
@@ -435,16 +495,22 @@ function TrendCharts({ onSelectExperiment }) {
           weightEvents={weightEvents}
           bandLowerKey="s1_confidence_lower"
           bandUpperKey="s1_confidence_upper"
+          scaleKey="s1_rate"
+          maxWidth={700}
         />
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: -12, paddingLeft: 4 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginBottom: 12, paddingLeft: 4 }}>
           Per-experiment S1 rate (Bayesian-adjusted) — differs from the global all-time pass rate shown on the Overview tab.
         </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16, marginBottom: 24 }}>
         <MiniChart
           data={trends}
           valueKey="best_novelty_score"
           label="Best Novelty Score"
           color="var(--accent-purple, #bc8cff)"
           weightEvents={weightEvents}
+          scaleKey="novelty"
+          maxWidth={520}
         />
         <MiniChart
           data={trends}
@@ -453,6 +519,58 @@ function TrendCharts({ onSelectExperiment }) {
           color="var(--accent-yellow, #d29922)"
           formatValue={v => v.toFixed(4)}
           weightEvents={weightEvents}
+          scaleKey="loss_ratio"
+          maxWidth={520}
+        />
+        <MiniChart
+          data={trends}
+          valueKey="avg_throughput_tok_s"
+          label="Average Throughput (tok/s)"
+          color="var(--accent-blue, #58a6ff)"
+          formatValue={v => Math.round(v).toLocaleString()}
+          weightEvents={weightEvents}
+          scaleKey="throughput_tok_s"
+          maxWidth={520}
+        />
+        <MiniChart
+          data={trends}
+          valueKey="avg_routing_token_retention"
+          label="Routing Token Retention (MoE)"
+          color="var(--accent-green, #3fb950)"
+          formatValue={v => `${(v * 100).toFixed(1)}%`}
+          weightEvents={weightEvents}
+          scaleKey="routing_token_retention"
+          maxWidth={520}
+        />
+        <MiniChart
+          data={trends}
+          valueKey="avg_routing_utilization_entropy"
+          label="Routing Utilization Entropy (MoE)"
+          color="var(--accent-green, #2ea043)"
+          formatValue={v => v.toFixed(3)}
+          weightEvents={weightEvents}
+          scaleKey="routing_entropy"
+          maxWidth={520}
+        />
+        <MiniChart
+          data={trends}
+          valueKey="avg_depth_savings_ratio"
+          label="Depth Savings Ratio (MoD)"
+          color="#c77dff"
+          formatValue={v => `${(v * 100).toFixed(1)}%`}
+          weightEvents={weightEvents}
+          scaleKey="depth_savings_ratio"
+          maxWidth={520}
+        />
+        <MiniChart
+          data={trends}
+          valueKey="avg_recursion_savings_ratio"
+          label="Recursion Savings Ratio (MoR)"
+          color="#9f7aea"
+          formatValue={v => `${(v * 100).toFixed(1)}%`}
+          weightEvents={weightEvents}
+          scaleKey="recursion_savings_ratio"
+          maxWidth={520}
         />
       </div>
       {weightEvents.length > 0 && (
@@ -547,8 +665,24 @@ function TrendCharts({ onSelectExperiment }) {
       )}
 
       {/* Data table */}
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
-        Experiment Data
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
+          Experiment Data
+        </div>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter experiments"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
       </div>
       <table className="data-table">
         <thead>
@@ -557,6 +691,7 @@ function TrendCharts({ onSelectExperiment }) {
               <th
                 key={col.key}
                 onClick={() => handleSort(col.key)}
+                title={col.tooltip}
                 style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
               >
                 {col.label}
@@ -641,6 +776,31 @@ function TrendCharts({ onSelectExperiment }) {
               </td>
               <td style={{ color: noveltyColor(d.best_novelty_score) }}>
                 {metricText(d.best_novelty_score, 'not computed', (v) => v.toFixed(3))}
+              </td>
+              <td style={{ color: 'var(--text-secondary)' }}>
+                {d.avg_throughput_tok_s != null
+                  ? `${Math.round(d.avg_throughput_tok_s).toLocaleString()} tok/s`
+                  : '—'}
+              </td>
+              <td style={{ color: 'var(--text-secondary)' }}>
+                {d.avg_routing_token_retention != null
+                  ? `${(d.avg_routing_token_retention * 100).toFixed(1)}%`
+                  : '—'}
+              </td>
+              <td style={{ color: 'var(--text-secondary)' }}>
+                {d.avg_routing_utilization_entropy != null
+                  ? d.avg_routing_utilization_entropy.toFixed(3)
+                  : '—'}
+              </td>
+              <td style={{ color: 'var(--text-secondary)' }}>
+                {d.avg_depth_savings_ratio != null
+                  ? `${(d.avg_depth_savings_ratio * 100).toFixed(1)}%`
+                  : '—'}
+              </td>
+              <td style={{ color: 'var(--text-secondary)' }}>
+                {d.avg_recursion_savings_ratio != null
+                  ? `${(d.avg_recursion_savings_ratio * 100).toFixed(1)}%`
+                  : '—'}
               </td>
               <td>{d.n_programs_generated || 0}</td>
               <td style={{ color: (d.n_stage1_passed || 0) > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>

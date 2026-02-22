@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # Keep native perf-sensitive tests deterministic in CI by avoiding
+  # runtime-dependent OpenMP thread scaling and dynamic adjustment.
+  OMP_NUM_THREADS: '1'
+  OMP_DYNAMIC: 'FALSE'
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -52,6 +58,7 @@ jobs:
           python-version: '3.12'
       - run: pip install pyyaml jsonschema
       - run: python tools/validate_manifests.py
+      - run: python tools/check_manifest_port_dtypes.py
       - run: python tools/check_component_mapping.py
 
   build-native:

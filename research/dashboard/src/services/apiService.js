@@ -21,7 +21,7 @@ async function handleResponse(response) {
 export const apiService = {
   // Experiments
   getExperiments: (limit = 100) => 
-    fetch(`${API_BASE}/api/experiments?limit=${limit}`).then(handleResponse),
+    fetch(`${API_BASE}/api/experiments?n=${limit}`).then(handleResponse),
   
   getExperiment: (id) => 
     fetch(`${API_BASE}/api/experiments/${id}`).then(handleResponse),
@@ -122,6 +122,17 @@ export const apiService = {
 
   stopDesigner: () =>
     fetch(`${API_BASE}/api/designer/stop`, { method: 'POST' }).then(handleResponse),
+
+  // Native runner profiling
+  getNativeProfile: () =>
+    fetch(`${API_BASE}/api/native-profile/v2/data`).then(handleResponse),
+
+  toggleNativeProfiling: (enable) =>
+    fetch(`${API_BASE}/api/native-profile/v2/enable`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable: !!enable }),
+    }).then(handleResponse),
 };
 
 export default apiService;

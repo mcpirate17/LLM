@@ -33,6 +33,164 @@ export function normalizeLossRatio(lossRatio) {
   return lossRatio != null ? Math.max(0, 1 - (lossRatio - 0.2) / 0.8) : 0;
 }
 
+const BONUS_WEIGHTS = {
+  efficiency: 12,
+  routing: 10,
+  adaptive: 8,
+};
+
+const ARCHITECTURE_TARGETS = {
+  moe: { capacity_multiplier: 4.0, flops_iso: true },
+  mod: { throughput_multiplier: 2.0, accuracy_iso: true },
+  mor: { accuracy_gain: 0.02, params_iso: true },
+  mamba: { scaling: 'linear', throughput_vs_transformer: 5.0 },
+};
+
+const PARAM_EXP_RANGE = { min: 5, max: 10 };
+const FLOPS_EXP_RANGE = { min: 6, max: 13 };
+
+function normalizeInverseLog10(value, minExp, maxExp) {
+  if (value == null || value <= 0) return null;
+  const exp = Math.log10(value);
+  const score = 1 - (exp - minExp) / (maxExp - minExp);
+  return clamp01(score);
+}
+
+function parseJsonValue(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch (err) {
+      return null;
+    }
+  }
+  return null;
+}
+
+function pickFirstNumber(entry, keys) {
+  for (const key of keys) {
+    const value = entry?.[key];
+    if (value == null) continue;
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+  }
+  return null;
+}
+
+function averageScores(scores) {
+  if (!scores.length) return null;
+  const total = scores.reduce((sum, v) => sum + v, 0);
+  return total / scores.length;
+}
+
+function getExpertCount(entry) {
+  const direct = pickFirstNumber(entry, ['routing_expert_count', 'expert_count', 'n_experts']);
+  if (direct != null) return direct;
+  const parsed = parseJsonValue(entry?.routing_expert_utilization_json);
+  if (Array.isArray(parsed)) return parsed.length;
+  if (parsed && typeof parsed === 'object') return Object.keys(parsed).length;
+  return null;
+}
+
+function normalizeRoutingEntropy(entropy, nExperts) {
+  if (entropy == null) return null;
+  if (nExperts != null && nExperts > 1) {
+    const maxEntropy = Math.log2(nExperts);
+    if (maxEntropy > 0) return clamp01(entropy / maxEntropy);
+  }
+  return clamp01(entropy);
+}
+
+function computeRoutingBonus(entry) {
+  const entropy = entry?.routing_utilization_entropy;
+  const dropRate = entry?.routing_drop_rate;
+  const overflow = entry?.routing_capacity_overflow_count;
+  const confMean = entry?.routing_confidence_mean;
+  const confStd = entry?.routing_confidence_std;
+  const tokensTotal = entry?.routing_tokens_total;
+  const tokensProcessed = entry?.routing_tokens_processed;
+
+  const scores = [];
+  const nExperts = getExpertCount(entry);
+  const entropyScore = normalizeRoutingEntropy(entropy, nExperts);
+  if (entropyScore != null) scores.push(entropyScore);
+  if (dropRate != null) scores.push(clamp01(1 - Number(dropRate)));
+  if (overflow != null) scores.push(clamp01(1 - Math.min(Number(overflow) / 5, 1)));
+  if (confMean != null) scores.push(clamp01(Number(confMean)));
+  if (confStd != null) scores.push(clamp01(1 - Number(confStd) / 0.3));
+  if (tokensTotal && tokensProcessed) {
+    const procRate = Number(tokensProcessed) / Number(tokensTotal);
+    // Reward processed rate, especially if it meets high utilization targets
+    scores.push(clamp01(procRate / 0.95));
+  }
+
+  const avg = averageScores(scores);
+  // Apply MoE multiplier if expert utilization is balanced (high entropy)
+  const moeFactor = (entropyScore && entropyScore > 0.8) ? 1.2 : 1.0;
+  return avg == null ? null : avg * BONUS_WEIGHTS.routing * moeFactor;
+}
+
+function computeEfficiencyBonus(entry) {
+  const scores = [];
+  const params = entry?.param_count ?? entry?.graph_n_params_estimate;
+  const flops = entry?.flops_forward;
+  const throughput = entry?.throughput_tok_s;
+
+  const paramScore = normalizeInverseLog10(params, PARAM_EXP_RANGE.min, PARAM_EXP_RANGE.max);
+  if (paramScore != null) scores.push(paramScore);
+  const flopsScore = normalizeInverseLog10(flops, FLOPS_EXP_RANGE.min, FLOPS_EXP_RANGE.max);
+  if (flopsScore != null) scores.push(flopsScore);
+  
+  if (throughput != null) {
+    // Baseline target for dense is 5000 tok/s; Mamba/MoD targets 10000+
+    const targetThroughput = (entry.routing_mode || entry.compute_routing === 'mod_topk') ? 10000 : 5000;
+    scores.push(clamp01(Number(throughput) / targetThroughput));
+  }
+
+  const avg = averageScores(scores);
+  return avg == null ? null : avg * BONUS_WEIGHTS.efficiency;
+}
+
+function computeAdaptiveBonus(entry) {
+  const scores = [];
+  const depthSavings = pickFirstNumber(entry, [
+    'depth_savings_ratio',
+    'adaptive_depth_savings',
+    'depth_compute_savings',
+    'depth_efficiency_gain',
+  ]);
+  // Target for MoD is 50% savings
+  if (depthSavings != null) scores.push(clamp01(depthSavings / ARCHITECTURE_TARGETS.mod.throughput_multiplier * 2));
+
+  const depthUtil = pickFirstNumber(entry, [
+    'effective_depth_ratio',
+    'depth_utilization_ratio',
+    'avg_depth_ratio',
+  ]);
+  if (depthUtil != null) scores.push(clamp01(1 - depthUtil));
+
+  const recursionSavings = pickFirstNumber(entry, [
+    'recursion_savings_ratio',
+    'recursion_compute_savings',
+    'adaptive_recursion_savings',
+    'recursion_efficiency_gain',
+  ]);
+  if (recursionSavings != null) scores.push(clamp01(recursionSavings));
+
+  const avg = averageScores(scores);
+  return avg == null ? null : avg * BONUS_WEIGHTS.adaptive;
+}
+
+function computeBonusBreakdown(entry) {
+  return {
+    efficiencyBonus: computeEfficiencyBonus(entry) ?? 0,
+    routingBonus: computeRoutingBonus(entry) ?? 0,
+    adaptiveBonus: computeAdaptiveBonus(entry) ?? 0,
+  };
+}
+
 // ── Candidate score (programs + leaderboard entries) ────────────────
 //
 // This is the ONE score function for individual architectures.
@@ -60,6 +218,7 @@ function tieredBreakdown(entry, tierOrder) {
   const consistency = entry.validation_multi_seed_std != null ? Math.max(0, 1 - entry.validation_multi_seed_std * 10) : 0;
   const tierBonus = (tierOrder[entry.tier] || 0) / 4;
   const tier = entry.tier || 'screening';
+  const bonus = computeBonusBreakdown(entry);
 
   if (tier === 'breakthrough' || tier === 'validation') {
     return {
@@ -70,6 +229,9 @@ function tieredBreakdown(entry, tierOrder) {
       vBase: validationBaseline * 25,
       consistency: consistency * 15,
       tierBonus: tierBonus * 20,
+      efficiencyBonus: bonus.efficiencyBonus,
+      routingBonus: bonus.routingBonus,
+      adaptiveBonus: bonus.adaptiveBonus,
     };
   }
 
@@ -80,6 +242,9 @@ function tieredBreakdown(entry, tierOrder) {
       iLoss: investigationLoss * 20,
       robust: robustness * 15,
       tierBonus: tierBonus * 35,
+      efficiencyBonus: bonus.efficiencyBonus,
+      routingBonus: bonus.routingBonus,
+      adaptiveBonus: bonus.adaptiveBonus,
     };
   }
 
@@ -87,6 +252,9 @@ function tieredBreakdown(entry, tierOrder) {
     sLoss: screeningLoss * 35,
     novelty: novelty * 25,
     tierBonus: tierBonus * 40,
+    efficiencyBonus: bonus.efficiencyBonus,
+    routingBonus: bonus.routingBonus,
+    adaptiveBonus: bonus.adaptiveBonus,
   };
 }
 
@@ -100,12 +268,16 @@ function flatBreakdown(program) {
   const noveltyScore = program.novelty_score != null ? Math.min(program.novelty_score, 1.0) : 0;
   const baselineScore = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) : 0;
   const throughputScore = program.throughput_tok_s != null ? Math.min(program.throughput_tok_s / 5000, 1.0) : 0;
+  const bonus = computeBonusBreakdown(program);
 
   return {
     loss: lossScore * 35,
     novelty: noveltyScore * 25,
     baseline: baselineScore * 25,
     throughput: throughputScore * 15,
+    efficiencyBonus: bonus.efficiencyBonus,
+    routingBonus: bonus.routingBonus,
+    adaptiveBonus: bonus.adaptiveBonus,
   };
 }
 
@@ -143,8 +315,18 @@ export function discoveryScoreBreakdown(program) {
   const novelty = program.novelty_score != null ? Math.min(program.novelty_score, 1.0) * 25 : 0;
   const baseline = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) * 30 : 0;
   const id = program.most_similar_to ? 10 : 0;
-  const total = clampScore(loss + novelty + baseline + id);
-  return { total, loss, novelty, baseline, id };
+  const bonus = computeBonusBreakdown(program);
+  const total = clampScore(loss + novelty + baseline + id + bonus.efficiencyBonus + bonus.routingBonus + bonus.adaptiveBonus);
+  return {
+    total,
+    loss,
+    novelty,
+    baseline,
+    id,
+    efficiencyBonus: bonus.efficiencyBonus,
+    routingBonus: bonus.routingBonus,
+    adaptiveBonus: bonus.adaptiveBonus,
+  };
 }
 
 export function discoveryScore(program) {
@@ -208,7 +390,8 @@ export function trendScoreBreakdown(d) {
 
 export function trendScore(d) {
   const b = trendScoreBreakdown(d);
-  return clampScore((b.passRate + b.loss + b.novelty + b.efficiency) * b.reliabilityMultiplier);
+  const score = (b.passRate + b.loss + b.novelty + b.efficiency) * b.reliabilityMultiplier;
+  return Number.isFinite(score) ? clampScore(score) : 0;
 }
 
 // ── Op score (LearningPanel) ────────────────────────────────────────

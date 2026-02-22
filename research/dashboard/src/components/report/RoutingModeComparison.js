@@ -1,9 +1,13 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
+import { filterRowsByQuery } from '../../utils/tableFiltering';
 
 export default function RoutingModeComparison({ programs, comparison }) {
+  const [sortKey, setSortKey] = useState('count');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
   const analysis = useMemo(() => {
     if (comparison && Array.isArray(comparison.by_mode)) {
-      const sorted = [...comparison.by_mode]
+      const rows = [...comparison.by_mode]
         .map((row) => ({
           mode: row.routing_mode,
           count: row.n_programs || 0,
@@ -16,11 +20,10 @@ export default function RoutingModeComparison({ programs, comparison }) {
           avgEntropy: row.avg_utilization_entropy,
           avgConf: row.avg_confidence_mean,
           tokenRetention: row.token_retention,
-        }))
-        .sort((a, b) => b.count - a.count);
+        }));
 
       return {
-        sorted,
+        rows,
         routedCount: comparison.routed_programs || 0,
         uniformCount: comparison.uniform_programs || 0,
         total: comparison.total_programs || 0,
@@ -55,7 +58,7 @@ export default function RoutingModeComparison({ programs, comparison }) {
       }
     }
 
-    const sorted = Object.entries(byMode)
+    const rows = Object.entries(byMode)
       .map(([mode, m]) => ({
         mode,
         count: m.count,
@@ -70,13 +73,35 @@ export default function RoutingModeComparison({ programs, comparison }) {
         bestLoss: m.bestLoss < Infinity ? m.bestLoss : null,
         bestFingerprint: m.bestFingerprint,
         tokenRetention: m.dropCount > 0 ? Math.max(0, 1 - (m.totalDrop / m.dropCount)) : null,
-      }))
-      .sort((a, b) => b.count - a.count);
+      }));
 
-    return { sorted, routedCount, uniformCount, total: programs.length };
+    return { rows, routedCount, uniformCount, total: programs.length };
   }, [programs, comparison]);
 
-  if (analysis.sorted.length === 0) return null;
+  const filtered = useMemo(() => (
+    filterRowsByQuery(analysis.rows, filterQuery, ['mode'])
+  ), [analysis.rows, filterQuery]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) setSortDesc(!sortDesc);
+    else { setSortKey(key); setSortDesc(true); }
+  };
+
+  if (sorted.length === 0) return null;
 
   return (
     <div className="card">
@@ -107,17 +132,48 @@ export default function RoutingModeComparison({ programs, comparison }) {
         </div>
       </div>
 
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter modes"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Mode</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>N</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Sample</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>S1 Rate</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Avg Loss</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Drop %</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Entropy</th>
+              <th onClick={() => handleSort('mode')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Mode{sortKey === 'mode' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('count')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                N{sortKey === 'count' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('sampleLabel')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Sample{sortKey === 'sampleLabel' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('s1Rate')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                S1 Rate{sortKey === 's1Rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Avg Loss{sortKey === 'avgLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgDrop')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Drop %{sortKey === 'avgDrop' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgEntropy')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Entropy{sortKey === 'avgEntropy' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
               <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Confidence</th>
               <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Conf Label</th>
               <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Stability</th>
@@ -125,7 +181,7 @@ export default function RoutingModeComparison({ programs, comparison }) {
             </tr>
           </thead>
           <tbody>
-            {analysis.sorted.map(row => (
+            {sorted.map(row => (
               <tr key={row.mode} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px 8px', color: 'var(--accent-blue)', fontWeight: 600 }}>{row.mode}</td>
                 <td style={{ padding: '6px 8px' }}>{row.count}</td>

@@ -4,8 +4,19 @@ import { reliabilityColor } from '../utils/colors';
 import { useAriaData } from '../hooks/useAriaData';
 import { NarrativeProvider, useNarrative } from '../hooks/useNarrative';
 import { opScore, opScoreBreakdown } from '../utils/scoringEngine';
+import { filterRowsByQuery } from '../utils/tableFiltering';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
+
+function fmtNumber(value, digits = 0) {
+  if (!Number.isFinite(value)) return '—';
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function fmtPct(value, digits = 0) {
+  if (!Number.isFinite(value)) return '—';
+  return `${(Number(value) * 100).toFixed(digits)}%`;
+}
 
 function Tooltip({ children, content }) {
   const [show, setShow] = useState(false);
@@ -95,14 +106,170 @@ function Section({ title, id, isOpen, onToggle, children }) {
  * learning log timeline, and efficiency frontier.
  */
 
+function computeWeightedAverage(rows, key) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  let total = 0;
+  let weightSum = 0;
+  for (const row of rows) {
+    const weight = Number(row?.n_programs || 0);
+    const value = Number(row?.[key]);
+    if (!Number.isFinite(value) || weight <= 0) continue;
+    total += value * weight;
+    weightSum += weight;
+  }
+  if (weightSum <= 0) return null;
+  return total / weightSum;
+}
+
+function computeTargetSummary(programs, routingData) {
+  const rows = Array.isArray(programs) ? programs : [];
+  const takeAvg = (key) => {
+    const vals = rows.map(r => Number(r?.[key])).filter(v => Number.isFinite(v));
+    if (!vals.length) return null;
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  };
+  const takeMedian = (key) => {
+    const vals = rows.map(r => Number(r?.[key])).filter(v => Number.isFinite(v)).sort((a, b) => a - b);
+    if (!vals.length) return null;
+    const mid = Math.floor(vals.length / 2);
+    return vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+  };
+
+  const routingRows = routingData?.by_mode || [];
+  const routingRetention = computeWeightedAverage(
+    routingRows.map(r => ({
+      ...r,
+      token_retention: r.token_retention != null ? r.token_retention
+        : (r.avg_drop_rate != null ? (1 - r.avg_drop_rate) : null),
+    })),
+    "token_retention"
+  );
+
+  let bestMode = null;
+  let bestScore = -Infinity;
+  for (const row of routingRows) {
+    const retention = row.token_retention != null
+      ? row.token_retention
+      : (row.avg_drop_rate != null ? (1 - row.avg_drop_rate) : null);
+    const entropy = Number(row.avg_utilization_entropy);
+    const conf = Number(row.avg_confidence_mean);
+    const score = (Number.isFinite(retention) ? retention : 0)
+      + (Number.isFinite(entropy) ? entropy : 0)
+      + (Number.isFinite(conf) ? conf : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestMode = row.routing_mode;
+    }
+  }
+
+  return {
+    efficiency: {
+      throughputMedian: takeMedian("throughput_tok_s"),
+      paramsMedian: takeMedian("param_count"),
+      flopsMedian: takeMedian("flops_forward"),
+      sampleCount: rows.length,
+    },
+    routing: {
+      retention: routingRetention,
+      entropy: computeWeightedAverage(routingRows, "avg_utilization_entropy"),
+      confidence: computeWeightedAverage(routingRows, "avg_confidence_mean"),
+      overflow: computeWeightedAverage(routingRows, "avg_capacity_overflow_count"),
+      bestMode,
+      sampleCount: routingData?.total_programs || 0,
+    },
+    adaptive: {
+      depthSavings: takeAvg("depth_savings_ratio"),
+      effectiveDepth: takeAvg("effective_depth_ratio"),
+      recursionSavings: takeAvg("recursion_savings_ratio"),
+      recursionDepth: takeAvg("recursion_depth_ratio"),
+      sampleCount: rows.filter(r =>
+        r.depth_savings_ratio != null
+        || r.effective_depth_ratio != null
+        || r.recursion_savings_ratio != null
+        || r.recursion_depth_ratio != null
+      ).length,
+    }
+  };
+}
+
+function TargetBalanceCards({ summary }) {
+  if (!summary) return null;
+  const { efficiency, routing, adaptive } = summary;
+
+  return (
+    <div className="card">
+      <div className="card-title">Balanced Targets (MoE · MoD · MoR · Mamba)</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        These KPIs track Aria’s balance across routing health (MoE), adaptive compute (MoD/MoR), and efficiency (Mamba-like throughput).
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+        <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-blue)', textTransform: 'uppercase', marginBottom: 6 }}>
+            Efficiency
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Median throughput: <strong>{fmtNumber(efficiency.throughputMedian, 0)} tok/s</strong>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Median params: <strong>{efficiency.paramsMedian ? `${fmtNumber(efficiency.paramsMedian / 1e6, 2)}M` : '—'}</strong>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Median FLOPs: <strong>{efficiency.flopsMedian ? fmtNumber(efficiency.flopsMedian, 0) : '—'}</strong>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            Samples: {efficiency.sampleCount}
+          </div>
+        </div>
+        <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-green)', textTransform: 'uppercase', marginBottom: 6 }}>
+            Routing (MoE)
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Token retention: <strong>{fmtPct(routing.retention, 1)}</strong>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Utilization entropy: <strong>{fmtNumber(routing.entropy, 3)}</strong>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Confidence: <strong>{fmtNumber(routing.confidence, 3)}</strong>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            Best mode: {routing.bestMode || '—'} · Samples: {routing.sampleCount}
+          </div>
+        </div>
+        <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#c77dff', textTransform: 'uppercase', marginBottom: 6 }}>
+            Adaptive Compute
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Depth savings: <strong>{fmtPct(adaptive.depthSavings, 1)}</strong>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Effective depth: <strong>{fmtPct(adaptive.effectiveDepth, 1)}</strong>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Recursion savings: <strong>{fmtPct(adaptive.recursionSavings, 1)}</strong>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            Samples with telemetry: {adaptive.sampleCount}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GrammarWeightsChart({ defaultWeights, learnedWeights, explanation }) {
   if (!defaultWeights) return null;
 
   const categories = Object.keys(defaultWeights).sort();
-  const maxWeight = Math.max(
-    ...categories.map(c => Math.max(defaultWeights[c] || 0, (learnedWeights || {})[c] || 0)),
-    1
-  );
+  const weightValues = categories.map(c => Math.max(defaultWeights[c] || 0, (learnedWeights || {})[c] || 0));
+  const weightDefaults = CHART_DEFAULTS.grammar_weight;
+  const weightScale = getFixedScale('learning.grammar_weight', weightValues, {
+    defaultMin: weightDefaults.min,
+    defaultMax: weightDefaults.max,
+  });
+  const maxWeight = Math.max(weightScale.max, 1);
 
   return (
     <div className="card">
@@ -250,6 +417,7 @@ function routingMetricChips(row) {
 function OpSuccessTable({ opRates }) {
   const [sortKey, setSortKey] = useState('_score');
   const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
 
   const handleSort = (key) => {
     if (sortKey === key) setSortDesc(!sortDesc);
@@ -269,8 +437,12 @@ function OpSuccessTable({ opRates }) {
     }));
   }, [opRates]);
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(augmented, filterQuery, ['op'])
+  ), [augmented, filterQuery]);
+
   const sorted = useMemo(() => {
-    const arr = [...augmented];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va, vb;
       if (sortKey === '_score') { va = a._score; vb = b._score; }
@@ -285,7 +457,7 @@ function OpSuccessTable({ opRates }) {
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [augmented, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   if (!opRates || Object.keys(opRates).length === 0) {
     return (
@@ -298,7 +470,23 @@ function OpSuccessTable({ opRates }) {
 
   return (
     <div className="card">
-      <div className="card-title">Op Success Rates</div>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>Op Success Rates</span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter ops"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         Every candidate architecture is built by combining these primitive operations.
         This table shows how often each operation appears in architectures that survive each
@@ -543,16 +731,26 @@ function EfficiencyFrontier({ frontier }) {
 
   const losses = frontier.map(p => p.final_loss);
   const flops = frontier.map(p => Math.log10(Math.max(p.flops_forward, 1)));
-  const minLoss = Math.min(...losses);
-  const maxLoss = Math.max(...losses);
-  const minFlops = Math.min(...flops);
-  const maxFlops = Math.max(...flops);
+  const lossDefaults = CHART_DEFAULTS.loss_ratio;
+  const flopsDefaults = CHART_DEFAULTS.efficiency_log_flops;
+  const lossScale = getFixedScale('learning.loss_ratio', losses, {
+    defaultMin: lossDefaults.min,
+    defaultMax: lossDefaults.max,
+  });
+  const flopsScale = getFixedScale('learning.efficiency_log_flops', flops, {
+    defaultMin: flopsDefaults.min,
+    defaultMax: flopsDefaults.max,
+  });
+  const minLoss = lossScale.min;
+  const maxLoss = lossScale.max;
+  const minFlops = flopsScale.min;
+  const maxFlops = flopsScale.max;
   const rangeL = maxLoss - minLoss || 1;
   const rangeF = maxFlops - minFlops || 1;
 
   const points = frontier.map((p, i) => ({
-    x: pad + ((flops[i] - minFlops) / rangeF) * (W - 2 * pad),
-    y: H - pad - ((losses[i] - minLoss) / rangeL) * (H - 2 * pad),
+    x: pad + ((clampToScale(flops[i], flopsScale) - minFlops) / rangeF) * (W - 2 * pad),
+    y: H - pad - ((clampToScale(losses[i], lossScale) - minLoss) / rangeL) * (H - 2 * pad),
     label: p.graph_fingerprint?.slice(0, 8),
     novelty: p.novelty_score || 0,
     data: p,
@@ -637,6 +835,7 @@ function EfficiencyFrontier({ frontier }) {
 
 function LearningTrajectory({ trajectory, onNavigateStrategy }) {
   const minimumExperiments = Math.max(2, Number(trajectory?.min_experiments_required) || 5);
+  const windowSize = 30;
 
   if (!trajectory || trajectory.trend === 'insufficient_data') {
     return (
@@ -661,17 +860,24 @@ function LearningTrajectory({ trajectory, onNavigateStrategy }) {
       ? 'Declining'
       : 'Plateaued';
 
-  const points = trajectory.points || [];
+  const points = (trajectory.points || []).slice(-windowSize);
   const W = 600, H = 200, pad = 40, padRight = 12, padTop = 12;
 
   let sparkline = null;
   if (points.length >= 2) {
     const rates = points.map(p => p.s1_rate);
-    const maxR = Math.max(...rates, 0.01);
-    const step = (W - pad - padRight) / (rates.length - 1);
+    const rateDefaults = CHART_DEFAULTS.s1_rate;
+    const rateScale = getFixedScale('learning.s1_rate', rates, {
+      defaultMin: rateDefaults.min,
+      defaultMax: rateDefaults.max,
+    });
+    const maxR = Math.max(rateScale.max, 0.01);
+    const denom = Math.max(1, windowSize - 1);
+    const step = (W - pad - padRight) / denom;
     const pts = rates.map((r, i) => {
       const x = pad + i * step;
-      const y = H - pad - (r / maxR) * (H - pad - padTop);
+      const clamped = clampToScale(r, rateScale);
+      const y = H - pad - (clamped / maxR) * (H - pad - padTop);
       return `${x},${y}`;
     });
 
@@ -695,7 +901,7 @@ function LearningTrajectory({ trajectory, onNavigateStrategy }) {
 
     // X-axis labels (every ~5th experiment)
     const xLabels = [];
-    const labelEvery = Math.max(1, Math.floor(points.length / 8));
+    const labelEvery = Math.max(1, Math.floor(windowSize / 8));
     for (let i = 0; i < points.length; i += labelEvery) {
       const x = pad + i * step;
       xLabels.push(
@@ -813,14 +1019,21 @@ function LearningTrajectory({ trajectory, onNavigateStrategy }) {
 function ExperimentClusters({ clustersData }) {
   const [sortKey, setSortKey] = useState('avg_s1_rate');
   const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
 
   const handleSort = (key) => {
     if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
   };
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(clustersData?.clusters || [], filterQuery, [
+      'cluster_id',
+      'description',
+    ])
+  ), [clustersData?.clusters, filterQuery]);
+
   const sorted = useMemo(() => {
-    if (!clustersData?.clusters) return [];
-    const arr = [...clustersData.clusters];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va = a[sortKey], vb = b[sortKey];
       if (va == null && vb == null) return 0;
@@ -830,7 +1043,7 @@ function ExperimentClusters({ clustersData }) {
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [clustersData?.clusters, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   const clusterCols = [
     { key: 'cluster_id', label: 'Cluster' },
@@ -853,7 +1066,23 @@ function ExperimentClusters({ clustersData }) {
 
   return (
     <div className="card">
-      <div className="card-title">Experiment Clusters ({clustersData.n_clusters})</div>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>Experiment Clusters ({clustersData.n_clusters})</span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter clusters"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
         Deterministic grouping of completed experiments by outcome profile (S1 rate, novelty, loss, duration).
         Stability score indicates how well-separated clusters are.
@@ -919,14 +1148,18 @@ function ExperimentClusters({ clustersData }) {
 function RoutingHealth({ data }) {
   const [sortKey, setSortKey] = useState('n_programs');
   const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
 
   const handleSort = (key) => {
     if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
   };
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(data?.by_mode || [], filterQuery, ['routing_mode'])
+  ), [data?.by_mode, filterQuery]);
+
   const sorted = useMemo(() => {
-    if (!data?.by_mode) return [];
-    const arr = [...data.by_mode];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va = a[sortKey], vb = b[sortKey];
       if (va == null && vb == null) return 0;
@@ -936,7 +1169,7 @@ function RoutingHealth({ data }) {
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [data?.by_mode, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   if (!data || data.available === false || !data.by_mode || data.by_mode.length === 0) {
     return (
@@ -966,7 +1199,23 @@ function RoutingHealth({ data }) {
 
   return (
     <div className="card">
-      <div className="card-title">Routing Health ({data.n_modes} modes)</div>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>Routing Health ({data.n_modes} modes)</span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter modes"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
         Aggregated routing telemetry by mode. Lower drop rate and higher confidence generally indicate healthier routing.
       </p>
@@ -1066,6 +1315,31 @@ function GatingBehaviorDiagnostics({ data }) {
   }
 
   const rows = Array.isArray(data.by_mode) ? data.by_mode : [];
+  const [sortKey, setSortKey] = useState('n_programs');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
+
+  const filtered = useMemo(() => (
+    filterRowsByQuery(rows, filterQuery, ['routing_mode'])
+  ), [rows, filterQuery]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
+  };
   return (
     <div className="card">
       <div className="card-title">Gating Behavior Diagnostics</div>
@@ -1088,20 +1362,49 @@ function GatingBehaviorDiagnostics({ data }) {
         </div>
       )}
       {rows.length > 0 && (
+        <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+          <input
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="Filter modes"
+            style={{
+              fontSize: 11,
+              padding: '4px 8px',
+              borderRadius: 4,
+              border: '1px solid var(--border)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              minWidth: 160,
+            }}
+          />
+        </div>
+      )}
+      {rows.length > 0 && (
         <div style={{ maxHeight: 260, overflow: 'auto' }}>
           <table className="data-table">
             <thead>
               <tr>
-                <th>Mode</th>
-                <th>N</th>
-                <th>Entropy</th>
-                <th>Collapse Risk</th>
-                <th>Retention (avg)</th>
+                <th onClick={() => handleSort('routing_mode')} style={{ cursor: 'pointer' }}>
+                  Mode{sortKey === 'routing_mode' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                </th>
+                <th onClick={() => handleSort('n_programs')} style={{ cursor: 'pointer' }}>
+                  N{sortKey === 'n_programs' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                </th>
+                <th onClick={() => handleSort('avg_gate_entropy')} style={{ cursor: 'pointer' }}>
+                  Entropy{sortKey === 'avg_gate_entropy' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                </th>
+                <th onClick={() => handleSort('collapse_risk_label')} style={{ cursor: 'pointer' }}>
+                  Collapse Risk{sortKey === 'collapse_risk_label' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                </th>
+                <th onClick={() => handleSort('avg_token_retention')} style={{ cursor: 'pointer' }}>
+                  Retention (avg){sortKey === 'avg_token_retention' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                </th>
                 <th>Retention Curve</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {sorted.map((row) => (
                 <tr key={row.routing_mode}>
                   <td style={{ color: 'var(--accent-blue)' }}>{row.routing_mode}</td>
                   <td>{row.n_programs ?? 0}</td>
@@ -1126,6 +1429,31 @@ function GatingBehaviorDiagnostics({ data }) {
 function MathFamilyCoverage({ data }) {
   const rows = Array.isArray(data?.families) ? data.families : [];
   const totals = data?.totals || {};
+  const [sortKey, setSortKey] = useState('n_tested');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
+
+  const filtered = useMemo(() => (
+    filterRowsByQuery(rows, filterQuery, ['family'])
+  ), [rows, filterQuery]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
+  };
 
   if (rows.length === 0) {
     return (
@@ -1148,20 +1476,49 @@ function MathFamilyCoverage({ data }) {
         <strong style={{ color: 'var(--accent-purple)' }}>Totals:</strong>{' '}
         {totals.n_tested ?? 0} tested, {totals.n_survived ?? 0} Stage-1 survivors
       </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter families"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <div style={{ maxHeight: 260, overflow: 'auto' }}>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Family</th>
-              <th>Tested</th>
-              <th>Survivors</th>
-              <th>Survival %</th>
-              <th>Test Share</th>
-              <th>Survivor Share</th>
+              <th onClick={() => handleSort('family')} style={{ cursor: 'pointer' }}>
+                Family{sortKey === 'family' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('n_tested')} style={{ cursor: 'pointer' }}>
+                Tested{sortKey === 'n_tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('n_survived')} style={{ cursor: 'pointer' }}>
+                Survivors{sortKey === 'n_survived' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('survival_rate')} style={{ cursor: 'pointer' }}>
+                Survival %{sortKey === 'survival_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('tested_share')} style={{ cursor: 'pointer' }}>
+                Test Share{sortKey === 'tested_share' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('survivor_share')} style={{ cursor: 'pointer' }}>
+                Survivor Share{sortKey === 'survivor_share' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {rows.map(row => (
+            {sorted.map(row => (
               <tr key={row.family}>
                 <td style={{ textTransform: 'capitalize', color: 'var(--accent-blue)' }}>{row.family}</td>
                 <td>{row.n_tested ?? 0}</td>
@@ -1183,6 +1540,31 @@ function MathspaceImpact({ data }) {
   const families = Array.isArray(data?.by_family) ? data.by_family : [];
   const topTrust = Array.isArray(data?.top_trustworthy_operators) ? data.top_trustworthy_operators : [];
   const totals = data?.totals || {};
+  const [sortKey, setSortKey] = useState('n_tested');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
+
+  const filtered = useMemo(() => (
+    filterRowsByQuery(rows, filterQuery, ['op_name'])
+  ), [rows, filterQuery]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
+  };
 
   if (!data || data.available === false || rows.length === 0) {
     return (
@@ -1230,21 +1612,52 @@ function MathspaceImpact({ data }) {
         </div>
       )}
 
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter operators"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <div style={{ maxHeight: 220, overflow: 'auto', marginBottom: 10 }}>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Operator</th>
-              <th>Tested</th>
-              <th>S1 %</th>
-              <th>Validation %</th>
-              <th>Baseline Win %</th>
-              <th>Trust %</th>
-              <th>Avg Novelty</th>
+              <th onClick={() => handleSort('op_name')} style={{ cursor: 'pointer' }}>
+                Operator{sortKey === 'op_name' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('n_tested')} style={{ cursor: 'pointer' }}>
+                Tested{sortKey === 'n_tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('stage1_pass_rate')} style={{ cursor: 'pointer' }}>
+                S1 %{sortKey === 'stage1_pass_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('validation_pass_rate')} style={{ cursor: 'pointer' }}>
+                Validation %{sortKey === 'validation_pass_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('baseline_win_rate')} style={{ cursor: 'pointer' }}>
+                Baseline Win %{sortKey === 'baseline_win_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('trust_score')} style={{ cursor: 'pointer' }}>
+                Trust %{sortKey === 'trust_score' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avg_novelty_score')} style={{ cursor: 'pointer' }}>
+                Avg Novelty{sortKey === 'avg_novelty_score' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {rows.slice(0, 10).map((row) => (
+            {sorted.slice(0, 10).map((row) => (
               <tr key={row.op_name}>
                 <td style={{ color: 'var(--accent-blue)' }}>{row.op_name}</td>
                 <td>{row.n_tested ?? 0}</td>
@@ -1301,10 +1714,13 @@ function parseArchSpec(value) {
 }
 
 function CompressionCoverage({ data, programs }) {
+  const [sortKey, setSortKey] = useState('count');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
   const analysis = useMemo(() => {
     if (data && Array.isArray(data.techniques)) {
       const totals = data.totals || {};
-      const sorted = [...data.techniques]
+      const rows = [...data.techniques]
         .map((row) => ({
           technique: row.technique,
           label: WEIGHT_STORAGE_LABELS[row.technique] || TOKEN_REP_LABELS[row.technique] || row.technique,
@@ -1316,11 +1732,10 @@ function CompressionCoverage({ data, programs }) {
           avgMemoryMb: row.avg_estimated_memory_mb,
           avgRetention: row.avg_quality_retention,
           survivalRate: row.survival_rate,
-        }))
-        .sort((a, b) => (b.count || 0) - (a.count || 0));
+        }));
 
       return {
-        sorted,
+        rows,
         denseCount: Math.max(0, (totals.n_survived || 0) - (totals.n_compressed_survived || 0)),
         compressedCount: totals.n_compressed_survived || 0,
         total: totals.n_survived || 0,
@@ -1351,7 +1766,7 @@ function CompressionCoverage({ data, programs }) {
       if (p.loss_ratio != null && p.loss_ratio < m.bestLoss) m.bestLoss = p.loss_ratio;
     }
 
-    const sorted = Object.entries(byTechnique)
+    const rows = Object.entries(byTechnique)
       .map(([technique, m]) => ({
         technique,
         label: WEIGHT_STORAGE_LABELS[technique] || TOKEN_REP_LABELS[technique] || technique,
@@ -1359,11 +1774,32 @@ function CompressionCoverage({ data, programs }) {
         avgLoss: m.lossCount > 0 ? m.totalLoss / m.lossCount : null,
         factor: COMPRESSION_FACTORS[technique] || 1.0,
         bestLoss: m.bestLoss < Infinity ? m.bestLoss : null,
-      }))
-      .sort((a, b) => b.count - a.count);
+      }));
 
-    return { sorted, denseCount, compressedCount, total: programs.length };
-  }, [programs]);
+    return { rows, denseCount, compressedCount, total: programs.length };
+  }, [data, programs]);
+
+  const filtered = useMemo(() => (
+    filterRowsByQuery(analysis?.rows || [], filterQuery, ['technique', 'label'])
+  ), [analysis?.rows, filterQuery]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
+  };
 
   if (!analysis || analysis.compressedCount === 0) {
     return (
@@ -1395,23 +1831,58 @@ function CompressionCoverage({ data, programs }) {
           </span>
         )}
       </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter techniques"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <div style={{ maxHeight: 260, overflow: 'auto' }}>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Technique</th>
-              <th>Tested</th>
-              <th>N</th>
-              <th>Survival %</th>
-              <th>Avg Loss</th>
-              <th>Best Loss</th>
-              <th>Avg Ratio</th>
-              <th>Avg Mem (MB)</th>
-              <th>Quality Retention</th>
+              <th onClick={() => handleSort('label')} style={{ cursor: 'pointer' }}>
+                Technique{sortKey === 'label' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('tested')} style={{ cursor: 'pointer' }}>
+                Tested{sortKey === 'tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('count')} style={{ cursor: 'pointer' }}>
+                N{sortKey === 'count' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('survivalRate')} style={{ cursor: 'pointer' }}>
+                Survival %{sortKey === 'survivalRate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgLoss')} style={{ cursor: 'pointer' }}>
+                Avg Loss{sortKey === 'avgLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('bestLoss')} style={{ cursor: 'pointer' }}>
+                Best Loss{sortKey === 'bestLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgRatio')} style={{ cursor: 'pointer' }}>
+                Avg Ratio{sortKey === 'avgRatio' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgMemoryMb')} style={{ cursor: 'pointer' }}>
+                Avg Mem (MB){sortKey === 'avgMemoryMb' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('avgRetention')} style={{ cursor: 'pointer' }}>
+                Quality Retention{sortKey === 'avgRetention' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {analysis.sorted.map(row => (
+            {sorted.map(row => (
               <tr key={row.technique}>
                 <td style={{ color: (row.avgRatio != null && row.avgRatio < 1) ? 'var(--accent-green)' : 'var(--text-secondary)', fontWeight: 600 }}>
                   {row.label}
@@ -1840,6 +2311,10 @@ function LearningPanel({ onNavigateStrategy }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const targetSummary = useMemo(
+    () => computeTargetSummary(topPrograms, routingComparison || routingHealth),
+    [topPrograms, routingComparison, routingHealth]
+  );
 
   const [openSections, setOpenSections] = useState({
     core: true,
@@ -1943,6 +2418,7 @@ function LearningPanel({ onNavigateStrategy }) {
 
       <Section title="Search Quality" id="quality" isOpen={openSections.quality} onToggle={toggleSection}>
         <ArchitectureRerunTelemetry telemetry={weights?.architecture_rerun_telemetry} />
+        <TargetBalanceCards summary={targetSummary} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <EfficiencyFrontier frontier={frontier} />
           <DataAccumulation

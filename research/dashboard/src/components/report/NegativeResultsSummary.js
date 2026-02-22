@@ -13,7 +13,7 @@ export default function NegativeResultsSummary() {
   }, []);
 
   if (!data) return null;
-  const hasContent = (data.failed_ops?.length > 0) || (data.refuted_hypotheses?.length > 0);
+  const hasContent = (data.failed_ops?.length > 0) || (data.toxic_bigrams?.length > 0) || (data.refuted_hypotheses?.length > 0);
   if (!hasContent) return null;
 
   return (
@@ -39,6 +39,22 @@ export default function NegativeResultsSummary() {
               }}>
                 <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--accent-red)' }}>{op.op_name}</span>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>0/{op.n_used} S1</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {data.toxic_bigrams?.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>
+              Toxic Patterns
+            </div>
+            {data.toxic_bigrams.slice(0, 8).map(tb => (
+              <div key={tb.pattern} style={{
+                display: 'flex', justifyContent: 'space-between', padding: '3px 0',
+                borderBottom: '1px solid var(--border)',
+              }}>
+                <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--accent-red)' }}>{tb.pattern}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>pen {tb.penalty.toFixed(2)}</span>
               </div>
             ))}
           </div>

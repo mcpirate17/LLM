@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+import { filterRowsByQuery } from '../utils/tableFiltering';
 
 const TYPE_ORDER = {
   insight: 6,
@@ -119,6 +120,7 @@ function LabNotebook({ entries, onSelectExperiment }) {
     } catch {}
     return true;
   });
+  const [filterQuery, setFilterQuery] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [copiedValue, copyText] = useCopyToClipboard();
 
@@ -150,8 +152,17 @@ function LabNotebook({ entries, onSelectExperiment }) {
     });
   }, [entries]);
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(augmented, filterQuery, [
+      'entry_type',
+      'title',
+      'content',
+      (row) => row?.metadata?.source,
+    ])
+  ), [augmented, filterQuery]);
+
   const sorted = useMemo(() => {
-    const arr = [...augmented];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va, vb;
       if (sortKey === '_score') {
@@ -171,7 +182,7 @@ function LabNotebook({ entries, onSelectExperiment }) {
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [augmented, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   const latestTimestamp = useMemo(() => {
     if (!entries || entries.length === 0) return null;
@@ -193,7 +204,23 @@ function LabNotebook({ entries, onSelectExperiment }) {
 
   return (
     <div className="card">
-      <div className="card-title">Lab Notebook — Recent Entries</div>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>Lab Notebook — Recent Entries</span>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter entries"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
         Latest entry: {latestTimestamp ? formatTime(latestTimestamp) : 'not available'}
       </div>

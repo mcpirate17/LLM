@@ -12,8 +12,10 @@ import json
 import logging
 import math
 import os
+import queue
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
 import zlib
@@ -283,6 +285,12 @@ CREATE TABLE IF NOT EXISTS program_results (
     cka_probe_protocol_hash TEXT,
     cka_reference_quality TEXT,
 
+    -- Adaptive compute telemetry (MoD/MoR)
+    depth_savings_ratio REAL,
+    effective_depth_ratio REAL,
+    recursion_savings_ratio REAL,
+    recursion_depth_ratio REAL,
+
     -- External benchmarks
     external_benchmarks_json TEXT
 );
@@ -327,6 +335,14 @@ CREATE TABLE IF NOT EXISTS op_success_rates (
     avg_loss_ratio REAL,
     avg_novelty REAL,
     avg_novelty_confidence REAL,
+    last_updated REAL
+);
+
+CREATE TABLE IF NOT EXISTS failure_signatures (
+    signature TEXT PRIMARY KEY,
+    n_failures INTEGER DEFAULT 0,
+    n_successes INTEGER DEFAULT 0,
+    error_types TEXT,
     last_updated REAL
 );
 
@@ -681,6 +697,7 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "routing_confidence_mean": "REAL",
     "routing_confidence_std": "REAL",
     "routing_expert_utilization_json": "TEXT",
+    "routing_expert_count": "INTEGER",
     # Novelty calibration
     "novelty_confidence": "REAL",
     "novelty_raw_score": "REAL",
@@ -697,6 +714,11 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     # Diagnostic tasks
     "diagnostic_tasks_json": "TEXT",
     "diagnostic_score": "REAL",
+    # Adaptive compute telemetry (MoD/MoR)
+    "depth_savings_ratio": "REAL",
+    "effective_depth_ratio": "REAL",
+    "recursion_savings_ratio": "REAL",
+    "recursion_depth_ratio": "REAL",
     # External benchmarks
     "external_benchmarks_json": "TEXT",
 }
@@ -732,6 +754,75 @@ class LabNotebook:
         self.conn.executescript(NOTEBOOK_SCHEMA)
         self._maybe_commit()
         self._migrate()
+
+        self._write_queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._writer_thread.start()
+
+    def _writer_loop(self):
+        """Background thread that handles all database writes."""
+        # Use a separate connection for the writer thread
+        writer_conn = sqlite3.connect(str(self.db_path))
+        writer_conn.execute("PRAGMA journal_mode=WAL")
+        writer_conn.execute("PRAGMA synchronous=NORMAL")
+        
+        batch = []
+        last_commit = time.time()
+        
+        while not self._stop_event.is_set() or not self._write_queue.empty():
+            try:
+                item = self._write_queue.get(timeout=0.1)
+                if item is None: # Sentinel
+                    break
+                
+                sql, params = item
+                if sql == "__flush__":
+                    # Flush request: commit pending batch and signal caller
+                    if batch:
+                        writer_conn.commit()
+                        batch = []
+                        last_commit = time.time()
+                    params.set()  # params is a threading.Event
+                    continue
+                if isinstance(params, list) and params and isinstance(params[0], (list, tuple)):
+                    writer_conn.executemany(sql, params)
+                else:
+                    writer_conn.execute(sql, params)
+                batch.append(item)
+
+                if len(batch) >= 50 or (time.time() - last_commit > 1.0 and batch):
+                    writer_conn.commit()
+                    batch = []
+                    last_commit = time.time()
+                    
+            except queue.Empty:
+                if batch:
+                    writer_conn.commit()
+                    batch = []
+                    last_commit = time.time()
+                continue
+            except Exception as e:
+                LOGGER.error(f"LabNotebook async writer error: {e}")
+        
+        if batch:
+            writer_conn.commit()
+        writer_conn.close()
+
+    def _submit_write(self, sql: str, params: Any):
+        """Submit a write task to the background queue."""
+        self._write_queue.put((sql, params))
+
+    def flush_writes(self, timeout: float = 5.0):
+        """Block until the async write queue is drained and committed.
+
+        Useful in tests and any code that writes via ``_submit_write`` then
+        immediately reads back via the main ``self.conn``.
+        """
+        # Put a sentinel-like marker and wait for drain
+        flush_event = threading.Event()
+        self._write_queue.put(("__flush__", flush_event))
+        flush_event.wait(timeout=timeout)
 
     def _migrate(self):
         """Add any missing columns to existing databases."""
@@ -903,6 +994,12 @@ class LabNotebook:
         self._maybe_commit()
 
     def close(self):
+        if hasattr(self, "_stop_event"):
+            self._stop_event.set()
+        if hasattr(self, "_write_queue"):
+            self._write_queue.put(None) # Sentinel
+        if hasattr(self, "_writer_thread") and self._writer_thread.is_alive():
+            self._writer_thread.join(timeout=2.0)
         self.conn.close()
 
     def _compress(self, data: Any) -> bytes:
@@ -1513,6 +1610,35 @@ class LabNotebook:
         )
         self._maybe_commit()
 
+    def purge_empty_experiments(self) -> int:
+        """Delete failed experiments that produced no program_results.
+
+        Call periodically (e.g. between experiment cycles) to prevent
+        empty experiments from accumulating.  Returns count deleted.
+        """
+        rows = self.conn.execute("""
+            SELECT experiment_id FROM experiments
+            WHERE status = 'failed'
+            AND NOT EXISTS (
+                SELECT 1 FROM program_results p
+                WHERE p.experiment_id = experiments.experiment_id
+            )
+        """).fetchall()
+        if not rows:
+            return 0
+        ids = [r[0] for r in rows]
+        placeholders = ",".join("?" for _ in ids)
+        self.conn.execute(
+            f"DELETE FROM experiments WHERE experiment_id IN ({placeholders})", ids
+        )
+        for table in ("entries", "insights", "hypotheses"):
+            self.conn.execute(
+                f"DELETE FROM {table} WHERE experiment_id IN ({placeholders})", ids
+            )
+        self._maybe_commit()
+        LOGGER.debug("Purged %d empty failed experiments", len(ids))
+        return len(ids)
+
     def cancel_experiment(self, experiment_id: str) -> bool:
         """Cancel a running experiment by marking it as failed.
 
@@ -1560,7 +1686,37 @@ class LabNotebook:
 
         Accepts all program_results columns as keyword arguments.
         Boolean fields (stage0_passed, etc.) are converted to int.
+
+        Quality gate: rejects results that provide no learning signal —
+        S0 failures, S1 failures with no loss data, and results with
+        errors — to keep the database lean and focused.
         """
+        # ── Quality gate: reject noise ──
+        s0 = kwargs.get("stage0_passed")
+        s1 = kwargs.get("stage1_passed")
+        loss_ratio = kwargs.get("loss_ratio")
+        err = kwargs.get("error_message")
+
+        # Reject S0 failures that carry no error classification.
+        # S0 failures WITH error_type inform compile-failure clustering.
+        if s0 is not None and not s0:
+            error_type = kwargs.get("error_type")
+            if not error_type:
+                LOGGER.debug("Quality gate: dropping S0 failure with no error_type (fp=%s)", graph_fingerprint)
+                return ""
+
+        # Reject S1 failures that carry no learning signal at all:
+        # no loss data AND no error classification AND no novelty data.
+        # Failures WITH loss_ratio inform grammar weights; failures WITH
+        # error_type inform failure-pattern clustering; failures WITH
+        # novelty data inform op success rates — all are valuable.
+        if s0 and not s1:
+            error_type = kwargs.get("error_type")
+            novelty = kwargs.get("novelty_score") or kwargs.get("novelty_confidence")
+            if loss_ratio is None and not error_type and not novelty:
+                LOGGER.debug("Quality gate: dropping S1 failure with no signal (fp=%s)", graph_fingerprint)
+                return ""
+
         result_id = str(uuid.uuid4())[:12]
         now = time.time()
 
@@ -1610,22 +1766,29 @@ class LabNotebook:
         placeholders = ", ".join(["?"] * len(all_cols))
         col_str = ", ".join(all_cols)
 
-        self.conn.execute(
+        self._submit_write(
             f"INSERT INTO program_results ({col_str}) VALUES ({placeholders})",
             all_vals,
         )
-        self._maybe_commit()
         return result_id
 
     # ── Training Curves ──
 
     def store_training_curve(self, result_id: str,
                              curve: List[Dict]) -> None:
-        """Store per-step training data.
+        """Store per-step training data for survivors only.
 
         curve: list of dicts with keys step, loss, grad_norm, step_time_ms
         """
-        if not curve:
+        if not curve or not result_id:
+            return
+        # Only store curves for results that passed S1 (survivors).
+        # S1 failure learning signal is captured in loss_ratio, not per-step curves.
+        row = self.conn.execute(
+            "SELECT stage1_passed FROM program_results WHERE result_id = ?",
+            (result_id,),
+        ).fetchone()
+        if row and row[0] == 0:
             return
         self.conn.executemany(
             """INSERT OR REPLACE INTO training_curves
@@ -1750,6 +1913,144 @@ class LabNotebook:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── Failure Signatures ──
+
+    @staticmethod
+    def _extract_op_bigrams(graph_json: str) -> List[str]:
+        """Extract sorted op-pair bigrams from a graph JSON.
+
+        A bigram is "opA->opB" for each edge in the graph.  Returns a
+        sorted deduplicated list, giving a compact structural fingerprint
+        of what-connects-to-what.
+        """
+        try:
+            data = json.loads(graph_json)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        nodes = data.get("nodes", {})
+        bigrams: set = set()
+        for nid, nd in nodes.items():
+            op = nd.get("op_name", "")
+            if not op or op == "input":
+                continue
+            for inp in nd.get("input_ids", []):
+                parent = nodes.get(str(inp), {})
+                pop = parent.get("op_name", "")
+                if pop and pop != "input":
+                    bigrams.add(f"{pop}->{op}")
+        return sorted(bigrams)
+
+    def update_failure_signatures(self, experiment_id: str) -> None:
+        """Update failure_signatures table from program results in this experiment.
+
+        Extracts op-pair bigrams from each graph and tracks how often
+        each bigram appears in failed vs successful programs.  This gives
+        Aria a compact memory of which structural patterns to avoid.
+        """
+        rows = self.conn.execute(
+            """SELECT graph_json, stage1_passed, error_type
+               FROM program_results
+               WHERE experiment_id = ? AND graph_json IS NOT NULL""",
+            (experiment_id,),
+        ).fetchall()
+
+        sig_stats: Dict[str, Dict] = {}
+        for r in rows:
+            bigrams = self._extract_op_bigrams(r[0])
+            s1 = r[1]
+            err = r[2] or ""
+            for bg in bigrams:
+                if bg not in sig_stats:
+                    sig_stats[bg] = {"n_f": 0, "n_s": 0, "errs": set()}
+                if s1:
+                    sig_stats[bg]["n_s"] += 1
+                else:
+                    sig_stats[bg]["n_f"] += 1
+                    if err:
+                        sig_stats[bg]["errs"].add(err)
+
+        now = time.time()
+        for sig, st in sig_stats.items():
+            # Keep error_types compact: top 3, comma-separated
+            errs_str = ",".join(sorted(st["errs"])[:3]) if st["errs"] else None
+            self.conn.execute(
+                """INSERT INTO failure_signatures
+                   (signature, n_failures, n_successes, error_types, last_updated)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(signature) DO UPDATE SET
+                    n_failures = n_failures + excluded.n_failures,
+                    n_successes = n_successes + excluded.n_successes,
+                    error_types = COALESCE(excluded.error_types, error_types),
+                    last_updated = excluded.last_updated""",
+                (sig, st["n_f"], st["n_s"], errs_str, now),
+            )
+        self._maybe_commit()
+
+    def backfill_failure_signatures(self) -> int:
+        """One-time backfill of failure_signatures from all existing results.
+
+        Skips if the table already has data.  Returns count of signatures created.
+        """
+        existing = self.conn.execute(
+            "SELECT COUNT(*) FROM failure_signatures"
+        ).fetchone()[0]
+        if existing > 0:
+            return 0
+        rows = self.conn.execute(
+            """SELECT graph_json, stage1_passed, error_type
+               FROM program_results WHERE graph_json IS NOT NULL"""
+        ).fetchall()
+        sig_stats: Dict[str, Dict] = {}
+        for r in rows:
+            bigrams = self._extract_op_bigrams(r[0])
+            s1 = r[1]
+            err = r[2] or ""
+            for bg in bigrams:
+                if bg not in sig_stats:
+                    sig_stats[bg] = {"n_f": 0, "n_s": 0, "errs": set()}
+                if s1:
+                    sig_stats[bg]["n_s"] += 1
+                else:
+                    sig_stats[bg]["n_f"] += 1
+                    if err:
+                        sig_stats[bg]["errs"].add(err)
+        now = time.time()
+        for sig, st in sig_stats.items():
+            errs_str = ",".join(sorted(st["errs"])[:3]) if st["errs"] else None
+            self.conn.execute(
+                """INSERT INTO failure_signatures
+                   (signature, n_failures, n_successes, error_types, last_updated)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (sig, st["n_f"], st["n_s"], errs_str, now),
+            )
+        self._maybe_commit()
+        LOGGER.info("Backfilled %d failure signatures from existing results", len(sig_stats))
+        return len(sig_stats)
+
+    def get_failure_signature_blocklist(self, min_seen: int = 5,
+                                        max_fail_rate: float = 0.85) -> Dict[str, float]:
+        """Return op-pair bigrams that consistently fail.
+
+        Returns {signature: penalty} where penalty is 0.0 (hard block) for
+        100% failure bigrams and scales up to 1.0.  Only includes bigrams
+        seen at least ``min_seen`` times with failure rate >= ``max_fail_rate``.
+        """
+        rows = self.conn.execute(
+            """SELECT signature, n_failures, n_successes
+               FROM failure_signatures
+               WHERE (n_failures + n_successes) >= ?""",
+            (min_seen,),
+        ).fetchall()
+        blocklist: Dict[str, float] = {}
+        for r in rows:
+            total = r[1] + r[2]
+            fail_rate = r[1] / total if total else 0
+            if fail_rate >= max_fail_rate:
+                # Scale: 100% fail → 0.0, max_fail_rate → 0.3
+                penalty = max(0.0, 0.3 * (1.0 - fail_rate) / (1.0 - max_fail_rate))
+                blocklist[r[0]] = round(penalty, 2)
+        return blocklist
+
     # ── Learning Log ──
 
     def log_learning_event(self, event_type: str, description: str,
@@ -1840,14 +2141,13 @@ class LabNotebook:
                    experiment_id: Optional[str] = None,
                    metadata: Optional[Dict] = None):
         """Log a time-series metric."""
-        self.conn.execute(
+        self._submit_write(
             """INSERT INTO metrics_log
             (timestamp, experiment_id, metric_name, metric_value, metadata_json)
             VALUES (?, ?, ?, ?, ?)""",
             (time.time(), experiment_id, metric_name, value,
              json.dumps(metadata) if metadata else None),
         )
-        self._maybe_commit()
 
     # ── Insights ──
 
@@ -2480,6 +2780,18 @@ class LabNotebook:
             "stage_deaths": stage_deaths,
         }
 
+    def _json_clean(self, obj: Any) -> Any:
+        """Deep clean object for JSON serialization (handles NaN/Inf)."""
+        if isinstance(obj, float):
+            if math.isfinite(obj):
+                return obj
+            return None
+        if isinstance(obj, dict):
+            return {k: self._json_clean(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple, set)):
+            return [self._json_clean(x) for x in obj]
+        return obj
+
     def get_experiment_trends(self, limit: int = 50) -> List[Dict]:
         """Get cross-experiment trend data for charts."""
 
@@ -2517,11 +2829,51 @@ class LabNotebook:
                LIMIT ?""",
             (limit,),
         ).fetchall()
+        exp_ids = [row["experiment_id"] for row in rows if row["experiment_id"]]
+        program_metrics_by_exp: Dict[str, Dict[str, Any]] = {}
+        if exp_ids:
+            available_cols = self._get_program_results_columns()
+            select_parts = ["experiment_id"]
+
+            def _avg(col: str, alias: Optional[str] = None) -> None:
+                if col in available_cols:
+                    select_parts.append(f"AVG({col}) as {alias or 'avg_' + col}")
+
+            _avg("throughput_tok_s", "avg_throughput_tok_s_programs")
+            _avg("routing_tokens_total", "avg_routing_tokens_total")
+            _avg("routing_tokens_processed", "avg_routing_tokens_processed")
+            _avg("routing_drop_rate", "avg_routing_drop_rate")
+            _avg("routing_utilization_entropy", "avg_routing_utilization_entropy")
+            _avg("routing_confidence_mean", "avg_routing_confidence_mean")
+            _avg("routing_capacity_overflow_count", "avg_routing_capacity_overflow_count")
+            if "routing_tokens_total" in available_cols and "routing_tokens_processed" in available_cols:
+                select_parts.append(
+                    "AVG(CASE WHEN routing_tokens_total > 0 "
+                    "THEN CAST(routing_tokens_processed AS REAL) / routing_tokens_total END) "
+                    "as avg_routing_token_retention"
+                )
+            _avg("depth_savings_ratio", "avg_depth_savings_ratio")
+            _avg("effective_depth_ratio", "avg_effective_depth_ratio")
+            _avg("recursion_savings_ratio", "avg_recursion_savings_ratio")
+            _avg("recursion_depth_ratio", "avg_recursion_depth_ratio")
+
+            if len(select_parts) > 1:
+                placeholders = ",".join("?" for _ in exp_ids)
+                query = (
+                    f"SELECT {', '.join(select_parts)} "
+                    f"FROM program_results WHERE experiment_id IN ({placeholders}) "
+                    f"GROUP BY experiment_id"
+                )
+                agg_rows = self.conn.execute(query, exp_ids).fetchall()
+                program_metrics_by_exp = {row["experiment_id"]: dict(row) for row in agg_rows}
         trends = []
         total_programs = 0
         total_stage1 = 0
         for r in rows:
             d = dict(r)
+            exp_id = d.get("experiment_id")
+            if exp_id and exp_id in program_metrics_by_exp:
+                d.update(program_metrics_by_exp[exp_id])
             
             # Extract perf report if available
             results_json = d.get("results_json")
@@ -2536,6 +2888,8 @@ class LabNotebook:
                         d["gpu_starvation_ms"] = perf.get("gpu_starvation", {}).get("total_stall_ms", 0)
                 except Exception:
                     pass
+            if d.get("avg_throughput_tok_s") in (None, 0) and d.get("avg_throughput_tok_s_programs") is not None:
+                d["avg_throughput_tok_s"] = d.get("avg_throughput_tok_s_programs")
 
             n_programs = max(int(d.get("n_programs_generated") or 0), 0)
             n_stage1 = max(int(d.get("n_stage1_passed") or 0), 0)
@@ -2592,8 +2946,11 @@ class LabNotebook:
 
             d.pop("_effective_n", None)
             d.pop("_trend_weight", None)
+            # Remove raw blob columns that are not JSON-serializable
+            d.pop("results_json", None)
+            d.pop("config_json", None)
 
-        return trends
+        return self._json_clean(trends)
 
     def get_dashboard_summary(self) -> Dict:
         """Get aggregate stats for the dashboard."""
@@ -2633,6 +2990,21 @@ class LabNotebook:
         avg_throughput = self.conn.execute(
             "SELECT AVG(throughput_tok_s) FROM program_results WHERE throughput_tok_s IS NOT NULL"
         ).fetchone()[0]
+        avg_entropy = self.conn.execute(
+            "SELECT AVG(routing_utilization_entropy) FROM program_results WHERE routing_utilization_entropy IS NOT NULL"
+        ).fetchone()[0]
+        avg_savings = self.conn.execute(
+            "SELECT AVG(depth_savings_ratio) FROM program_results WHERE depth_savings_ratio IS NOT NULL"
+        ).fetchone()[0]
+        avg_recursion_savings = self.conn.execute(
+            "SELECT AVG(recursion_savings_ratio) FROM program_results WHERE recursion_savings_ratio IS NOT NULL"
+        ).fetchone()[0]
+        avg_token_retention = self.conn.execute(
+            """SELECT AVG(CASE WHEN routing_tokens_total > 0
+                               THEN CAST(routing_tokens_processed AS REAL) / routing_tokens_total END)
+               FROM program_results"""
+        ).fetchone()[0]
+        
         latest_perf_report = None
         latest_perf_row = self.conn.execute(
             """SELECT experiment_id, completed_at, results_json
@@ -2675,6 +3047,10 @@ class LabNotebook:
             "latest_learning": latest_learning[0] if latest_learning else None,
             "avg_step_time_ms": avg_step_time or 0,
             "avg_throughput_tok_s": avg_throughput or 0,
+            "avg_routing_entropy": avg_entropy,
+            "avg_depth_savings": avg_savings,
+            "avg_recursion_savings": avg_recursion_savings,
+            "avg_routing_token_retention": avg_token_retention,
             "latest_perf_report": latest_perf_report,
         }
 
@@ -2971,36 +3347,51 @@ class LabNotebook:
 
         attention_ops = {
             "attention", "self_attention", "mha", "multihead_attention", "qkv_attention",
-            "softmax_attention",
+            "softmax_attention", "linear_attention",
         }
-        conv_ops = {"conv1d", "conv1d_seq", "depthwise_conv1d"}
-        spectral_ops = {"sin", "cos", "fft", "ifft", "fourier_mix"}
-        gating_ops = {"sigmoid", "tanh", "silu", "gelu", "maximum", "minimum", "swiglu"}
-        mlp_ops = {"linear_proj", "linear_proj_up", "linear_proj_down", "learnable_bias"}
+        conv_ops = {"conv1d", "conv1d_seq", "depthwise_conv1d", "conv_only"}
+        spectral_ops = {"sin", "cos", "fft", "ifft", "fourier_mix", "fourier_mixing", "rfft_seq", "irfft_seq"}
+        gating_ops = {"sigmoid", "tanh", "silu", "gelu", "maximum", "minimum", "swiglu", "topk_gate", "moe_topk"}
+        mlp_ops = {"linear_proj", "linear_proj_up", "linear_proj_down", "learnable_bias", "swiglu_mlp"}
+        ssm_ops = {"state_space", "selective_scan"}
+        adaptive_ops = {"mod_topk", "early_exit", "adaptive_recursion", "fixed_point_iter"}
 
         has_attention = bool(ops & attention_ops)
         has_conv = bool(ops & conv_ops)
         has_spectral = bool(ops & spectral_ops)
         has_gating = bool(ops & gating_ops)
         has_mlp = bool(ops & mlp_ops)
+        has_ssm = bool(ops & ssm_ops)
+        has_adaptive = bool(ops & adaptive_ops) or routing_mode in ("mod_topk", "early_exit", "adaptive_recursion")
 
-        if has_attention:
+        family = "Hybrid-Mixer"
+        if has_ssm:
+            family = "Mamba-SSM" if not has_attention else "Hybrid-SSM"
+        elif has_attention:
             if has_conv or has_spectral or has_gating:
-                return "Hybrid-Attention"
-            return "Attention"
-        if has_conv and has_spectral:
-            return "Spectral-Conv"
-        if has_spectral:
-            return "Spectral-Mixer"
-        if has_conv:
-            return "Conv-Mixer"
-        if has_gating and has_mlp:
-            return "Gated-MLP"
-        if has_mlp:
-            return "MLP-Mixer"
-        if has_gating:
-            return "Nonlinear-Mixer"
-        return "Hybrid-Mixer"
+                family = "Hybrid-Attention"
+            else:
+                family = "Attention"
+        elif has_conv and has_spectral:
+            family = "Spectral-Conv"
+        elif has_spectral:
+            family = "Spectral-Mixer"
+        elif has_conv:
+            family = "Conv-Mixer"
+        elif has_gating and has_mlp:
+            family = "Gated-MLP"
+        elif has_mlp:
+            family = "MLP-Mixer"
+        elif has_gating:
+            family = "Nonlinear-Mixer"
+
+        # Apply modifiers
+        if routing_mode == "moe_topk" or "moe_topk" in ops:
+            family = f"MoE-{family}"
+        if has_adaptive:
+            family = f"Adaptive-{family}"
+
+        return family
 
     def promote_to_tier(self, entry_id: str, tier: str,
                         **kwargs) -> None:
@@ -3938,3 +4329,25 @@ class LabNotebook:
             (json.dumps(message_ids), summary_message_id),
         )
         self._maybe_commit()
+
+    def compact_old_chat(self, max_chars: int = 160) -> int:
+        """Truncate and purge old chat messages to keep the DB lean.
+
+        - Truncates all compacted messages to max_chars
+        - Deletes compacted messages older than 7 days
+        Returns number of rows affected.
+        """
+        cutoff = time.time() - 7 * 86400
+        # Delete old compacted messages
+        n1 = self.conn.execute(
+            "DELETE FROM aria_chat WHERE compacted = 1 AND timestamp < ?",
+            (cutoff,),
+        ).rowcount
+        # Truncate long messages that are already compacted
+        self.conn.execute(
+            """UPDATE aria_chat SET text = SUBSTR(text, 1, ?) || '...'
+               WHERE compacted = 1 AND LENGTH(text) > ?""",
+            (max_chars, max_chars),
+        )
+        self._maybe_commit()
+        return n1

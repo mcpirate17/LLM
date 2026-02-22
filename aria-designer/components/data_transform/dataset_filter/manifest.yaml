@@ -35,7 +35,7 @@ help_md: '### Technical
 
   Outputs: filtered:dataset.
 
-  Params: condition.
+  Params: filter_scope, condition.
 
 
   ### Plain Language

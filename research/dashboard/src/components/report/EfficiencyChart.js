@@ -1,21 +1,42 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../../utils/chartScales';
 
-export default function EfficiencyChart({ frontier }) {
+export default function EfficiencyChart({ frontier, showLabels = false, labelCount = 5 }) {
   if (!frontier || frontier.length === 0) return <p style={{ color: 'var(--text-muted)' }}>No Pareto-optimal programs yet.</p>;
 
-  const W = 500, H = 200;
+  const W = 700, H = 260;
   const pad = { l: 60, r: 20, t: 20, b: 35 };
 
   const losses = frontier.map(p => p.final_loss || p.loss_ratio || 0).filter(l => isFinite(l));
   const flops = frontier.map(p => p.flops_forward || p.param_count || 0).filter(f => f > 0);
   if (losses.length < 2 || flops.length < 2) return null;
 
-  const minL = Math.min(...losses), maxL = Math.max(...losses);
-  const minF = Math.min(...flops), maxF = Math.max(...flops);
+  const lossDefaults = CHART_DEFAULTS.loss_ratio;
+  const flopsDefaults = CHART_DEFAULTS.efficiency_flops;
+  const lossScale = getFixedScale('efficiency.loss_ratio', losses, {
+    defaultMin: lossDefaults.min,
+    defaultMax: lossDefaults.max,
+  });
+  const flopsScale = getFixedScale('efficiency.flops', flops, {
+    defaultMin: flopsDefaults.min,
+    defaultMax: flopsDefaults.max,
+  });
+  const minL = lossScale.min;
+  const maxL = lossScale.max;
+  const minF = flopsScale.min;
+  const maxF = flopsScale.max;
   const rangeL = maxL - minL || 1, rangeF = maxF - minF || 1;
 
-  const xScale = v => pad.l + ((v - minF) / rangeF) * (W - pad.l - pad.r);
-  const yScale = v => H - pad.b - ((v - minL) / rangeL) * (H - pad.t - pad.b);
+  const xScale = v => pad.l + ((clampToScale(v, flopsScale) - minF) / rangeF) * (W - pad.l - pad.r);
+  const yScale = v => H - pad.b - ((clampToScale(v, lossScale) - minL) / rangeL) * (H - pad.t - pad.b);
+
+  const labelCandidates = useMemo(() => {
+    if (!showLabels) return [];
+    return [...frontier]
+      .filter(p => p.graph_fingerprint)
+      .sort((a, b) => (a.final_loss || a.loss_ratio || 0) - (b.final_loss || b.loss_ratio || 0))
+      .slice(0, labelCount);
+  }, [frontier, showLabels, labelCount]);
 
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
@@ -33,6 +54,16 @@ export default function EfficiencyChart({ frontier }) {
             stroke="var(--bg-secondary)" strokeWidth={1.5}>
             <title>{p.graph_fingerprint?.slice(0, 10)}: loss={p.final_loss || p.loss_ratio}</title>
           </circle>
+        );
+      })}
+      {labelCandidates.map((p, i) => {
+        const x = xScale(p.flops_forward || p.param_count || 0);
+        const y = yScale(p.final_loss || p.loss_ratio || 0);
+        if (!isFinite(x) || !isFinite(y)) return null;
+        return (
+          <text key={`label-${i}`} x={x + 8} y={y - 6} fontSize={9} fill="var(--text-secondary)">
+            {(p.graph_fingerprint || '').slice(0, 8)}
+          </text>
         );
       })}
     </svg>

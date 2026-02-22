@@ -44,10 +44,32 @@ Preset quick intents are available:
 - `Refine Fingerprint`
 - `Refine Recommended`
 - `Refine Compression`
+- `Optimize Data/Control`
 - `Refine Sparsity`
 - `Investigate`
 
 You can still write custom prompts directly.
+
+## Port Dtype Contract (Manifest-Level)
+
+Use only schema-supported `dtype` values in component manifests and docs/examples:
+- `tensor`, `scalar`, `index`, `mask`, `complex_tensor`
+- `dataset`, `list`, `record`
+
+Example data/control ports:
+
+```yaml
+inputs:
+  - name: dataset
+    dtype: dataset
+outputs:
+  - name: item
+    dtype: record
+  - name: batch
+    dtype: list
+```
+
+Avoid legacy aliases such as `table` and `binary` as port dtypes.
 
 ## 5) Import/Export
 

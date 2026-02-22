@@ -13,7 +13,7 @@ import json
 import csv
 import io
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import logging
 import math
@@ -34,6 +34,7 @@ from .notebook import LabNotebook
 from .evidence import build_evidence_pack
 from .persona import get_aria
 from .runner import ExperimentRunner, RunConfig
+from .native_runner import native_runner_capability_report
 from .llm.context import build_program_context
 from .designer_utils import compile_designer_graph, validate_designer_graph, run_designer_graph, get_designer_components, generate_python_module, import_research_program
 
@@ -65,6 +66,88 @@ _DESIGNER_LAST_ACTIVITY_TS = time.time()
 _DESIGNER_LAST_ACTIVITY_REASON = "startup"
 _DESIGNER_LAST_AUTOSTOP_TS: float | None = None
 _DESIGNER_IDLE_WATCHDOG_STARTED = False
+_NATIVE_CANARY_LOCK = threading.Lock()
+_NATIVE_CANARY_CACHE: Dict[str, Any] = {
+    "updated_at": 0.0,
+    "payload": None,
+}
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = str(os.environ.get(name, "1" if default else "0")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _native_runner_canary_status_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
+    enabled = _env_bool("NATIVE_RUNNER_CANARY_STATUS_ENABLED", False)
+    if not enabled:
+        return {
+            "enabled": False,
+            "status": "disabled",
+        }
+
+    try:
+        iterations = int(str(os.environ.get("NATIVE_RUNNER_CANARY_ITERATIONS", "8")))
+    except Exception:
+        iterations = 8
+    iterations = max(1, min(iterations, 50))
+
+    try:
+        seed = int(str(os.environ.get("NATIVE_RUNNER_CANARY_SEED", "1337")))
+    except Exception:
+        seed = 1337
+
+    try:
+        ttl_seconds = float(str(os.environ.get("NATIVE_RUNNER_CANARY_TTL_S", "300")))
+    except Exception:
+        ttl_seconds = 300.0
+    ttl_seconds = max(0.0, min(ttl_seconds, 3600.0))
+
+    now = time.time()
+    with _NATIVE_CANARY_LOCK:
+        cache_updated = float(_NATIVE_CANARY_CACHE.get("updated_at") or 0.0)
+        cached_payload = _NATIVE_CANARY_CACHE.get("payload")
+        if (not force_refresh) and cached_payload is not None and (now - cache_updated) <= ttl_seconds:
+            out = dict(cached_payload)
+            out["cached"] = True
+            out["age_s"] = round(max(0.0, now - cache_updated), 3)
+            return out
+
+        try:
+            from .native_runner_canary import run_selective_canary_latency_benchmark
+
+            result = run_selective_canary_latency_benchmark(
+                iterations=iterations,
+                seed=seed,
+            )
+            payload = {
+                "enabled": True,
+                "status": "ok",
+                "cached": False,
+                "age_s": 0.0,
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "iterations": int(result.iterations),
+                "seed": int(result.seed),
+                "probe_avg_latency_ms": float(result.probe_avg_latency_ms),
+                "selective_avg_latency_ms": float(result.selective_avg_latency_ms),
+                "latency_delta_ms": float(result.latency_delta_ms),
+                "latency_ratio": float(result.latency_ratio),
+                "probe_execution_paths": dict(result.probe_execution_paths),
+                "selective_execution_paths": dict(result.selective_execution_paths),
+                "selective_applied_layers_avg": float(result.selective_applied_layers_avg),
+            }
+        except Exception as exc:
+            payload = {
+                "enabled": True,
+                "status": "error",
+                "error": str(exc),
+                "cached": False,
+                "age_s": 0.0,
+            }
+
+        _NATIVE_CANARY_CACHE["updated_at"] = now
+        _NATIVE_CANARY_CACHE["payload"] = payload
+        return payload
 
 
 def _designer_service_status() -> Dict[str, Any]:
@@ -431,6 +514,40 @@ def _json_safe(value: Any) -> Any:
             pass
 
     return str(value)
+
+
+def _with_native_runner_progress(progress_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    payload = dict(progress_payload or {})
+    try:
+        payload["native_runner"] = native_runner_capability_report()
+    except Exception as exc:
+        payload["native_runner"] = {
+            "enabled": False,
+            "strict": False,
+            "designer_runtime_available": False,
+            "status": f"native_runner_report_error:{exc}",
+            "fallback_metrics": {
+                "total_compiles": 0,
+                "native_enabled_compiles": 0,
+                "fallback_compiles": 0,
+                "probe_successes": 0,
+                "probe_failures": 0,
+                "fallback_rate": 0.0,
+                "samples_considered": 0,
+                "all_compile_calls": 0,
+            },
+            "semantic_warning_count": 0,
+            "semantic_warnings": [],
+            "selective_guardrail": {
+                "consecutive_requested_not_candidate": 0,
+                "threshold": 5,
+                "triggered": False,
+                "trigger_count": 0,
+                "last_reason": None,
+                "history": [],
+            },
+        }
+    return payload
 
 
 def _to_safe_float(value: Any, default: float = 0.0) -> float:
@@ -3991,32 +4108,75 @@ def create_app(
 
     # ── Dashboard routes ──
 
-    @app.route("/")
-    def index():
-        if not _dashboard_index_path():
-            return _dashboard_missing_response()
-        return send_from_directory(app.static_folder, "index.html")
-
-    @app.route("/favicon.ico")
-    def favicon():
-        if app.static_folder:
-            icon = Path(app.static_folder) / "favicon.ico"
-            if icon.is_file():
-                return send_from_directory(app.static_folder, "favicon.ico")
-        return "", 204
-
-    @app.route("/<path:path>")
-    def static_files(path):
-        if app.static_folder:
-            static_path = Path(app.static_folder) / path
-            if static_path.is_file():
-                return send_from_directory(app.static_folder, path)
-        index_path = _dashboard_index_path()
-        if index_path and not _is_asset_path(path):
-            return send_from_directory(app.static_folder, "index.html")
-        return "Not found", 404
+    # (Moved to end of create_app to prevent shadowing API routes)
 
     # ── Read-only API routes ──
+
+    @app.route("/api/native-profile/v2/data")
+    def api_native_runner_profile():
+        """Return per-node profiling data from the most recent native execution."""
+        try:
+            from .native_runner import get_native_profile, _try_import_rust_scheduler
+
+            rust = _try_import_rust_scheduler()
+            profiling_enabled = bool(
+                rust is not None
+                and hasattr(rust, "profiler_enabled")
+                and rust.profiler_enabled()
+            )
+
+            profile = get_native_profile()
+            if profile is not None:
+                node_profiles = list(profile.get("node_profiles", []))
+                total_duration_us = sum(
+                    float(p.get("duration_us", 0)) for p in node_profiles
+                )
+                return jsonify({
+                    "status": "ok",
+                    "enabled": profiling_enabled,
+                    "node_profiles": node_profiles,
+                    "peak_memory_bytes": int(profile.get("peak_memory_bytes", 0)),
+                    "total_duration_us": total_duration_us,
+                })
+            else:
+                return jsonify({
+                    "status": "ok",
+                    "enabled": profiling_enabled,
+                    "node_profiles": [],
+                    "peak_memory_bytes": 0,
+                    "total_duration_us": 0.0,
+                })
+        except Exception as e:
+            logger.error(f"Error in /api/native-profile/v2/data: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/native-profile/v2/enable", methods=["POST"])
+    def api_native_runner_profile_enable():
+        """Toggle native kernel profiling on or off."""
+        try:
+            from .native_runner import enable_native_profiling, _try_import_rust_scheduler
+
+            body = request.get_json(silent=True) or {}
+            enable = bool(body.get("enable", True))
+
+            result = enable_native_profiling(enable)
+
+            rust = _try_import_rust_scheduler()
+            now_enabled = bool(
+                rust is not None
+                and hasattr(rust, "profiler_enabled")
+                and rust.profiler_enabled()
+            )
+
+            return jsonify({
+                "status": "ok",
+                "requested": enable,
+                "enabled": now_enabled,
+                "accepted": result,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/native-profile/v2/enable: {e}")
+            return jsonify({"error": str(e)}), 500
 
     @app.route("/api/status")
     def api_status():
@@ -4026,7 +4186,7 @@ def create_app(
         aria = get_aria()
         try:
             summary = nb.get_dashboard_summary()
-            progress_payload = runner.progress.to_dict()
+            progress_payload = _with_native_runner_progress(runner.progress.to_dict())
             trigger = _get_run_trigger_snapshot(progress_payload.get("experiment_id"))
             progress_payload["run_trigger_source"] = trigger.get("source")
             progress_payload["run_trigger"] = trigger
@@ -4035,6 +4195,7 @@ def create_app(
                 "summary": summary,
                 "is_running": runner.is_running,
                 "progress": progress_payload,
+                "native_runner": progress_payload.get("native_runner"),
                 "run_trigger_source": trigger.get("source"),
                 "run_trigger": trigger,
             })
@@ -4046,8 +4207,13 @@ def create_app(
 
     @app.route("/api/experiments")
     def api_experiments():
-        """List recent experiments."""
-        n = request.args.get("n", 20, type=int)
+        """List experiments (newest first)."""
+        n = request.args.get("n", type=int)
+        if n is None:
+            n = request.args.get("limit", type=int)
+        if n is None:
+            n = 200
+        n = max(1, min(n, 5000))
         nb = LabNotebook(notebook_path)
         try:
             return jsonify(nb.get_recent_experiments(n))
@@ -4732,7 +4898,7 @@ def create_app(
             except Exception as e:
                 logger.warning("Failed enriching dashboard campaign metadata: %s", e)
 
-            recent_experiments = nb.get_recent_experiments(10)
+            recent_experiments = nb.get_recent_experiments(30)
             from .analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             top_programs = nb.get_top_programs(10)
@@ -4748,7 +4914,7 @@ def create_app(
                 "insights": _deduplicate_insights(nb.get_insights(limit=50)),
                 "recent_entries": _normalize_entries(nb.get_entries(limit=20)),
                 "is_running": runner.is_running,
-                "progress": runner.progress.to_dict(),
+                "progress": _with_native_runner_progress(runner.progress.to_dict()),
             }
 
             # Compute deltas from latest completed experiment
@@ -5985,6 +6151,52 @@ def create_app(
             "can_start_without_override": preflight.get("verdict") == "pass",
         })
 
+    @app.route("/api/worker/evaluate", methods=["POST"])
+    def api_worker_evaluate():
+        """Z12: Distributed worker endpoint for evaluating a computation graph."""
+        runner = _get_runner(notebook_path)
+        body = request.get_json(silent=True) or {}
+        
+        graph_json = body.get("graph_json")
+        config_dict = body.get("config")
+        seed = body.get("seed", 42)
+        
+        if not graph_json or not config_dict:
+            return jsonify({"error": "Missing graph_json or config"}), 400
+            
+        try:
+            from ..synthesis.graph import json_to_graph
+            from ..synthesis.compiler import compile_model
+            import torch
+            
+            graph = json_to_graph(graph_json)
+            config = RunConfig.from_dict(config_dict)
+            
+            dev_str = config.device if torch.cuda.is_available() else "cpu"
+            dev = torch.device(dev_str)
+            
+            # Compile model locally on worker
+            layer_graphs = [graph] * config.n_layers
+            model = compile_model(
+                layer_graphs,
+                vocab_size=config.vocab_size,
+                max_seq_len=config.max_seq_len,
+            ).to(dev)
+            
+            # Use the runner's async-friendly training method
+            result = runner._micro_train_async(model, config, seed, dev)
+            
+            return jsonify({
+                "status": "ok",
+                "result": result,
+                "device": dev_str,
+                "worker_id": os.environ.get("ARIA_WORKER_ID", "anonymous")
+            })
+            
+        except Exception as e:
+            logger.error("Worker evaluation failed: %s", e)
+            return jsonify({"error": str(e), "passed": False}), 500
+
     @app.route("/api/experiments/start", methods=["POST"])
     def api_start_experiment():
         """Start a new experiment. Accepts RunConfig fields + optional hypothesis."""
@@ -6354,13 +6566,14 @@ def create_app(
     def api_progress():
         """Get current experiment progress (poll-based alternative to SSE)."""
         runner = _get_runner(notebook_path)
-        progress_payload = runner.progress.to_dict()
+        progress_payload = _with_native_runner_progress(runner.progress.to_dict())
         trigger = _get_run_trigger_snapshot(progress_payload.get("experiment_id"))
         progress_payload["run_trigger_source"] = trigger.get("source")
         progress_payload["run_trigger"] = trigger
         return jsonify({
             "is_running": runner.is_running,
             "progress": progress_payload,
+            "native_runner": progress_payload.get("native_runner"),
             "run_trigger_source": trigger.get("source"),
             "run_trigger": trigger,
         })
@@ -8155,6 +8368,7 @@ def create_app(
         runner = _get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
+        refresh_canary = _parse_bool_query(request.args.get("refresh_canary"), default=False)
         try:
             # CUDA info
             cuda_available = torch.cuda.is_available()
@@ -8197,6 +8411,8 @@ def create_app(
                 "cuda": {"available": cuda_available, **cuda_info},
                 "llm": llm_info,
                 "database": db_info,
+                "native_runner": native_runner_capability_report(),
+                "native_runner_canary": _native_runner_canary_status_payload(force_refresh=refresh_canary),
                 "is_running": runner.is_running,
             })
         except Exception as e:
@@ -8204,6 +8420,56 @@ def create_app(
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
+
+    @app.route("/api/native-runner/capability")
+    def api_native_runner_capability():
+        """Report native-runner adapter capability and current mode flags."""
+        try:
+            return jsonify(native_runner_capability_report())
+        except Exception as e:
+            logger.error(f"Error in /api/native-runner/capability: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/native-runner/canary/refresh", methods=["POST"])
+    def api_native_runner_canary_refresh():
+        """Force-refresh native runner canary payload (bypass TTL cache)."""
+        try:
+            payload = _native_runner_canary_status_payload(force_refresh=True)
+            return jsonify(
+                {
+                    "status": "ok",
+                    "native_runner_canary": payload,
+                    "refreshed_at": datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z"),
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error in /api/native-runner/canary/refresh: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/native-runner/telemetry")
+    def api_native_runner_telemetry():
+        """Return native runner fallback metrics for dashboard consumption."""
+        try:
+            from .native_runner import native_runner_capability_report, _FALLBACK_METRICS
+            report = native_runner_capability_report()
+            return jsonify({
+                "status": "ok",
+                "metrics": report.get("fallback_metrics", {}),
+                "capability": {
+                    "enabled": report.get("enabled"),
+                    "strict": report.get("strict"),
+                    "designer_runtime_available": report.get("designer_runtime_available"),
+                    "status": report.get("status"),
+                },
+                "op_support": report.get("native_op_support", {}),
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/native-runner/telemetry: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    # (Profiling routes moved to end of create_app)
 
     @app.route("/api/validate", methods=["POST"])
     def api_validate_pipeline():
@@ -8993,6 +9259,53 @@ def create_app(
         except Exception as e:
             logger.error(f"Error in /api/aria/activity: {e}")
             return jsonify([]), 500
+
+    # ── Designer static files (same-origin iframe) ──
+
+    _designer_dist = str(
+        Path(__file__).parent.parent.parent / "aria-designer" / "ui" / "dist"
+    )
+
+    @app.route("/designer-proxy/")
+    def designer_index():
+        """Serve the built aria-designer index.html for the embedded iframe.
+
+        Serving the designer from the same origin as the dashboard avoids
+        cross-origin iframe restrictions in Brave and other browsers.
+        """
+        return send_from_directory(_designer_dist, "index.html")
+
+    @app.route("/designer-proxy/<path:subpath>")
+    def designer_assets(subpath):
+        """Serve aria-designer static assets (JS, CSS, etc.)."""
+        return send_from_directory(_designer_dist, subpath)
+
+    # ── Dashboard routes ──
+
+    @app.route("/")
+    def index():
+        if not _dashboard_index_path():
+            return _dashboard_missing_response()
+        return send_from_directory(app.static_folder, "index.html")
+
+    @app.route("/favicon.ico")
+    def favicon():
+        if app.static_folder:
+            icon = Path(app.static_folder) / "favicon.ico"
+            if icon.is_file():
+                return send_from_directory(app.static_folder, "favicon.ico")
+        return "", 204
+
+    @app.route("/<path:path>")
+    def static_files(path):
+        if app.static_folder:
+            static_path = Path(app.static_folder) / path
+            if static_path.is_file():
+                return send_from_directory(app.static_folder, path)
+        index_path = _dashboard_index_path()
+        if index_path and not _is_asset_path(path):
+            return send_from_directory(app.static_folder, "index.html")
+        return "Not found", 404
 
     return app
 

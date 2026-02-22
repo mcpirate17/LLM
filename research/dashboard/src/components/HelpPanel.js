@@ -129,7 +129,7 @@ The system status badge on the dashboard shows whether an LLM backend is active.
 - **Leaderboard (Curated)** - Promotion pipeline: screening → investigation → validation → breakthrough
 
 **Analysis** — Trends and learning signals
-- **Trends** - Cross-experiment charts (S1 pass rate, novelty, loss ratio over time)
+- **Analytics** - Cross-experiment charts (S1 pass rate, novelty, loss ratio over time)
 - **Learning** - Grammar weight evolution, op success rates, trajectory, clusters
 - **Insights** - Data-driven patterns: top/bottom ops, correlations, failure modes
 - **Report** - Consolidated research report with discovery rankings and efficiency frontier
@@ -185,7 +185,7 @@ The system status badge on the dashboard shows whether an LLM backend is active.
 
 **Leaderboard Score** (Leaderboard tab): Adaptive by tier — earlier tiers weight the tier bonus higher, later tiers weight validation metrics (baseline ratio, multi-seed consistency) higher.
 
-**Trend Score** (Trends tab): S1 rate (35%) + Loss ratio (30%) + Novelty (25%) + Efficiency (10%)
+**Trend Score** (Analytics tab): S1 rate (35%) + Loss ratio (30%) + Novelty (25%) + Efficiency (10%)
 
 **Op Score** (Learning tab): S1 rate (40%) + S0.5 rate (20%) + S0 rate (10%) + Novelty (20%) + Usage (10%)
 

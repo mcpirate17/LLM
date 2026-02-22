@@ -1,7 +1,7 @@
 from typing import List, Dict, Any
 from .database import list_components
 
-def suggest_components(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
+def suggest_components(workflow: Dict[str, Any], prompt: str | None = None) -> List[Dict[str, Any]]:
     """
     Suggest next components based on the current graph state.
     Returns a list of component manifests to suggest.
@@ -31,7 +31,14 @@ def suggest_components(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
         for c in input_comps:
             if "input" in c["name"].lower():
                 suggestions.append(_make_suggestion(c, "Start with an input node."))
-        return suggestions[:3]
+        prompt_boosted = _suggest_from_prompt(by_category, all_components, prompt)
+        if prompt_boosted:
+            suggestions.extend(prompt_boosted)
+        return _dedupe_suggestions(suggestions)[:5]
+
+    prompt_boosted = _suggest_from_prompt(by_category, all_components, prompt)
+    if prompt_boosted:
+        suggestions.extend(prompt_boosted)
 
     for node in leaf_nodes:
         comp_type = node["component_type"] # e.g. "math/relu" or just "relu"
@@ -58,12 +65,81 @@ def suggest_components(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
             # Suggest Output or Attention
             suggestions.extend(_suggest_category(by_category, "mixing", "Add attention."))
             
-    # Deduplicate by ID
+    return _dedupe_suggestions(suggestions)[:5]
+
+
+def _dedupe_suggestions(suggestions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     unique = {}
     for s in suggestions:
         unique[s["component"]["id"]] = s
-        
-    return list(unique.values())[:5]
+    return list(unique.values())
+
+
+def _suggest_from_prompt(by_cat: Dict[str, List[Dict[str, Any]]], all_components: List[Dict[str, Any]], prompt: str | None) -> List[Dict[str, Any]]:
+    if not prompt:
+        return []
+
+    lower = prompt.lower()
+    out: List[Dict[str, Any]] = []
+
+    has_dataflow_focus = any(k in lower for k in [
+        "data/control",
+        "data flow",
+        "join",
+        "filter",
+        "schema",
+        "columns",
+        "dataset",
+        "hygiene",
+    ])
+
+    if has_dataflow_focus:
+        out.extend(_suggest_component_ids(
+            all_components,
+            ["join", "dataset_filter", "select_columns"],
+            "Optimize data/control flow by tightening joins, filters, and schema-column hygiene.",
+        ))
+        out.extend(_suggest_category(
+            by_cat,
+            "control_flow",
+            "Add explicit control-flow guards to keep data/control routing predictable.",
+        ))
+        out.extend(_suggest_category(
+            by_cat,
+            "data_transform",
+            "Refine dataset transforms for cleaner schema handling and deterministic filtering.",
+        ))
+
+    if "join" in lower and not has_dataflow_focus:
+        out.extend(_suggest_component_ids(
+            all_components,
+            ["join"],
+            "Add/adjust join nodes for explicit key-based dataset merging.",
+        ))
+    if "filter" in lower and not has_dataflow_focus:
+        out.extend(_suggest_component_ids(
+            all_components,
+            ["dataset_filter"],
+            "Add filter nodes to enforce row-level quality gates early.",
+        ))
+    if "schema" in lower or "column" in lower:
+        out.extend(_suggest_component_ids(
+            all_components,
+            ["select_columns"],
+            "Use schema-aware column selection to avoid downstream mismatches.",
+        ))
+
+    return _dedupe_suggestions(out)
+
+
+def _suggest_component_ids(all_components: List[Dict[str, Any]], component_ids: List[str], reason: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    targets = {cid.lower() for cid in component_ids}
+    for comp in all_components:
+        cid = str(comp.get("id", "")).lower()
+        if cid in targets:
+            out.append(_make_suggestion(comp, reason))
+    return out
 
 def _suggest_category(by_cat, category, reason):
     res = []

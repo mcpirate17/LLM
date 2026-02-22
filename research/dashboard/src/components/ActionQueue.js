@@ -131,7 +131,7 @@ function ActionQueue({
   const [showActivity, setShowActivity] = useState(false);
   const eventBus = useEventBus();
   const subscribe = eventBus?.subscribe;
-  const { leaderboardEntries, learningTrajectory, mathFamilyCoverage } = useAriaData();
+  const { leaderboardEntries, learningTrajectory, mathFamilyCoverage } = useAriaData() || {};
   const fetchRef = useRef(0);
 
   // Fetch computed action queue

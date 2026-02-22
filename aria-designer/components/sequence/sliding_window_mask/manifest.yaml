@@ -15,7 +15,7 @@ inputs:
   - D
 outputs:
 - name: y
-  dtype: tensor
+  dtype: mask
   shape:
   - B
   - S
@@ -45,7 +45,7 @@ help_md: '### Technical
 
   Inputs: x:tensor[B, S, D].
 
-  Outputs: y:tensor[B, S, D].
+  Outputs: y:mask[B, S, D].
 
   Params: window_size.
 

@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { noveltyColor, reliabilityColor } from '../utils/colors';
 import { experimentScore, experimentScoreBreakdown } from '../utils/scoringEngine';
+import { filterRowsByQuery } from '../utils/tableFiltering';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 /** Color-code experiment outcome: green (good), amber (ok), red (bad) */
@@ -121,6 +122,7 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
     } catch {}
     return true;
   });
+  const [filterQuery, setFilterQuery] = useState('');
   const [copiedValue, copyText] = useCopyToClipboard();
   const [cancellingId, setCancellingId] = useState(null);
   const [rerunningId, setRerunningId] = useState(null);
@@ -203,8 +205,18 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
     }));
   }, [experiments]);
 
+  const filtered = useMemo(() => (
+    filterRowsByQuery(augmented, filterQuery, [
+      'experiment_id',
+      'experiment_type',
+      'hypothesis',
+      'status',
+      'aria_summary',
+    ])
+  ), [augmented, filterQuery]);
+
   const sorted = useMemo(() => {
-    const arr = [...augmented];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let va, vb;
       if (sortKey === 'score') {
@@ -231,7 +243,7 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
       return sortDesc ? vb - va : va - vb;
     });
     return arr;
-  }, [augmented, sortKey, sortDesc]);
+  }, [filtered, sortKey, sortDesc]);
 
   if (!experiments || experiments.length === 0) {
     return (
@@ -246,15 +258,31 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
 
   return (
     <div className="card">
-      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <span>Experiments</span>
-        <button
-          className="refresh-btn"
-          style={{ fontSize: 11, padding: '3px 10px' }}
-          onClick={() => setShowExpertColumns(!showExpertColumns)}
-        >
-          {showExpertColumns ? 'Hide noise' : 'Show expert columns'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="Filter experiments"
+            style={{
+              fontSize: 11,
+              padding: '4px 8px',
+              borderRadius: 4,
+              border: '1px solid var(--border)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              minWidth: 180,
+            }}
+          />
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 11, padding: '3px 10px' }}
+            onClick={() => setShowExpertColumns(!showExpertColumns)}
+          >
+            {showExpertColumns ? 'Hide noise' : 'Show expert columns'}
+          </button>
+        </div>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
         Each experiment generates a batch of random computation graphs, then tests whether they can

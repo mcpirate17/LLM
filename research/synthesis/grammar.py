@@ -63,6 +63,10 @@ class GrammarConfig:
     min_block_density: float = 0.05
     max_block_density: float = 0.5
 
+    def update_bias(self, delta: float):
+        """Adjust structured sparsity bias."""
+        self.structured_sparsity_bias = max(0.0, min(1.0, self.structured_sparsity_bias + delta))
+
 
 def generate_layer_graph(
     config: Optional[GrammarConfig] = None,

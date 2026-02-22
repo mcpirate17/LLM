@@ -762,6 +762,11 @@ body {
   background: #0a1628;
   color: var(--muted);
 }
+.file-picker-meta {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
 
 .port-row {
   display: flex;
@@ -821,6 +826,40 @@ button.small {
 
 /* ── Import Dialog ── */
 .import-modal { max-width: 600px; }
+.import-controls {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.import-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.import-controls input,
+.import-controls select {
+  background: #0f1b2a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.import-search { min-width: 240px; }
+.loading-state {
+  color: var(--text);
+  font-size: 12px;
+  margin-top: 6px;
+}
+.error-state {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 6px;
+}
 .survivor-list {
   display: flex;
   flex-direction: column;

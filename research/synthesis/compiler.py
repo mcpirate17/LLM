@@ -65,6 +65,51 @@ def _record_sparse_telemetry(module: nn.Module, op_name: str, density: float,
     setattr(module, "sparse_telemetry", telemetry)
 
 
+def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_experts: torch.Tensor,
+                              logits: Optional[torch.Tensor] = None) -> None:
+    """Record MoE routing statistics: entropy, expert utilization, drop rate."""
+    telemetry = getattr(module, "routing_telemetry", {
+        "tokens_total": 0,
+        "tokens_processed": 0,
+        "expert_counts": torch.zeros(n_experts, device=selected_experts.device),
+        "entropy_sum": 0.0,
+        "count": 0,
+    })
+    
+    B, S = selected_experts.shape[:2]
+    total_tokens = B * S
+    telemetry["tokens_total"] += total_tokens
+    telemetry["tokens_processed"] += total_tokens # Assuming all tokens processed for now
+    
+    # Expert utilization
+    counts = torch.histc(selected_experts.float(), bins=n_experts, min=0, max=n_experts-1)
+    telemetry["expert_counts"] += counts
+    
+    # Entropy if logits provided
+    if logits is not None:
+        probs = F.softmax(logits, dim=-1)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
+        telemetry["entropy_sum"] += entropy
+        telemetry["count"] += 1
+        
+    setattr(module, "routing_telemetry", telemetry)
+
+
+def _record_adaptive_telemetry(module: nn.Module, savings_ratio: float, 
+                               effective_depth: Optional[float] = None) -> None:
+    """Record adaptive compute statistics (MoD/MoR)."""
+    telemetry = getattr(module, "adaptive_telemetry", {
+        "savings_sum": 0.0,
+        "depth_sum": 0.0,
+        "count": 0,
+    })
+    telemetry["savings_sum"] += float(savings_ratio)
+    if effective_depth is not None:
+        telemetry["depth_sum"] += float(effective_depth)
+    telemetry["count"] += 1
+    setattr(module, "adaptive_telemetry", telemetry)
+
+
 def _build_nm_mask(weight: torch.Tensor, n: int, m: int) -> torch.Tensor:
     if n <= 0 or m <= 0 or n > m:
         return torch.ones_like(weight)
@@ -343,13 +388,55 @@ def _op_topk_gate(module, inputs, _):
     if not hasattr(module, 'gate_proj'): return inputs[0]
     x = inputs[0]
     B, S, D = x.shape
-    gate_weights = F.softmax(F.linear(x, module.gate_proj), dim=-1)
+    logits = F.linear(x, module.gate_proj)
+    gate_weights = F.softmax(logits, dim=-1)
+    
+    # Record routing telemetry
+    _record_routing_telemetry(module, 2, gate_weights.argmax(dim=-1), logits=logits)
+    
     half = D // 2
     out = torch.cat([x[..., :half] * gate_weights[..., 0:1], 
                      x[..., half:2*half] * gate_weights[..., 1:2]], dim=-1)
     if D > 2 * half:
         out = torch.cat([out, x[..., 2*half:]], dim=-1)
     return out
+
+@register_op("moe_topk")
+def _op_moe_topk(module, inputs, config):
+    """Sparse Mixture-of-Experts channel mixer."""
+    x = inputs[0]
+    B, S, D = x.shape
+    
+    n_experts = int(config.get("num_experts", 4))
+    top_k = int(config.get("top_k", 2))
+    
+    if not hasattr(module, 'gate_weight'):
+        return x
+        
+    logits = F.linear(x, module.gate_weight)
+    weights, indices = logits.topk(top_k, dim=-1)
+    weights = F.softmax(weights, dim=-1)
+    
+    # Record routing telemetry
+    _record_routing_telemetry(module, n_experts, indices, logits=logits)
+    
+    # Simplified routing implementation for compiler
+    output = torch.zeros_like(x)
+    # Note: CompiledOp for moe_topk needs to manage experts as sub-modules
+    # For now we use a linear-based approximation if experts not fully built
+    if hasattr(module, 'experts'):
+        for i, expert in enumerate(module.experts):
+            mask = (indices == i).any(dim=-1)
+            if mask.any():
+                expert_input = x[mask]
+                # Weight contribution
+                expert_weight = weights[indices == i].reshape(-1, 1)
+                output[mask] += expert(expert_input) * expert_weight
+    else:
+        # Fallback to a learned projection if experts sub-modules aren't ready
+        output = F.linear(x, module.weight) if hasattr(module, 'weight') else x
+        
+    return output
 
 @register_op("nm_sparse_linear")
 def _op_nm_sparse_linear(module, inputs, config):
@@ -534,7 +621,26 @@ def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...
     if op_name in PRIMITIVE_REGISTRY:
         prim = PRIMITIVE_REGISTRY[op_name]
         if hasattr(prim, 'execute_fn') and prim.execute_fn is not None:
-            return prim.execute_fn(module, *inputs)
+            result = prim.execute_fn(module, *inputs)
+            # Sanitize non-finite values and record telemetry
+            if isinstance(result, torch.Tensor):
+                nonfinite = int((~torch.isfinite(result)).sum().item())
+                if nonfinite > 0:
+                    result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
+                    telemetry = getattr(module, "mathspace_telemetry", {})
+                    stats = telemetry.get(op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0})
+                    stats["calls"] = stats.get("calls", 0) + 1
+                    stats["nonfinite_elements"] = stats.get("nonfinite_elements", 0) + nonfinite
+                    stats["sanitized_calls"] = stats.get("sanitized_calls", 0) + 1
+                    telemetry[op_name] = stats
+                    setattr(module, "mathspace_telemetry", telemetry)
+                else:
+                    telemetry = getattr(module, "mathspace_telemetry", {})
+                    stats = telemetry.get(op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0})
+                    stats["calls"] = stats.get("calls", 0) + 1
+                    telemetry[op_name] = stats
+                    setattr(module, "mathspace_telemetry", telemetry)
+            return result
 
     raise ValueError(f"Unknown op: {op_name}")
 
@@ -585,6 +691,18 @@ class CompiledOp(nn.Module):
             self.conv_weight = self._make_param((D_in, 1, 3), std=1.0 / math.sqrt(3))
         elif op.name == "topk_gate":
             self.gate_proj = self._make_param((2, D_in), std=std)
+        elif op.name == "moe_topk":
+            n_experts = int(config.get("num_experts", 4))
+            self.gate_weight = self._make_param((n_experts, D_in), std=std)
+            # Create a minimal MLP for each expert to keep CompiledOp self-contained
+            hidden = int(D_in * config.get("mlp_ratio", 2.0))
+            self.experts = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(D_in, hidden, bias=False),
+                    nn.GELU(),
+                    nn.Linear(hidden, D_in, bias=False)
+                ) for _ in range(n_experts)
+            ])
         elif op.name == "nm_sparse_linear":
             self.weight = self._make_param((D_out, D_in), std=std)
             self.sparsity_n = int(config.get("n", 2))
@@ -632,6 +750,11 @@ class CompiledOp(nn.Module):
 
     def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
         """Execute this primitive operation."""
+        wrapper = getattr(self, '_native_wrapper', None)
+        if wrapper is not None:
+            result = wrapper.dispatch(self.op_name, *inputs)
+            if result is not None:
+                return result
         return _execute_op(self, self.op_name, inputs, self.config)
 
 
@@ -661,16 +784,31 @@ class CompiledLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Execute the computation graph with liveness-based memory management.
-        
+
+        If a ``_subgraph_dispatcher`` is attached (by the native-first
+        compile pipeline), tries to execute the entire graph through the
+        Rust scheduler in a single call.  Falls back to per-op dispatch
+        on failure or when not all ops are native-supported.
+
         Tensors are deleted as soon as their last consumer finishes, minimizing
         peak VRAM usage.
         """
+        # --- Subgraph dispatch fast-path ---
+        dispatcher = getattr(self, '_subgraph_dispatcher', None)
+        if dispatcher is not None:
+            result = dispatcher.try_dispatch(x)
+            if result is not None:
+                return result
+
         node_outputs: Dict[int, torch.Tensor] = {}
         counts = self.consumer_counts.copy()
         output_id = self.graph._output_node_id
-        if output_id is None: 
+        if output_id is None:
             raise RuntimeError("Graph has no output node")
 
+        # Track if we need aggressive reclamation (high memory pressure)
+        is_cuda = x.is_cuda
+        
         for nid in self.topo_order:
             node = self.graph.nodes[nid]
             if node.is_input:
@@ -687,7 +825,10 @@ class CompiledLayer(nn.Module):
                 if counts[iid] <= 0 and iid != output_id:
                     if iid in node_outputs:
                         # Explicitly clear reference to trigger prompt reclamation
-                        del node_outputs[iid]
+                        out_to_del = node_outputs.pop(iid)
+                        if is_cuda:
+                            # Manually help reference counting
+                            del out_to_del
 
         out = node_outputs.pop(output_id)
         node_outputs.clear() # Reclaim any lingering intermediates

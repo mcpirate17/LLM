@@ -474,12 +474,41 @@ class MoETopK(nn.Module):
         self.experts = nn.ModuleList([SwiGLUMLP(dim, mlp_ratio) for _ in range(n_experts)])
         self.gate = nn.Linear(dim, n_experts, bias=False)
         self.topk = topk
+        self.n_experts = n_experts
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
         logits = self.gate(x)
         weights, indices = logits.topk(self.topk, dim=-1)
         weights = F.softmax(weights, dim=-1)
+
+        # Record routing telemetry
+        if hasattr(self, "routing_telemetry"):
+            # Compute entropy
+            probs = F.softmax(logits, dim=-1)
+            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
+            
+            # Utilization
+            counts = torch.histc(indices.float(), bins=self.n_experts, min=0, max=self.n_experts-1)
+            
+            rt = self.routing_telemetry
+            rt["tokens_total"] = rt.get("tokens_total", 0) + B * S
+            rt["tokens_processed"] = rt.get("tokens_processed", 0) + B * S
+            rt["expert_counts"] = rt.get("expert_counts", torch.zeros(self.n_experts, device=x.device)) + counts
+            rt["entropy_sum"] = rt.get("entropy_sum", 0.0) + entropy
+            rt["count"] = rt.get("count", 0) + 1
+        else:
+            # Initialize telemetry placeholder if not present (will be extracted by runner)
+            probs = F.softmax(logits, dim=-1)
+            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
+            counts = torch.histc(indices.float(), bins=self.n_experts, min=0, max=self.n_experts-1)
+            self.routing_telemetry = {
+                "tokens_total": B * S,
+                "tokens_processed": B * S,
+                "expert_counts": counts,
+                "entropy_sum": entropy,
+                "count": 1,
+            }
 
         # Simple loop-based routing (good enough for small models)
         output = torch.zeros_like(x)
@@ -675,6 +704,15 @@ class MoDTopKRouting(nn.Module):
         topk_vals, topk_idx = scores.topk(k, dim=-1)
         weights = torch.sigmoid(topk_vals)
 
+        # Record adaptive telemetry
+        savings = 1.0 - (k / S)
+        if hasattr(self, "adaptive_telemetry"):
+            at = self.adaptive_telemetry
+            at["savings_sum"] = at.get("savings_sum", 0.0) + savings
+            at["count"] = at.get("count", 0) + 1
+        else:
+            self.adaptive_telemetry = {"savings_sum": savings, "count": 1}
+
         # Gather selected tokens
         selected = x.gather(1, topk_idx.unsqueeze(-1).expand(-1, -1, D))
         processed = block(selected) * weights.unsqueeze(-1)
@@ -778,6 +816,18 @@ class AdaptiveRecursionRouting(nn.Module):
 
     def forward(self, x: torch.Tensor, block: nn.Module) -> torch.Tensor:
         depth_weights = F.softmax(self.depth_router(x), dim=-1)  # (B, S, max_depth)
+        
+        # Record adaptive telemetry
+        avg_depth = (depth_weights * torch.arange(1, self.max_depth + 1, device=x.device)).sum(dim=-1).mean().item()
+        savings = 1.0 - (avg_depth / self.max_depth)
+        if hasattr(self, "adaptive_telemetry"):
+            at = self.adaptive_telemetry
+            at["savings_sum"] = at.get("savings_sum", 0.0) + savings
+            at["depth_sum"] = at.get("depth_sum", 0.0) + avg_depth
+            at["count"] = at.get("count", 0) + 1
+        else:
+            self.adaptive_telemetry = {"savings_sum": savings, "depth_sum": avg_depth, "count": 1}
+
         outputs = [x]
         current = x
         for d in range(self.max_depth):

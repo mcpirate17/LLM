@@ -1,0 +1,105 @@
+name: Research Native Runner CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'research/**'
+      - '.github/workflows/research-native-ci.yml'
+  pull_request:
+    paths:
+      - 'research/**'
+      - '.github/workflows/research-native-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  native-runner-contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple/
+
+      - name: Set up Node.js
+        if: matrix.python-version == '3.11'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run dashboard telemetry preset regression checks
+        if: matrix.python-version == '3.11'
+        run: |
+          cd research/dashboard
+          npm ci
+          CI=true npx react-scripts test --watch=false --runInBand --testPathPattern=ControlPanel.test.js
+
+      - name: Build native runtime
+        run: |
+          make -C research/runtime/native c-kernels
+
+      - name: Enforce native-first compile callsites
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m research.tools.check_native_compile_callsites
+
+      - name: Run native-runner adapter, contract, parity, and ABI smoke tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pytest \
+            research/tests/test_native_runner_adapter.py \
+            research/tests/test_native_runner_contracts.py \
+            research/tests/test_native_runner_parity.py \
+            research/tests/test_native_runner_soak.py \
+            research/tests/test_native_runner_abi_smoke.py \
+            research/tests/test_native_runner_abi_inference_probe.py \
+            research/tests/test_runner_safe_eval_stage_routing.py \
+            -q
+
+      - name: Cutover gate canary (enforce-ready)
+        if: matrix.python-version == '3.11'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          NATIVE_RUNNER_MAX_FALLBACK_RATE: "1.0"
+          NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS: "1"
+          NATIVE_RUNNER_REQUIRE_PARITY_PASS: "1"
+          NATIVE_RUNNER_ABI_PARITY_SAMPLE_RATE: "1.0"
+          NATIVE_RUNNER_ABI_PARITY_MAX_ABS: "1e-6"
+          NATIVE_RUNNER_ABI_PARITY_STRICT: "1"
+        run: |
+          python -m research.tools.check_cutover_gate --offline --generate-compile-sample --generate-parity-sample
+
+      - name: Native no-legacy gate (ABI model-only)
+        if: matrix.python-version == '3.11'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          NATIVE_RUNNER_ENABLED: "1"
+          NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED: "1"
+          NATIVE_RUNNER_ABI_MODEL_ONLY: "1"
+        run: |
+          python -m research.tools.check_no_legacy_compile
+
+      - name: Native canary execution paths (no legacy compile)
+        if: matrix.python-version == '3.11'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          NATIVE_RUNNER_ENABLED: "1"
+          NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED: "1"
+          NATIVE_RUNNER_ABI_MODEL_ONLY: "1"
+        run: |
+          python -m research.tools.check_no_legacy_execution_paths

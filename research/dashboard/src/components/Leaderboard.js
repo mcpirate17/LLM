@@ -263,7 +263,10 @@ function ScoreBreakdown({ entry }) {
     robust: { label: 'Robustness', color: 'var(--accent-yellow)' },
     consistency: { label: 'Consistency', color: '#d29922' },
     tierBonus: { label: 'Tier Bonus', color: 'var(--accent-orange)' },
-    throughput: { label: 'Throughput', color: 'var(--text-muted)' }
+    throughput: { label: 'Throughput', color: 'var(--text-muted)' },
+    efficiencyBonus: { label: 'Efficiency', color: '#58a6ff' },
+    routingBonus: { label: 'Routing', color: '#3fb950' },
+    adaptiveBonus: { label: 'Adaptive Compute', color: '#c77dff' },
   };
 
   const components = Object.entries(breakdown)

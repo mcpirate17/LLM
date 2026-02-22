@@ -55,6 +55,14 @@ function SummaryCards({ learningTrend }) {
       color: noveltyColor,
     },
     {
+      label: 'Efficiency Focus',
+      value: summary.avg_routing_entropy != null ? `\u03A3 ${summary.avg_routing_entropy.toFixed(2)}` : '—',
+      sub: summary.avg_depth_savings != null 
+        ? `${(summary.avg_depth_savings * 100).toFixed(1)}% adaptive savings`
+        : 'Dense architectures',
+      color: summary.avg_depth_savings > 0.2 ? 'green' : 'purple',
+    },
+    {
       label: 'Perf Report',
       value: latestPerf ? `${latestPerf.programs_profiled || 0} profiled` : '—',
       sub: latestPerf

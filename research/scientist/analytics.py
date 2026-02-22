@@ -34,6 +34,7 @@ class ExperimentAnalytics:
         self._last_grammar_weight_diagnostics: Optional[Dict] = None
 
     _OP_NAME_PATTERN = re.compile(r'"op_name"\s*:\s*"([^"]+)"')
+    _OP_KEY_PATTERN = re.compile(r'"op"\s*:\s*"([^"]+)"')
 
     _FULL_QKV_TOKEN_MIXERS: Set[str] = {
         "softmax_attention",
@@ -94,13 +95,14 @@ class ExperimentAnalytics:
     @classmethod
     def _extract_ops_fast(cls, graph_json: str) -> Optional[List[str]]:
         """Fast-path op extraction from JSON string without full decode."""
-        if not graph_json or '"op_name"' not in graph_json:
+        if not graph_json:
             return []
-        ops = sorted({
-            op for op in cls._OP_NAME_PATTERN.findall(graph_json)
-            if op and op != "input"
-        })
-        return ops
+        if '"op_name"' not in graph_json and '"op"' not in graph_json:
+            return []
+        ops = set()
+        ops.update(op for op in cls._OP_NAME_PATTERN.findall(graph_json) if op and op != "input")
+        ops.update(op for op in cls._OP_KEY_PATTERN.findall(graph_json) if op and op != "input")
+        return sorted(ops)
 
     @staticmethod
     def _extract_ops_fallback(graph_json: str) -> Optional[List[str]]:
@@ -109,9 +111,11 @@ class ExperimentAnalytics:
             graph_data = json.loads(graph_json)
             nodes = graph_data.get("nodes", {}) if isinstance(graph_data, dict) else {}
             return sorted({
-                nd["op_name"]
+                nd.get("op_name") or nd.get("op")
                 for nd in nodes.values()
-                if isinstance(nd, dict) and nd.get("op_name") and nd["op_name"] != "input"
+                if isinstance(nd, dict)
+                and (nd.get("op_name") or nd.get("op"))
+                and (nd.get("op_name") or nd.get("op")) != "input"
             })
         except (json.JSONDecodeError, TypeError, AttributeError):
             return None
@@ -2790,6 +2794,7 @@ class ExperimentAnalytics:
             "weak_ops": [],
             "dominant_errors": [],
             "anti_patterns": [],
+            "toxic_bigrams": [],
             "refuted_hypotheses": [],
             "summary": "",
         }
@@ -2895,11 +2900,23 @@ class ExperimentAnalytics:
         except Exception:
             pass
 
-        # 5. Summary text
+        # 5. Toxic op-pair bigrams from failure_signatures table
+        try:
+            blocklist = self.nb.get_failure_signature_blocklist()
+            for sig, penalty in sorted(blocklist.items(), key=lambda x: x[1]):
+                result["toxic_bigrams"].append({
+                    "pattern": sig,
+                    "penalty": penalty,
+                })
+        except Exception:
+            pass
+
+        # 6. Summary text
         n_ops = len(result["failed_ops"])
         n_weak = len(result["weak_ops"])
         n_errs = len(result["dominant_errors"])
         n_anti = len(result["anti_patterns"])
+        n_toxic = len(result["toxic_bigrams"])
         n_ref = len(result["refuted_hypotheses"])
         parts = []
         if n_ops:
@@ -2915,6 +2932,9 @@ class ExperimentAnalytics:
             )
         if n_anti:
             parts.append(f"{n_anti} anti-correlated structural features")
+        if n_toxic:
+            top_toxic = ", ".join(t["pattern"] for t in result["toxic_bigrams"][:3])
+            parts.append(f"{n_toxic} toxic op-pair patterns ({top_toxic})")
         if n_ref:
             parts.append(f"{n_ref} refuted hypotheses")
         result["summary"] = "; ".join(parts) if parts else "No negative results to report yet."

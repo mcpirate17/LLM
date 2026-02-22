@@ -59,6 +59,23 @@ make dev-stop
   - `POST /api/designer/lineage/sync`
   - `GET /api/designer/lineage`
   - `GET /api/designer/lineage/<run_id>`
+- Native runner capability/cutover endpoint:
+  - `GET /api/native-runner/capability` (includes `fallback_metrics` + `cutover_gate`)
+
+Native cutover verification (strict no-legacy lane):
+- env baseline:
+  - `NATIVE_RUNNER_ENABLED=1`
+  - `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED=1`
+  - `NATIVE_RUNNER_ABI_MODEL_ONLY=1`
+- checks:
+  - `python -m research.tools.check_no_legacy_compile`
+  - `python -m research.tools.check_no_legacy_execution_paths`
+
+Deprecation note:
+- `NATIVE_RUNNER_LEGACY_ONLY` and `fallback_metrics.legacy_compile_invocations` are compatibility surfaces pending Phase-D removal; prefer ABI-model-only + no-legacy gates and `fallback_metrics.legacy_compile_count`.
+
+Cutover gate readiness check (gate lane):
+- `python -m research.tools.check_cutover_gate --offline --generate-compile-sample --generate-parity-sample`
 
 ## Troubleshooting
 

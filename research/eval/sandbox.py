@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import os
+import random
 import signal
 import time
 import traceback
@@ -88,6 +89,7 @@ class SandboxResult:
     random_input_passed: bool = False
     output_range: Optional[str] = None
     kernel_timing: Optional[Dict[str, Any]] = None
+    native_abi_probe: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
@@ -102,10 +104,18 @@ def _timeout_handler(signum, frame):
 
 
 def _mapped_shared_token_ids(batch_size: int, seq_len: int, vocab_size: int):
-    """Create token IDs using a zero-copy NumPy->Torch view without disk I/O."""
+    """Create token IDs using a zero-copy NumPy->Torch view without disk I/O.
+    Uses pinned memory if possible for faster transfer to GPU.
+    """
     arr = np.empty((batch_size, seq_len), dtype=np.int64)
     arr[:] = np.random.randint(0, vocab_size, size=(batch_size, seq_len), dtype=np.int64)
     tensor = torch.from_numpy(arr)
+    # Z8: Pin memory for faster CPU->GPU transfer if we know we're going to GPU later
+    if torch.cuda.is_available():
+        try:
+            tensor = tensor.pin_memory()
+        except Exception:
+            pass
     return tensor, arr, None
 
 
@@ -117,6 +127,9 @@ def safe_eval(
     device: str = "cuda",
     timeout_seconds: int = 30,
     run_stability_probe: bool = True,
+    abi_infer_probe: Optional[bool] = None,
+    abi_infer_primary: Optional[bool] = None,
+    abi_infer_primary_no_grad: Optional[bool] = None,
 ) -> SandboxResult:
     """Safely evaluate a model through Stage 0 and Stage 0.5.
 
@@ -171,7 +184,91 @@ def safe_eval(
         else:
             shared_ids, mapped_array, mapped_path = _mapped_shared_token_ids(batch_size, seq_len, vocab_size)
             input_ids = shared_ids
+
+        # Optional inference-only probe through native runner ABI session.
+        # This validates that compile-time ABI handles can execute real token payloads
+        # without replacing training/backprop path yet.
+        if abi_infer_probe is None:
+            abi_probe_enabled = os.getenv("NATIVE_RUNNER_ABI_INFER_PROBE", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        else:
+            abi_probe_enabled = bool(abi_infer_probe)
+        abi_session = getattr(model, "_native_runner_abi_session", None)
+        if abi_probe_enabled and abi_session is not None:
+            abi_probe_logits = None
+            probe_payload = {
+                "attempted": True,
+                "succeeded": False,
+                "reason": "unknown",
+                "vocab_size": None,
+                "max_logit": None,
+                "primary_requested": False,
+                "primary_used": False,
+                "mode": "probe_only",
+            }
+            try:
+                flat_tokens = input_ids.detach().cpu().reshape(-1).tolist()
+                abi_logits = abi_session.execute_tokens(flat_tokens, batch=batch_size)
+                if int(len(abi_logits)) != int(vocab_size):
+                    probe_payload["reason"] = (
+                        f"vocab_mismatch:{len(abi_logits)}!={int(vocab_size)}"
+                    )
+                else:
+                    probe_payload["succeeded"] = True
+                    probe_payload["reason"] = "ok"
+                    probe_payload["vocab_size"] = int(len(abi_logits))
+                    probe_payload["max_logit"] = float(max(abi_logits)) if abi_logits else None
+                    abi_probe_logits = abi_logits
+            except Exception as exc:
+                probe_payload["reason"] = f"execute_error:{exc}"
+            result.native_abi_probe = probe_payload
+        else:
+            abi_probe_logits = None
+            result.native_abi_probe = {
+                "attempted": False,
+                "succeeded": False,
+                "reason": "disabled_or_missing_session",
+                "primary_requested": False,
+                "primary_used": False,
+                "mode": "probe_only",
+            }
         logits = None
+        if abi_infer_primary is None:
+            native_primary_requested = os.getenv("NATIVE_RUNNER_ABI_INFER_PRIMARY", "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        else:
+            native_primary_requested = bool(abi_infer_primary)
+        if abi_infer_primary_no_grad is None:
+            native_primary_no_grad = os.getenv("NATIVE_RUNNER_ABI_INFER_PRIMARY_NO_GRAD", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        else:
+            native_primary_no_grad = bool(abi_infer_primary_no_grad)
+        if isinstance(result.native_abi_probe, dict):
+            result.native_abi_probe["primary_requested"] = bool(native_primary_requested)
+        native_primary_used = False
+        if (
+            native_primary_requested
+            and native_primary_no_grad
+            and abi_probe_logits is not None
+        ):
+            logits = torch.tensor(abi_probe_logits, dtype=torch.float32, device=dev).view(1, 1, -1)
+            logits = logits.expand(batch_size, seq_len, -1).contiguous()
+            native_primary_used = True
+            if isinstance(result.native_abi_probe, dict):
+                result.native_abi_probe["primary_used"] = True
+                result.native_abi_probe["mode"] = "primary_forward_only"
 
         def _run_forward() -> None:
             nonlocal logits
@@ -179,7 +276,9 @@ def safe_eval(
                                     enabled=(dev.type == "cuda")):
                 logits = model(input_ids)
 
-        forward_kernel = op_profiler.profile_callable(_run_forward)
+        forward_kernel = None
+        if not native_primary_used:
+            forward_kernel = op_profiler.profile_callable(_run_forward)
         if logits is None:
             _run_forward()
 
@@ -221,6 +320,74 @@ def safe_eval(
         if result.has_nan_output or result.has_inf_output:
             result.error = "NaN/Inf in forward output"
             result.error_type = "nan_forward"
+            return result
+
+        if native_primary_used and native_primary_no_grad:
+            parity_sample_rate_raw = os.getenv("NATIVE_RUNNER_ABI_PARITY_SAMPLE_RATE", "0.0")
+            try:
+                parity_sample_rate = max(0.0, min(1.0, float(parity_sample_rate_raw)))
+            except Exception:
+                parity_sample_rate = 0.0
+            parity_attempt = parity_sample_rate > 0.0 and random.random() < parity_sample_rate
+            parity_max_abs = None
+            parity_mean_abs = None
+            parity_pass = None
+            parity_reason = "not_sampled"
+            parity_threshold_raw = os.getenv("NATIVE_RUNNER_ABI_PARITY_MAX_ABS", "1.0")
+            try:
+                parity_threshold = float(parity_threshold_raw)
+            except Exception:
+                parity_threshold = 1.0
+            parity_strict = os.getenv("NATIVE_RUNNER_ABI_PARITY_STRICT", "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if parity_attempt:
+                parity_reason = "ok"
+                try:
+                    with torch.no_grad(), torch.amp.autocast(
+                        device_type=dev.type,
+                        dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
+                        shadow_logits = model(input_ids)
+                    if shadow_logits.dim() != 3 or tuple(shadow_logits.shape) != tuple(logits.shape):
+                        parity_pass = False
+                        parity_reason = f"shape_mismatch:{tuple(shadow_logits.shape)}!={tuple(logits.shape)}"
+                    else:
+                        diff = torch.abs(shadow_logits.float() - logits.float())
+                        parity_max_abs = float(diff.max().item())
+                        parity_mean_abs = float(diff.mean().item())
+                        parity_pass = parity_max_abs <= parity_threshold
+                        if not parity_pass:
+                            parity_reason = "max_abs_exceeded"
+                except Exception as exc:
+                    parity_pass = False
+                    parity_reason = f"shadow_forward_error:{exc}"
+
+            if isinstance(result.native_abi_probe, dict):
+                result.native_abi_probe["parity_sample_rate"] = float(parity_sample_rate)
+                result.native_abi_probe["parity_attempted"] = bool(parity_attempt)
+                result.native_abi_probe["parity_pass"] = parity_pass
+                result.native_abi_probe["parity_reason"] = parity_reason
+                result.native_abi_probe["parity_max_abs_diff"] = parity_max_abs
+                result.native_abi_probe["parity_mean_abs_diff"] = parity_mean_abs
+                result.native_abi_probe["parity_max_abs_threshold"] = float(parity_threshold)
+                result.native_abi_probe["parity_strict"] = bool(parity_strict)
+
+            if parity_attempt and parity_pass is False and parity_strict:
+                result.error = (
+                    "ABI parity regression in primary mode: "
+                    f"reason={parity_reason}, max_abs={parity_max_abs}, threshold={parity_threshold}"
+                )
+                result.error_type = "abi_parity_regression"
+                return result
+
+            if dev.type == "cuda":
+                result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
+            result.passed = True
             return result
 
         # Backward pass

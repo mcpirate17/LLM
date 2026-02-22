@@ -43,6 +43,22 @@ Aria will auto-start Designer services via lifecycle endpoints.
 - Bridge evaluation via research pipeline
 - Lineage sync and lifecycle auto-management
 
+## Port Dtype Contract
+
+Manifest port `dtype` values are contract-driven and must be one of:
+- `tensor`
+- `scalar`
+- `index`
+- `mask`
+- `complex_tensor`
+- `dataset`
+- `list`
+- `record`
+
+Notes:
+- `shape` is required for tensor-like ports (`tensor`, `complex_tensor`).
+- Data/control flows should use `dataset`, `list`, and `record` (not legacy `table`/`binary` dtype aliases).
+
 ## Key API Endpoints
 
 ### Components

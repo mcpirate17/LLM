@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import importlib.util
 import os
+import yaml
 from .dispatch import KernelDispatcher
+from .port_dtypes import find_unsupported_edge_dtype_pairings
 
 class WorkflowModule(nn.Module):
     def __init__(self, workflow_json, component_registry):
@@ -12,6 +14,14 @@ class WorkflowModule(nn.Module):
         self.nodes_config = {n['id']: n for n in workflow_json['nodes']}
         self.edges = workflow_json['edges']
         self.component_registry = component_registry
+
+        dtype_issues = find_unsupported_edge_dtype_pairings(
+            workflow_json,
+            self.component_registry.get_manifest,
+        )
+        if dtype_issues:
+            first = dtype_issues[0]
+            raise ValueError(first["message"])
 
         # Validate and get topological order
         dispatcher = KernelDispatcher()
@@ -149,26 +159,55 @@ class ComponentRegistry:
     def __init__(self, components_dir):
         self.components_dir = components_dir
         self.handlers = {}
+        self.manifests = {}
+
+    def _resolve_component_dir(self, component_type):
+        parts = component_type.split("/")
+        if len(parts) == 2:
+            cat, cid = parts
+            component_dir = os.path.join(self.components_dir, cat, cid)
+            if os.path.isdir(component_dir):
+                return component_dir
+            return None
+
+        cid = component_type
+        for cat in os.listdir(self.components_dir):
+            category_dir = os.path.join(self.components_dir, cat)
+            if not os.path.isdir(category_dir):
+                continue
+            component_dir = os.path.join(category_dir, cid)
+            if os.path.isdir(component_dir):
+                return component_dir
+        return None
+
+    def get_manifest(self, component_type):
+        if component_type in self.manifests:
+            return self.manifests[component_type]
+
+        component_dir = self._resolve_component_dir(component_type)
+        if component_dir is None:
+            return None
+
+        manifest_path = os.path.join(component_dir, "manifest.yaml")
+        if not os.path.exists(manifest_path):
+            return None
+
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = yaml.safe_load(f)
+        self.manifests[component_type] = manifest
+        return manifest
 
     def get_handler(self, component_type):
         if component_type in self.handlers:
             return self.handlers[component_type]
 
-        # component_type can be "category/id" or just "id"
-        parts = component_type.split("/")
-        if len(parts) == 2:
-            cat, cid = parts
-            path = os.path.join(self.components_dir, cat, cid, "kernel_fallback.py")
-            if os.path.exists(path):
-                return self._load_handler(component_type, path)
-        else:
-            cid = component_type
-            # Search for this ID in all categories
-            for cat in os.listdir(self.components_dir):
-                if os.path.isdir(os.path.join(self.components_dir, cat)):
-                    path = os.path.join(self.components_dir, cat, cid, "kernel_fallback.py")
-                    if os.path.exists(path):
-                        return self._load_handler(component_type, path)
+        component_dir = self._resolve_component_dir(component_type)
+        if component_dir is None:
+            return None
+
+        path = os.path.join(component_dir, "kernel_fallback.py")
+        if os.path.exists(path):
+            return self._load_handler(component_type, path)
 
         return None
 

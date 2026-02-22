@@ -156,6 +156,20 @@ class ComputationGraphIR:
             results.append(ir.has_gradient_path())
         return np.array(results, dtype=bool)
 
+    @staticmethod
+    def batch_op_distribution(ir_list: List[ComputationGraphIR], n_opcodes: int) -> np.ndarray:
+        """Compute opcode counts for a batch of IRs.
+        Returns array of shape (batch_size, n_opcodes).
+        """
+        batch_size = len(ir_list)
+        counts = np.zeros((batch_size, n_opcodes), dtype=np.int32)
+        for i, ir in enumerate(ir_list):
+            op_codes = ir.op_codes
+            non_input = op_codes[op_codes != 0]
+            if len(non_input) > 0:
+                counts[i] = np.bincount(non_input, minlength=n_opcodes)
+        return counts
+
     def n_params_estimate(self) -> int:
         """Estimate total learnable parameters using the IR. Cached."""
         total = 0

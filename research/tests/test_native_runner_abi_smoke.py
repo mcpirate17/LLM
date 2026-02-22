@@ -1,0 +1,470 @@
+from __future__ import annotations
+
+import ctypes
+from pathlib import Path
+
+import pytest
+
+
+class NrCompileRequest(ctypes.Structure):
+    _fields_ = [
+        ("ir_json", ctypes.c_char_p),
+        ("ir_json_len", ctypes.c_int64),
+        ("vocab_size", ctypes.c_int32),
+        ("max_seq_len", ctypes.c_int32),
+    ]
+
+
+class NrCompileResponse(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("model_handle", ctypes.c_int64),
+        ("message", ctypes.c_char_p),
+    ]
+
+
+class NrExecuteRequest(ctypes.Structure):
+    _fields_ = [
+        ("model_handle", ctypes.c_int64),
+        ("token_ids", ctypes.POINTER(ctypes.c_int32)),
+        ("batch", ctypes.c_int32),
+        ("seq_len", ctypes.c_int32),
+    ]
+
+
+class NrExecuteResponse(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("logits", ctypes.POINTER(ctypes.c_float)),
+        ("vocab_size", ctypes.c_int32),
+        ("message", ctypes.c_char_p),
+    ]
+
+
+class NrCapability(ctypes.Structure):
+    _fields_ = [
+        ("supported_ops", ctypes.POINTER(ctypes.c_char_p)),
+        ("n_supported", ctypes.c_int32),
+        ("unsupported_ops", ctypes.POINTER(ctypes.c_char_p)),
+        ("n_unsupported", ctypes.c_int32),
+    ]
+
+
+def _load_native_lib():
+    lib_path = (
+        Path(__file__).resolve().parents[1]
+        / "runtime"
+        / "native"
+        / "build"
+        / "libaria_native_runtime.so"
+    )
+    if not lib_path.exists():
+        pytest.skip(f"native runtime library not built: {lib_path}")
+    return ctypes.CDLL(str(lib_path))
+
+
+def test_runner_abi_lifecycle_compile_execute_smoke():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_set_strict_mode.argtypes = [ctypes.c_int32]
+    lib.nr_set_strict_mode.restype = ctypes.c_int32
+    assert lib.nr_set_strict_mode(0) == 0
+
+    lib.nr_query_capabilities.argtypes = [ctypes.POINTER(NrCapability)]
+    lib.nr_query_capabilities.restype = ctypes.c_int32
+    cap = NrCapability()
+    assert lib.nr_query_capabilities(ctypes.byref(cap)) == 0
+    assert int(cap.n_supported) > 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n0","target":"n2"},{"source":"n2","target":"n3"},{"source":"n1","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":32,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=128,
+        max_seq_len=16,
+    )
+    compile_res = lib.nr_compile(ctypes.byref(req))
+    assert int(compile_res.status) == 0
+    assert int(compile_res.model_handle) > 0
+
+    lib.nr_execute.argtypes = [ctypes.POINTER(NrExecuteRequest)]
+    lib.nr_execute.restype = NrExecuteResponse
+
+    token_buf = (ctypes.c_int32 * 4)(1, 2, 3, 4)
+    exec_req = NrExecuteRequest(
+        model_handle=compile_res.model_handle,
+        token_ids=token_buf,
+        batch=1,
+        seq_len=4,
+    )
+    exec_res = lib.nr_execute(ctypes.byref(exec_req))
+    assert int(exec_res.status) == 0
+    assert int(exec_res.vocab_size) == 128
+    assert bool(exec_res.logits)
+    logits = [float(exec_res.logits[i]) for i in range(exec_res.vocab_size)]
+    non_target_max = max(
+        logits[i] for i in range(exec_res.vocab_size) if i not in {1, 2, 3, 4}
+    )
+    for idx in [1, 2, 3, 4]:
+        assert logits[idx] > non_target_max
+
+    # Deterministic replay for same handle + tokens.
+    exec_res_2 = lib.nr_execute(ctypes.byref(exec_req))
+    assert int(exec_res_2.status) == 0
+    logits_2 = [float(exec_res_2.logits[i]) for i in range(exec_res_2.vocab_size)]
+    assert logits == logits_2
+
+    lib.nr_release_model.argtypes = [ctypes.c_int64]
+    lib.nr_release_model(compile_res.model_handle)
+
+    released_res = lib.nr_execute(ctypes.byref(exec_req))
+    assert int(released_res.status) == -4
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_strict_mode_rejects_marked_ir():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_set_strict_mode.argtypes = [ctypes.c_int32]
+    lib.nr_set_strict_mode.restype = ctypes.c_int32
+    assert lib.nr_set_strict_mode(1) == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    # Minimal marker-based strict-mode rejection path in smoke implementation.
+    ir = b'{"schema_version":"native_ir.v1","unsupported":true}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    compile_res = lib.nr_compile(ctypes.byref(req))
+    assert int(compile_res.status) == -6
+
+    lib.nr_get_fallback_count.restype = ctypes.c_int64
+    assert int(lib.nr_get_fallback_count()) >= 1
+
+    lib.nr_set_strict_mode(0)
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_unsupported_schema_and_seq_overflow():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+    bad_ir = b'{"schema_version":"native_ir.v0","nodes":[]}'
+    bad_req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(bad_ir),
+        ir_json_len=len(bad_ir),
+        vocab_size=16,
+        max_seq_len=4,
+    )
+    bad_res = lib.nr_compile(ctypes.byref(bad_req))
+    assert int(bad_res.status) == -2
+
+    good_ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n0","target":"n2"},{"source":"n2","target":"n3"},{"source":"n1","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":8,"output_node_id":"n7"}'
+    good_req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(good_ir),
+        ir_json_len=len(good_ir),
+        vocab_size=32,
+        max_seq_len=2,
+    )
+    good_res = lib.nr_compile(ctypes.byref(good_req))
+    assert int(good_res.status) == 0
+
+    lib.nr_execute.argtypes = [ctypes.POINTER(NrExecuteRequest)]
+    lib.nr_execute.restype = NrExecuteResponse
+    token_buf = (ctypes.c_int32 * 3)(4, 5, 6)
+    overflow_req = NrExecuteRequest(
+        model_handle=good_res.model_handle,
+        token_ids=token_buf,
+        batch=1,
+        seq_len=3,
+    )
+    overflow_res = lib.nr_execute(ctypes.byref(overflow_req))
+    assert int(overflow_res.status) == -1
+
+    lib.nr_release_model.argtypes = [ctypes.c_int64]
+    lib.nr_release_model(good_res.model_handle)
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_unsupported_graph_family():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    # First-family ABI supports exp+add+mul+matmul+linear+softmax+rmsnorm+sub graph nodes only for now.
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"matmul","input_ids":[],"config":{},"is_input":true,"is_output":true}],"edges":[],"model_dim":16,"output_node_id":"n0"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_add_mul_matmul_linear_softmax_rmsnorm_sub_without_exp_family():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"relu","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n0","target":"n2"},{"source":"n2","target":"n3"},{"source":"n1","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_out_of_order_exp_add_mul_matmul_linear_softmax_rmsnorm_sub_family():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"add","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"exp","input_ids":["n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n0","target":"n2"},{"source":"n2","target":"n3"},{"source":"n1","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_unlinked_exp_add_mul_matmul_linear_softmax_rmsnorm_sub_family():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n0"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n0","target":"n2"},{"source":"n2","target":"n3"},{"source":"n1","target":"n3"},{"source":"n0","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_transitively_linked_exp_add_mul_matmul_linear_softmax_rmsnorm_sub_family():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"b1","op_name":"relu","input_ids":["n0"],"config":{},"is_input":false,"is_output":false},{"id":"n1","op_name":"add","input_ids":["b1","b1"],"config":{},"is_input":false,"is_output":false},{"id":"b2","op_name":"relu","input_ids":["n1"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["b2","n0"],"config":{},"is_input":false,"is_output":false},{"id":"b3","op_name":"relu","input_ids":["n2"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["b3","n1"],"config":{},"is_input":false,"is_output":false},{"id":"b4","op_name":"relu","input_ids":["n3"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["b4"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"b5","op_name":"relu","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["b5"],"config":{},"is_input":false,"is_output":false},{"id":"b6","op_name":"relu","input_ids":["n5"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["b6"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"b7","op_name":"relu","input_ids":["n6"],"config":{},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["b7","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"b1"},{"source":"b1","target":"n1"},{"source":"n1","target":"b2"},{"source":"b2","target":"n2"},{"source":"n2","target":"b3"},{"source":"b3","target":"n3"},{"source":"n3","target":"b4"},{"source":"b4","target":"n4"},{"source":"n4","target":"b5"},{"source":"b5","target":"n5"},{"source":"n5","target":"b6"},{"source":"b6","target":"n6"},{"source":"n6","target":"b7"},{"source":"b7","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_when_edges_break_family_ancestry_even_if_input_ids_linked():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n0","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_when_edges_declared_empty_even_if_input_ids_linked():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_when_required_family_marker_is_duplicated():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true},{"id":"n8","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_when_required_link_exists_only_in_edges_not_input_ids():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n0"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_when_required_link_is_duplicated_in_input_ids():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n0","target":"n2"},{"source":"n2","target":"n3"},{"source":"n1","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_when_required_link_is_duplicated_in_explicit_edges():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n2","target":"n3"},{"source":"n1","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n1","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()
+
+
+def test_runner_abi_rejects_when_required_chain_input_refs_missing_node_id():
+    lib = _load_native_lib()
+
+    lib.nr_runtime_init.restype = ctypes.c_int32
+    assert lib.nr_runtime_init() == 0
+
+    lib.nr_compile.argtypes = [ctypes.POINTER(NrCompileRequest)]
+    lib.nr_compile.restype = NrCompileResponse
+
+    ir = b'{"schema_version":"native_ir.v1","nodes":[{"id":"n0","op_name":"exp","input_ids":[],"config":{},"is_input":true,"is_output":false},{"id":"n1","op_name":"add","input_ids":["n0"],"config":{},"is_input":false,"is_output":false},{"id":"n2","op_name":"mul","input_ids":["n1","n0"],"config":{},"is_input":false,"is_output":false},{"id":"n3","op_name":"matmul","input_ids":["n2","n1"],"config":{},"is_input":false,"is_output":false},{"id":"n4","op_name":"linear","input_ids":["n3","n_missing"],"config":{"in_dim":2,"out_dim":1},"is_input":false,"is_output":false},{"id":"n5","op_name":"softmax","input_ids":["n4"],"config":{},"is_input":false,"is_output":false},{"id":"n6","op_name":"rmsnorm","input_ids":["n5"],"config":{"eps":1.0e-5},"is_input":false,"is_output":false},{"id":"n7","op_name":"sub","input_ids":["n6","n1"],"config":{},"is_input":false,"is_output":true}],"edges":[{"source":"n0","target":"n1"},{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"}],"model_dim":16,"output_node_id":"n7"}'
+    req = NrCompileRequest(
+        ir_json=ctypes.c_char_p(ir),
+        ir_json_len=len(ir),
+        vocab_size=64,
+        max_seq_len=8,
+    )
+    res = lib.nr_compile(ctypes.byref(req))
+    assert int(res.status) == -3
+
+    lib.nr_runtime_shutdown()

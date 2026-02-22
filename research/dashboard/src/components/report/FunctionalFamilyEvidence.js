@@ -1,10 +1,14 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { reliabilityBand } from './reportUtils';
+import { filterRowsByQuery } from '../../utils/tableFiltering';
 
 export default function FunctionalFamilyEvidence({ coverage }) {
   const families = Array.isArray(coverage?.families) ? coverage.families : [];
   const totals = coverage?.totals || {};
   if (families.length === 0) return null;
+  const [sortKey, setSortKey] = useState('n_tested');
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filterQuery, setFilterQuery] = useState('');
 
   const functional = families.find(row => row.family === 'functional') || null;
   const exoticFamilies = families.filter(row => row.family !== 'euclidean');
@@ -12,6 +16,29 @@ export default function FunctionalFamilyEvidence({ coverage }) {
   const exoticSurvived = exoticFamilies.reduce((sum, row) => sum + (row.n_survived || 0), 0);
   const testedBand = reliabilityBand(functional?.n_tested || 0);
   const survivedBand = reliabilityBand(functional?.n_survived || 0);
+
+  const filtered = useMemo(() => (
+    filterRowsByQuery(families, filterQuery, ['family'])
+  ), [families, filterQuery]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      return sortDesc ? vb - va : va - vb;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const handleSort = (key) => {
+    if (sortKey === key) setSortDesc(!sortDesc);
+    else { setSortKey(key); setSortDesc(true); }
+  };
 
   return (
     <div className="card">
@@ -54,19 +81,46 @@ export default function FunctionalFamilyEvidence({ coverage }) {
         </div>
       )}
 
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</div>
+        <input
+          value={filterQuery}
+          onChange={(e) => setFilterQuery(e.target.value)}
+          placeholder="Filter families"
+          style={{
+            fontSize: 11,
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-tertiary)',
+            color: 'var(--text-primary)',
+            minWidth: 160,
+          }}
+        />
+      </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Family</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Tested</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Survived</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>S1 Rate</th>
-              <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Share of Tested</th>
+              <th onClick={() => handleSort('family')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Family{sortKey === 'family' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('n_tested')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Tested{sortKey === 'n_tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('n_survived')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Survived{sortKey === 'n_survived' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('survival_rate')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                S1 Rate{sortKey === 'survival_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
+              <th onClick={() => handleSort('tested_share')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+                Share of Tested{sortKey === 'tested_share' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {families.map(row => {
+            {sorted.map(row => {
               const isFunctional = row.family === 'functional';
               const testedShare = Number(row.tested_share || 0) * 100;
               const survivalRate = Number(row.survival_rate || 0) * 100;

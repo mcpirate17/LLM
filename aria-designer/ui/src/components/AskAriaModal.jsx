@@ -17,6 +17,11 @@ const INTENT_PRESETS = [
     prompt: 'Propose a patch that improves compression/efficiency (params/FLOPs/memory) with minimal quality regression risk.',
   },
   {
+    id: 'beat_benchmarks',
+    label: 'Beat Benchmarks',
+    prompt: 'Propose a patch that closes benchmark-target gaps for speed, FLOPs, novelty, and downstream task quality while preserving stability.',
+  },
+  {
     id: 'refine_sparsity',
     label: 'Refine Sparsity',
     prompt: 'Propose sparsity-oriented changes (structured sparsity-friendly ops) while preserving gradient flow and stability.',
@@ -25,6 +30,11 @@ const INTENT_PRESETS = [
     id: 'investigate',
     label: 'Investigate',
     prompt: 'Propose an investigation-oriented variant to stress-test a key architectural hypothesis and improve novelty evidence.',
+  },
+  {
+    id: 'optimize_data_control',
+    label: 'Optimize Data/Control',
+    prompt: 'Suggest data/control workflow optimizations focused on join/filter behavior and schema hygiene (column selection, deterministic filtering, explicit control-flow guards).',
   },
 ]
 
@@ -101,7 +111,7 @@ function AskAriaModal({
         />
 
         <div className="ask-actions">
-          <button onClick={() => onSuggest()} disabled={loading}>Get Suggestions</button>
+          <button onClick={() => onSuggest(prompt)} disabled={loading}>Get Suggestions</button>
           <button className="primary" onClick={() => onSubmitPrompt(prompt)} disabled={loading || !prompt.trim()}>
             Create Proposal
           </button>
