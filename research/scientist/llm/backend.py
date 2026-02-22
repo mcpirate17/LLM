@@ -45,29 +45,72 @@ class LLMBackend(ABC):
         return f"<{self.__class__.__name__} available={self.is_available()}>"
 
 
-def create_backend() -> Optional[LLMBackend]:
+def create_backend(is_analyst: bool = False) -> Optional[LLMBackend]:
     """Factory: create an LLM backend from environment variables.
 
     Environment:
-        ARIA_LLM_BACKEND: 'ollama', 'anthropic', or 'openai'
+        ARIA_LLM_BACKEND: 'ollama', 'anthropic', or 'openai' (Primary)
+        ARIA_ANALYST_BACKEND: Faster fallback for standard analysis (optional)
+        ARIA_ANALYST_MODEL: Model override for analyst mode
 
     Returns None if no backend is configured (rule-based fallback).
     """
-    backend_name = os.environ.get("ARIA_LLM_BACKEND", "").lower().strip()
+    # Z16: Auto-detection for analyst model if no explicit backend set
+    if is_analyst and not os.environ.get("ARIA_ANALYST_BACKEND") and not os.environ.get("ARIA_LLM_BACKEND"):
+        # Try to find a local Ollama model if Ollama is available
+        from .ollama import OllamaBackend
+        probe = OllamaBackend()
+        if probe.is_available():
+            discovered = probe.auto_discover_analyst_model()
+            if discovered:
+                probe.model = discovered
+                probe.keep_alive = 0 # Immediate unload after analysis
+                logger.info(f"Auto-detected analyst model: {discovered} (Ollama)")
+                return probe
+
+    if is_analyst:
+        backend_name = os.environ.get("ARIA_ANALYST_BACKEND", "").lower().strip()
+        # If no specific analyst backend, fall back to primary
+        if not backend_name:
+            backend_name = os.environ.get("ARIA_LLM_BACKEND", "").lower().strip()
+    else:
+        backend_name = os.environ.get("ARIA_LLM_BACKEND", "").lower().strip()
 
     if not backend_name:
-        logger.info("No ARIA_LLM_BACKEND set — using rule-based fallback")
+        if not is_analyst:
+            logger.info("No ARIA_LLM_BACKEND set — using rule-based fallback")
         return None
 
     if backend_name == "ollama":
         from .ollama import OllamaBackend
-        return OllamaBackend()
+        b = OllamaBackend()
+        
+        # Determine model
+        model_override = os.environ.get("ARIA_ANALYST_MODEL") if is_analyst else os.environ.get("ARIA_LLM_MODEL")
+        if model_override:
+            b.model = model_override
+        elif is_analyst:
+            # If backend is 'ollama' but no model specified, try auto-discover
+            discovered = b.auto_discover_analyst_model()
+            if discovered:
+                b.model = discovered
+                logger.info(f"Analyst backend set to Ollama, auto-discovered model: {discovered}")
+        
+        if is_analyst:
+            b.keep_alive = 0 # Immediate unload for analyst tasks
+        return b
     elif backend_name == "anthropic":
         from .anthropic import AnthropicBackend
-        return AnthropicBackend()
+        b = AnthropicBackend()
+        if is_analyst and os.environ.get("ARIA_ANALYST_MODEL"):
+            b.model = os.environ.get("ARIA_ANALYST_MODEL")
+        return b
     elif backend_name == "openai":
         from .openai_backend import OpenAIBackend
-        return OpenAIBackend()
+        b = OpenAIBackend()
+        if is_analyst and os.environ.get("ARIA_ANALYST_MODEL"):
+            b.model = os.environ.get("ARIA_ANALYST_MODEL")
+        return b
     else:
         logger.warning(f"Unknown ARIA_LLM_BACKEND={backend_name!r}, using rule-based fallback")
         return None

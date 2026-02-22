@@ -341,26 +341,43 @@ export function discoveryScore(program) {
  */
 export function experimentScoreBreakdown(exp) {
   if (exp?.status === 'running' && exp?.experiment_type === 'validation') {
-    return { passRate: 10, loss: 0, novelty: 0, completion: 15 };
+    return { passRate: 10, loss: 0, novelty: 0, completion: 5, quality: 0 };
   }
 
   const n = exp.n_programs_generated || 0;
   const s1 = exp.n_stage1_passed || 0;
-  const passRate = n > 0 ? Math.min(s1 / n / 0.10, 1.0) * 40 : 0;
-  const loss = exp.best_loss_ratio != null
-    ? normalizeLossRatio(exp.best_loss_ratio) * 30
+  
+  // Z15: More rigorous pass rate (linear scale up to 100%)
+  const passRate = n > 0 ? (s1 / n) * 30 : 0;
+  
+  // Quality component (30 points)
+  const lossScore = exp.best_loss_ratio != null
+    ? normalizeLossRatio(exp.best_loss_ratio) * 15
     : 0;
-  const novelty = exp.best_novelty_score != null
-    ? Math.min(exp.best_novelty_score, 1.0) * 20
+  const noveltyScore = exp.best_novelty_score != null
+    ? Math.min(exp.best_novelty_score, 1.0) * 15
     : 0;
-  const completion = exp.status === 'completed' ? 10 : 0;
+  const quality = lossScore + noveltyScore;
 
-  return { passRate, loss, novelty, completion };
+  // Completion bonus (5 points)
+  const completion = exp.status === 'completed' ? 5 : 0;
+  
+  // Discovery bonus (35 points) - rewarded for finding survivors
+  const discovery = s1 > 0 ? Math.min(s1 * 5, 35) : 0;
+
+  let total = passRate + quality + completion + discovery;
+  
+  // Strict penalty for total failure (compiled but nothing learned)
+  if (exp.status === 'completed' && s1 === 0) {
+    total = total * 0.5; // 50% penalty
+  }
+
+  return { passRate, quality, completion, discovery, total };
 }
 
 export function experimentScore(exp) {
   const b = experimentScoreBreakdown(exp);
-  return clampScore(b.passRate + b.loss + b.novelty + b.completion);
+  return clampScore(b.total);
 }
 
 // ── Trend score (TrendCharts) ───────────────────────────────────────

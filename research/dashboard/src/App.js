@@ -11,7 +11,7 @@ import LabNotebook from './components/LabNotebook';
 import MetricsChart from './components/MetricsChart';
 import ControlPanel from './components/ControlPanel';
 import LiveFeed from './components/LiveFeed';
-import TrendCharts from './components/TrendCharts';
+import TrendCharts, { ExperimentDataTab } from './components/TrendCharts';
 import PerfDashboard from './components/PerfDashboard';
 import LearningPanel from './components/LearningPanel';
 import CycleTimeline from './components/CycleTimeline';
@@ -33,6 +33,7 @@ import apiService from './services/apiService';
 import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
+const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
 const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
 const AUTO_REPAIR_SHOW_COMPLETED_KEY = 'aria_auto_repair_show_completed_v1';
 
@@ -180,11 +181,12 @@ const LOG_SUB_TABS = [
 
 const ANALYTICS_SUB_TABS = [
   { key: 'trends', label: 'Trends' },
+  { key: 'data', label: 'Data' },
   { key: 'insights', label: 'Insights' },
   { key: 'learning', label: 'Learning' },
 ];
 
-function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onNavigateStrategy }) {
+function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onRerunExperiment, onFillGapsExperiment, onNavigateStrategy, onStartExperiment }) {
   const [analyticsView, setAnalyticsView] = useState('trends');
   return (
     <>
@@ -208,21 +210,19 @@ function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onNavigate
         ))}
       </div>
       {analyticsView === 'trends' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, alignItems: 'start' }}>
-          <ErrorBoundary>
-            <TrendCharts onSelectExperiment={onSelectExperiment} />
-          </ErrorBoundary>
-          <ErrorBoundary>
-            <div>
-              {tabErrors.insights && (
-                <div className="error-banner" style={{ marginBottom: 12 }}>
-                  Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
-                </div>
-              )}
-              <InsightsPanel insights={tabData.insights || data?.insights} compact />
-            </div>
-          </ErrorBoundary>
-        </div>
+        <ErrorBoundary>
+          <TrendCharts onSelectExperiment={onSelectExperiment} />
+        </ErrorBoundary>
+      )}
+      {analyticsView === 'data' && (
+        <ErrorBoundary>
+          <ExperimentDataTab
+            onSelectExperiment={onSelectExperiment}
+            onRerunExperiment={onRerunExperiment}
+            onFillGapsExperiment={onFillGapsExperiment}
+            onStartExperiment={onStartExperiment}
+          />
+        </ErrorBoundary>
       )}
       {analyticsView === 'insights' && (
         <ErrorBoundary>
@@ -238,7 +238,7 @@ function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onNavigate
       )}
       {analyticsView === 'learning' && (
         <ErrorBoundary>
-          <LearningPanel onNavigateStrategy={onNavigateStrategy} />
+          <LearningPanel onNavigateStrategy={onNavigateStrategy} onStartExperiment={onStartExperiment} />
         </ErrorBoundary>
       )}
     </>
@@ -397,6 +397,9 @@ function AppContent({ onRunningChange }) {
     entries: null,
     insights: null,
   });
+  const [experimentsPageSize, setExperimentsPageSize] = useState(DEFAULT_EXPERIMENTS_PAGE_SIZE);
+  const [experimentsHasMore, setExperimentsHasMore] = useState(true);
+  const [experimentsLoadingMore, setExperimentsLoadingMore] = useState(false);
 
   // Drill-down state
   const [selectedExperiment, setSelectedExperiment] = useState(null);
@@ -551,13 +554,44 @@ function AppContent({ onRunningChange }) {
     setAllowAdvancedStartOverride(false);
   }, [activeOverviewStrategy?.id]);
 
-  const fetchTabFreshData = useCallback(async (tab) => {
+  const fetchTabFreshData = useCallback(async (tab, options = {}) => {
+    const append = options.append === true;
+    const requestedOffset = Number(options.offset || 0);
     const endpoints = {
-      experiments: '/api/experiments?n=500',
+      experiments: null,
       programs: '/api/programs?n=50&sort=novelty_score',
       entries: '/api/entries?n=50',
       insights: '/api/insights',
     };
+
+    if (tab === 'experiments') {
+      const offset = append ? requestedOffset : 0;
+      const endpoint = `/api/experiments?n=${experimentsPageSize}&offset=${offset}`;
+
+      try {
+        if (append) {
+          setExperimentsLoadingMore(true);
+        }
+        const res = await fetch(`${API_BASE}${endpoint}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const page = Array.isArray(json) ? json : [];
+        setTabData(prev => ({
+          ...prev,
+          experiments: append ? [...(Array.isArray(prev.experiments) ? prev.experiments : []), ...page] : page,
+        }));
+        setTabErrors(prev => ({ ...prev, experiments: null }));
+        setExperimentsHasMore(page.length === experimentsPageSize);
+      } catch (err) {
+        setTabErrors(prev => ({ ...prev, experiments: err.message }));
+      } finally {
+        if (append) {
+          setExperimentsLoadingMore(false);
+        }
+      }
+      return;
+    }
+
     const endpoint = endpoints[tab];
     if (!endpoint) return;
 
@@ -570,10 +604,11 @@ function AppContent({ onRunningChange }) {
     } catch (err) {
       setTabErrors(prev => ({ ...prev, [tab]: err.message }));
     }
-  }, []);
+  }, [experimentsPageSize]);
 
   useEffect(() => {
     if (activeTab === 'experiments') {
+      setExperimentsHasMore(true);
       fetchTabFreshData('experiments');
     } else if (activeTab === 'discoveries') {
       fetchTabFreshData('programs');
@@ -583,6 +618,19 @@ function AppContent({ onRunningChange }) {
       fetchTabFreshData('insights');
     }
   }, [activeTab, fetchTabFreshData]);
+
+  const handleLoadMoreExperiments = useCallback(() => {
+    if (experimentsLoadingMore || !experimentsHasMore) return;
+    const currentCount = Array.isArray(tabData.experiments) ? tabData.experiments.length : 0;
+    fetchTabFreshData('experiments', { append: true, offset: currentCount });
+  }, [experimentsHasMore, experimentsLoadingMore, fetchTabFreshData, tabData.experiments]);
+
+  const handleExperimentPageSizeChange = useCallback((nextSize) => {
+    const parsed = Number(nextSize);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    setExperimentsPageSize(parsed);
+    setExperimentsHasMore(true);
+  }, []);
 
   // Compute per-tab delta indicators from latest vs previous experiment
   const tabDeltas = useMemo(() => {
@@ -802,6 +850,28 @@ function AppContent({ onRunningChange }) {
       fetchDashboard();
     } catch (err) {
       setActionError('Failed to restart experiment: ' + err.message);
+    }
+  };
+
+  const handleFillGapsExperiment = async (experimentId) => {
+    if (!experimentId) {
+      setActionError('No experiment selected for gap fill');
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/fill-gaps`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setActionError(err.error || 'Failed to fill metric gaps');
+        return;
+      }
+      setActionError(null);
+      fetchDashboard();
+      if (refreshSharedData) refreshSharedData();
+    } catch (err) {
+      setActionError('Failed to fill gaps: ' + err.message);
     }
   };
 
@@ -1486,6 +1556,11 @@ function AppContent({ onRunningChange }) {
               experiments={tabData.experiments || data?.recent_experiments}
               onSelectExperiment={handleSelectExperiment}
               onRefresh={fetchDashboard}
+              onLoadMore={handleLoadMoreExperiments}
+              hasMore={experimentsHasMore}
+              loadingMore={experimentsLoadingMore}
+              pageSize={experimentsPageSize}
+              onPageSizeChange={handleExperimentPageSizeChange}
             />
           </>
         )}
@@ -1519,7 +1594,10 @@ function AppContent({ onRunningChange }) {
             tabData={tabData}
             tabErrors={tabErrors}
             onSelectExperiment={handleSelectExperiment}
+            onRerunExperiment={handleRerunExperiment}
+            onFillGapsExperiment={handleFillGapsExperiment}
             onNavigateStrategy={handleNavigateStrategy}
+            onStartExperiment={handleStartExperiment}
           />
         )}
 

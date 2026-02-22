@@ -167,8 +167,10 @@ def evolutionary_search(
 
             if rng.random() < config.crossover_rate and len(population) >= 2:
                 # Crossover
-                p1 = _tournament_select(population, config.tournament_size, rng)
-                p2 = _tournament_select(population, config.tournament_size, rng)
+                p1 = _tournament_select(population, config.tournament_size, rng,
+                                   config.fitness_weight, config.novelty_weight)
+                p2 = _tournament_select(population, config.tournament_size, rng,
+                                   config.fitness_weight, config.novelty_weight)
                 try:
                     child_graph = _crossover_graphs(p1.graph, p2.graph, grammar, rng)
                     # Deterministic parent ordering for lineage hash stability
@@ -183,7 +185,8 @@ def evolutionary_search(
                     fill_failures += 1
             else:
                 # Mutation
-                parent = _tournament_select(population, config.tournament_size, rng)
+                parent = _tournament_select(population, config.tournament_size, rng,
+                                   config.fitness_weight, config.novelty_weight)
                 try:
                     child_graph = _mutate_graph(parent.graph, grammar, rng)
                     child = Individual(
@@ -377,10 +380,12 @@ def _tournament_select(
     population: List[Individual],
     tournament_size: int,
     rng: random.Random,
+    fitness_weight: float = 0.5,
+    novelty_weight: float = 0.5,
 ) -> Individual:
-    """Tournament selection."""
+    """Tournament selection with weighted fitness + novelty."""
     candidates = rng.sample(population, min(tournament_size, len(population)))
-    return max(candidates, key=lambda x: x.fitness + x.novelty)
+    return max(candidates, key=lambda x: x.fitness * fitness_weight + x.novelty * novelty_weight)
 
 
 def _mutate_graph(

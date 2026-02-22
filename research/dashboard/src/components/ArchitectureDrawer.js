@@ -425,10 +425,13 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
   // Send command to iframe
   const sendToDesigner = useCallback((type, payload = {}) => {
     if (iframeRef.current?.contentWindow) {
+      console.log('[ArchDrawer] sending message:', type, payload);
       iframeRef.current.contentWindow.postMessage(
         { target: 'aria-designer', type, ...payload },
         '*'
       );
+    } else {
+      console.warn('[ArchDrawer] cannot send message: iframeRef.current.contentWindow is null');
     }
   }, []);
 
@@ -682,14 +685,15 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
               zIndex: 1,
             }}>
               <div>
-                {booting ? 'Starting Aria Designer\u2026'
-                  : bridgeStep === 'iframe-loading' ? 'Waiting for designer iframe\u2026'
+                {booting ? 'Starting Aria Designer backend\u2026'
+                  : bridgeStep === 'iframe-loading' ? 'Loading designer UI iframe\u2026'
+                  : bridgeStep === 'iframe-loaded' ? 'Iframe loaded, waiting for bridge\u2026'
                   : bridgeStep === 'sending-load-result' ? 'Bridge connected, requesting architecture\u2026'
-                  : bridgeStep === 'importing' ? 'Importing architecture\u2026'
+                  : bridgeStep === 'importing' ? 'Importing architecture into canvas\u2026'
                   : 'Loading architecture\u2026'}
               </div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                step: {bridgeStep}
+                step: {bridgeStep} {bridgeReady ? '(bridge ready)' : ''}
               </div>
             </div>
           )}

@@ -57,7 +57,10 @@ _FALLBACK_METRICS: Dict[str, int] = {
     "parity_failures": 0,
     "probe_successes": 0,
     "probe_failures": 0,
+    "hybrid_compiles": 0,
 }
+
+PARTIAL_NATIVE_COVERAGE_THRESHOLD = 0.5  # 50% — at least half the ops must be native
 
 _legacy_only_deprecation_warned = False
 
@@ -605,11 +608,14 @@ def native_runner_capability_report() -> Dict[str, Any]:
     native_total = int(_FALLBACK_METRICS.get("native_enabled_compiles") or 0)
     fallback = int(_FALLBACK_METRICS.get("fallback_compiles") or 0)
     legacy_count = _legacy_compile_count()
+    hybrid = int(_FALLBACK_METRICS.get("hybrid_compiles") or 0)
     report["fallback_metrics"] = {
         **_FALLBACK_METRICS,
         "legacy_compile_count": legacy_count,
         "legacy_compile_invocations": legacy_count,
+        "hybrid_compiles": hybrid,
         "fallback_rate": (float(fallback) / float(native_total)) if native_total > 0 else 0.0,
+        "hybrid_rate": (float(hybrid) / float(native_total)) if native_total > 0 else 0.0,
         "max_allowed_fallback_rate": os.environ.get("NATIVE_RUNNER_MAX_FALLBACK_RATE"),
         "max_allowed_legacy_compile_count": os.environ.get("NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"),
         "max_allowed_legacy_compile_invocations": os.environ.get("NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"),
@@ -2001,6 +2007,7 @@ def compile_model_native_first(
     op_support: Optional[Dict[str, Any]] = None
     native_lib = None
     full_native_coverage = False
+    partial_native_coverage = False
     if state.enabled:
         native_lib = _try_load_native_lib()
         if layer_graphs:
@@ -2020,6 +2027,17 @@ def compile_model_native_first(
                     f"NATIVE_RUNNER_STRICT=1 but {len(op_support['unsupported'])} ops lack "
                     f"native kernel support: {op_support['unsupported']}"
                 )
+            elif coverage >= PARTIAL_NATIVE_COVERAGE_THRESHOLD:
+                partial_native_coverage = True
+                logger.info(
+                    "Partial native path: %.1f%% coverage (%d/%d ops). "
+                    "Unsupported: %s",
+                    coverage * 100,
+                    len(op_support["supported"]),
+                    len(op_support["kernel_relevant_ops"]),
+                    op_support["unsupported"],
+                )
+                _FALLBACK_METRICS["native_dispatch_compiles"] += 1
             else:
                 _log_native_fallback_coverage(op_support)
         elif state.strict:
@@ -2157,13 +2175,19 @@ def compile_model_native_first(
             capability["execution_path"] = "selective_native_active_legacy_compile"
         else:
             capability["execution_path"] = "selective_candidate_legacy_compile"
+    elif full_native_coverage:
+        capability["execution_path"] = "full_native_legacy_compile"
+    elif partial_native_coverage:
+        capability["execution_path"] = "hybrid_native_legacy_compile"
     elif state.enabled:
         capability["execution_path"] = "legacy_fallback"
 
     # --- Compile via legacy path (actual native execution dispatch is a future phase) ---
     _FALLBACK_METRICS["total_compiles"] += 1
-    if state.enabled and (op_support is None or op_support["native_coverage"] < 1.0):
+    if state.enabled and (op_support is None or op_support["native_coverage"] < PARTIAL_NATIVE_COVERAGE_THRESHOLD):
         _FALLBACK_METRICS["fallback_compiles"] += 1
+    if state.enabled and partial_native_coverage:
+        _FALLBACK_METRICS["hybrid_compiles"] += 1
 
     abi_report = _maybe_prepare_runner_abi_session(
         layer_graphs=layer_graphs,
@@ -2244,12 +2268,11 @@ def compile_model_native_first(
     _record_legacy_compile_invocation()
     capability["legacy_compile_used"] = True
 
-    # --- Attach native forward wrapper when full coverage + selective active ---
+    # --- Attach native forward wrapper when coverage meets threshold ---
     if (
-        full_native_coverage
-        and selective_candidate
-        and bool(selective_activation.get("activated"))
+        state.enabled
         and op_support is not None
+        and op_support["native_coverage"] >= PARTIAL_NATIVE_COVERAGE_THRESHOLD
     ):
         try:
             wrapper = NativeForwardWrapper(model, set(op_support["supported"]))
@@ -2278,10 +2301,9 @@ def compile_model_native_first(
             }
     # --- Attach SubgraphDispatchers to compiled layers for batch Rust dispatch ---
     if (
-        full_native_coverage
-        and selective_candidate
-        and bool(selective_activation.get("activated"))
+        state.enabled
         and op_support is not None
+        and op_support["native_coverage"] >= PARTIAL_NATIVE_COVERAGE_THRESHOLD
     ):
         try:
             supported_set = set(op_support["supported"])

@@ -224,6 +224,8 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedProgramId, setSelectedProgramId] = useState(null);
+  const [isRerunning, setIsRerunning] = useState(false);
+  const [rerunConfirm, setRerunConfirm] = useState(false);
   const [progSortKey, setProgSortKey] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY) || '{}');
@@ -288,18 +290,51 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const prereg = data.preregistration || null;
   const preregDeviations = data.preregistration_deviations || [];
 
+  const handleRerun = async () => {
+    if (!rerunConfirm) {
+      setRerunConfirm(true);
+      setTimeout(() => setRerunConfirm(false), 3000);
+      return;
+    }
+    setIsRerunning(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/rerun`, { method: 'POST' });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || 'Failed to rerun');
+      // On success, go back to command view which shows the active run
+      if (onBack) onBack();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setIsRerunning(false);
+      setRerunConfirm(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Header */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
             <button className="refresh-btn" onClick={() => onBack && onBack()} style={{ marginRight: 12 }}>&larr; Back</button>
-            <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)' }}>{experimentId}</span>
-            <span className={`badge ${exp.status === 'completed' ? 'pass' : exp.status === 'running' ? 'running' : 'fail'}`}
-              style={{ marginLeft: 8 }}>
+            <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)', marginRight: 8 }}>{experimentId}</span>
+            <span className={`badge ${exp.status === 'completed' ? 'pass' : exp.status === 'running' ? 'running' : 'fail'}`}>
               {exp.status}
             </span>
+            <button
+              className="refresh-btn"
+              style={{
+                marginLeft: 12,
+                fontSize: 11,
+                borderColor: rerunConfirm ? 'var(--accent-yellow)' : 'var(--border)',
+                color: rerunConfirm ? 'var(--accent-yellow)' : 'inherit',
+              }}
+              disabled={isRerunning || exp.status === 'running'}
+              onClick={handleRerun}
+            >
+              {isRerunning ? 'Starting...' : rerunConfirm ? 'Click to confirm Rerun' : 'Rerun Experiment'}
+            </button>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             {formatTime(exp.timestamp)} | {formatDuration(exp.duration_seconds)}

@@ -143,6 +143,23 @@ cd /home/tim/Projects/LLM/research
 python -m pytest tests/ -x
 ```
 
+## CI / Branch Protection
+
+Dashboard hook-order safety check is enforced by GitHub Actions workflow:
+- `.github/workflows/dashboard-hook-order.yml`
+- Job name: `hook-order-check`
+
+Recommended branch protection on your default branch:
+- Require status checks to pass before merging.
+- Add required check: `hook-order-check`.
+
+Local pre-push equivalent:
+
+```bash
+cd /home/tim/Projects/LLM/research/dashboard
+npm run check:hook-order
+```
+
 ## Troubleshooting
 
 - `No module named research`: you ran from inside `research/`; move to `/home/tim/Projects/LLM`.

@@ -265,6 +265,7 @@ class RunConfig:
     hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name
     hydra_project_root: str = "../HYDRA"
     # Synthesis grammar
+    min_depth: int = 3
     max_depth: int = 10
     max_ops: int = 16
     math_space_weight: float = 2.0
@@ -2874,7 +2875,7 @@ class ExperimentRunner:
                 FROM program_results
                 WHERE stage1_passed = 1
                   AND experiment_id IN ({placeholders})
-                ORDER BY loss_ratio ASC NULLS LAST, novelty_score DESC NULLS LAST, timestamp DESC
+                ORDER BY loss_ratio ASC NULLS LAST, novelty_score DESC NULLS LAST, timestamp DESC, result_id ASC
                 LIMIT ?""",
             [*recent_ids, max(20, int(config.refinement_top_k) * 10)],
         ).fetchall()
@@ -5589,6 +5590,63 @@ class ExperimentRunner:
             logger.debug("Failed comparing generated-op distribution for %s: %s", exp_id, e)
             return None
 
+    def _compute_multi_objective_fitness(self, s1_result, sandbox_result, graph, config):
+        """Multi-objective fitness: quality + efficiency + speed + learning + compactness."""
+        weights = {
+            "quality": 0.40,
+            "efficiency": 0.20,
+            "speed": 0.15,
+            "learning_speed": 0.15,
+            "compactness": 0.10,
+        }
+
+        components = {}
+
+        # Quality: 1 - loss_ratio
+        lr = s1_result.get("loss_ratio", 1.0) if s1_result else 1.0
+        components["quality"] = max(0.0, 1.0 - lr)
+
+        # Efficiency: prefer fewer params
+        max_params = config.model_dim * config.vocab_size * 2
+        param_count = getattr(sandbox_result, "param_count", 0) or 0
+        if param_count > 0 and max_params > 0:
+            components["efficiency"] = max(0.0, 1.0 - min(param_count / max_params, 1.0))
+        else:
+            components["efficiency"] = 0.0
+
+        # Speed: throughput in tokens/sec
+        target_throughput = 50000.0
+        throughput = s1_result.get("throughput", 0) if s1_result else 0
+        if throughput and throughput > 0:
+            components["speed"] = min(throughput / target_throughput, 1.0)
+        else:
+            components["speed"] = 0.0
+
+        # Learning speed: how fast loss improved
+        lir = s1_result.get("loss_improvement_rate", 0) if s1_result else 0
+        components["learning_speed"] = max(0.0, min(float(lir or 0), 1.0))
+
+        # Compactness: fewer ops = simpler
+        n_ops = len(graph.nodes) if hasattr(graph, "nodes") else 0
+        max_ops = max(1, int(config.max_ops))
+        components["compactness"] = max(0.0, 1.0 - min(n_ops / max_ops, 1.0))
+
+        # Redistribute weight from missing components to quality
+        weighted_sum = 0.0
+        missing_weight = 0.0
+        for key, w in weights.items():
+            val = components[key]
+            if val > 0 or key == "quality":
+                weighted_sum += val * w
+            else:
+                missing_weight += w
+
+        # Give missing weight to quality
+        if missing_weight > 0:
+            weighted_sum += components["quality"] * missing_weight
+
+        return weighted_sum, components
+
     def _run_continuous_evolution(self, config: RunConfig, nb: LabNotebook,
                                   n_experiments: int, limit_str: str,
                                   mode_reasoning: str):
@@ -5813,8 +5871,8 @@ class ExperimentRunner:
                 gc.collect()
 
                 if s1_result.get("passed"):
-                    lr = s1_result.get("loss_ratio", 1.0)
-                    fitness = max(0.0, 1.0 - lr)
+                    fitness, _components = self._compute_multi_objective_fitness(
+                        s1_result, sandbox_result, graph, config)
                 else:
                     fitness = 0.1
             except Exception:
@@ -6134,7 +6192,7 @@ class ExperimentRunner:
 
                 graph_json_str = source.get("graph_json")
                 arch_spec_json_str = source.get("arch_spec_json")
-                model_source = source.get("model_source", "graph_synthesis")
+                model_source = source.get("model_source") or "graph_synthesis"
 
                 # Generate training programs (queue-level scheduling telemetry)
                 training_programs, tp_sched = synthesize_training_program_batch(
@@ -6447,7 +6505,7 @@ class ExperimentRunner:
 
                 graph_json_str = source.get("graph_json")
                 arch_spec_json_str = source.get("arch_spec_json")
-                model_source = source.get("model_source", "graph_synthesis")
+                model_source = source.get("model_source") or "graph_synthesis"
 
                 # Get best training program from investigation
                 best_tp_json = None
@@ -7408,6 +7466,8 @@ class ExperimentRunner:
 
         grammar_weights = None
         excluded_ops: set = set()
+        op_weights: Dict[str, float] = {}
+        failure_blocklist: Dict[str, float] = {}
         champion_bias: Dict[str, float] = {}
         analytics = None
         grammar_gate: Optional[Dict[str, Any]] = None
@@ -9936,7 +9996,7 @@ class ExperimentRunner:
                 # Reconstruct model
                 graph_json_str = source.get("graph_json")
                 arch_spec_json_str = source.get("arch_spec_json")
-                model_source = source.get("model_source", "graph_synthesis")
+                model_source = source.get("model_source") or "graph_synthesis"
 
                 # Generate training programs (queue-level scheduling telemetry)
                 training_programs, tp_sched = synthesize_training_program_batch(
@@ -10349,7 +10409,7 @@ class ExperimentRunner:
 
                 graph_json_str = source.get("graph_json")
                 arch_spec_json_str = source.get("arch_spec_json")
-                model_source = source.get("model_source", "graph_synthesis")
+                model_source = source.get("model_source") or "graph_synthesis"
 
                 # Get best training program from investigation
                 leaderboard_entries = nb.get_leaderboard()
@@ -11444,8 +11504,8 @@ class ExperimentRunner:
                 gc.collect()
 
                 if s1_result.get("passed"):
-                    lr = s1_result.get("loss_ratio", 1.0)
-                    fitness = max(0.0, 1.0 - lr)
+                    fitness, _components = self._compute_multi_objective_fitness(
+                        s1_result, sandbox_result, graph, config)
                 else:
                     fitness = 0.1  # compiled and stable but didn't learn
             except Exception:
@@ -11738,8 +11798,8 @@ class ExperimentRunner:
                     gc.collect()
 
                     if s1_result.get("passed"):
-                        lr = s1_result.get("loss_ratio", 1.0)
-                        fitness = max(0.0, 1.0 - lr)
+                        fitness, _components = self._compute_multi_objective_fitness(
+                            s1_result, sandbox_result, graph, config)
                     else:
                         fitness = 0.1
                 except Exception:

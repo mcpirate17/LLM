@@ -112,6 +112,7 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
             graph_uses_math_spaces=0,
         )
 
+    nb.flush_writes()
     analytics = ExperimentAnalytics(nb)
     report = analytics.grammar_weight_attribution_report()
 

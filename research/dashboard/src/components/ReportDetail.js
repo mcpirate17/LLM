@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
 import { promotionEvidence } from '../utils/scoringEngine';
 import { filterRowsByQuery } from '../utils/tableFiltering';
@@ -176,30 +176,24 @@ export default function ReportDetail({
   const stabilitySummary = crossRunStability.summary || {};
   const stabilityCandidates = crossRunStability.candidates || [];
 
-  const filteredStabilityCandidates = useMemo(() => (
-    filterRowsByQuery(stabilityCandidates, stabilityFilter, [
-      'graph_fingerprint',
-      'trend',
-      'latest_rank',
-      'previous_rank',
-    ])
-  ), [stabilityCandidates, stabilityFilter]);
+  const filteredStabilityCandidates = filterRowsByQuery(stabilityCandidates, stabilityFilter, [
+    'graph_fingerprint',
+    'trend',
+    'latest_rank',
+    'previous_rank',
+  ]);
 
-  const sortedStabilityCandidates = useMemo(() => {
-    const arr = [...filteredStabilityCandidates];
-    arr.sort((a, b) => {
-      const va = a?.[stabilitySortKey];
-      const vb = b?.[stabilitySortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') {
-        return stabilitySortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      return stabilitySortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filteredStabilityCandidates, stabilitySortKey, stabilitySortDesc]);
+  const sortedStabilityCandidates = [...filteredStabilityCandidates].sort((a, b) => {
+    const va = a?.[stabilitySortKey];
+    const vb = b?.[stabilitySortKey];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'string') {
+      return stabilitySortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+    }
+    return stabilitySortDesc ? vb - va : va - vb;
+  });
 
   const handleStabilitySort = (key) => {
     if (stabilitySortKey === key) setStabilitySortDesc(!stabilitySortDesc);

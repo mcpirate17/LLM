@@ -260,7 +260,7 @@ function TargetBalanceCards({ summary }) {
   );
 }
 
-function GrammarWeightsChart({ defaultWeights, learnedWeights, explanation }) {
+function GrammarWeightsChart({ defaultWeights, learnedWeights, explanation, onStartExperiment }) {
   if (!defaultWeights) return null;
 
   const categories = Object.keys(defaultWeights).sort();
@@ -326,9 +326,29 @@ function GrammarWeightsChart({ defaultWeights, learnedWeights, explanation }) {
         })}
       </div>
       {!learnedWeights && (
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8, fontStyle: 'italic' }}>
-          No learned weights yet. Run more experiments to enable learning.
-        </p>
+        <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 6, background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 6px', lineHeight: 1.5 }}>
+            No learned weights yet — only default weights are shown. The system needs at least 5 distinct
+            operation categories with success data to compute learned weights. Run more diverse experiments
+            to explore different op categories.
+          </p>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            Categories discovered: {categories.length} · Need success data across {'\u2265'}5 categories
+          </div>
+          {onStartExperiment && categories.length < 5 && (
+            <button
+              className="refresh-btn"
+              style={{ fontSize: 11, padding: '4px 10px', marginTop: 8 }}
+              onClick={() => onStartExperiment({
+                mode: 'continuous', n_cycles: 5,
+                source: 'grammar_weights', auto_harden: true,
+                preflight_override: true, enforce_preflight: true,
+              })}
+            >
+              Run 5 Continuous
+            </button>
+          )}
+        </div>
       )}
       {explanation && (
         <div style={{ marginTop: 12, padding: 10, background: 'var(--bg-tertiary)', borderRadius: 6, borderLeft: '3px solid var(--accent-purple)' }}>
@@ -834,17 +854,52 @@ function EfficiencyFrontier({ frontier }) {
   );
 }
 
-function LearningTrajectory({ trajectory, onNavigateStrategy }) {
+function LearningTrajectory({ trajectory, onNavigateStrategy, onStartExperiment }) {
   const minimumExperiments = Math.max(2, Number(trajectory?.min_experiments_required) || 5);
   const windowSize = 30;
 
   if (!trajectory || trajectory.trend === 'insufficient_data') {
+    const current = trajectory?.n_experiments || 0;
+    const pct = minimumExperiments > 0 ? Math.min(100, Math.round((current / minimumExperiments) * 100)) : 0;
     return (
       <div className="card">
         <div className="card-title">Learning Trajectory</div>
-        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          Need at least {minimumExperiments} experiments to compute a learning trajectory.
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          Tracks the stage-1 survival rate across experiments. Need at least {minimumExperiments} experiments to compute a learning trajectory.
         </p>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+          Progress: {current} of {minimumExperiments} experiments
+        </div>
+        <div style={{
+          height: 6, borderRadius: 3,
+          background: 'var(--bg-tertiary)',
+          overflow: 'hidden',
+          marginBottom: 8,
+        }}>
+          <div style={{
+            height: '100%', borderRadius: 3,
+            width: `${pct}%`,
+            background: 'var(--accent-purple)',
+            opacity: 0.6,
+            transition: 'width 0.4s ease',
+          }} />
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, textAlign: 'right' }}>
+          {pct}% ({current}/{minimumExperiments})
+        </div>
+        {onStartExperiment && current < minimumExperiments && (
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            onClick={() => onStartExperiment({
+              mode: 'continuous', n_cycles: Math.max(5, minimumExperiments - current),
+              source: 'learning_trajectory', auto_harden: true,
+              preflight_override: true, enforce_preflight: true,
+            })}
+          >
+            Run {Math.max(5, minimumExperiments - current)} Experiments
+          </button>
+        )}
       </div>
     );
   }
@@ -1932,15 +1987,47 @@ function WhatIHaveLearned({ summary }) {
   );
 }
 
-function ControlComparison({ data }) {
+function ControlComparison({ data, onStartExperiment }) {
   if (!data || data.status === 'insufficient_data') {
+    const nControl = data?.control?.experiments || 0;
+    const nLearned = data?.learned?.experiments || 0;
     return (
       <div className="card">
         <div className="card-title">Learning Effectiveness</div>
-        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          Need at least 2 control experiments and 2 learned-weight experiments to compare.
-          Control experiments run every 5th continuous experiment with default grammar weights.
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+          Compares experiments using learned grammar weights vs control experiments with default weights.
+          This tells you whether Aria's learning is actually improving search quality.
         </p>
+        <div style={{
+          padding: '10px 12px', borderRadius: 6, marginBottom: 10,
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border)',
+          fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6,
+        }}>
+          <div style={{ marginBottom: 4 }}>
+            <strong>What's needed:</strong> {'\u2265'}2 control + {'\u2265'}2 learned experiments
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            <strong>Current:</strong> {nControl} control, {nLearned} learned
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            Control experiments run automatically every 5th continuous-mode experiment with default grammar weights.
+            Run 5 continuous experiments to guarantee at least 1 control.
+          </div>
+        </div>
+        {onStartExperiment && (
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            onClick={() => onStartExperiment({
+              mode: 'continuous', n_cycles: 5,
+              source: 'control_comparison', auto_harden: true,
+              preflight_override: true, enforce_preflight: true,
+            })}
+          >
+            Run 5 Continuous
+          </button>
+        )}
       </div>
     );
   }
@@ -2287,7 +2374,67 @@ function InsightSynergyMatrix({ data }) {
   );
 }
 
-function LearningPanel({ onNavigateStrategy }) {
+function DataPopulateBar({ learningTrajectory, controlComparison, onStartExperiment }) {
+  if (!onStartExperiment) return null;
+
+  const nExperiments = learningTrajectory?.n_experiments || 0;
+  const hasEnoughData = nExperiments >= 10
+    && controlComparison?.status !== 'insufficient_data';
+  if (hasEnoughData) return null;
+
+  const controlNeeded = controlComparison?.status === 'insufficient_data';
+  const nControlExps = controlComparison?.control?.experiments || 0;
+  const nLearnedExps = controlComparison?.learned?.experiments || 0;
+
+  return (
+    <div className="card" style={{
+      padding: '14px 16px',
+      borderLeft: '3px solid var(--accent-blue)',
+      background: 'var(--bg-secondary)',
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+        More experiments needed to populate learning analytics
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 10 }}>
+        {nExperiments < 5
+          ? `You have ${nExperiments} experiment${nExperiments === 1 ? '' : 's'}. At least 5 are needed for trajectory analysis, and control experiments run automatically every 5th continuous experiment.`
+          : nExperiments < 10
+            ? `${nExperiments} experiments completed. More data will improve trajectory analysis and statistical significance.`
+            : ''}
+        {controlNeeded && nExperiments >= 5 && (
+          <span> Control comparison needs {'\u2265'}2 control + {'\u2265'}2 learned experiments (currently {nControlExps} control, {nLearnedExps} learned). Controls run automatically every 5th continuous experiment.</span>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          className="refresh-btn"
+          style={{ fontSize: 12, padding: '5px 14px', fontWeight: 600 }}
+          onClick={() => onStartExperiment({
+            mode: 'continuous', n_cycles: 5, source: 'learning_panel',
+            auto_harden: true, preflight_override: true, enforce_preflight: true,
+          })}
+        >
+          Run 5 Continuous
+        </button>
+        <button
+          className="refresh-btn"
+          style={{ fontSize: 12, padding: '5px 14px', fontWeight: 600 }}
+          onClick={() => onStartExperiment({
+            mode: 'continuous', n_cycles: 10, source: 'learning_panel',
+            auto_harden: true, preflight_override: true, enforce_preflight: true,
+          })}
+        >
+          Run 10 Continuous
+        </button>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {nExperiments} experiment{nExperiments === 1 ? '' : 's'} so far
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function LearningPanel({ onNavigateStrategy, onStartExperiment }) {
   const {
     learningTrajectory,
     fingerprintDiagnostics,
@@ -2402,18 +2549,24 @@ function LearningPanel({ onNavigateStrategy }) {
         controlComparison={controlComparison}
         title="Aria's Analysis / Feedback Loop Summary"
       />
+      <DataPopulateBar
+        learningTrajectory={learningTrajectory}
+        controlComparison={controlComparison}
+        onStartExperiment={onStartExperiment}
+      />
 
       <Section title="Core Learning" id="core" isOpen={openSections.core} onToggle={toggleSection}>
         <AriaThoughtProcess />
         <WhatIHaveLearned summary={learningSummary} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <LearningTrajectory trajectory={learningTrajectory} onNavigateStrategy={onNavigateStrategy} />
-          <ControlComparison data={controlComparison} />
+          <LearningTrajectory trajectory={learningTrajectory} onNavigateStrategy={onNavigateStrategy} onStartExperiment={onStartExperiment} />
+          <ControlComparison data={controlComparison} onStartExperiment={onStartExperiment} />
         </div>
         <GrammarWeightsChart
           defaultWeights={weights?.default}
           learnedWeights={weights?.learned}
           explanation={weights?.explanation}
+          onStartExperiment={onStartExperiment}
         />
       </Section>
 
@@ -2421,7 +2574,13 @@ function LearningPanel({ onNavigateStrategy }) {
         <ArchitectureRerunTelemetry telemetry={weights?.architecture_rerun_telemetry} />
         <TargetBalanceCards summary={targetSummary} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <EfficiencyFrontier frontier={frontier} />
+          <DataAccumulation
+            title="Efficiency Frontier"
+            current={Array.isArray(frontier) ? frontier.length : 0}
+            threshold={3}
+          >
+            <EfficiencyFrontier frontier={frontier} />
+          </DataAccumulation>
           <DataAccumulation
             title="Experiment Clusters"
             current={sampleCount(clusters, 'clusters')}
@@ -2457,7 +2616,13 @@ function LearningPanel({ onNavigateStrategy }) {
 
       <Section title="Raw Data" id="raw" isOpen={openSections.raw} onToggle={toggleSection}>
         <AdaptationSummary log={log} />
-        <InsightSynergyMatrix data={insightInteractions} />
+        <DataAccumulation
+          title="Insight Synergy Matrix"
+          current={insightInteractions?.total_interactions || (insightInteractions?.synergistic_pairs?.length || 0) + (insightInteractions?.antagonistic_pairs?.length || 0)}
+          threshold={5}
+        >
+          <InsightSynergyMatrix data={insightInteractions} />
+        </DataAccumulation>
         <OpSuccessTable opRates={opRates} />
         <LearningLog log={log} />
       </Section>

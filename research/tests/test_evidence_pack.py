@@ -61,6 +61,7 @@ def test_validate_evidence_pack_rejects_missing_novelty_reference():
 
 def test_build_evidence_pack_includes_reference_and_metrics():
     nb = _make_notebook_with_novelty()
+    nb.flush_writes()
     pack = build_evidence_pack(nb)
     validate_evidence_pack(pack)
     assert "supporting_metrics" in pack

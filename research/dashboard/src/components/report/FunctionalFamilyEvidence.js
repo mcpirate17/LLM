@@ -5,7 +5,6 @@ import { filterRowsByQuery } from '../../utils/tableFiltering';
 export default function FunctionalFamilyEvidence({ coverage }) {
   const families = Array.isArray(coverage?.families) ? coverage.families : [];
   const totals = coverage?.totals || {};
-  if (families.length === 0) return null;
   const [sortKey, setSortKey] = useState('n_tested');
   const [sortDesc, setSortDesc] = useState(true);
   const [filterQuery, setFilterQuery] = useState('');
@@ -34,6 +33,8 @@ export default function FunctionalFamilyEvidence({ coverage }) {
     });
     return arr;
   }, [filtered, sortKey, sortDesc]);
+
+  if (families.length === 0) return null;
 
   const handleSort = (key) => {
     if (sortKey === key) setSortDesc(!sortDesc);

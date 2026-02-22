@@ -2196,7 +2196,84 @@ class LabNotebook:
             d["insights"] = self._decompress(d["insights_json"])
         return d
 
-    def get_recent_experiments(self, n: int = 20) -> List[Dict]:
+    def backfill_experiment_metrics(self, experiment_id: str) -> Dict[str, Any]:
+        """Backfill missing summary metrics on an existing experiment row.
+
+        Uses already-recorded program_results/results_json only (no rerun).
+        """
+        exp = self.conn.execute(
+            "SELECT experiment_id, best_loss_ratio, best_novelty_score, results_json "
+            "FROM experiments WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+        if exp is None:
+            return {"found": False, "updated_fields": [], "updated": False}
+
+        agg = self.conn.execute(
+            """SELECT
+                    MIN(loss_ratio) AS min_loss_ratio,
+                    MAX(novelty_score) AS max_novelty_score,
+                    AVG(throughput_tok_s) AS avg_throughput_tok_s,
+                    COUNT(*) AS n_results
+               FROM program_results
+               WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+
+        min_loss = agg["min_loss_ratio"] if agg else None
+        max_novelty = agg["max_novelty_score"] if agg else None
+        avg_tp = agg["avg_throughput_tok_s"] if agg else None
+        n_results = int(agg["n_results"] or 0) if agg else 0
+
+        perf_tp = None
+        raw_results = exp["results_json"]
+        if isinstance(raw_results, str) and raw_results:
+            try:
+                parsed = self._decompress(raw_results)
+                perf = parsed.get("perf_report") if isinstance(parsed, dict) else None
+                if isinstance(perf, dict):
+                    perf_tp = perf.get("avg_throughput_tok_s")
+            except Exception:
+                perf_tp = None
+
+        updates: List[str] = []
+        params: List[Any] = []
+        updated_fields: List[str] = []
+
+        if exp["best_loss_ratio"] is None and min_loss is not None:
+            updates.append("best_loss_ratio = ?")
+            params.append(float(min_loss))
+            updated_fields.append("best_loss_ratio")
+
+        if exp["best_novelty_score"] is None and max_novelty is not None:
+            updates.append("best_novelty_score = ?")
+            params.append(float(max_novelty))
+            updated_fields.append("best_novelty_score")
+
+        if updates:
+            params.append(experiment_id)
+            self.conn.execute(
+                f"UPDATE experiments SET {', '.join(updates)} WHERE experiment_id = ?",
+                tuple(params),
+            )
+            self._maybe_commit()
+
+        throughput_available = (
+            (avg_tp is not None and float(avg_tp) > 0)
+            or (perf_tp is not None and float(perf_tp) > 0)
+        )
+
+        return {
+            "found": True,
+            "updated": bool(updated_fields),
+            "updated_fields": updated_fields,
+            "n_program_results": n_results,
+            "throughput_available": bool(throughput_available),
+        }
+
+    def get_recent_experiments(self, n: int = 20, offset: int = 0) -> List[Dict]:
+        n = max(1, int(n))
+        offset = max(0, int(offset))
         rows = self.conn.execute(
             """SELECT experiment_id, timestamp, experiment_type, status,
                       hypothesis, research_question,
@@ -2204,8 +2281,8 @@ class LabNotebook:
                       n_stage1_passed,
                       best_loss_ratio, best_novelty_score, aria_mood,
                       aria_summary, duration_seconds
-               FROM experiments ORDER BY timestamp DESC LIMIT ?""",
-            (n,)
+               FROM experiments ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            (n, offset)
         ).fetchall()
         return [dict(r) for r in rows]
 

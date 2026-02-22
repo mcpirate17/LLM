@@ -264,7 +264,8 @@ _register(PrimitiveOp("multi_head_mix", OpCategory.STRUCTURAL, 1, "identity",
 
 _register(PrimitiveOp("linear_proj", OpCategory.PARAMETERIZED, 1, "linear",
                        has_params=True, param_formula="D*D",
-                       description="Learned linear projection (D -> D)"))
+                       description="Learned linear projection (D -> D)",
+                       config_keys=("out_dim",)))
 _register(PrimitiveOp("linear_proj_down", OpCategory.PARAMETERIZED, 1, "linear",
                        has_params=True, param_formula="D*D//2",
                        description="Learned linear projection (D -> D//2)"))

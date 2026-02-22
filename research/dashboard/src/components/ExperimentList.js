@@ -95,7 +95,16 @@ function StageFunnel({ generated, s0, s05, s1 }) {
 const EXPERIMENT_LIST_SORT_PREFS_KEY = 'dashboard.experiment-list.sort.v1';
 const EXPERIMENT_LIST_EXPERT_KEY = 'dashboard.experiment-list.expert.v1';
 
-function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
+function ExperimentList({
+  experiments,
+  onSelectExperiment,
+  onRefresh,
+  onLoadMore,
+  hasMore = false,
+  loadingMore = false,
+  pageSize = 200,
+  onPageSizeChange,
+}) {
   const [showExpertColumns, setShowExpertColumns] = useState(() => {
     try {
       return localStorage.getItem(EXPERIMENT_LIST_EXPERT_KEY) === 'true';
@@ -123,6 +132,9 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
     return true;
   });
   const [filterQuery, setFilterQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [outcomeFilter, setOutcomeFilter] = useState('all');
   const [copiedValue, copyText] = useCopyToClipboard();
   const [cancellingId, setCancellingId] = useState(null);
   const [rerunningId, setRerunningId] = useState(null);
@@ -205,7 +217,17 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
     }));
   }, [experiments]);
 
-  const filtered = useMemo(() => (
+  const experimentTypes = useMemo(() => {
+    const unique = Array.from(new Set(
+      augmented
+        .map((exp) => exp?.experiment_type)
+        .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    ));
+    unique.sort((a, b) => a.localeCompare(b));
+    return unique;
+  }, [augmented]);
+
+  const queryFiltered = useMemo(() => (
     filterRowsByQuery(augmented, filterQuery, [
       'experiment_id',
       'experiment_type',
@@ -214,6 +236,30 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
       'aria_summary',
     ])
   ), [augmented, filterQuery]);
+
+  const filtered = useMemo(() => (
+    queryFiltered.filter((exp) => {
+      if (statusFilter !== 'all' && exp.status !== statusFilter) return false;
+      if (typeFilter !== 'all' && exp.experiment_type !== typeFilter) return false;
+      if (outcomeFilter === 'has_s1' && (exp.n_stage1_passed || 0) <= 0) return false;
+      if (outcomeFilter === 'no_s1' && (exp.n_stage1_passed || 0) > 0) return false;
+      return true;
+    })
+  ), [queryFiltered, statusFilter, typeFilter, outcomeFilter]);
+
+  const hasActiveFilters = (
+    filterQuery.trim().length > 0 ||
+    statusFilter !== 'all' ||
+    typeFilter !== 'all' ||
+    outcomeFilter !== 'all'
+  );
+
+  const clearFilters = () => {
+    setFilterQuery('');
+    setStatusFilter('all');
+    setTypeFilter('all');
+    setOutcomeFilter('all');
+  };
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -275,6 +321,58 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
               minWidth: 180,
             }}
           />
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            style={{ fontSize: 11, padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+            aria-label="Filter by status"
+          >
+            <option value="all">All status</option>
+            <option value="completed">Completed</option>
+            <option value="running">Running</option>
+            <option value="failed">Failed</option>
+          </select>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            style={{ fontSize: 11, padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+            aria-label="Filter by experiment type"
+          >
+            <option value="all">All types</option>
+            {experimentTypes.map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
+          <select
+            value={outcomeFilter}
+            onChange={(e) => setOutcomeFilter(e.target.value)}
+            style={{ fontSize: 11, padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+            aria-label="Filter by outcome"
+          >
+            <option value="all">All outcomes</option>
+            <option value="has_s1">Has S1 pass</option>
+            <option value="no_s1">No S1 pass</option>
+          </select>
+          {onPageSizeChange && (
+            <select
+              value={String(pageSize)}
+              onChange={(e) => onPageSizeChange(e.target.value)}
+              style={{ fontSize: 11, padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+              aria-label="Experiments page size"
+            >
+              <option value="100">100 / page</option>
+              <option value="200">200 / page</option>
+              <option value="500">500 / page</option>
+            </select>
+          )}
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 11, padding: '3px 10px' }}
+            onClick={clearFilters}
+            disabled={!hasActiveFilters}
+          >
+            Clear filters
+          </button>
           <button
             className="refresh-btn"
             style={{ fontSize: 11, padding: '3px 10px' }}
@@ -548,6 +646,21 @@ function ExperimentList({ experiments, onSelectExperiment, onRefresh }) {
         <span><span style={{ color: 'var(--accent-yellow)' }}>Amber</span> = some results (limited learning)</span>
         <span><span style={{ color: 'var(--accent-red)' }}>Red</span> = no learning (grammar needs adjustment)</span>
         {onSelectExperiment && <span style={{ marginLeft: 'auto' }}>Click a row for details</span>}
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          Showing {sorted.length} experiment{sorted.length === 1 ? '' : 's'}
+        </span>
+        {onLoadMore && (
+          <button
+            className="refresh-btn"
+            onClick={onLoadMore}
+            disabled={!hasMore || loadingMore}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            {loadingMore ? 'Loading…' : hasMore ? 'Load more' : 'All loaded'}
+          </button>
+        )}
       </div>
     </div>
   );

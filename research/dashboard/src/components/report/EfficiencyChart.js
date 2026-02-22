@@ -2,14 +2,13 @@ import React, { useMemo } from 'react';
 import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../../utils/chartScales';
 
 export default function EfficiencyChart({ frontier, showLabels = false, labelCount = 5 }) {
-  if (!frontier || frontier.length === 0) return <p style={{ color: 'var(--text-muted)' }}>No Pareto-optimal programs yet.</p>;
+  const frontierRows = Array.isArray(frontier) ? frontier : [];
 
   const W = 700, H = 260;
   const pad = { l: 60, r: 20, t: 20, b: 35 };
 
-  const losses = frontier.map(p => p.final_loss || p.loss_ratio || 0).filter(l => isFinite(l));
-  const flops = frontier.map(p => p.flops_forward || p.param_count || 0).filter(f => f > 0);
-  if (losses.length < 2 || flops.length < 2) return null;
+  const losses = frontierRows.map(p => p.final_loss || p.loss_ratio || 0).filter(l => isFinite(l));
+  const flops = frontierRows.map(p => p.flops_forward || p.param_count || 0).filter(f => f > 0);
 
   const lossDefaults = CHART_DEFAULTS.loss_ratio;
   const flopsDefaults = CHART_DEFAULTS.efficiency_flops;
@@ -32,11 +31,14 @@ export default function EfficiencyChart({ frontier, showLabels = false, labelCou
 
   const labelCandidates = useMemo(() => {
     if (!showLabels) return [];
-    return [...frontier]
+    return [...frontierRows]
       .filter(p => p.graph_fingerprint)
       .sort((a, b) => (a.final_loss || a.loss_ratio || 0) - (b.final_loss || b.loss_ratio || 0))
       .slice(0, labelCount);
-  }, [frontier, showLabels, labelCount]);
+  }, [frontierRows, showLabels, labelCount]);
+
+  if (frontierRows.length === 0) return <p style={{ color: 'var(--text-muted)' }}>No Pareto-optimal programs yet.</p>;
+  if (losses.length < 2 || flops.length < 2) return null;
 
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
@@ -44,7 +46,7 @@ export default function EfficiencyChart({ frontier, showLabels = false, labelCou
       <line x1={pad.l} y1={pad.t} x2={pad.l} y2={H - pad.b} stroke="var(--border)" />
       <text x={W / 2} y={H - 5} textAnchor="middle" fill="var(--text-muted)" fontSize={10}>FLOPs / Params</text>
       <text x={12} y={H / 2} textAnchor="middle" fill="var(--text-muted)" fontSize={10} transform={`rotate(-90, 12, ${H / 2})`}>Loss</text>
-      {frontier.map((p, i) => {
+      {frontierRows.map((p, i) => {
         const x = xScale(p.flops_forward || p.param_count || 0);
         const y = yScale(p.final_loss || p.loss_ratio || 0);
         if (!isFinite(x) || !isFinite(y)) return null;

@@ -634,6 +634,7 @@ class TestNotebook(unittest.TestCase):
                 (60.0 + i, exp_id),
             )
 
+        self.nb.flush_writes()
         self.nb.conn.commit()
 
         clusters = ExperimentAnalytics(self.nb).experiment_clusters(n_clusters=4)

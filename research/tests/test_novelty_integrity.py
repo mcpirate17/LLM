@@ -98,6 +98,7 @@ def test_integrity_check_rejects_unjustified_heuristic_promotion():
             tier="validation",
             novelty_confidence=0.8,
         )
+        nb.flush_writes()
         report = run_integrity_check(nb)
         assert report["ok"] is False
         assert any("heuristic novelty" in f for f in report["failures"])

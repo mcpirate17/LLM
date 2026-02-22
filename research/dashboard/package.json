@@ -13,7 +13,8 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "check:hook-order": "node scripts/check-hook-order.js"
   },
   "proxy": "http://localhost:5000",
   "browserslist": {

@@ -111,6 +111,8 @@ class Aria:
         self._rng = random.Random()
         self._llm = None
         self._llm_initialized = False
+        self._analyst_llm = None
+        self._analyst_llm_initialized = False
         # Cost tracking
         self._total_tokens = 0
         self._total_cost = 0.0  # estimated USD
@@ -131,18 +133,34 @@ class Aria:
         self._refuted_hypotheses: List[Dict] = []
 
     def _get_llm(self):
-        """Lazy-init LLM backend (only try once)."""
+        """Lazy-init primary LLM backend (only try once)."""
         if not self._llm_initialized:
             self._llm_initialized = True
             try:
                 from .llm import create_backend
-                self._llm = create_backend()
+                self._llm = create_backend(is_analyst=False)
                 if self._llm:
-                    logger.info(f"Aria LLM backend: {self._llm.name}")
+                    logger.info(f"Aria Primary LLM backend: {self._llm.name} ({getattr(self._llm, 'model', 'default')})")
             except Exception as e:
-                logger.debug(f"LLM backend init failed: {e}")
+                logger.debug(f"Primary LLM backend init failed: {e}")
                 self._llm = None
         return self._llm
+
+    def _get_analyst_llm(self):
+        """Lazy-init fast analyst LLM backend."""
+        if not self._analyst_llm_initialized:
+            self._analyst_llm_initialized = True
+            try:
+                from .llm import create_backend
+                self._analyst_llm = create_backend(is_analyst=True)
+                if self._analyst_llm:
+                    logger.info(f"Aria Analyst LLM backend: {self._analyst_llm.name} ({getattr(self._analyst_llm, 'model', 'default')})")
+            except Exception as e:
+                logger.debug(f"Analyst LLM backend init failed: {e}")
+                self._analyst_llm = None
+        
+        # If no analyst backend configured, fall back to primary
+        return self._analyst_llm or self._get_llm()
 
     # ── Cost tracking ──
 
@@ -267,6 +285,33 @@ class Aria:
         self.state.research_focus = "analysis"
         return self._rng.choice(self.ANALYSIS_COMMENTS)
 
+    def generate_situation_report(self, context: str) -> str:
+        """Use analyst LLM to condense raw data into a SITUATION REPORT brief.
+        This offloads 'lighter thinking' (summarization, trend extraction)
+        to the local model, saving tokens and focus for the primary LLM.
+        """
+        llm = self._get_analyst_llm()
+        if not llm or not context:
+            return context # Fallback to raw context
+            
+        try:
+            prompt = (
+                "You are an AI research analyst. Condense the following raw experimental data "
+                "into a high-density SITUATION REPORT for a senior scientist. "
+                "Extract: top 3 winners, top 3 failure modes, and net grammar shifts. "
+                "Be extremely concise. Use bullets.\n\n"
+                f"RAW DATA:\n{context}"
+            )
+            # Use lower max tokens for speed
+            resp = llm.generate(prompt, max_tokens=400, temperature=0.1)
+            self._track_cost(resp)
+            if resp.text.strip():
+                return f"SITUATION REPORT (pre-digested by Analyst):\n{resp.text.strip()}"
+        except Exception as e:
+            logger.warning(f"Situation report generation failed: {e}")
+            
+        return context
+
     # ── LLM-enhanced methods with rule-based fallback ──
 
     def formulate_hypothesis(
@@ -280,7 +325,7 @@ class Aria:
         When ``return_metadata`` is True, returns ``(hypothesis, metadata)``
         where metadata includes provenance details for notebook traceability.
         """
-        llm = self._get_llm()
+        llm = self._get_analyst_llm()
         if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import HYPOTHESIS_SYSTEM_PROMPT, HYPOTHESIS_PROMPT
@@ -337,10 +382,10 @@ class Aria:
         return hyp
 
     def experiment_summary(self, results: Dict, context: str = "") -> str:
-        """Generate experiment summary. Uses LLM if available."""
+        """Generate experiment summary. Uses analyst LLM if available."""
         self.state.experiments_today += 1
 
-        llm = self._get_llm()
+        llm = self._get_analyst_llm()
         if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, SUMMARY_PROMPT
@@ -352,6 +397,9 @@ class Aria:
                     return resp.text.strip()
             except Exception as e:
                 logger.warning(f"LLM summary failed, falling back: {e}")
+        else:
+            reason = "no_llm" if not llm else "no_context" if not context else "continuous_mode"
+            logger.debug(f"Skipping LLM summary (reason={reason})")
 
         return self._rule_based_summary(results)
 
@@ -407,12 +455,12 @@ class Aria:
     def analyze_results(self, results: Dict, context: str = "") -> Optional[str]:
         """LLM-powered deep analysis of experiment results.
 
-        Returns LLM analysis text, or None if LLM unavailable.
+        Returns analyst LLM output, or None if LLM unavailable.
         Skipped entirely in continuous mode to save API costs.
         """
         if self._continuous_mode:
             return None
-        llm = self._get_llm()
+        llm = self._get_analyst_llm()
         if not llm or not context:
             return None
 
@@ -448,9 +496,11 @@ class Aria:
         if not llm:
             return None
 
+        # Z17: Offload lighter thinking locally
+        situation_report = self.generate_situation_report(context)
         try:
             from .llm.prompts import BRIEFING_SYSTEM_PROMPT, STRATEGY_PROMPT
-            prompt = STRATEGY_PROMPT.format(context=context)
+            prompt = STRATEGY_PROMPT.format(context=situation_report)
             resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
             self._track_cost(resp)
             text = resp.text.strip() if resp.text.strip() else None
@@ -460,16 +510,14 @@ class Aria:
             return None
 
     def suggest_experiment(self, context: str = "") -> Dict:
-        """Suggest an experiment configuration based on data.
-
-        Returns {config: Dict, reasoning: str, confidence: float}.
-        Uses LLM with SUGGESTION_PROMPT, falls back to rule-based.
-        """
+        """Suggest an experiment configuration based on data."""
         llm = self._get_llm()
         if llm and context:
+            # Z17: Offload lighter thinking by pre-digesting the context
+            situation_report = self.generate_situation_report(context)
             try:
                 from .llm.prompts import BRIEFING_SYSTEM_PROMPT, SUGGESTION_PROMPT
-                prompt = SUGGESTION_PROMPT.format(context=context)
+                prompt = SUGGESTION_PROMPT.format(context=situation_report)
                 resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
                 self._track_cost(resp)
                 if resp.text.strip():
@@ -740,9 +788,9 @@ class Aria:
         """Validate whether a hypothesis was confirmed or refuted.
 
         Returns {validated: bool, explanation: str}.
-        Uses LLM with VALIDATION_PROMPT, falls back to S1>0 heuristic.
+        Uses analyst LLM with VALIDATION_PROMPT, falls back to S1>0 heuristic.
         """
-        llm = self._get_llm()
+        llm = self._get_analyst_llm()
         if llm and context:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, VALIDATION_PROMPT
@@ -841,7 +889,7 @@ class Aria:
                 "summarize which operation categories are helping or hurting learning."
             )
 
-        llm = self._get_llm()
+        llm = self._get_analyst_llm()
         if llm:
             try:
                 deltas = []
@@ -915,7 +963,7 @@ class Aria:
         clusters = (learning_data.get("clusters") or {}).get("clusters") or []
         recent_experiments = learning_data.get("recent_experiments") or []
 
-        llm = self._get_llm()
+        llm = self._get_analyst_llm()
         if llm:
             try:
                 delta_lines = []
@@ -1963,9 +2011,11 @@ class Aria:
                 if cycle_count % self._llm_decision_interval == 0:
                     use_llm = True
         if use_llm:
+            # Z17: Offload lighter thinking locally
+            situation_report = self.generate_situation_report(context)
             try:
                 from .llm.prompts import SYSTEM_PROMPT, MODE_SELECTION_PROMPT
-                prompt = MODE_SELECTION_PROMPT.format(context=context)
+                prompt = MODE_SELECTION_PROMPT.format(context=situation_report)
                 resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
                 self._track_cost(resp)
                 if resp.text.strip():

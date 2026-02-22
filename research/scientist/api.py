@@ -4214,9 +4214,11 @@ def create_app(
         if n is None:
             n = 200
         n = max(1, min(n, 5000))
+        offset = request.args.get("offset", 0, type=int)
+        offset = max(0, min(offset, 1_000_000))
         nb = LabNotebook(notebook_path)
         try:
-            return jsonify(nb.get_recent_experiments(n))
+            return jsonify(nb.get_recent_experiments(n, offset=offset))
         except Exception as e:
             logger.error(f"Error in /api/experiments: {e}")
             return jsonify({"error": str(e)}), 500
@@ -6532,6 +6534,25 @@ def create_app(
             return jsonify({"error": str(e)}), 400
         except Exception as e:
             logger.error(f"Error rerunning experiment {experiment_id}: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/experiments/<experiment_id>/fill-gaps", methods=["POST"])
+    def api_fill_experiment_gaps(experiment_id):
+        """Backfill missing summary metrics for an existing experiment row."""
+        nb = LabNotebook(notebook_path)
+        try:
+            result = nb.backfill_experiment_metrics(experiment_id)
+            if not result.get("found"):
+                return jsonify({"error": "Experiment not found"}), 404
+            return jsonify({
+                "status": "ok",
+                "experiment_id": experiment_id,
+                **result,
+            })
+        except Exception as e:
+            logger.error(f"Error filling gaps for experiment {experiment_id}: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -9259,6 +9280,47 @@ def create_app(
         except Exception as e:
             logger.error(f"Error in /api/aria/activity: {e}")
             return jsonify([]), 500
+
+    # ── /api/v1/ aliases for embedded aria-designer iframe ──
+    # The designer app uses /api/v1/... routes (its native API paths).
+    # When embedded via /designer-proxy/, RESEARCH_API_BASE resolves to the
+    # dashboard origin, so these requests land here instead of on port 8091.
+
+    @app.route("/api/v1/import/survivors/<result_id>", methods=["POST"])
+    def api_v1_import_survivor(result_id):
+        """Import a research program into workflow format (v1 alias)."""
+        nb = LabNotebook(notebook_path)
+        try:
+            row = nb.get_program_detail(result_id)
+            if row is None:
+                return jsonify({"error": "Program not found"}), 404
+            graph_json_str = row["graph_json"]
+            workflow = import_research_program(graph_json_str)
+            return jsonify({"success": True, "workflow": workflow})
+        except Exception as e:
+            logger.error(f"Error in /api/v1/import/survivors/{result_id}: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/v1/import/survivors", methods=["GET"])
+    def api_v1_list_survivors():
+        """List importable survivors (v1 alias)."""
+        n = request.args.get("n", 20, type=int)
+        nb = LabNotebook(notebook_path)
+        try:
+            survivors = nb.get_top_programs(n, sort_by="loss_ratio")
+            return jsonify(survivors)
+        except Exception as e:
+            logger.error(f"Error in /api/v1/import/survivors: {e}")
+            return jsonify([]), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/v1/components", methods=["GET"])
+    def api_v1_components():
+        """Return designer components (v1 alias)."""
+        return jsonify(get_designer_components())
 
     # ── Designer static files (same-origin iframe) ──
 

@@ -28,6 +28,17 @@ import { buildWorkflowJson } from './utils/workflow'
 import { starterEdges, starterNodes } from './mockData'
 
 const API_BASE = 'http://127.0.0.1:8091'
+const getResearchApiBase = () => {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:5000';
+  const url = new URL(window.location.href);
+  // If we are on 5174 (dev) or 8091 (designer), assume research is on 5000
+  if (url.port === '5174' || url.port === '8091') {
+    return `${url.protocol}//${url.hostname}:5000`;
+  }
+  // If we are embedded in the dashboard, the dashboard itself is the researcher API host
+  return url.origin;
+};
+const RESEARCH_API_BASE = getResearchApiBase();
 const DESIGNER_API_BASE = import.meta.env.VITE_DESIGNER_API_BASE || 'http://127.0.0.1:5000'
 
 const defaultEdgeOptions = {
@@ -68,8 +79,12 @@ function DesignerApp() {
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [helpRequest, setHelpRequest] = useState(null)
-  const [readOnly, setReadOnly] = useState(() => new URLSearchParams(window.location.search).get('readonly') === '1')
-  const [embeddedMode, setEmbeddedMode] = useState(() => new URLSearchParams(window.location.search).get('embedded') === '1')
+  
+  // Use a ref to store initial URL params to avoid re-runs
+  const initialParams = useMemo(() => new URLSearchParams(window.location.search), [])
+  const [readOnly, setReadOnly] = useState(() => initialParams.get('readonly') === '1')
+  const [embeddedMode, setEmbeddedMode] = useState(() => initialParams.get('embedded') === '1')
+  
   const [evalState, setEvalState] = useState({ stages: [], status: null, totalTimeMs: null, error: null, benchmarking: null })
   const [validateUi, setValidateUi] = useState({ inProgress: false, last: 'idle', issues: 0 })
   const [stepStatus, setStepStatus] = useState({
@@ -93,7 +108,7 @@ function DesignerApp() {
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 15000)
-      const resp = await fetch(`${API_BASE}/api/v1/import/survivors/${encodeURIComponent(rid)}`, {
+      const resp = await fetch(`${RESEARCH_API_BASE}/api/v1/import/survivors/${encodeURIComponent(rid)}`, {
         method: 'POST',
         signal: controller.signal,
       })
@@ -162,7 +177,7 @@ function DesignerApp() {
 
   // Fetch components from API
   useEffect(() => {
-    fetch(`${API_BASE}/api/v1/components?status=approved`)
+    fetch(`${RESEARCH_API_BASE}/api/v1/components?status=approved`)
       .then((r) => r.json())
       .then((data) => {
         setComponents(data)
@@ -185,7 +200,7 @@ function DesignerApp() {
   useEffect(() => {
     const fetchProposals = async () => {
       try {
-        const r = await fetch(`${API_BASE}/api/v1/aria/proposals?status=pending`)
+        const r = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/proposals?status=pending`)
         const data = await r.json()
         setProposals(data)
       } catch (err) {
@@ -202,7 +217,7 @@ function DesignerApp() {
     const fetchConstraints = async () => {
       try {
         const workflow = buildWorkflowJson(nodes, edges)
-        const res = await fetch(`${API_BASE}/api/v1/constraints/palette`, {
+        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/constraints/palette`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow, selected_node_id: selectedNodeId }),
@@ -221,15 +236,14 @@ function DesignerApp() {
 
   // PostMessage bridge — notify parent window of state changes in embedded mode.
   const postToParent = useCallback((type, payload = {}) => {
-    if (!embeddedMode || !window.parent || window.parent === window) {
+    if (!embeddedMode) return
+    if (!window.parent || window.parent === window) {
       if (type === 'embedded-ready' || type === 'graph-loaded' || type === 'graph-load-error') {
-        console.warn('[Designer] postToParent BLOCKED:', type,
-          'embeddedMode=', embeddedMode,
-          'hasParent=', Boolean(window.parent),
-          'isTop=', window.parent === window)
+        console.warn('[Designer] postToParent BLOCKED: no parent window or is top', type)
       }
       return
     }
+    console.log('[Designer] postToParent:', type, payload)
     window.parent.postMessage({ source: 'aria-designer', type, ...payload }, '*')
   }, [embeddedMode])
 
@@ -307,19 +321,13 @@ function DesignerApp() {
   const urlParamsHandled = useRef(false)
   useEffect(() => {
     if (urlParamsHandled.current || components.length === 0) return
-    const params = new URLSearchParams(window.location.search)
-    const resultId = params.get('import_result_id')
-    const isReadOnly = params.get('readonly') === '1'
-    const isEmbedded = params.get('embedded') === '1'
-
-    if (isReadOnly) setReadOnly(true)
-    if (isEmbedded) setEmbeddedMode(true)
+    const resultId = initialParams.get('import_result_id')
 
     if (resultId) {
       urlParamsHandled.current = true
-      importResultIntoCanvas(resultId, { notifyParent: isEmbedded })
+      importResultIntoCanvas(resultId, { notifyParent: embeddedMode })
     }
-  }, [components, importResultIntoCanvas, postToParent])
+  }, [components, importResultIntoCanvas, embeddedMode])
 
   useEffect(() => () => {
     Object.values(validateTimersRef.current).forEach((t) => clearTimeout(t))
@@ -439,7 +447,7 @@ function DesignerApp() {
     }
     validateTimersRef.current[timerKey] = setTimeout(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/components/${componentId}/validate-config`, {
+        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/components/${componentId}/validate-config`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ config }),
@@ -573,7 +581,7 @@ function DesignerApp() {
         })
         data = await res.json()
       } catch {
-        const res = await fetch(`${API_BASE}/api/v1/workflows/validate`, {
+        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow }),
@@ -640,7 +648,7 @@ function DesignerApp() {
         data = await res.json()
       } catch {
         usedDesignerApi = false
-        const res = await fetch(`${API_BASE}/api/v1/workflows/compile`, {
+        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/compile`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow, target: 'cpu' }),
@@ -703,7 +711,7 @@ function DesignerApp() {
         if (!data.success) throw new Error(data.error || 'Save failed')
         setStatusMsg('Workflow saved')
       } catch {
-        await fetch(`${API_BASE}/api/v1/workflows/${workflow.workflow_id}`, {
+        await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/${workflow.workflow_id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(workflow),
@@ -736,7 +744,7 @@ function DesignerApp() {
         data = await res.json()
       } catch {
         usedDesignerApi = false
-        const res = await fetch(`${API_BASE}/api/v1/workflows/preview`, {
+        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow }),
@@ -824,7 +832,7 @@ function DesignerApp() {
     setAllNodeEvalStatus('running', null)
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflows/evaluate/stream`, {
+      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/evaluate/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflow, budget: { run_fingerprint: true, run_novelty: true } }),
@@ -1130,9 +1138,9 @@ function DesignerApp() {
   const handleReloadComponents = useCallback(async () => {
     setStatusMsg('Reloading components...')
     try {
-      const res = await fetch(`${API_BASE}/api/v1/components/reload`, { method: 'POST' })
+      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/components/reload`, { method: 'POST' })
       const data = await res.json()
-      const list = await fetch(`${API_BASE}/api/v1/components?status=approved`)
+      const list = await fetch(`${RESEARCH_API_BASE}/api/v1/components?status=approved`)
       const comps = await list.json()
       setComponents(comps)
       setStatusMsg(`Reloaded components: ${data.reloaded || comps.length}`)
@@ -1158,7 +1166,7 @@ function DesignerApp() {
     setAriaLoading(true)
     setStatusMsg('Fetching Aria suggestions...')
     try {
-      const res = await fetch(`${API_BASE}/api/v1/aria/suggest-components`, {
+      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/suggest-components`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflow, prompt: prompt || undefined }),
@@ -1194,7 +1202,7 @@ function DesignerApp() {
 
     // Preferred path: backend-generated deterministic patch proposal.
     try {
-      const res = await fetch(`${API_BASE}/api/v1/aria/generate-patch`, {
+      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/generate-patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflow, prompt: effectivePrompt, base_version: 1 }),
@@ -1204,7 +1212,7 @@ function DesignerApp() {
         setStatusMsg(`Aria proposal created: ${data.proposal_id}`)
         setRightPanelTab('proposals')
         setShowAskAriaModal(false)
-        const pRes = await fetch(`${API_BASE}/api/v1/aria/proposals?status=pending`)
+        const pRes = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/proposals?status=pending`)
         const pData = await pRes.json()
         setProposals(Array.isArray(pData) ? pData : [])
         setAriaLoading(false)
@@ -1262,7 +1270,7 @@ function DesignerApp() {
         expected_impact: { summary: 'User-directed change proposal' },
         ops,
       }
-      const res = await fetch(`${API_BASE}/api/v1/aria/propose-patch`, {
+      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/propose-patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -1274,7 +1282,7 @@ function DesignerApp() {
       setStatusMsg(`Aria proposal created: ${data.proposal_id}`)
       setRightPanelTab('proposals')
       setShowAskAriaModal(false)
-      const pRes = await fetch(`${API_BASE}/api/v1/aria/proposals?status=pending`)
+      const pRes = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/proposals?status=pending`)
       const pData = await pRes.json()
       setProposals(Array.isArray(pData) ? pData : [])
     } catch (err) {
@@ -1288,7 +1296,7 @@ function DesignerApp() {
   const handleApplyPatch = useCallback(async (proposalId) => {
     setStatusMsg('Applying patch...')
     try {
-      const res = await fetch(`${API_BASE}/api/v1/aria/apply-patch`, {
+      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/apply-patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ proposal_id: proposalId, approved_by: 'user' }),

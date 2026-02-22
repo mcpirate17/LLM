@@ -1,0 +1,35 @@
+name: Dashboard Hook Order
+
+on:
+  push:
+    paths:
+      - 'dashboard/**'
+      - '.github/workflows/dashboard-hook-order.yml'
+  pull_request:
+    paths:
+      - 'dashboard/**'
+      - '.github/workflows/dashboard-hook-order.yml'
+  workflow_dispatch:
+
+jobs:
+  hook-order-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check hook order
+        run: npm run check:hook-order

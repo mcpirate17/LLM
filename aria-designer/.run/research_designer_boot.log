@@ -1447,3 +1447,71 @@ INFO:     127.0.0.1:58480 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
 INFO:     127.0.0.1:58480 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
 INFO:     127.0.0.1:33788 - "GET /health HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56298 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40716 - "GET /health HTTP/1.1" 200 OK
+12:18:05 PM [vite] hmr update /src/App.jsx
+12:18:11 PM [vite] hmr update /src/App.jsx
+12:18:51 PM [vite] hmr update /src/App.jsx
+12:19:21 PM [vite] hmr update /src/App.jsx
+12:19:30 PM [vite] hmr update /src/App.jsx
+INFO:     127.0.0.1:51802 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51814 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [67618]
+INFO:     Stopping reloader process [54047]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [147899] using StatReload
+
+  VITE v5.4.21  ready in 74 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [147912]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:43606 - "GET /health HTTP/1.1" 200 OK
+1:32:59 PM [vite] vite.config.js changed, restarting server...
+1:32:59 PM [vite] server restarted.
+INFO:     127.0.0.1:47402 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36842 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [147912]
+INFO:     Stopping reloader process [147899]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [154449] using StatReload
+
+  VITE v5.4.21  ready in 71 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [154462]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:36896 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57072 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43472 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43474 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [154462]
+INFO:     Stopping reloader process [154449]
