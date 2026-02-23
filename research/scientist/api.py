@@ -9559,24 +9559,36 @@ def create_app(
     return app
 
 
-class _SseLogFilter(logging.Filter):
+class _PollEndpointFilter(logging.Filter):
     """Suppress noisy werkzeug logs for frequently-polled endpoints."""
 
     _SUPPRESSED = (
+        # SSE / streaming
         "GET /api/events",
+        # Dashboard polling (every 3-10s)
         "GET /api/aria/cycle-status",
+        "GET /api/aria/autonomy",
         "GET /api/dashboard",
+        "GET /api/actions",
+        "GET /api/healer/tasks",
+        "GET /api/diagnostics/fingerprint",
+        # Analytics polling
         "GET /api/analytics/learning-trajectory",
-        "GET /api/leaderboard",
         "GET /api/analytics/math-family-coverage",
+        "GET /api/analytics/regression-vs-baseline",
+        "GET /api/leaderboard",
+        "GET /api/trends/context",
+        "GET /api/insights",
+        # Static / designer assets
         "GET /static/",
+        "GET /designer-proxy/assets/",
+        # Designer keepalive
+        "POST /api/designer/touch",
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
-        if any(s in msg for s in self._SUPPRESSED):
-            return False
-        return True
+        return not any(s in msg for s in self._SUPPRESSED)
 
 
 def _setup_logging(log_dir: Optional[str] = None):
@@ -9584,8 +9596,13 @@ def _setup_logging(log_dir: Optional[str] = None):
     root = logging.getLogger()
     root.setLevel(logging.INFO)
 
-    # Suppress SSE endpoint spam from werkzeug
-    logging.getLogger("werkzeug").addFilter(_SseLogFilter())
+    # Suppress polling endpoint spam from werkzeug
+    logging.getLogger("werkzeug").addFilter(_PollEndpointFilter())
+
+    # Quiet noisy third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
     fmt = logging.Formatter(
         "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",

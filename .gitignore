@@ -29,6 +29,11 @@ Thumbs.db
 node_modules/
 research/dashboard/build/
 
+# Logs & DB backups
+*.log
+*.log.[0-9]
+*.db.bak.*
+
 # Separate projects (managed independently)
 AbstractMoE/
 HYDRA/
