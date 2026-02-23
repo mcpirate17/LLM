@@ -27,16 +27,19 @@ function clampScore(score) {
 
 /**
  * Normalize a loss ratio to 0-1 where lower loss = higher score.
- * Maps 0.2 → 1.0, 1.0 → 0.0.
+ * Maps 0.0 → 1.0, 0.2 → 1.0, 1.0 → 0.0. Clamped to [0, 1].
  */
 export function normalizeLossRatio(lossRatio) {
-  return lossRatio != null ? Math.max(0, 1 - (lossRatio - 0.2) / 0.8) : 0;
+  return lossRatio != null ? clamp01(1 - (lossRatio - 0.2) / 0.8) : 0;
 }
 
 const BONUS_WEIGHTS = {
   efficiency: 12,
   routing: 10,
   adaptive: 8,
+  sparsity: 10,
+  learningSpeed: 8,
+  externalComparison: 12,
 };
 
 const ARCHITECTURE_TARGETS = {
@@ -45,6 +48,71 @@ const ARCHITECTURE_TARGETS = {
   mor: { accuracy_gain: 0.02, params_iso: true },
   mamba: { scaling: 'linear', throughput_vs_transformer: 5.0 },
 };
+
+// ── External baselines (efficiency multipliers relative to dense transformer) ──
+// Sources: GPT-2/3, Switch Transformer, GShard, Mixtral, Mamba, Griffin, Jamba,
+// MoD, PonderNet, FNet, gMLP, MLP-Mixer. Values conservative for 256 d_model scale.
+
+const EXTERNAL_BASELINES = {
+  'Attention':                { paramEfficiency: 1.0,  flopEfficiency: 1.0,  throughputRatio: 1.0, learningSpeedRatio: 1.0  },
+  'Hybrid-Attention':         { paramEfficiency: 1.15, flopEfficiency: 1.05, throughputRatio: 0.9, learningSpeedRatio: 1.1  },
+  'MoE-Attention':            { paramEfficiency: 3.5,  flopEfficiency: 1.0,  throughputRatio: 0.85, learningSpeedRatio: 1.2 },
+  'Routed-MoE':               { paramEfficiency: 3.5,  flopEfficiency: 1.0,  throughputRatio: 0.85, learningSpeedRatio: 1.2 },
+  'MoE-Hybrid-Attention':     { paramEfficiency: 3.0,  flopEfficiency: 0.95, throughputRatio: 0.8, learningSpeedRatio: 1.15 },
+  'Mamba-SSM':                { paramEfficiency: 0.85, flopEfficiency: 1.2,  throughputRatio: 4.5, learningSpeedRatio: 0.9  },
+  'Hybrid-SSM':               { paramEfficiency: 1.1,  flopEfficiency: 1.15, throughputRatio: 2.5, learningSpeedRatio: 1.1  },
+  'MoE-Mamba-SSM':            { paramEfficiency: 3.0,  flopEfficiency: 1.1,  throughputRatio: 3.5, learningSpeedRatio: 1.05 },
+  'Adaptive-Attention':       { paramEfficiency: 1.2,  flopEfficiency: 1.4,  throughputRatio: 1.5, learningSpeedRatio: 1.1  },
+  'Adaptive-Hybrid-Attention':{ paramEfficiency: 1.25, flopEfficiency: 1.35, throughputRatio: 1.4, learningSpeedRatio: 1.1  },
+  'Adaptive-Mamba-SSM':       { paramEfficiency: 0.9,  flopEfficiency: 1.5,  throughputRatio: 5.0, learningSpeedRatio: 0.95 },
+  'Adaptive-MLP-Mixer':       { paramEfficiency: 1.3,  flopEfficiency: 1.1,  throughputRatio: 1.1, learningSpeedRatio: 1.05 },
+  'Conv-Mixer':               { paramEfficiency: 0.95, flopEfficiency: 1.1,  throughputRatio: 1.2, learningSpeedRatio: 0.95 },
+  'Spectral-Mixer':           { paramEfficiency: 0.9,  flopEfficiency: 1.05, throughputRatio: 1.15, learningSpeedRatio: 0.9 },
+  'Spectral-Conv':            { paramEfficiency: 0.92, flopEfficiency: 1.08, throughputRatio: 1.2, learningSpeedRatio: 0.92 },
+  'Gated-MLP':                { paramEfficiency: 0.85, flopEfficiency: 0.95, throughputRatio: 1.3, learningSpeedRatio: 0.85 },
+  'MLP-Mixer':                { paramEfficiency: 0.8,  flopEfficiency: 0.9,  throughputRatio: 1.4, learningSpeedRatio: 0.8  },
+  'Nonlinear-Mixer':          { paramEfficiency: 0.75, flopEfficiency: 0.85, throughputRatio: 1.5, learningSpeedRatio: 0.75 },
+  'Hybrid-Mixer':             { paramEfficiency: 0.95, flopEfficiency: 1.0,  throughputRatio: 1.1, learningSpeedRatio: 0.95 },
+};
+
+/**
+ * Resolve an architecture_family string to its external baseline entry.
+ * Tries: exact match → progressive prefix stripping → longest substring → fallback.
+ * Returns { key, baseline, fuzzy } or null if family is missing/Unknown.
+ */
+function resolveBaseline(family) {
+  if (!family || family === 'Unknown') return null;
+
+  // Exact match
+  if (EXTERNAL_BASELINES[family]) {
+    return { key: family, baseline: EXTERNAL_BASELINES[family], fuzzy: false };
+  }
+
+  // Progressive prefix stripping: "Adaptive-MoE-Attention" → "MoE-Attention" → "Attention"
+  let stripped = family;
+  while (stripped.includes('-')) {
+    stripped = stripped.replace(/^[^-]+-/, '');
+    if (EXTERNAL_BASELINES[stripped]) {
+      return { key: stripped, baseline: EXTERNAL_BASELINES[stripped], fuzzy: true };
+    }
+  }
+
+  // Longest-substring scan
+  let bestKey = null;
+  let bestLen = 0;
+  for (const key of Object.keys(EXTERNAL_BASELINES)) {
+    if (family.includes(key) && key.length > bestLen) {
+      bestKey = key;
+      bestLen = key.length;
+    }
+  }
+  if (bestKey) {
+    return { key: bestKey, baseline: EXTERNAL_BASELINES[bestKey], fuzzy: true };
+  }
+
+  // Fallback
+  return { key: 'Hybrid-Mixer', baseline: EXTERNAL_BASELINES['Hybrid-Mixer'], fuzzy: true };
+}
 
 const PARAM_EXP_RANGE = { min: 5, max: 10 };
 const FLOPS_EXP_RANGE = { min: 6, max: 13 };
@@ -183,11 +251,104 @@ function computeAdaptiveBonus(entry) {
   return avg == null ? null : avg * BONUS_WEIGHTS.adaptive;
 }
 
+function computeSparsityBonus(entry) {
+  const scores = [];
+  const sparsityRatio = entry?.sparsity_ratio;
+  if (sparsityRatio != null) scores.push(clamp01(Number(sparsityRatio) / 0.5));
+
+  const params = entry?.param_count ?? entry?.graph_n_params_estimate;
+  const paramScore = normalizeInverseLog10(params, 4, 9);
+  if (paramScore != null) scores.push(paramScore);
+
+  const memory = entry?.peak_memory_mb;
+  if (memory != null) scores.push(clamp01(1 - Number(memory) / 500));
+
+  const avg = averageScores(scores);
+  if (avg == null) return null;
+  const multiplier = (sparsityRatio != null && Number(sparsityRatio) > 0.5) ? 1.3 : 1.0;
+  return avg * BONUS_WEIGHTS.sparsity * multiplier;
+}
+
+function computeLearningSpeedBonus(entry) {
+  const scores = [];
+  const lir = entry?.loss_improvement_rate;
+  if (lir != null) scores.push(clamp01(Number(lir)));
+
+  const throughput = entry?.throughput_tok_s;
+  if (throughput != null) scores.push(clamp01(Number(throughput) / 5000));
+
+  const forwardMs = entry?.forward_time_ms;
+  if (forwardMs != null) scores.push(clamp01(1 - Number(forwardMs) / 50));
+
+  const avg = averageScores(scores);
+  return avg == null ? null : avg * BONUS_WEIGHTS.learningSpeed;
+}
+
+function computeExternalComparisonBonus(entry) {
+  const resolved = resolveBaseline(entry?.architecture_family);
+  if (!resolved) return null;
+  const { baseline } = resolved;
+  const scores = [];
+
+  // (a) Param efficiency sub-score
+  const lossRatio = entry?.loss_ratio;
+  const params = entry?.param_count ?? entry?.graph_n_params_estimate;
+  if (lossRatio != null && params != null) {
+    const learning = clamp01(1 - Number(lossRatio));
+    const paramNorm = normalizeInverseLog10(params, PARAM_EXP_RANGE.min, PARAM_EXP_RANGE.max);
+    if (paramNorm != null) {
+      const actual = learning * paramNorm;
+      const expected = 0.5 * baseline.paramEfficiency;
+      scores.push(clamp01(actual / expected / 1.5));
+    }
+  }
+
+  // (b) FLOP efficiency sub-score
+  const flopsPerParam = entry?.flops_per_param ?? (
+    entry?.flops_forward != null && params != null && Number(params) > 0
+      ? Number(entry.flops_forward) / Number(params)
+      : null
+  );
+  if (flopsPerParam != null && lossRatio != null) {
+    const learning = clamp01(1 - Number(lossRatio));
+    const flopNorm = normalizeInverseLog10(flopsPerParam, 0, 4);
+    if (flopNorm != null) {
+      const actual = learning * flopNorm;
+      const expected = 0.5 * baseline.flopEfficiency;
+      scores.push(clamp01(actual / expected / 1.5));
+    }
+  }
+
+  // (c) Throughput sub-score
+  const throughput = entry?.throughput_tok_s;
+  if (throughput != null) {
+    const expectedThroughput = 5000 * baseline.throughputRatio;
+    scores.push(clamp01(Number(throughput) / expectedThroughput));
+  }
+
+  // (d) Learning speed sub-score
+  const lir = entry?.loss_improvement_rate;
+  if (lir != null) {
+    const denseBaselineLIR = 0.5;
+    const expectedLIR = denseBaselineLIR * baseline.learningSpeedRatio;
+    scores.push(clamp01(Number(lir) / (expectedLIR * 1.5)));
+  }
+
+  const avg = averageScores(scores);
+  if (avg == null) return null;
+
+  const excellenceFactor = avg > 0.75 ? 1.3 : avg > 0.5 ? 1.1 : 1.0;
+  return avg * BONUS_WEIGHTS.externalComparison * excellenceFactor;
+}
+
 function computeBonusBreakdown(entry) {
   return {
     efficiencyBonus: computeEfficiencyBonus(entry) ?? 0,
     routingBonus: computeRoutingBonus(entry) ?? 0,
     adaptiveBonus: computeAdaptiveBonus(entry) ?? 0,
+    sparsityBonus: computeSparsityBonus(entry) ?? 0,
+    learningSpeedBonus: computeLearningSpeedBonus(entry) ?? 0,
+    externalComparisonBonus: computeExternalComparisonBonus(entry) ?? 0,
   };
 }
 
@@ -229,9 +390,7 @@ function tieredBreakdown(entry, tierOrder) {
       vBase: validationBaseline * 25,
       consistency: consistency * 15,
       tierBonus: tierBonus * 20,
-      efficiencyBonus: bonus.efficiencyBonus,
-      routingBonus: bonus.routingBonus,
-      adaptiveBonus: bonus.adaptiveBonus,
+      ...bonus,
     };
   }
 
@@ -242,9 +401,7 @@ function tieredBreakdown(entry, tierOrder) {
       iLoss: investigationLoss * 20,
       robust: robustness * 15,
       tierBonus: tierBonus * 35,
-      efficiencyBonus: bonus.efficiencyBonus,
-      routingBonus: bonus.routingBonus,
-      adaptiveBonus: bonus.adaptiveBonus,
+      ...bonus,
     };
   }
 
@@ -252,9 +409,7 @@ function tieredBreakdown(entry, tierOrder) {
     sLoss: screeningLoss * 35,
     novelty: novelty * 25,
     tierBonus: tierBonus * 40,
-    efficiencyBonus: bonus.efficiencyBonus,
-    routingBonus: bonus.routingBonus,
-    adaptiveBonus: bonus.adaptiveBonus,
+    ...bonus,
   };
 }
 
@@ -269,15 +424,16 @@ function flatBreakdown(program) {
   const baselineScore = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) : 0;
   const throughputScore = program.throughput_tok_s != null ? Math.min(program.throughput_tok_s / 5000, 1.0) : 0;
   const bonus = computeBonusBreakdown(program);
+  // Penalize programs that explicitly failed S1 (passed S0 but couldn't learn)
+  const s1Penalty = program.stage1_passed === false || program.stage1_passed === 0 ? 0.5 : 1.0;
 
   return {
-    loss: lossScore * 35,
+    loss: lossScore * 35 * s1Penalty,
     novelty: noveltyScore * 25,
-    baseline: baselineScore * 25,
+    baseline: baselineScore * 25 * s1Penalty,
     throughput: throughputScore * 15,
-    efficiencyBonus: bonus.efficiencyBonus,
-    routingBonus: bonus.routingBonus,
-    adaptiveBonus: bonus.adaptiveBonus,
+    s1Penalty,
+    ...bonus,
   };
 }
 
@@ -311,21 +467,26 @@ export const leaderboardEntryScoreBreakdown = candidateScoreBreakdown;
 // ── Discovery score (ResearchReport) ────────────────────────────────
 
 export function discoveryScoreBreakdown(program) {
-  const loss = normalizeLossRatio(program.loss_ratio) * 35;
-  const novelty = program.novelty_score != null ? Math.min(program.novelty_score, 1.0) * 25 : 0;
-  const baseline = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) * 30 : 0;
-  const id = program.most_similar_to ? 10 : 0;
+  const loss = normalizeLossRatio(program.loss_ratio) * 30;
+  const novelty = program.novelty_score != null ? Math.min(program.novelty_score, 1.0) * 20 : 0;
+  const baseline = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) * 25 : 0;
+  const id = program.most_similar_to ? 5 : 0;
+  const params = program.param_count ?? program.graph_n_params_estimate;
+  const paramEfficiency = normalizeInverseLog10(params, 4, 9);
+  const paramEff = (paramEfficiency != null ? paramEfficiency : 0) * 10;
+  const learningSpeed = program.loss_improvement_rate != null ? clamp01(program.loss_improvement_rate) * 10 : 0;
   const bonus = computeBonusBreakdown(program);
-  const total = clampScore(loss + novelty + baseline + id + bonus.efficiencyBonus + bonus.routingBonus + bonus.adaptiveBonus);
+  const bonusTotal = Object.values(bonus).reduce((s, v) => s + v, 0);
+  const total = clampScore(loss + novelty + baseline + id + paramEff + learningSpeed + bonusTotal);
   return {
     total,
     loss,
     novelty,
     baseline,
     id,
-    efficiencyBonus: bonus.efficiencyBonus,
-    routingBonus: bonus.routingBonus,
-    adaptiveBonus: bonus.adaptiveBonus,
+    paramEfficiency: paramEff,
+    learningSpeed,
+    ...bonus,
   };
 }
 
@@ -391,23 +552,28 @@ export function trendScoreBreakdown(d) {
   const stabilizedS1Rate = d.adjusted_s1_pass_rate != null
     ? d.adjusted_s1_pass_rate
     : (d.s1_pass_rate || 0);
-  const passRate = Math.min(stabilizedS1Rate / 0.10, 1.0) * 35;
+  const passRate = Math.min(stabilizedS1Rate / 0.10, 1.0) * 30;
   const loss = d.best_loss_ratio != null
-    ? normalizeLossRatio(d.best_loss_ratio) * 30
+    ? normalizeLossRatio(d.best_loss_ratio) * 25
     : 0;
   const novelty = d.best_novelty_score != null
-    ? Math.min(d.best_novelty_score, 1.0) * 25
+    ? Math.min(d.best_novelty_score, 1.0) * 20
     : 0;
   const efficiency = (d.duration_seconds && d.n_programs_generated)
-    ? Math.min((d.n_programs_generated / d.duration_seconds) / 2, 1.0) * 10
+    ? Math.min((d.n_programs_generated / d.duration_seconds) / 2, 1.0) * 15
+    : 0;
+  const learningSpeed = d.best_loss_improvement_rate != null
+    ? clamp01(d.best_loss_improvement_rate) * 10
     : 0;
   const reliabilityMultiplier = 0.5 + 0.5 * (d.trend_weight != null ? d.trend_weight : 1.0);
-  return { passRate, loss, novelty, efficiency, reliabilityMultiplier };
+  return { passRate, loss, novelty, efficiency, learningSpeed, reliabilityMultiplier };
 }
 
 export function trendScore(d) {
   const b = trendScoreBreakdown(d);
-  const score = (b.passRate + b.loss + b.novelty + b.efficiency) * b.reliabilityMultiplier;
+  const raw = (b.passRate + b.loss + b.novelty + b.efficiency + b.learningSpeed) * b.reliabilityMultiplier;
+  // Penalize experiments with zero S1 survivors (same logic as experimentScore)
+  const score = b.passRate === 0 ? raw * 0.5 : raw;
   return Number.isFinite(score) ? clampScore(score) : 0;
 }
 

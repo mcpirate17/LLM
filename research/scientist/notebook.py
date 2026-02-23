@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS program_results (
     sparse_nm_compliance REAL,
     sparse_active_params_estimate INTEGER,
     sparse_telemetry_json TEXT,
+    sparsity_ratio REAL,
 
     -- One-shot pruning baseline metrics
     pruning_method TEXT,
@@ -675,6 +676,7 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "sparse_nm_compliance": "REAL",
     "sparse_active_params_estimate": "INTEGER",
     "sparse_telemetry_json": "TEXT",
+    "sparsity_ratio": "REAL",
     "pruning_method": "TEXT",
     "pruning_target_sparsity": "REAL",
     "pruning_actual_sparsity": "REAL",
@@ -1537,6 +1539,14 @@ class LabNotebook:
         exploratory_deviation_reason: Optional[str] = None,
     ):
         """Mark an experiment as completed with results."""
+        n_total = results.get("total", 0)
+        if n_total == 0:
+            return self.fail_experiment(
+                experiment_id, 
+                error="Experiment completed with 0 programs generated (possible synthesis failure).",
+                results=results
+            )
+
         now = time.time()
         started = self.conn.execute(
             "SELECT started_at FROM experiments WHERE experiment_id = ?",
@@ -1601,12 +1611,20 @@ class LabNotebook:
             },
         ))
 
-    def fail_experiment(self, experiment_id: str, error: str):
+    def fail_experiment(self, experiment_id: str, error: str, results: Optional[Dict] = None):
         """Mark an experiment as failed."""
+        results_blob = self._compress(results) if results else None
+        n_prog = results.get("total", 0) if results else 0
+        
         self.conn.execute(
-            """UPDATE experiments SET status = 'failed', completed_at = ?,
-               aria_summary = ? WHERE experiment_id = ?""",
-            (time.time(), f"FAILED: {error}", experiment_id),
+            """UPDATE experiments SET 
+               status = 'failed', 
+               completed_at = ?,
+               aria_summary = ?,
+               results_json = ?,
+               n_programs_generated = ?
+               WHERE experiment_id = ?""",
+            (time.time(), f"FAILED: {error}", results_blob, n_prog, experiment_id),
         )
         self._maybe_commit()
 
@@ -1744,7 +1762,7 @@ class LabNotebook:
             else:
                 unknown_cols.append(col)
         if unknown_cols:
-            LOGGER.warning(
+            LOGGER.debug(
                 "Dropping unknown program_results columns: %s",
                 ", ".join(sorted(unknown_cols)),
             )
@@ -2320,7 +2338,14 @@ class LabNotebook:
                 LIMIT ?""",
             (n,)
         ).fetchall()
-        return [dict(r) for r in rows]
+        rows_dicts = [dict(r) for r in rows]
+        for d in rows_dicts:
+            if not d.get("architecture_family"):
+                d["architecture_family"] = self._classify_architecture_family(
+                    graph_json=d.get("graph_json"),
+                    routing_mode=d.get("routing_mode"),
+                )
+        return rows_dicts
 
     def get_report_top_programs_grouped_by_fingerprint(
         self,
@@ -3375,14 +3400,31 @@ class LabNotebook:
         return dict(rows) if rows else None
 
     def get_investigated_fingerprints(self) -> set:
-        """Return fingerprints that have already been investigated or beyond."""
+        """Return fingerprints that have already been investigated or beyond.
+
+        Checks both leaderboard tiers AND program_results from investigation/
+        ablation experiments, so candidates tested in failed/interrupted
+        investigations are not re-queued indefinitely.
+        """
+        fps = set()
+        # Tier-based: candidates promoted in leaderboard
         rows = self.conn.execute(
             "SELECT DISTINCT pr.graph_fingerprint "
             "FROM leaderboard l "
             "JOIN program_results pr ON pr.result_id = l.result_id "
             "WHERE l.tier IN ('investigation', 'validation', 'breakthrough')"
         ).fetchall()
-        return {r[0] for r in rows if r[0]}
+        fps.update(r[0] for r in rows if r[0])
+        # History-based: fingerprints tested in investigation/ablation experiments
+        # (catches failed/interrupted investigations that never reached leaderboard)
+        rows = self.conn.execute(
+            "SELECT DISTINCT pr.graph_fingerprint "
+            "FROM program_results pr "
+            "JOIN experiments e ON e.experiment_id = pr.experiment_id "
+            "WHERE e.experiment_type IN ('investigation', 'ablation')"
+        ).fetchall()
+        fps.update(r[0] for r in rows if r[0])
+        return fps
 
     def get_tiers_for_result_ids(self, result_ids: List[str]) -> Dict[str, str]:
         """Return {result_id: tier} for given result IDs that have leaderboard entries."""
