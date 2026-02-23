@@ -118,10 +118,54 @@ Cutover gate helper:
 - `python -m research.tools.check_cutover_gate --offline --generate-compile-sample` (runs one deterministic compile sample so legacy/fallback gates evaluate against real compile telemetry)
 - add `--allow-waiting` during observe phase
 
+## Architecture
+
+### Synthesis Pipeline
+
+Programs are generated from a probabilistic grammar over 75 primitive ops across 11 categories:
+
+- **elementwise** (unary/binary), **reduction**, **linear_algebra**, **structural** — basic tensor ops
+- **parameterized** — learnable ops (linear_proj, conv1d, selective_scan, swiglu_mlp, rwkv_channel, moe_topk, etc.)
+- **mixing** — sequence mixing (softmax_attention, linear_attention, graph_attention, state_space, conv_only)
+- **functional** — operator-learning (basis_expansion, integral_kernel, fixed_point_iter)
+- **frequency**, **math_space**, **sequence** — domain-specific ops
+
+Grammar weights are learned from op success rates via multiplicative contrast amplification with EMA smoothing.
+
+### Evaluation Stages
+
+- **S0**: Compile + forward pass (shape/CUDA sanity)
+- **S0.5**: Stability check (grad norms, NaN/Inf detection)
+- **S1**: Micro-training (128-step loss trajectory)
+- **Scale-up**: Full training with behavioral fingerprinting and novelty scoring
+
+Only S1 survivors and S1 failures with learning signal are stored in the database. S0 failures are tracked inline for op statistics but not persisted (saves ~80% storage).
+
+### Novelty Scoring
+
+S1 survivors get behavioral fingerprints computed while the model is still alive (in the S1 worker). Novelty is scored as a blend of structural novelty (graph topology) and behavioral novelty (fingerprint distance). Programs without fingerprints fall back to structural-only scoring at reduced confidence.
+
+### Aria Chat Actions
+
+Aria (the AI scientist persona) can take these actions via chat:
+
+| Action | Purpose |
+|---|---|
+| `adjust_config` | Modify experiment parameters (n_programs, max_depth, excluded_ops, etc.) |
+| `adjust_grammar` | Adjust grammar category weights |
+| `start_experiment` | Launch synthesis, evolution, novelty, or refinement experiments |
+| `edit_file` | Search-and-replace edits to .py/.js files (syntax-checked, auto-backup) |
+| `spawn_agent` | Spawn local Ollama agent for multi-file investigation/fixes |
+| `maintain_database` | DB housekeeping: purge junk, reset op stats, clear toxic signatures, vacuum |
+
+### Toxic Pattern Detection
+
+Op-pair bigrams are tracked in `failure_signatures`. Combinations that fail >85% of the time (min 5 observations) are blocklisted. Graphs with >50% toxic bigrams are skipped before evaluation.
+
 ## Repo Layout
 
 - `scientist/` — runner, API, notebook, analytics, persona
-- `synthesis/` — graph/primitives/compiler/grammar
+- `synthesis/` — graph/primitives/compiler/grammar (75 ops, 11 categories)
 - `eval/` — sandbox, metrics, fingerprinting, pruning/perf helpers
 - `dashboard/` — React app (used by `--mode=dashboard`)
 - `search/`, `training/`, `tools/` — search/training/utilities
