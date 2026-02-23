@@ -1515,3 +1515,664 @@ INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
 INFO:     Finished server process [154462]
 INFO:     Stopping reloader process [154449]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [212411] using StatReload
+
+  VITE v5.4.21  ready in 72 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [212424]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:47626 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34216 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34224 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47940 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47950 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47966 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47976 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47982 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47986 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48000 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48010 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48016 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48018 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53832 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53838 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53388 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53394 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53398 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53408 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53424 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53430 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53440 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53452 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57934 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57950 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48824 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48832 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48840 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48854 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48862 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48868 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33604 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33612 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40588 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40600 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43092 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43096 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44932 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44940 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44942 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44958 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44962 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44970 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44972 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44980 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44986 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44988 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45002 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45010 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45016 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45018 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45026 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45038 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45044 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45050 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45062 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45072 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45088 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45104 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45106 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45108 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59738 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59748 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59756 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59770 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52628 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52640 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52650 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52664 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52672 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52678 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52692 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52700 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39148 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39164 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39176 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39192 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56338 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56344 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56360 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56368 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56372 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56384 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58370 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58372 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58374 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58384 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54550 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54554 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54566 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54582 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54594 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54610 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54616 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54632 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54634 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54636 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54642 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54648 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49114 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49118 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49128 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49140 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47904 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47918 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47932 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47942 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48254 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48266 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48282 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48286 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48292 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48302 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48318 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48330 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58240 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58248 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58250 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58254 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58262 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58268 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58280 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58294 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58298 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58308 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58318 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58322 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58330 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58332 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58340 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58350 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58358 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58364 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58380 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58396 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58400 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58410 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58420 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58436 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39934 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39942 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39948 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39950 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51090 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58058 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58070 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58086 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58102 - "POST /api/v1/workflows/validate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47904 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47908 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47920 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47928 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47938 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47954 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47960 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47966 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47976 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47984 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47996 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48000 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48016 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48026 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48038 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48046 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48052 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48060 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48066 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48068 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48080 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48090 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48100 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48116 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48120 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48122 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48128 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48142 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59592 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59594 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59598 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59610 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59624 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59632 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59638 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59642 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55980 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55982 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55988 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55990 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40086 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40094 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40108 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40112 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40124 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40128 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40130 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40138 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40150 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40166 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40180 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40186 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40188 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40196 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40212 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40222 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40226 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40230 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40234 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40246 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40256 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40268 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40274 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40276 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40284 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40300 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40304 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40314 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55080 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55086 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51966 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51976 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [212424]
+INFO:     Stopping reloader process [212411]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [253445] using StatReload
+
+  VITE v5.4.21  ready in 72 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [253458]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:43916 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53416 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53424 - "OPTIONS /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53430 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53430 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:53430 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41674 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41674 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45046 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48810 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48814 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48826 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52134 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42618 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42624 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42636 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42642 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50418 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50432 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57766 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57776 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57274 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57280 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41832 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41846 - "GET /health HTTP/1.1" 200 OK
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:42482 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56494 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54066 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49826 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49834 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55594 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55610 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36684 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52506 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60788 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60790 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60796 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60800 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60808 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60818 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60824 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60826 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60836 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60846 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60862 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60870 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60886 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60896 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60900 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60914 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60926 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60936 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60940 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60946 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60948 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60958 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60974 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60986 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60992 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60998 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32780 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32790 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47962 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55410 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47560 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40402 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40406 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37296 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43112 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43124 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43132 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43144 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43154 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43162 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43168 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43176 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43180 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43192 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43202 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43212 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43222 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43228 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43238 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43252 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43266 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43274 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43282 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43292 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43294 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43306 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43314 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43330 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43338 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43346 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43362 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43368 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44878 - "POST /api/v1/constraints/palette HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:44514 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44516 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34424 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34430 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34434 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34450 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49528 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49540 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49554 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49564 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40222 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40238 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40252 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40256 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47480 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47496 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34552 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34556 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42192 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42194 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58278 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58284 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42100 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42102 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52694 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52704 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55944 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55952 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45616 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45622 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42314 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42320 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46512 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46520 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50352 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50358 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33226 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33232 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42368 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42374 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36902 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36904 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44028 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44030 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48668 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48680 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53228 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53244 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34372 - "GET /api/v1/import/survivors/8f6190f8-38b HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:41216 - "GET /api/v1/import/survivors/8f6190f8-38b HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:41806 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41816 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41820 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41826 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45430 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45436 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45438 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45440 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45446 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45448 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33770 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33786 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33792 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44858 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44870 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57944 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57948 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57952 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57966 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45736 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45742 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39208 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39222 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46266 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46278 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60916 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60918 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41868 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41872 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41880 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41886 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43834 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43844 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54190 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54204 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54206 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54214 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40236 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40242 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51170 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51174 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51190 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51198 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48124 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48134 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52240 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52254 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40146 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40162 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46742 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46756 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [253458]
+INFO:     Stopping reloader process [253445]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [308371] using StatReload
+
+  VITE v5.4.21  ready in 72 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [308384]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:43332 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43338 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43354 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43364 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55826 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55840 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55202 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55218 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55222 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41242 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41258 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34716 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34722 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38824 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38830 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53458 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53460 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51242 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51246 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51256 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51268 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44030 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34118 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34130 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34132 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49292 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54590 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54600 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54604 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54616 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52180 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52190 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35666 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35676 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48612 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48628 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48638 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48648 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40250 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40266 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40274 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40284 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40290 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40296 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40298 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40300 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40314 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40328 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40330 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40336 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40346 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40358 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40374 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40384 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40392 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40394 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40406 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40408 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40424 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40434 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40448 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40454 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40456 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40464 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40474 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40488 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54280 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54294 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47240 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60156 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60172 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60178 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36306 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36318 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36332 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48766 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48768 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48780 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48794 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48798 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48810 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48818 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48828 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48842 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48844 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48848 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48854 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48862 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48874 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48888 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48904 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48918 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48924 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48940 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48942 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48956 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48964 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48972 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48988 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48996 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49008 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49010 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49014 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60224 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60234 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49046 - "GET /api/experiments HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49062 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49072 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49076 - "GET /api/ HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49080 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54014 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54026 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51422 - "GET /api/experiments HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51432 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37036 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37042 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37044 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43068 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43080 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43084 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43100 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40008 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40022 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37308 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37316 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53568 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53578 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55618 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55632 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36188 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36200 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52226 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52234 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55876 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55892 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55898 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55904 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42762 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42774 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42790 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42798 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42800 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42804 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [308384]
+INFO:     Stopping reloader process [308371]
+Starting API (port 8091) and UI (port 5174, strict)...
+API: http://127.0.0.1:8091  UI: http://localhost:5174
+Run 'make dev-stop' to stop both servers.
+INFO:     Will watch for changes in these directories: ['/home/tim/Projects/LLM/aria-designer/api']
+INFO:     Uvicorn running on http://127.0.0.1:8091 (Press CTRL+C to quit)
+INFO:     Started reloader process [329435] using StatReload
+
+  VITE v5.4.21  ready in 79 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: use --host to expose
+INFO:     Started server process [329448]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+DEBUG: Initializing DB at /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+DEBUG: DB initialization complete
+DEBUG: Opening new connection to /home/tim/Projects/LLM/aria-designer/api/aria_designer.db
+INFO:     127.0.0.1:47006 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47012 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47024 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47030 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58224 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58232 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43920 - "GET /api/v1/integration/bridge-gap-report HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43934 - "GET /api/v1/blocks/builtin?model_dim=256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56418 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56424 - "GET /api/v1/aria/proposals?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56434 - "POST /api/v1/constraints/palette HTTP/1.1" 200 OK

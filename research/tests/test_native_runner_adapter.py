@@ -1162,10 +1162,12 @@ def test_abi_model_only_returns_native_model_without_legacy_compile():
 
 
 def test_abi_model_only_requires_successful_abi_session():
+    """When ABI fails and legacy compile is explicitly disabled, raise RuntimeError."""
     env = {
         "NATIVE_RUNNER_ENABLED": "1",
         "NATIVE_RUNNER_STRICT": "0",
         "NATIVE_RUNNER_ABI_MODEL_ONLY": "1",
+        "NATIVE_RUNNER_DISABLE_LEGACY_COMPILE": "1",
     }
     abi_report = {
         "requested": True,
@@ -2059,8 +2061,8 @@ def test_abi_model_only_is_default_when_native_enabled():
     assert report.get("execution_mode_classification") == "native_abi_model_only"
 
 
-def test_abi_default_hard_fails_without_rollback_flag():
-    """Stream 2: When ABI prep fails and no rollback flag, hard-fail."""
+def test_abi_default_falls_back_to_legacy_when_abi_fails():
+    """When ABI prep fails without DISABLE_LEGACY_COMPILE, fall back to legacy."""
     env = {
         "NATIVE_RUNNER_ENABLED": "1",
         "NATIVE_RUNNER_STRICT": "0",
@@ -2079,13 +2081,42 @@ def test_abi_default_hard_fails_without_rollback_flag():
         "research.scientist.native_runner.os.environ", env
     ), patch(
         "research.scientist.native_runner._maybe_prepare_runner_abi_session", return_value=abi_report
+    ), patch(
+        "research.scientist.native_runner._legacy_compile_model"
+    ) as mock_legacy:
+        mock_legacy.return_value = "legacy_model"
+        result = compile_model_native_first([])
+        mock_legacy.assert_called_once()
+
+
+def test_abi_hard_fails_when_legacy_compile_disabled():
+    """When ABI prep fails AND legacy compile is disabled, raise RuntimeError."""
+    env = {
+        "NATIVE_RUNNER_ENABLED": "1",
+        "NATIVE_RUNNER_STRICT": "0",
+        "NATIVE_RUNNER_DISABLE_LEGACY_COMPILE": "1",
+    }
+    abi_report = {
+        "requested": True,
+        "attempted": True,
+        "succeeded": False,
+        "reason": "not_supported",
+        "model_handle": None,
+        "session": None,
+    }
+
+    reset_native_runner_telemetry()
+    with patch("research.scientist.native_runner_adapter.os.environ", env), patch(
+        "research.scientist.native_runner.os.environ", env
+    ), patch(
+        "research.scientist.native_runner._maybe_prepare_runner_abi_session", return_value=abi_report
     ):
-        with pytest.raises(RuntimeError, match="Native mode requires successful ABI session"):
+        with pytest.raises(RuntimeError, match="requires successful ABI session"):
             compile_model_native_first([])
 
 
-def test_abi_default_falls_back_with_rollback_flag():
-    """Phase D: NATIVE_RUNNER_ALLOW_LEGACY_FALLBACK is removed; ABI failure always raises."""
+def test_abi_falls_back_with_legacy_fallback_flag():
+    """NATIVE_RUNNER_ALLOW_LEGACY_FALLBACK is removed; legacy fallback is the default."""
     env = {
         "NATIVE_RUNNER_ENABLED": "1",
         "NATIVE_RUNNER_STRICT": "0",
@@ -2106,9 +2137,12 @@ def test_abi_default_falls_back_with_rollback_flag():
         "research.scientist.native_runner.os.environ", env
     ), patch(
         "research.scientist.native_runner._maybe_prepare_runner_abi_session", return_value=abi_report
-    ):
-        with pytest.raises(RuntimeError, match="Native mode requires successful ABI session"):
-            compile_model_native_first([])
+    ), patch(
+        "research.scientist.native_runner._legacy_compile_model"
+    ) as mock_legacy:
+        mock_legacy.return_value = "legacy_model"
+        result = compile_model_native_first([])
+        mock_legacy.assert_called_once()
 
 
 def test_capability_payload_includes_execution_mode_classification():

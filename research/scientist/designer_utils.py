@@ -548,35 +548,56 @@ def import_research_program(graph_json_str: str) -> Dict[str, Any]:
     
     be_nodes = data.get("nodes", {})
     model_dim = data.get("model_dim", 256)
-    
+
+    # Calculate depth-based layout
+    depths = {}
+    def get_depth(nid):
+        if nid in depths: return depths[nid]
+        node = be_nodes.get(str(nid))
+        if not node or not node.get("input_ids"):
+            depths[nid] = 0
+            return 0
+        d = 1 + max(get_depth(iid) for iid in node["input_ids"])
+        depths[nid] = d
+        return d
+
+    for nid_str in be_nodes:
+        get_depth(int(nid_str))
+
+    # Group by depth for horizontal spreading
+    by_depth = {}
+    for nid, d in depths.items():
+        by_depth.setdefault(d, []).append(nid)
+
     for nid_str, be_node in be_nodes.items():
         nid = int(nid_str)
         op_name = be_node["op_name"]
         
         # Map op_name back to component_type
-        # We need to know the category. 
-        # For now, we'll try a best-effort lookup in PRIMITIVE_REGISTRY.
         category = "other"
         from research.synthesis.primitives import PRIMITIVE_REGISTRY
         if op_name in PRIMITIVE_REGISTRY:
             category = PRIMITIVE_REGISTRY[op_name].category.value
-            # Map category name back to fe category if possible
-            # Simplified for now
             if "unary" in category or "binary" in category: category = "math"
             elif "param" in category: category = "linear_algebra"
         
         fe_id = f"node_{nid}"
         comp_type = f"{category}/{op_name}"
         if op_name == "input": comp_type = "io/input"
-        if be_node.get("is_output"): 
-            # We'll add an explicit output node if it's marked as output
-            pass
+
+        # Calculate position based on depth
+        depth = depths.get(nid, 0)
+        nodes_at_depth = by_depth.get(depth, [])
+        idx_at_depth = nodes_at_depth.index(nid) if nid in nodes_at_depth else 0
+        
+        pos_x = 50 + depth * 250
+        pos_y = 50 + idx_at_depth * 120
 
         nodes.append({
             "id": fe_id,
             "component_type": comp_type,
             "params": be_node.get("config", {}),
-            "ui_meta": {"position": {"x": 100, "y": 100 + nid * 100}}
+            "ui_meta": {"position": {"x": pos_x, "y": pos_y}}
         })
         
         # Add edges from input_ids
@@ -592,11 +613,12 @@ def import_research_program(graph_json_str: str) -> Dict[str, Any]:
     # Add explicit output node connected to the graph's output
     output_be_id = data.get("output_node_id")
     if output_be_id is not None:
+        max_depth = max(depths.values()) if depths else 0
         nodes.append({
             "id": "node_out",
             "component_type": "io/output",
             "params": {},
-            "ui_meta": {"position": {"x": 100, "y": 100 + (len(be_nodes) + 1) * 100}}
+            "ui_meta": {"position": {"x": 50 + (max_depth + 1) * 250, "y": 50}}
         })
         edges.append({
             "id": "edge_to_out",

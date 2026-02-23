@@ -321,14 +321,34 @@ function LiveFeed({ apiBase, experimentId = null }) {
                   >
                     {evt.result}
                   </span>
-                  {evt.novelty != null && (
-                    <span className="feed-novelty">N:{evt.novelty}</span>
-                  )}
                   {evt.loss_ratio != null && (
                     <span className="feed-loss">L:{evt.loss_ratio}</span>
                   )}
+                  {evt.novelty != null && (
+                    <span className="feed-novelty">N:{evt.novelty}</span>
+                  )}
+                  {evt.throughput != null && (
+                    <span className="feed-metric">{evt.throughput}tok/s</span>
+                  )}
+                  {evt.memory_mb != null && (
+                    <span className="feed-metric">{evt.memory_mb}MB</span>
+                  )}
                   {evt.params != null && (
                     <span className="feed-params">{(evt.params / 1000).toFixed(0)}K</span>
+                  )}
+                  {evt.stability != null && (
+                    <span className="feed-metric" style={{ color: 'var(--accent-yellow)' }}>stab:{evt.stability}</span>
+                  )}
+                  {evt.has_nan && (
+                    <span style={{ color: 'var(--accent-red)', fontWeight: 600, marginLeft: 4 }}>NaN!</span>
+                  )}
+                  {evt.has_inf && (
+                    <span style={{ color: 'var(--accent-red)', fontWeight: 600, marginLeft: 4 }}>Inf!</span>
+                  )}
+                  {evt.error && (
+                    <span className="feed-error-detail" style={{ color: 'var(--accent-orange)', marginLeft: 4, fontSize: 11 }}>
+                      {evt.error_type ? `[${evt.error_type}] ` : ''}{evt.error}
+                    </span>
                   )}
                 </>
               )}
@@ -571,9 +591,10 @@ function LiveFeed({ apiBase, experimentId = null }) {
                   color: evt.decision_type === 'go' ? 'var(--accent-green)' :
                          evt.decision_type === 'no_go' ? 'var(--accent-red)' : 'var(--accent-yellow)',
                   fontWeight: 600,
+                  whiteSpace: 'normal', wordBreak: 'break-word',
                 }}>
                   {evt.decision_type?.toUpperCase().replace('_', '-')}: {evt.subject}
-                  {evt.rationale && ` — ${evt.rationale.slice(0, 60)}`}
+                  {evt.rationale && ` — ${evt.rationale}`}
                 </span>
               )}
               {/* Knowledge events */}

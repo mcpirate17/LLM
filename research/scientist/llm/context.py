@@ -9,6 +9,35 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+_OP_REGISTRY_CACHE: Optional[str] = None
+
+
+def _build_op_registry_section() -> str:
+    """Build a compact category→ops listing from the primitive registry.
+
+    Cached after first call since the registry is static within a process.
+    """
+    global _OP_REGISTRY_CACHE
+    if _OP_REGISTRY_CACHE is not None:
+        return _OP_REGISTRY_CACHE
+    try:
+        try:
+            from ...synthesis.primitives import PRIMITIVE_REGISTRY
+        except (ImportError, SystemError):
+            from synthesis.primitives import PRIMITIVE_REGISTRY
+        by_cat: Dict[str, List[str]] = {}
+        for name, op in sorted(PRIMITIVE_REGISTRY.items()):
+            cat = op.category.value if hasattr(op.category, "value") else str(op.category)
+            by_cat.setdefault(cat, []).append(name)
+        lines = [f"Available Ops ({len(PRIMITIVE_REGISTRY)} total, use excluded_ops/op_weights to control):"]
+        for cat in sorted(by_cat):
+            ops = by_cat[cat]
+            lines.append(f"  {cat} ({len(ops)}): {', '.join(ops)}")
+        _OP_REGISTRY_CACHE = "\n".join(lines)
+    except Exception:
+        _OP_REGISTRY_CACHE = ""
+    return _OP_REGISTRY_CACHE
+
 
 def build_experiment_context(results: Dict, config: Optional[Dict] = None,
                              hypothesis: Optional[str] = None) -> str:
@@ -190,6 +219,11 @@ def build_rich_context(
                                  f"(n={s.get('n_used', 0)})")
             sections.append("\n".join(lines))
 
+        # Full op registry (so Aria can reference any op by name)
+        op_registry_section = _build_op_registry_section()
+        if op_registry_section:
+            sections.append(op_registry_section)
+
         # Structural correlations
         correlations = analytics_data.get("structural_correlations", {})
         if correlations:
@@ -250,6 +284,7 @@ def build_rich_context(
                     delta = learned - default
                     arrow = "^" if delta > 0.1 else ("v" if delta < -0.1 else "=")
                     lines.append(f"  {cat}: {default:.1f} -> {learned:.1f} [{arrow}]")
+            lines.append("  (Set category_weights in CONFIG to override any of these)")
             sections.append("\n".join(lines))
 
         # Learning log
@@ -284,6 +319,7 @@ def build_rich_context(
                     f"uses, fails at {op.get('failure_stage', '?')} "
                     f"(confidence={op.get('confidence', 0):.2f})"
                 )
+            neg_lines.append("  (Use excluded_ops in CONFIG to ban these)")
         anti_patterns = neg.get("anti_patterns", [])
         if anti_patterns:
             if not neg_lines:
@@ -312,6 +348,28 @@ def build_rich_context(
             neg_lines.append(f"  Summary: {summary[:200]}")
         if neg_lines:
             sections.append("\n".join(neg_lines))
+
+        # Designer telemetry
+        designer = analytics_data.get("designer_telemetry", {})
+        if designer:
+            d_lines = ["Designer Integration:"]
+            gap = designer.get("bridge_gap_report", {})
+            if gap:
+                d_lines.append(
+                    f"  Bridge gap: {gap.get('unsupported_components', 0)} "
+                    f"of {gap.get('total_components', 0)} components unsupported"
+                )
+                gaps = gap.get("gaps", [])
+                if gaps:
+                    d_lines.append(
+                        "  Unsupported: " + ", ".join(
+                            g.get("component_id", "?") for g in gaps[:8]
+                        )
+                    )
+            blocks = [b for b in designer.get("builtin_blocks", []) if b]
+            if blocks:
+                d_lines.append(f"  Available block templates: {', '.join(blocks)}")
+            sections.append("\n".join(d_lines))
 
     # Past hypothesis outcomes
     if past_hypotheses:

@@ -436,10 +436,16 @@ function TopPrograms({
                       title={isQueued
                         ? 'Remove from investigation queue'
                         : !queueEligible
-                          ? 'Not eligible for investigation/validation queue actions'
+                          ? (p.tier === 'validation' || p.tier === 'breakthrough' 
+                              ? 'Architecture is fully validated.' 
+                              : 'Not eligible for investigation/validation queue actions')
                           : queueAddTitle}
                     >
-                      {isQueued ? 'Queued' : !queueEligible ? 'Ineligible' : queueAddLabel}
+                      {isQueued 
+                        ? 'Queued' 
+                        : !queueEligible 
+                          ? (p.tier === 'validation' || p.tier === 'breakthrough' ? 'Validated' : 'Ineligible') 
+                          : queueAddLabel}
                     </button>
                   )}
                   {p.result_id && onOpenInDesigner && (

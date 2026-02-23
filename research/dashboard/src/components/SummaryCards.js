@@ -56,18 +56,20 @@ function SummaryCards({ learningTrend }) {
     },
     {
       label: 'Efficiency Focus',
-      value: summary.avg_routing_entropy != null ? `\u03A3 ${summary.avg_routing_entropy.toFixed(2)}` : '—',
-      sub: summary.avg_depth_savings != null 
+      value: summary.avg_sparsity_ratio > 0.1 
+        ? `${(summary.avg_sparsity_ratio * 100).toFixed(0)}% Sparse`
+        : (summary.avg_routing_entropy != null ? `\u03A3 ${summary.avg_routing_entropy.toFixed(2)}` : '—'),
+      sub: summary.avg_depth_savings > 0 
         ? `${(summary.avg_depth_savings * 100).toFixed(1)}% adaptive savings`
-        : 'Dense architectures',
-      color: summary.avg_depth_savings > 0.2 ? 'green' : 'purple',
+        : (summary.avg_sparsity_ratio > 0.1 ? 'Structured Sparsity' : 'Dense architectures'),
+      color: (summary.avg_depth_savings > 0.2 || summary.avg_sparsity_ratio > 0.4) ? 'green' : 'purple',
     },
     {
-      label: 'Perf Report',
-      value: latestPerf ? `${latestPerf.programs_profiled || 0} profiled` : '—',
+      label: 'Pipeline Perf',
+      value: latestPerf ? `${latestPerf.programs_profiled || 0} Profiled` : (summary.avg_step_time_ms ? `${summary.avg_step_time_ms.toFixed(1)}ms` : '—'),
       sub: latestPerf
         ? `queue ${Number(latestPerf.avg_scheduling_wait_ms || 0).toFixed(1)}ms, stalls ${latestPerf.gpu_starvation_events || 0}`
-        : (summary.avg_step_time_ms ? `${summary.avg_step_time_ms.toFixed(1)}ms step` : 'No perf data'),
+        : (summary.avg_step_time_ms ? 'Avg S1 step time' : 'No perf data'),
       color: latestPerf && Number(latestPerf.avg_scheduling_wait_ms || 0) < 10 ? 'green' : '',
     },
   ];

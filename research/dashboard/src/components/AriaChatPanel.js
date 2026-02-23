@@ -152,14 +152,15 @@ function renderLocalEvidence(message) {
 function actionSummary(action) {
   const type = action.type || 'unknown';
   const detail = action.detail || {};
+  const fmtVal = (v) => typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v);
   if (type === 'adjust_config') {
     const changes = detail.changes || {};
-    const preview = Object.entries(changes).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(', ');
+    const preview = Object.entries(changes).slice(0, 4).map(([k, v]) => `${k}=${fmtVal(v)}`).join(', ');
     return summarizeForChat(`Adjusted config: ${preview}${Object.keys(changes).length > 4 ? ', …' : ''}`, 160);
   }
   if (type === 'adjust_grammar') {
     const weights = detail.weights || {};
-    const preview = Object.entries(weights).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(', ');
+    const preview = Object.entries(weights).slice(0, 4).map(([k, v]) => `${k}=${fmtVal(v)}`).join(', ');
     return summarizeForChat(`Adjusted grammar: ${preview}${Object.keys(weights).length > 4 ? ', …' : ''}`, 160);
   }
   if (type === 'start_experiment') {

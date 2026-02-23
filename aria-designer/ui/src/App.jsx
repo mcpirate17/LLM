@@ -39,7 +39,7 @@ const getResearchApiBase = () => {
   return url.origin;
 };
 const RESEARCH_API_BASE = getResearchApiBase();
-const DESIGNER_API_BASE = import.meta.env.VITE_DESIGNER_API_BASE || 'http://127.0.0.1:5000'
+const DESIGNER_API_BASE = import.meta.env.VITE_DESIGNER_API_BASE || 'http://127.0.0.1:8091'
 
 const defaultEdgeOptions = {
   type: 'smoothstep',
@@ -217,7 +217,7 @@ function DesignerApp() {
     const fetchConstraints = async () => {
       try {
         const workflow = buildWorkflowJson(nodes, edges)
-        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/constraints/palette`, {
+        const res = await fetch(`${DESIGNER_API_BASE}/api/v1/constraints/palette`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow, selected_node_id: selectedNodeId }),
@@ -447,7 +447,7 @@ function DesignerApp() {
     }
     validateTimersRef.current[timerKey] = setTimeout(async () => {
       try {
-        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/components/${componentId}/validate-config`, {
+        const res = await fetch(`${DESIGNER_API_BASE}/api/v1/components/${componentId}/validate-config`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ config }),

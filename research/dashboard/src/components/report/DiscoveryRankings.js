@@ -518,7 +518,9 @@ export default function DiscoveryRankings({
                             title={isQueued
                               ? 'Remove from progression queue'
                               : queueDisabled
-                                ? reportQueueReasonLabel(eligibility.queueReason)
+                                ? (p.tier === 'validation' || p.tier === 'breakthrough' 
+                                    ? 'Architecture is fully validated.' 
+                                    : reportQueueReasonLabel(eligibility.queueReason))
                                 : queueIntent === 'validation'
                                   ? 'Add to validation queue'
                                   : 'Add to investigation queue'}
@@ -527,7 +529,7 @@ export default function DiscoveryRankings({
                             {isQueued
                               ? 'Queued'
                               : queueDisabled
-                                ? 'Ineligible'
+                                ? (p.tier === 'validation' || p.tier === 'breakthrough' ? 'Validated' : 'Ineligible')
                                 : queueIntent === 'validation'
                                   ? 'Queue Validate'
                                   : 'Queue Investigate'}

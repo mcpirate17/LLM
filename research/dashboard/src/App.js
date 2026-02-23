@@ -407,6 +407,7 @@ function AppContent({ onRunningChange }) {
 
   // Action error state (replaces alert())
   const [actionError, setActionError] = useState(null);
+  const [blockedConfig, setBlockedConfig] = useState(null);
   const [autoRepairTasks, setAutoRepairTasks] = useState([]);
   const [showCompletedAutoRepairTasks, setShowCompletedAutoRepairTasks] = useState(() => {
     try {
@@ -800,16 +801,28 @@ function AppContent({ onRunningChange }) {
         if (startedRepair) {
           const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
           setActionError(`${err.error || 'Failed to start experiment'} — auto-repair started (${taskId}).`);
+        } else if (err?.preflight_blocked) {
+          setActionError(summarizePreflightBlock(err, 'Preflight gate blocked launch.'));
+          setBlockedConfig(config);
         } else {
           setActionError(err.error || 'Failed to start experiment');
         }
-        return;
+        return { ok: false, ...err };
       }
       setActionError(null);
+      setBlockedConfig(null);
       fetchDashboard();
       if (refreshSharedData) refreshSharedData();
+      return { ok: true };
     } catch (err) {
       setActionError('Failed to start experiment: ' + err.message);
+      return { ok: false, error: err.message };
+    }
+  };
+
+  const handleForceStart = () => {
+    if (blockedConfig) {
+      handleStartExperiment({ ...blockedConfig, preflight_override: true });
     }
   };
 
@@ -1423,7 +1436,27 @@ function AppContent({ onRunningChange }) {
 
         {actionError && (
           <div className="error-banner" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} onClick={() => setActionError(null)}>
-            <span>{actionError}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span>{actionError}</span>
+              {blockedConfig && (
+                <button
+                  className="refresh-btn"
+                  style={{
+                    fontSize: 11,
+                    padding: '2px 8px',
+                    borderColor: 'var(--accent-red)',
+                    color: 'var(--accent-red)',
+                    background: 'rgba(248, 81, 73, 0.1)',
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleForceStart();
+                  }}
+                >
+                  Force Start
+                </button>
+              )}
+            </div>
             <button
               onClick={(e) => { e.stopPropagation(); setActionError(null); }}
               aria-label="Dismiss error"

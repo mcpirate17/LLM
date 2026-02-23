@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { noveltyColor, reliabilityColor } from '../utils/colors';
 import { experimentScore, experimentScoreBreakdown } from '../utils/scoringEngine';
@@ -112,6 +112,7 @@ function ExperimentList({
       return false;
     }
   });
+  const [hideLowScore, setHideLowScore] = useState(true);
 
   const [sortKey, setSortKey] = useState(() => {
     try {
@@ -140,6 +141,9 @@ function ExperimentList({
   const [rerunningId, setRerunningId] = useState(null);
   const [confirmingAction, setConfirmingAction] = useState(null); // { id, type }
   const [inlineError, setInlineError] = useState(null); // { id, message }
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [batchRerunActive, setBatchRerunActive] = useState(false);
+  const [batchRerunStatus, setBatchRerunStatus] = useState(null);
 
   const handleCancel = async (e, experimentId) => {
     e.stopPropagation();
@@ -239,13 +243,15 @@ function ExperimentList({
 
   const filtered = useMemo(() => (
     queryFiltered.filter((exp) => {
+      if (hideLowScore && exp._score < 5 && exp.status !== 'running') return false;
       if (statusFilter !== 'all' && exp.status !== statusFilter) return false;
       if (typeFilter !== 'all' && exp.experiment_type !== typeFilter) return false;
       if (outcomeFilter === 'has_s1' && (exp.n_stage1_passed || 0) <= 0) return false;
       if (outcomeFilter === 'no_s1' && (exp.n_stage1_passed || 0) > 0) return false;
+      if (outcomeFilter === 'unevaluated' && !(exp.status === 'completed' && (exp.n_stage1_passed || 0) === 0 && exp.best_loss_ratio == null)) return false;
       return true;
     })
-  ), [queryFiltered, statusFilter, typeFilter, outcomeFilter]);
+  ), [queryFiltered, statusFilter, typeFilter, outcomeFilter, hideLowScore]);
 
   const hasActiveFilters = (
     filterQuery.trim().length > 0 ||
@@ -290,6 +296,60 @@ function ExperimentList({
     });
     return arr;
   }, [filtered, sortKey, sortDesc]);
+
+  const toggleSelected = useCallback((id, e) => {
+    if (e) e.stopPropagation();
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds(prev => {
+      if (prev.size > 0 && sorted.every(exp => prev.has(exp.experiment_id))) {
+        return new Set();
+      }
+      return new Set(sorted.map(exp => exp.experiment_id));
+    });
+  }, [sorted]);
+
+  const handleBatchRerun = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`Rerun ${selectedIds.size} selected experiment(s)? They will be queued and run sequentially.`)) return;
+    setBatchRerunActive(true);
+    try {
+      const res = await fetch('/api/experiments/batch-rerun', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ experiment_ids: Array.from(selectedIds) }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to start batch rerun');
+        setBatchRerunActive(false);
+        return;
+      }
+      setSelectedIds(new Set());
+      const poll = setInterval(async () => {
+        try {
+          const sr = await fetch('/api/experiments/batch-rerun/status');
+          const st = await sr.json();
+          setBatchRerunStatus(st);
+          if (!st.active) {
+            clearInterval(poll);
+            setBatchRerunActive(false);
+            setBatchRerunStatus(null);
+            if (onRefresh) onRefresh();
+          }
+        } catch { /* ignore poll errors */ }
+      }, 5000);
+    } catch (err) {
+      alert('Network error starting batch rerun');
+      setBatchRerunActive(false);
+    }
+  }, [selectedIds, onRefresh]);
 
   if (!experiments || experiments.length === 0) {
     return (
@@ -352,6 +412,7 @@ function ExperimentList({
             <option value="all">All outcomes</option>
             <option value="has_s1">Has S1 pass</option>
             <option value="no_s1">No S1 pass</option>
+            <option value="unevaluated">Unevaluated</option>
           </select>
           {onPageSizeChange && (
             <select
@@ -380,6 +441,28 @@ function ExperimentList({
           >
             {showExpertColumns ? 'Hide noise' : 'Show expert columns'}
           </button>
+          <button
+            className="refresh-btn"
+            style={{ fontSize: 11, padding: '3px 10px', color: hideLowScore ? 'var(--text-muted)' : 'var(--accent-yellow)' }}
+            onClick={() => setHideLowScore(!hideLowScore)}
+            title="Filter out experiments with very low scores (failed synthesis or no learning)"
+          >
+            {hideLowScore ? 'Show low-signal' : 'Hide low-signal'}
+          </button>
+          {selectedIds.size > 0 && (
+            <button
+              className="refresh-btn"
+              style={{
+                fontSize: 11, padding: '3px 10px',
+                background: 'var(--accent-blue)', color: '#fff', border: 'none',
+                opacity: batchRerunActive ? 0.6 : 1,
+              }}
+              disabled={batchRerunActive}
+              onClick={handleBatchRerun}
+            >
+              {batchRerunActive ? 'Rerunning...' : `Rerun Selected (${selectedIds.size})`}
+            </button>
+          )}
         </div>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
@@ -388,9 +471,25 @@ function ExperimentList({
         The system formulates a hypothesis before each experiment and adjusts strategy based on outcomes.
         Click any row for the full breakdown.
       </p>
+      {batchRerunStatus && batchRerunStatus.active && (
+        <div style={{ fontSize: 12, padding: '6px 10px', marginBottom: 8, borderRadius: 4, background: 'var(--accent-blue)22', border: '1px solid var(--accent-blue)44', color: 'var(--text-primary)' }}>
+          Batch rerun: {batchRerunStatus.completed}/{batchRerunStatus.total} done
+          {batchRerunStatus.current && <span> — running <code style={{ fontSize: 11 }}>{batchRerunStatus.current.slice(0, 8)}</code></span>}
+          {batchRerunStatus.remaining.length > 0 && <span>, {batchRerunStatus.remaining.length} queued</span>}
+        </div>
+      )}
       <table className="data-table">
         <thead>
           <tr>
+            <th style={{ width: 30, textAlign: 'center', padding: '4px 2px' }}>
+              <input
+                type="checkbox"
+                checked={sorted.length > 0 && sorted.every(exp => selectedIds.has(exp.experiment_id))}
+                onChange={toggleSelectAll}
+                title="Select all visible"
+                style={{ cursor: 'pointer' }}
+              />
+            </th>
             {visibleColumns.map(col => (
               <th
                 key={col.key}
@@ -421,6 +520,14 @@ function ExperimentList({
               <tr key={exp.experiment_id}
                 style={{ cursor: onSelectExperiment ? 'pointer' : 'default' }}
                 onClick={() => onSelectExperiment && onSelectExperiment(exp.experiment_id)}>
+                <td style={{ width: 30, textAlign: 'center', padding: '4px 2px' }} onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(exp.experiment_id)}
+                    onChange={(e) => toggleSelected(exp.experiment_id, e)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                </td>
                 {visibleColumns.map(col => {
                   if (col.key === 'score') {
                     return (
@@ -509,7 +616,7 @@ function ExperimentList({
                             </button>
                           )
                         )}
-                        {(exp.status === 'running' || exp.status === 'failed') && (
+                        {(exp.status === 'running' || exp.status === 'failed' || exp.status === 'completed') && (
                           confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'rerun' ? (
                             <span style={{ fontSize: 10, marginLeft: 6 }}>
                               <span style={{ color: 'var(--accent-yellow)' }}>Rerun?</span>

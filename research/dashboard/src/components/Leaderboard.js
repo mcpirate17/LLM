@@ -1042,10 +1042,16 @@ function Leaderboard({
                             title={isQueued
                               ? 'Remove from investigation queue'
                               : !eligibility.queueEligible
-                                ? 'Not eligible for investigation/validation queue actions'
+                                ? (entry.tier === 'validation' || entry.tier === 'breakthrough' 
+                                    ? 'Architecture is fully validated.' 
+                                    : 'Not eligible for investigation/validation queue actions')
                                 : queueAddTitle}
                           >
-                            {isQueued ? 'Queued' : !eligibility.queueEligible ? 'Ineligible' : queueAddLabel}
+                            {isQueued 
+                              ? 'Queued' 
+                              : !eligibility.queueEligible 
+                                ? (entry.tier === 'validation' || entry.tier === 'breakthrough' ? 'Validated' : 'Ineligible') 
+                                : queueAddLabel}
                           </button>
                         )}
                       </div>

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Novelty pipeline integrity checks.
+# Run with experiment ID to diagnose S1=0/5:
+# DEBUG: Added logging to identify failure point
+# python tools/novelty_integrity_check.py --db research/lab_notebook.db --experiment-id <id> python -m tools.novelty_integrity_check --experiment 2e8bbb6c-150
 
 Usage:
   PYTHONPATH=.. python tools/novelty_integrity_check.py --db lab_notebook.db

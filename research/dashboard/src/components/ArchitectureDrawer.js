@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { parseDesignerBridgeMessage } from '../utils/designerBridge';
 
 // Use same-origin proxy to avoid cross-origin iframe restrictions in Brave.
@@ -456,19 +456,13 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
     }, 8000);
   }, []);
 
-  // Send load-result immediately when bridge becomes ready, then
-  // retry every 2 s until the graph loads (or times out).
+  // import_result_id is in the iframe URL, so the iframe imports directly.
+  // Update bridge step when bridge becomes ready so the timeout/fallback logic
+  // knows where we are in the loading sequence.
   useEffect(() => {
     if (!designerReady || !bridgeReady || !resultId || !loading || error) return undefined;
-    console.log('[ArchDrawer] sending load-result for', resultId);
     setBridgeStep('importing');
-    sendToDesigner('load-result', { resultId });
-    const timer = setInterval(() => {
-      console.log('[ArchDrawer] retrying load-result for', resultId);
-      sendToDesigner('load-result', { resultId });
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [bridgeReady, designerReady, error, loading, resultId, sendToDesigner]);
+  }, [bridgeReady, designerReady, error, loading, resultId]);
 
   useEffect(() => {
     if (!designerReady || !resultId || !loading || error) return undefined;
@@ -747,6 +741,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
 
           {iframeSrc && designerReady && (
             <iframe
+              key={resultId}
               ref={iframeRef}
               src={iframeSrc}
               onLoad={handleIframeLoad}

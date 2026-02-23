@@ -512,9 +512,13 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
     ? Object.entries(suggestedConfig).filter(([k, v]) =>
         k !== 'mode' && k !== 'model_source' && k !== 'hypothesis' && v != null)
     : [];
-  const paramSummary = paramEntries.slice(0, 5).map(([k, v]) =>
-    `${k.replace(/_/g, ' ')}: ${typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : v}`
-  );
+  const paramSummary = paramEntries.slice(0, 5).map(([k, v]) => {
+    let display;
+    if (typeof v === 'number') display = Number.isInteger(v) ? v : v.toFixed(2);
+    else if (typeof v === 'object' && v !== null) display = JSON.stringify(v);
+    else display = String(v);
+    return `${k.replace(/_/g, ' ')}: ${display}`;
+  });
 
   const handleStartClick = async () => {
     const config = buildStartConfig();

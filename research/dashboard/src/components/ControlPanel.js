@@ -78,6 +78,29 @@ const DEFAULT_CONFIG = {
   // Model source
   model_source: 'mixed',
   morph_ratio: 0.5,
+  // Grammar probabilities
+  grammar_split_prob: 0.2,
+  grammar_merge_prob: 0.1,
+  grammar_risky_op_prob: 0.05,
+  grammar_freq_domain_prob: 0.05,
+  structured_sparsity_bias: 0.0,
+  // Category weights (higher = more likely to be sampled)
+  category_weights: {
+    elementwise_unary: 1.0,
+    elementwise_binary: 1.0,
+    reduction: 1.0,
+    linear_algebra: 1.0,
+    structural: 1.0,
+    parameterized: 1.0,
+    mixing: 1.0,
+    sequence: 1.0,
+    frequency: 1.0,
+    math_space: 1.0,
+    functional: 1.0,
+  },
+  // Op control
+  excluded_ops: '',
+  op_weights: '',
   // Training programs
   use_synthesized_training: false,
   n_training_programs: 3,
@@ -263,6 +286,7 @@ function ControlPanel({
   const [hypothesis, setHypothesis] = useState('');
   const [mode, setMode] = useState('single');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showOpRef, setShowOpRef] = useState(false);
   const { summary: liveSummary } = useAriaData() || {};
   const [systemStatus, setSystemStatus] = useState(null);
   const [validating, setValidating] = useState(false);
@@ -275,6 +299,7 @@ function ControlPanel({
   const [llmSaving, setLlmSaving] = useState(false);
   const [llmMessage, setLlmMessage] = useState('');
   const [actionError, setActionError] = useState('');
+  const [blockedConfig, setBlockedConfig] = useState(null);
   const [showCutoverDetails, setShowCutoverDetails] = useState(false);
   // Scale-up state
   const [scaleUpUseTop, setScaleUpUseTop] = useState(true);
@@ -411,110 +436,146 @@ function ControlPanel({
     if (onPrefillApplied) onPrefillApplied();
   }, [prefillRequest, onPrefillApplied]);
 
-  const handleStart = () => {
+  const handleStart = async (overrideParams = {}) => {
     setActionError('');
+    setBlockedConfig(null);
+    let finalConfig = {
+      ...config,
+      mode,
+      hypothesis: hypothesis || undefined,
+      ...overrideParams
+    };
+
+    // Only send non-default category weights to avoid noise
+    if (finalConfig.category_weights && typeof finalConfig.category_weights === 'object') {
+      const nonDefault = {};
+      Object.entries(finalConfig.category_weights).forEach(([k, v]) => {
+        if (v !== 1.0) nonDefault[k] = v;
+      });
+      finalConfig.category_weights = Object.keys(nonDefault).length > 0 ? nonDefault : undefined;
+    }
+
+    // Convert string-based op control fields to proper types for the API
+    if (typeof finalConfig.excluded_ops === 'string') {
+      const ops = finalConfig.excluded_ops.split(',').map(s => s.trim()).filter(Boolean);
+      finalConfig.excluded_ops = ops.length > 0 ? ops : undefined;
+    }
+    if (typeof finalConfig.op_weights === 'string') {
+      const parsed = {};
+      finalConfig.op_weights.split(',').map(s => s.trim()).filter(Boolean).forEach(pair => {
+        const [op, w] = pair.split(':').map(s => s.trim());
+        if (op && w && !isNaN(parseFloat(w))) parsed[op] = parseFloat(w);
+      });
+      finalConfig.op_weights = Object.keys(parsed).length > 0 ? parsed : undefined;
+    }
+
+    const processStart = async (fullPayload) => {
+      try {
+        const result = await onStart(fullPayload);
+        // Note: we expect onStart to handle its own error reporting to the global app,
+        // but if it returns an error object, we can handle it locally too.
+        if (result && !result.ok) {
+          if (result.preflight_blocked) {
+            setBlockedConfig(fullPayload);
+            // Error message is likely already set by onStart in the global banner, 
+            // but we'll set it here too for the local UI.
+            setActionError('Preflight gate blocked launch. You can Force Start to override.');
+          }
+        }
+      } catch (e) {
+        setActionError('Failed to start: ' + e.message);
+      }
+    };
+
     if (mode === 'investigation') {
-      const payload = {
-        ...config,
-        mode: 'investigation',
-        hypothesis: hypothesis || undefined,
-      };
       if (investUseTop) {
-        fetch(`${API_BASE}/api/programs?n=${investTopN}&sort=loss_ratio`)
-          .then(r => r.json())
-          .then(programs => {
-            const ids = programs
-              .filter(p => p.stage1_passed)
-              .map(p => p.result_id)
-              .slice(0, investTopN);
-            if (ids.length === 0) {
-              setActionError('No Stage 1 survivors found to investigate.');
-              return;
-            }
-            onStart({ ...payload, result_ids: ids });
-          })
-          .catch(e => setActionError('Failed to fetch programs: ' + e.message));
+        try {
+          const r = await fetch(`${API_BASE}/api/programs?n=${investTopN}&sort=loss_ratio`);
+          const programs = await r.json();
+          const ids = programs
+            .filter(p => p.stage1_passed)
+            .map(p => p.result_id)
+            .slice(0, investTopN);
+          if (ids.length === 0) {
+            setActionError('No Stage 1 survivors found to investigate.');
+            return;
+          }
+          await processStart({ ...finalConfig, result_ids: ids });
+        } catch (e) {
+          setActionError('Failed to fetch programs: ' + e.message);
+        }
       } else {
         const ids = investIds.split(',').map(s => s.trim()).filter(Boolean);
         if (ids.length === 0) {
           setActionError('Please enter at least one result ID.');
           return;
         }
-        onStart({ ...payload, result_ids: ids });
+        await processStart({ ...finalConfig, result_ids: ids });
       }
       return;
     }
     if (mode === 'validation') {
-      const payload = {
-        ...config,
-        mode: 'validation',
-        hypothesis: hypothesis || undefined,
-      };
       if (investUseTop) {
-        fetch(`${API_BASE}/api/leaderboard?tier=investigation&sort=composite_score&limit=${investTopN}`)
-          .then(r => r.json())
-          .then(data => {
-            const ids = (data.entries || [])
-              .filter(e => e.investigation_passed)
-              .map(e => e.result_id)
-              .slice(0, investTopN);
-            if (ids.length === 0) {
-              setActionError('No investigation survivors found to validate.');
-              return;
-            }
-            onStart({ ...payload, result_ids: ids });
-          })
-          .catch(e => setActionError('Failed to fetch leaderboard: ' + e.message));
+        try {
+          const r = await fetch(`${API_BASE}/api/leaderboard?tier=investigation&sort=composite_score&limit=${investTopN}`);
+          const data = await r.json();
+          const ids = (data.entries || [])
+            .filter(e => e.investigation_passed)
+            .map(e => e.result_id)
+            .slice(0, investTopN);
+          if (ids.length === 0) {
+            setActionError('No investigation survivors found to validate.');
+            return;
+          }
+          await processStart({ ...finalConfig, result_ids: ids });
+        } catch (e) {
+          setActionError('Failed to fetch leaderboard: ' + e.message);
+        }
       } else {
         const ids = investIds.split(',').map(s => s.trim()).filter(Boolean);
         if (ids.length === 0) {
           setActionError('Please enter at least one result ID.');
           return;
         }
-        onStart({ ...payload, result_ids: ids });
+        await processStart({ ...finalConfig, result_ids: ids });
       }
       return;
     }
     if (mode === 'scale_up') {
-      const payload = {
-        ...config,
-        mode: 'scale_up',
-        hypothesis: hypothesis || undefined,
+      const scaleUpPayload = {
+        ...finalConfig,
         scale_up_steps: scaleUpSteps,
         scale_up_batch_size: scaleUpBatchSize,
         scale_up_seq_len: scaleUpSeqLen,
       };
       if (scaleUpUseTop) {
-        // Fetch top N programs and use their IDs
-        fetch(`${API_BASE}/api/programs?n=${scaleUpTopN}&sort=loss_ratio`)
-          .then(r => r.json())
-          .then(programs => {
-            const ids = programs
-              .filter(p => p.stage1_passed)
-              .map(p => p.result_id)
-              .slice(0, scaleUpTopN);
-            if (ids.length === 0) {
-              setActionError('No Stage 1 survivors found to scale up.');
-              return;
-            }
-            onStart({ ...payload, result_ids: ids });
-          })
-          .catch(e => setActionError('Failed to fetch top programs: ' + e.message));
+        try {
+          const r = await fetch(`${API_BASE}/api/programs?n=${scaleUpTopN}&sort=loss_ratio`);
+          const programs = await r.json();
+          const ids = programs
+            .filter(p => p.stage1_passed)
+            .map(p => p.result_id)
+            .slice(0, scaleUpTopN);
+          if (ids.length === 0) {
+            setActionError('No Stage 1 survivors found to scale up.');
+            return;
+          }
+          await processStart({ ...scaleUpPayload, result_ids: ids });
+        } catch (e) {
+          setActionError('Failed to fetch top programs: ' + e.message);
+        }
       } else {
         const ids = scaleUpIds.split(',').map(s => s.trim()).filter(Boolean);
         if (ids.length === 0) {
           setActionError('Please enter at least one result ID.');
           return;
         }
-        onStart({ ...payload, result_ids: ids });
+        await processStart({ ...scaleUpPayload, result_ids: ids });
       }
       return;
     }
-    onStart({
-      ...config,
-      mode,
-      hypothesis: hypothesis || undefined,
-    });
+    
+    await processStart(finalConfig);
   };
 
   const updateConfig = (key, value) => {
@@ -555,7 +616,22 @@ function ControlPanel({
 
   const applyRecommendation = () => {
     if (recommendation?.config) {
-      setConfig(prev => ({ ...prev, ...recommendation.config }));
+      setConfig(prev => {
+        const next = { ...prev, ...recommendation.config };
+        // Deep-merge category_weights so partial updates don't wipe existing values
+        if (recommendation.config.category_weights && prev.category_weights) {
+          next.category_weights = { ...prev.category_weights, ...recommendation.config.category_weights };
+        }
+        // Convert excluded_ops array to comma-separated string for the text input
+        if (Array.isArray(next.excluded_ops)) {
+          next.excluded_ops = next.excluded_ops.join(', ');
+        }
+        // Convert op_weights dict to op:weight string for the text input
+        if (typeof next.op_weights === 'object' && next.op_weights !== null && !Array.isArray(next.op_weights)) {
+          next.op_weights = Object.entries(next.op_weights).map(([k, v]) => `${k}:${v}`).join(', ');
+        }
+        return next;
+      });
       setRecommendation(null);
     }
   };
@@ -1660,6 +1736,121 @@ function ControlPanel({
                 </>
               )}
             </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Grammar Control</div>
+            <div className="config-grid">
+              <div className="config-item">
+                <label>Split Prob</label>
+                <input
+                  type="number" min="0" max="1" step="0.05"
+                  value={config.grammar_split_prob}
+                  onChange={(e) => updateConfig('grammar_split_prob', parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="config-item">
+                <label>Merge Prob</label>
+                <input
+                  type="number" min="0" max="1" step="0.05"
+                  value={config.grammar_merge_prob}
+                  onChange={(e) => updateConfig('grammar_merge_prob', parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="config-item">
+                <label>Risky Op Prob</label>
+                <input
+                  type="number" min="0" max="1" step="0.05"
+                  value={config.grammar_risky_op_prob}
+                  onChange={(e) => updateConfig('grammar_risky_op_prob', parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="config-item">
+                <label>Freq Domain Prob</label>
+                <input
+                  type="number" min="0" max="1" step="0.05"
+                  value={config.grammar_freq_domain_prob}
+                  onChange={(e) => updateConfig('grammar_freq_domain_prob', parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="config-item">
+                <label>Sparsity Bias</label>
+                <input
+                  type="number" min="0" max="1" step="0.1"
+                  value={config.structured_sparsity_bias}
+                  onChange={(e) => updateConfig('structured_sparsity_bias', parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="config-item">
+                <label>Model Source</label>
+                <select
+                  value={config.model_source}
+                  onChange={(e) => updateConfig('model_source', e.target.value)}
+                >
+                  <option value="mixed">Mixed</option>
+                  <option value="graph_synthesis">Graph Synthesis</option>
+                  <option value="morphological_box">Morphological Box</option>
+                </select>
+              </div>
+              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
+                <label>Excluded Ops <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(comma-separated)</span></label>
+                <input
+                  type="text"
+                  value={typeof config.excluded_ops === 'string' ? config.excluded_ops : (Array.isArray(config.excluded_ops) ? config.excluded_ops.join(', ') : '')}
+                  onChange={(e) => updateConfig('excluded_ops', e.target.value)}
+                  placeholder="e.g. rwkv_channel, swiglu_mlp"
+                />
+              </div>
+              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
+                <label>Op Weights <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(op:weight, comma-separated)</span></label>
+                <input
+                  type="text"
+                  value={typeof config.op_weights === 'string' ? config.op_weights : (typeof config.op_weights === 'object' && config.op_weights !== null ? Object.entries(config.op_weights).map(([k,v]) => `${k}:${v}`).join(', ') : '')}
+                  onChange={(e) => updateConfig('op_weights', e.target.value)}
+                  placeholder="e.g. selective_scan:2.0, exp:1.5"
+                />
+              </div>
+            </div>
+
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Category Weights <span style={{ fontWeight: 'normal', textTransform: 'none' }}>(1.0 = default, higher = more likely)</span></div>
+            <div className="config-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+              {Object.keys(config.category_weights || {}).map(cat => (
+                <div className="config-item" key={cat}>
+                  <label style={{ fontSize: 11 }}>{cat.replace(/_/g, ' ')}</label>
+                  <input
+                    type="number" min="0.1" max="10" step="0.5"
+                    value={(config.category_weights || {})[cat] ?? 1.0}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value) || 1.0;
+                      setConfig(prev => ({
+                        ...prev,
+                        category_weights: { ...prev.category_weights, [cat]: val },
+                      }));
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+
+            <button
+              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '8px 0 4px', textAlign: 'left' }}
+              onClick={() => setShowOpRef(!showOpRef)}
+            >
+              {showOpRef ? '\u25BC' : '\u25B6'} Available Ops Reference ({Object.values(config.category_weights || {}).length} categories)
+            </button>
+            {showOpRef && (
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--bg-secondary)', borderRadius: 4, padding: 8, maxHeight: 200, overflowY: 'auto', lineHeight: 1.6 }}>
+                <div><b>elementwise_unary:</b> abs, cos, exp, gelu, log, neg, reciprocal, relu, sigmoid, sign_ste, silu, sin, sqrt, square, tanh</div>
+                <div><b>elementwise_binary:</b> add, div_safe, maximum, minimum, mul, sub</div>
+                <div><b>reduction:</b> cumprod_safe, cumsum, max_last, mean_last, mean_seq, norm_last, sum_last, sum_seq</div>
+                <div><b>linear_algebra:</b> matmul, outer_product, transpose_sd</div>
+                <div><b>structural:</b> concat, gather_sorted, multi_head_mix, roll_neg, roll_seq, scatter_unsort, split2, split3</div>
+                <div><b>parameterized:</b> block_sparse_linear, conv1d_seq, fused_linear_gelu, learnable_bias, learnable_scale, linear_proj, linear_proj_down, linear_proj_up, moe_topk, nm_sparse_linear, rmsnorm, rwkv_channel, selective_scan, semi_structured_2_4_linear, swiglu_mlp, topk_gate</div>
+                <div><b>mixing:</b> conv_only, fourier_mixing, graph_attention, linear_attention, softmax_attention, state_space</div>
+                <div><b>sequence:</b> argsort_seq, causal_mask, local_window_attn, sliding_window_mask, softmax_last, softmax_seq, sort_seq, token_pool_restore</div>
+                <div><b>frequency:</b> irfft_seq, rfft_seq</div>
+                <div><b>math_space:</b> <i>(loaded dynamically from math space modules)</i></div>
+                <div><b>functional:</b> basis_expansion, fixed_point_iter, integral_kernel</div>
+              </div>
+            )}
+
             <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Automation</div>
             <div className="config-grid">
               <div className="config-item" style={{ gridColumn: '1 / -1' }}>
@@ -1828,7 +2019,7 @@ function ControlPanel({
                 <>
                   <div className="recommendation-config">
                     {Object.entries(recommendation.config).map(([k, v]) => (
-                      <span key={k} className="rec-param">{k}: {v}</span>
+                      <span key={k} className="rec-param">{k}: {typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}</span>
                     ))}
                   </div>
                   <button className="apply-rec-btn" onClick={applyRecommendation}>
@@ -1855,15 +2046,33 @@ function ControlPanel({
               {startLockReason || 'Start is locked by Strategy Advisor. Use the primary recommendation or override from Overview advanced setup.'}
             </div>
           )}
-          <button className="start-btn" onClick={handleStart} disabled={startLocked}>
-            {mode === 'continuous' ? 'Start Continuous Research'
-              : mode === 'evolve' ? 'Start Evolution Search'
-              : mode === 'novelty' ? 'Start Novelty Search'
-              : mode === 'scale_up' ? 'Start Scale-Up Validation'
-              : mode === 'investigation' ? 'Start Investigation'
-              : mode === 'validation' ? 'Start Validation'
-              : 'Run Experiment'}
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="start-btn" onClick={() => handleStart()} disabled={startLocked} style={{ flex: 1 }}>
+              {mode === 'continuous' ? 'Start Continuous Research'
+                : mode === 'evolve' ? 'Start Evolution Search'
+                : mode === 'novelty' ? 'Start Novelty Search'
+                : mode === 'scale_up' ? 'Start Scale-Up Validation'
+                : mode === 'investigation' ? 'Start Investigation'
+                : mode === 'validation' ? 'Start Validation'
+                : 'Run Experiment'}
+            </button>
+            {blockedConfig && (
+              <button 
+                className="start-btn" 
+                onClick={() => handleStart({ preflight_override: true })}
+                style={{ 
+                  flex: '0 0 auto', 
+                  width: 'auto', 
+                  padding: '0 15px', 
+                  background: 'rgba(248, 81, 73, 0.1)', 
+                  borderColor: 'var(--accent-red)',
+                  color: 'var(--accent-red)'
+                }}
+              >
+                Force Start
+              </button>
+            )}
+          </div>
         </>
       ) : (
         /* Running state - show progress */

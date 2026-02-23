@@ -248,7 +248,13 @@ function ExpandedDetail({ entry, onInvestigate, onValidate, onQueueAdd, onQueueR
                     opacity: !isQueued && !eligibility?.queueEligible ? 0.5 : 1,
                   }}
                 >
-                  {isQueued ? 'Queued' : !eligibility?.queueEligible ? 'Not eligible' : 'Add to Queue'}
+                  {isQueued 
+                    ? 'Queued' 
+                    : (!eligibility?.queueEligible && (entry.tier === 'validation' || entry.tier === 'breakthrough'))
+                      ? 'Fully Validated'
+                      : !eligibility?.queueEligible 
+                        ? 'Ineligible' 
+                        : 'Add to Queue'}
                 </button>
               )}
             </div>

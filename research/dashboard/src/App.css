@@ -599,7 +599,9 @@ details[open] > summary::before { transform: rotate(90deg); }
 .feed-result { font-weight: 600; min-width: 80px; }
 .feed-novelty { color: var(--accent-purple); }
 .feed-loss { color: var(--accent-yellow); }
+.feed-metric { color: var(--text-muted); margin-left: 4px; }
 .feed-params { color: var(--text-muted); }
+.feed-error-detail { overflow: hidden; text-overflow: ellipsis; max-width: 300px; display: inline-block; vertical-align: bottom; }
 
 .feed-event-msg { color: var(--text-secondary); padding: 4px 0; }
 .feed-event-msg.feed-success { color: var(--accent-green); font-weight: 600; }
