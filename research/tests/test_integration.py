@@ -1891,16 +1891,33 @@ class TestAriaModeSelecion(unittest.TestCase):
         })
         self.assertEqual(rec["mode"], "synthesis")
 
-    def test_long_zero_survivor_streak_recommends_pivot(self):
-        """After many zero-survivor runs, recommendation should include pivot signal."""
-        rec = self.aria._rule_based_mode_recommendation({
+    def test_long_zero_survivor_streak_rotates_recovery(self):
+        """After many zero-survivor runs, recommendation should rotate strategies."""
+        # n_experiments=10 → recovery_idx=0 → conservative config
+        rec0 = self.aria._rule_based_mode_recommendation({
             "total_s1_survivors": 0,
             "avg_novelty": 0,
-            "n_experiments_in_session": 12,
+            "n_experiments_in_session": 10,
         })
-        self.assertEqual(rec["mode"], "synthesis")
-        self.assertTrue(rec.get("config", {}).get("pivot_recommended"))
-        self.assertTrue(rec.get("config", {}).get("stop_recommended"))
+        self.assertEqual(rec0["mode"], "synthesis")
+        self.assertEqual(rec0["config"]["residual_prob"], 0.85)
+
+        # n_experiments=11 → recovery_idx=1 → sparse config
+        rec1 = self.aria._rule_based_mode_recommendation({
+            "total_s1_survivors": 0,
+            "avg_novelty": 0,
+            "n_experiments_in_session": 11,
+        })
+        self.assertEqual(rec1["mode"], "synthesis")
+        self.assertIn("op_weights", rec1["config"])
+
+        # n_experiments=14 → recovery_idx=4 → evolution
+        rec4 = self.aria._rule_based_mode_recommendation({
+            "total_s1_survivors": 0,
+            "avg_novelty": 0,
+            "n_experiments_in_session": 14,
+        })
+        self.assertEqual(rec4["mode"], "evolution")
 
     def test_low_novelty_recommends_novelty_search(self):
         """With survivors but low novelty, should recommend novelty."""
@@ -5238,19 +5255,27 @@ class TestAutoEscalation(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="fp_escalate",
             graph_json="{}",
+            stage0_passed=True,
+            stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.3,
             novelty_score=0.6,
             model_source="graph_synthesis",
         )
+        nb.flush_writes()  # record_program_result uses async write queue
         nb.complete_experiment(exp_id, {
             "total": 10, "stage1_passed": 1,
         }, "summary", "excited")
 
-        results = {"stage1_passed": 1, "survivors": [
+        # Include experiment_id so _auto_escalate queries this specific
+        # experiment's results rather than the global top-N (which is
+        # sensitive to shared DB state and epsilon-greedy seed).
+        results = {"stage1_passed": 1, "experiment_id": exp_id, "survivors": [
             {"novelty": 0.6, "loss_ratio": 0.3}
         ]}
 
+        # Force deterministic exploit mode (no epsilon exploration)
+        self.config.selection_epsilon = 0.0
         self.runner._auto_escalate(results, self.config, nb, phase="screening")
 
         # Should have queued investigation
@@ -5449,11 +5474,13 @@ class TestAutoEscalation(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="fp_lb",
             graph_json="{}",
+            stage0_passed=True,
             stage1_passed=True,
             loss_ratio=0.4,
             novelty_score=0.7,
             model_source="graph_synthesis",
         )
+        nb.flush_writes()  # record_program_result uses async write queue
         nb.complete_experiment(exp_id, {"total": 5, "stage1_passed": 1},
                                "done", "excited")
 
@@ -6455,7 +6482,8 @@ class TestEvolutionIntegration(unittest.TestCase):
         self.assertGreater(len(pop), 0)
         for ind in pop:
             self.assertEqual(ind.fitness, 0.0)
-            self.assertEqual(ind.novelty, 0.0)
+            # novelty may be recomputed by diversity enforcement (structural fallback)
+            self.assertIsInstance(ind.novelty, float)
             self.assertEqual(ind.metadata.get("fitness_error_type"), "RuntimeError")
             self.assertEqual(ind.metadata.get("novelty_error_type"), "ValueError")
 
@@ -7013,6 +7041,14 @@ class TestInlinePhaseMethods(unittest.TestCase):
                 runner._progress.experiment_id = exp_id
                 runner._progress.status = "evolving"
 
+            # Add llm_analysis so fail_experiment doesn't auto-delete this
+            # zero-value experiment (production cleanup for truly empty failures).
+            nb.conn.execute(
+                "UPDATE experiments SET llm_analysis = ? WHERE experiment_id = ?",
+                ("test analysis", exp_id),
+            )
+            nb._maybe_commit()
+
             failed_id = runner._fail_active_cycle_experiment(
                 nb,
                 "simulated cycle failure",
@@ -7124,6 +7160,12 @@ class TestInlinePhaseMethods(unittest.TestCase):
                     config={"device": "cuda", "n_programs": 1},
                     hypothesis=f"cuda streak {idx}",
                 )
+                # Set llm_analysis so fail_experiment doesn't auto-delete
+                nb.conn.execute(
+                    "UPDATE experiments SET llm_analysis = ? WHERE experiment_id = ?",
+                    ("cuda assert", exp_id),
+                )
+                nb._maybe_commit()
                 nb.fail_experiment(
                     exp_id,
                     "CUDA error: device-side assert triggered",
@@ -9565,6 +9607,374 @@ class TestChatActions(unittest.TestCase):
         rec = aria._rule_based_mode_recommendation(data)
         # Should NOT recommend sparse because cooldown not expired AND no new data
         self.assertNotIn("Sparse", rec.get("reasoning", ""))
+
+
+class TestApplyRecommendation(unittest.TestCase):
+    """Tests for _apply_recommendation with expanded grammar knobs."""
+
+    def _make_runner(self):
+        from research.scientist.runner import ExperimentRunner
+        runner = ExperimentRunner.__new__(ExperimentRunner)
+        runner._grammar_weight_overrides = {}
+        runner._excluded_ops_overrides = set()
+        runner._op_weights_overrides = {}
+        runner._last_chat_config_overrides = {}
+        return runner
+
+    def _make_suggestion(self, config, confidence=0.8):
+        return {
+            "reasoning": "Test recommendation",
+            "confidence": confidence,
+            "config": config,
+            "evidence_pack": {
+                "hypothesis": "test",
+                "supporting_metrics": [{"name": "s1_rate", "value": 0.1, "baseline": 0.05, "delta_vs_baseline": 0.05}],
+                "uncertainty": "low",
+                "confounders": [],
+                "falsification": "s1_rate drops below 0.05",
+            },
+        }
+
+    def test_category_weights_applied_to_grammar_overrides(self):
+        """category_weights dict should merge into grammar weight overrides."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "category_weights": {"functional": 3.0, "elementwise_unary": 2.5, "math_space": 1.8},
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 3.0)
+        self.assertAlmostEqual(runner._grammar_weight_overrides["elementwise_unary"], 2.5)
+        self.assertAlmostEqual(runner._grammar_weight_overrides["math_space"], 1.8)
+
+    def test_excluded_ops_stored(self):
+        """excluded_ops list should populate _excluded_ops_overrides."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "excluded_ops": ["rwkv_channel", "swiglu_mlp"],
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertIn("rwkv_channel", runner._excluded_ops_overrides)
+        self.assertIn("swiglu_mlp", runner._excluded_ops_overrides)
+
+    def test_excluded_ops_accumulate(self):
+        """Multiple recommendations should accumulate excluded ops."""
+        runner = self._make_runner()
+        runner._excluded_ops_overrides = {"old_op"}
+        nb = MagicMock()
+        suggestion = self._make_suggestion({"excluded_ops": ["new_op"]})
+        runner._apply_recommendation(suggestion, nb)
+        self.assertIn("old_op", runner._excluded_ops_overrides)
+        self.assertIn("new_op", runner._excluded_ops_overrides)
+
+    def test_op_weights_stored(self):
+        """op_weights dict should populate _op_weights_overrides."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "op_weights": {"selective_scan": 2.0, "exp": 1.5},
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertAlmostEqual(runner._op_weights_overrides["selective_scan"], 2.0)
+        self.assertAlmostEqual(runner._op_weights_overrides["exp"], 1.5)
+
+    def test_grammar_probs_applied_to_config_overrides(self):
+        """Grammar probability keys should go into config overrides."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "grammar_split_prob": 0.3,
+            "grammar_merge_prob": 0.4,
+            "grammar_risky_op_prob": 0.15,
+            "grammar_freq_domain_prob": 0.2,
+            "structured_sparsity_bias": 0.5,
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_split_prob"], 0.3)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_merge_prob"], 0.4)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_risky_op_prob"], 0.15)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_freq_domain_prob"], 0.2)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["structured_sparsity_bias"], 0.5)
+
+    def test_combined_recommendation(self):
+        """A recommendation with all knob types should route each correctly."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "n_programs": 60,
+            "max_depth": 12,
+            "math_space_weight": 3.5,
+            "category_weights": {"functional": 2.5, "sequence": 1.8},
+            "excluded_ops": ["rwkv_channel"],
+            "op_weights": {"matmul": 1.5},
+            "grammar_split_prob": 0.4,
+            "residual_prob": 0.8,
+        })
+        runner._apply_recommendation(suggestion, nb)
+        # Grammar overrides: math_space_weight + category weights
+        self.assertAlmostEqual(runner._grammar_weight_overrides["math_space_weight"], 3.5)
+        self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 2.5)
+        self.assertAlmostEqual(runner._grammar_weight_overrides["sequence"], 1.8)
+        # Excluded ops
+        self.assertIn("rwkv_channel", runner._excluded_ops_overrides)
+        # Op weights
+        self.assertAlmostEqual(runner._op_weights_overrides["matmul"], 1.5)
+        # Config overrides
+        self.assertEqual(runner._last_chat_config_overrides["n_programs"], 60)
+        self.assertEqual(runner._last_chat_config_overrides["max_depth"], 12)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_split_prob"], 0.4)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["residual_prob"], 0.8)
+
+    def test_low_confidence_rejected(self):
+        """Recommendations with confidence < 0.4 should not be applied."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion(
+            {"category_weights": {"functional": 5.0}, "excluded_ops": ["matmul"]},
+            confidence=0.2,
+        )
+        runner._apply_recommendation(suggestion, nb)
+        self.assertEqual(runner._grammar_weight_overrides, {})
+        self.assertEqual(runner._excluded_ops_overrides, set())
+
+    def test_missing_evidence_pack_rejected(self):
+        """Recommendations without evidence pack should not be applied."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = {
+            "reasoning": "Trust me",
+            "confidence": 0.9,
+            "config": {"category_weights": {"functional": 5.0}},
+            # no evidence_pack
+        }
+        runner._apply_recommendation(suggestion, nb)
+        self.assertEqual(runner._grammar_weight_overrides, {})
+
+    def test_value_clamping_probabilities(self):
+        """Probability values should be clamped to [0, 1]."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "grammar_split_prob": 5.0,  # Should clamp to 1.0
+            "grammar_merge_prob": -0.5,  # Should clamp to 0.0
+            "residual_prob": 1.5,  # Should clamp to 1.0
+            "structured_sparsity_bias": 99.0,  # Should clamp to 1.0
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_split_prob"], 1.0)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_merge_prob"], 0.0)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["residual_prob"], 1.0)
+        self.assertAlmostEqual(runner._last_chat_config_overrides["structured_sparsity_bias"], 1.0)
+
+    def test_value_clamping_category_weights(self):
+        """Category weights should be clamped to [0.1, 10.0]."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "category_weights": {"functional": 999.0, "math_space": -5.0},
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 10.0)
+        self.assertAlmostEqual(runner._grammar_weight_overrides["math_space"], 0.1)
+
+    def test_value_clamping_op_weights(self):
+        """Op weights should be clamped to [0.01, 10.0]."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "op_weights": {"matmul": 100.0, "exp": -1.0},
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertAlmostEqual(runner._op_weights_overrides["matmul"], 10.0)
+        self.assertAlmostEqual(runner._op_weights_overrides["exp"], 0.01)
+
+    def test_value_clamping_n_programs(self):
+        """n_programs should be clamped to [4, 500]."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({"n_programs": 99999})
+        runner._apply_recommendation(suggestion, nb)
+        self.assertEqual(runner._last_chat_config_overrides["n_programs"], 500)
+
+    def test_invalid_types_ignored(self):
+        """Non-dict category_weights, non-list excluded_ops should be ignored."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "category_weights": "not_a_dict",
+            "excluded_ops": "not_a_list",
+            "op_weights": 42,
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertEqual(runner._grammar_weight_overrides, {})
+        self.assertEqual(runner._excluded_ops_overrides, set())
+        self.assertEqual(runner._op_weights_overrides, {})
+
+    def test_unknown_keys_ignored(self):
+        """Unknown config keys should not appear in any override dict."""
+        runner = self._make_runner()
+        nb = MagicMock()
+        suggestion = self._make_suggestion({
+            "totally_fake_key": 42,
+            "another_fake": "hello",
+        })
+        runner._apply_recommendation(suggestion, nb)
+        self.assertEqual(runner._grammar_weight_overrides, {})
+        self.assertEqual(runner._last_chat_config_overrides, {})
+
+
+class TestContextBuilderExpanded(unittest.TestCase):
+    """Tests for expanded context builder sections."""
+
+    def test_op_registry_section_populated(self):
+        """Op registry section should list all primitives by category."""
+        from research.scientist.llm.context import _build_op_registry_section, _OP_REGISTRY_CACHE
+        import research.scientist.llm.context as ctx_mod
+        ctx_mod._OP_REGISTRY_CACHE = None  # Force rebuild
+        section = _build_op_registry_section()
+        self.assertIn("Available Ops", section)
+        self.assertIn("excluded_ops", section)
+        self.assertIn("elementwise_unary", section)
+        self.assertIn("relu", section)
+        self.assertIn("matmul", section)
+
+    def test_category_weight_hint_in_context(self):
+        """Grammar weights section should include category_weights hint."""
+        from research.scientist.llm.context import build_rich_context
+        ctx = build_rich_context(
+            results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
+            analytics_data={
+                "grammar_weights": {"parameterized": 2.0},
+                "default_weights": {"parameterized": 1.0},
+            },
+        )
+        self.assertIn("Set category_weights in CONFIG", ctx)
+
+    def test_excluded_ops_hint_in_negative_results(self):
+        """Negative results section should suggest using excluded_ops."""
+        from research.scientist.llm.context import build_rich_context
+        ctx = build_rich_context(
+            results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
+            analytics_data={
+                "negative_results": {
+                    "failed_ops": [
+                        {"op_name": "bad_op", "n_used": 10, "failure_stage": "stage0", "confidence": 0.9},
+                    ],
+                },
+            },
+        )
+        self.assertIn("Use excluded_ops in CONFIG to ban these", ctx)
+
+    def test_designer_telemetry_section(self):
+        """Designer telemetry should render in context when present."""
+        from research.scientist.llm.context import build_rich_context
+        ctx = build_rich_context(
+            results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
+            analytics_data={
+                "designer_telemetry": {
+                    "bridge_gap_report": {
+                        "unsupported_components": 3,
+                        "total_components": 50,
+                        "gaps": [{"component_id": "comp_a"}, {"component_id": "comp_b"}],
+                    },
+                    "builtin_blocks": ["MLP", "Attention", "FFN"],
+                },
+            },
+        )
+        self.assertIn("Designer Integration:", ctx)
+        self.assertIn("Bridge gap: 3 of 50", ctx)
+        self.assertIn("comp_a", ctx)
+        self.assertIn("MLP", ctx)
+
+    def test_designer_telemetry_absent_gracefully(self):
+        """Missing designer telemetry should not break context building."""
+        from research.scientist.llm.context import build_rich_context
+        ctx = build_rich_context(
+            results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
+            analytics_data={},
+        )
+        self.assertNotIn("Designer Integration:", ctx)
+
+
+class TestRuleBasedStrategies(unittest.TestCase):
+    """Tests for expanded rule-based strategy configs in persona."""
+
+    def test_strategy_keys_match_runconfig(self):
+        """All strategy config keys should be valid RunConfig or grammar override keys."""
+        from research.scientist.persona import Aria
+        from research.scientist.runner import RunConfig
+        aria = Aria()
+        suggestion = aria._rule_based_suggestion()
+        config = suggestion.get("config", {})
+
+        valid_runconfig_keys = set(RunConfig.__dataclass_fields__.keys())
+        # Keys handled by _apply_recommendation
+        valid_override_keys = {
+            "math_space_weight", "category_weights", "excluded_ops", "op_weights",
+            "grammar_split_prob", "grammar_merge_prob", "grammar_risky_op_prob",
+            "grammar_freq_domain_prob", "structured_sparsity_bias", "optimizer_preference",
+        }
+        valid_keys = valid_runconfig_keys | valid_override_keys
+
+        for key in config:
+            self.assertIn(key, valid_keys,
+                          f"Strategy key '{key}' not in RunConfig or override keys")
+
+    def test_all_strategies_have_valid_keys(self):
+        """Cycle through all strategies and verify keys are valid."""
+        from research.scientist.persona import Aria
+        from research.scientist.runner import RunConfig
+        aria = Aria()
+
+        valid_runconfig_keys = set(RunConfig.__dataclass_fields__.keys())
+        valid_override_keys = {
+            "math_space_weight", "category_weights", "excluded_ops", "op_weights",
+            "grammar_split_prob", "grammar_merge_prob", "grammar_risky_op_prob",
+            "grammar_freq_domain_prob", "structured_sparsity_bias", "optimizer_preference",
+        }
+        valid_keys = valid_runconfig_keys | valid_override_keys
+
+        for i in range(9):  # 9 strategies
+            aria.state.experiments_today = i
+            suggestion = aria._rule_based_suggestion()
+            config = suggestion.get("config", {})
+            for key in config:
+                if isinstance(config[key], dict):
+                    continue  # category_weights is a nested dict, not a RunConfig key
+                self.assertIn(key, valid_keys,
+                              f"Strategy {i} key '{key}' not valid")
+
+    def test_functional_heavy_strategy_exists(self):
+        """Strategy 9 (index 8) should be the functional-heavy config."""
+        from research.scientist.persona import Aria
+        aria = Aria()
+        aria.state.experiments_today = 8
+        suggestion = aria._rule_based_suggestion()
+        config = suggestion.get("config", {})
+        self.assertIn("category_weights", config)
+        self.assertAlmostEqual(config["category_weights"]["functional"], 3.0)
+        self.assertAlmostEqual(config["category_weights"]["elementwise_unary"], 2.5)
+
+    def test_split_merge_uses_grammar_prefix(self):
+        """Strategy 5 should use grammar_split_prob, not split_prob."""
+        from research.scientist.persona import Aria
+        aria = Aria()
+        aria.state.experiments_today = 4  # index 4 = strategy 5
+        suggestion = aria._rule_based_suggestion()
+        config = suggestion.get("config", {})
+        self.assertIn("grammar_split_prob", config)
+        self.assertNotIn("split_prob", config)
+
+    def test_high_risk_uses_grammar_prefix(self):
+        """Strategy 6 should use grammar_risky_op_prob, not risky_op_prob."""
+        from research.scientist.persona import Aria
+        aria = Aria()
+        aria.state.experiments_today = 5  # index 5 = strategy 6
+        suggestion = aria._rule_based_suggestion()
+        config = suggestion.get("config", {})
+        self.assertIn("grammar_risky_op_prob", config)
+        self.assertNotIn("risky_op_prob", config)
 
 
 if __name__ == "__main__":

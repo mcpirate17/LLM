@@ -1612,10 +1612,11 @@ class LabNotebook:
         ))
 
     def fail_experiment(self, experiment_id: str, error: str, results: Optional[Dict] = None):
-        """Mark an experiment as failed."""
+        """Mark an experiment as failed. Deletes record if it contains no useful information."""
         results_blob = self._compress(results) if results else None
         n_prog = results.get("total", 0) if results else 0
         
+        # First update so we have the state
         self.conn.execute(
             """UPDATE experiments SET 
                status = 'failed', 
@@ -1627,6 +1628,18 @@ class LabNotebook:
             (time.time(), f"FAILED: {error}", results_blob, n_prog, experiment_id),
         )
         self._maybe_commit()
+
+        # Delete if it's total junk (no programs AND no LLM insights)
+        row = self.conn.execute(
+            "SELECT llm_analysis FROM experiments WHERE experiment_id = ?",
+            (experiment_id,)
+        ).fetchone()
+        
+        if n_prog == 0 and (not row or not row["llm_analysis"]):
+            self.conn.execute("DELETE FROM experiments WHERE experiment_id = ?", (experiment_id,))
+            self.conn.execute("DELETE FROM entries WHERE experiment_id = ?", (experiment_id,))
+            self._maybe_commit()
+            LOGGER.info("Deleted zero-value failed experiment %s", experiment_id)
 
     def purge_empty_experiments(self) -> int:
         """Delete failed experiments that produced no program_results.
@@ -1920,6 +1933,53 @@ class LabNotebook:
                     last_updated = excluded.last_updated""",
                 (op_name, stats["n_used"], stats["n_s0"], stats["n_s05"],
                  stats["n_s1"], avg_lr, avg_nov, avg_nov_conf, now),
+            )
+        self._maybe_commit()
+
+    def strip_graph_json_for_failures(self, experiment_id: str) -> int:
+        """Clear graph_json for S1 failures with no loss data.
+
+        Called after update_op_success_rates() has already consumed the graphs.
+        Sets to empty string (NOT NULL constraint on column).
+        Returns the number of rows stripped.
+        """
+        cur = self.conn.execute(
+            """UPDATE program_results SET graph_json = ''
+               WHERE experiment_id = ?
+                 AND stage0_passed = 1 AND stage1_passed = 0
+                 AND loss_ratio IS NULL AND length(graph_json) > 0""",
+            (experiment_id,),
+        )
+        n = cur.rowcount
+        if n:
+            self._maybe_commit()
+        return n
+
+    def merge_op_failure_counts(self, op_counts: Dict[str, Dict[str, int]]) -> None:
+        """Merge S0 failure op counts into op_success_rates.
+
+        Called after update_op_success_rates() to incorporate ops from programs
+        that failed S0/S0.5 and were not stored in program_results.
+
+        Args:
+            op_counts: {op_name: {"n_used": int, "n_s0": int, "n_s05": int}}
+        """
+        if not op_counts:
+            return
+        now = time.time()
+        for op_name, counts in op_counts.items():
+            self.conn.execute(
+                """INSERT INTO op_success_rates
+                   (op_name, n_used, n_stage0_passed, n_stage05_passed,
+                    n_stage1_passed, last_updated)
+                   VALUES (?, ?, ?, ?, 0, ?)
+                   ON CONFLICT(op_name) DO UPDATE SET
+                    n_used = n_used + excluded.n_used,
+                    n_stage0_passed = n_stage0_passed + excluded.n_stage0_passed,
+                    n_stage05_passed = n_stage05_passed + excluded.n_stage05_passed,
+                    last_updated = excluded.last_updated""",
+                (op_name, counts.get("n_used", 0), counts.get("n_s0", 0),
+                 counts.get("n_s05", 0), now),
             )
         self._maybe_commit()
 
@@ -3106,8 +3166,17 @@ class LabNotebook:
                                THEN CAST(routing_tokens_processed AS REAL) / routing_tokens_total END)
                FROM program_results"""
         ).fetchone()[0]
+        avg_sparsity = self.conn.execute(
+            "SELECT AVG(sparsity_ratio) FROM program_results WHERE sparsity_ratio IS NOT NULL"
+        ).fetchone()[0]
         
+        # Unique fingerprint count for grammar diversity tracking
+        unique_fingerprints = self.conn.execute(
+            "SELECT COUNT(DISTINCT graph_fingerprint) FROM program_results"
+        ).fetchone()[0]
+
         latest_perf_report = None
+        latest_dedup = None
         latest_perf_row = self.conn.execute(
             """SELECT experiment_id, completed_at, results_json
                FROM experiments
@@ -3133,6 +3202,15 @@ class LabNotebook:
                         "gpu_starvation_events": int((perf_report.get("gpu_starvation") or {}).get("event_count", 0) or 0),
                         "top_kernel": top_kernel,
                     }
+                # Extract dedup stats from latest experiment
+                if isinstance(latest_results, dict) and "dedup_rate" in latest_results:
+                    latest_dedup = {
+                        "experiment_id": latest_perf_row["experiment_id"],
+                        "dedup_rate": latest_results.get("dedup_rate", 0),
+                        "skipped_dedup": latest_results.get("skipped_dedup", 0),
+                        "novel_count": latest_results.get("dedup_novel_count", 0),
+                        "known_fingerprints": latest_results.get("dedup_known_fingerprints", 0),
+                    }
             except (TypeError, ValueError, json.JSONDecodeError):
                 latest_perf_report = None
 
@@ -3153,7 +3231,10 @@ class LabNotebook:
             "avg_depth_savings": avg_savings,
             "avg_recursion_savings": avg_recursion_savings,
             "avg_routing_token_retention": avg_token_retention,
+            "avg_sparsity_ratio": avg_sparsity,
             "latest_perf_report": latest_perf_report,
+            "unique_fingerprints": unique_fingerprints,
+            "latest_dedup": latest_dedup,
         }
 
     # ── Leaderboard ──

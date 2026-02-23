@@ -404,6 +404,7 @@ _ALLOWED_CHAT_ACTION_TYPES = {
     "start_experiment",
     "edit_file",
     "spawn_agent",
+    "maintain_database",
 }
 
 
@@ -6538,6 +6539,173 @@ def create_app(
         finally:
             nb.close()
 
+    # ── Batch rerun state ────────────────────────────────────────────
+    _batch_rerun_state: Dict[str, Any] = {
+        "active": False,
+        "total": 0,
+        "completed": 0,
+        "current": None,
+        "remaining": [],
+        "results": [],
+    }
+
+    @app.route("/api/experiments/batch-rerun", methods=["POST"])
+    def api_batch_rerun():
+        """Queue multiple experiments for sequential rerun."""
+        data = request.get_json(silent=True) or {}
+        experiment_ids = data.get("experiment_ids", [])
+        if not experiment_ids or not isinstance(experiment_ids, list):
+            return jsonify({"error": "experiment_ids must be a non-empty list"}), 400
+
+        if _batch_rerun_state["active"]:
+            return jsonify({"error": "A batch rerun is already in progress"}), 409
+
+        runner = _get_runner(notebook_path)
+        if runner.is_running:
+            return jsonify({"error": "An experiment is already running"}), 409
+
+        # Validate all experiment IDs exist before starting
+        nb = LabNotebook(notebook_path)
+        try:
+            for eid in experiment_ids:
+                exp = nb.get_resumable_experiment(eid) or nb.get_experiment(eid)
+                if exp is None:
+                    return jsonify({"error": f"Experiment {eid} not found"}), 404
+        finally:
+            nb.close()
+
+        queue = list(experiment_ids)
+        first_id = queue.pop(0)
+
+        _batch_rerun_state.update({
+            "active": True,
+            "total": len(experiment_ids),
+            "completed": 0,
+            "current": first_id,
+            "remaining": queue,
+            "results": [],
+        })
+
+        def _run_single(eid):
+            """Rerun a single experiment, return new_id or None on error."""
+            r = _get_runner(notebook_path)
+            nb2 = LabNotebook(notebook_path)
+            try:
+                source = nb2.get_resumable_experiment(eid) or nb2.get_experiment(eid)
+                if source is None:
+                    return None
+                try:
+                    config_dict = json.loads(source.get("config_json") or "{}")
+                except Exception:
+                    config_dict = {}
+                config = RunConfig.from_dict(config_dict)
+                hypothesis = source.get("hypothesis")
+                exp_type = str(source.get("experiment_type") or "synthesis").strip().lower()
+
+                if str(source.get("status") or "").strip().lower() == "running":
+                    nb2.cancel_experiment(eid)
+
+                if exp_type == "continuous":
+                    config.continuous = True
+                    new_id = r.start_continuous(config)
+                elif exp_type == "evolution":
+                    new_id = r.start_evolution(config, hypothesis=hypothesis)
+                elif exp_type == "novelty":
+                    new_id = r.start_novelty_search(config, hypothesis=hypothesis)
+                else:
+                    new_id = r.start_experiment(config, hypothesis=hypothesis)
+
+                _record_run_trigger(
+                    experiment_id=new_id,
+                    source="ui_batch_rerun",
+                    mode=exp_type,
+                    details={"source_experiment_id": eid},
+                )
+                return new_id
+            except Exception as e:
+                logger.error(f"Batch rerun error for {eid}: {e}\n{traceback.format_exc()}")
+                return None
+            finally:
+                nb2.close()
+
+        def _batch_worker():
+            """Background thread: run first, then poll and run remaining."""
+            try:
+                # Run the first experiment
+                new_id = _run_single(first_id)
+                _batch_rerun_state["results"].append({
+                    "source_id": first_id,
+                    "new_id": new_id,
+                    "ok": new_id is not None,
+                })
+
+                for next_id in list(_batch_rerun_state["remaining"]):
+                    # Wait for current experiment to finish
+                    r = _get_runner(notebook_path)
+                    while r.is_running:
+                        time.sleep(5)
+
+                    _batch_rerun_state["completed"] += 1
+                    _batch_rerun_state["current"] = next_id
+                    _batch_rerun_state["remaining"] = [
+                        x for x in _batch_rerun_state["remaining"] if x != next_id
+                    ]
+
+                    new_id = _run_single(next_id)
+                    _batch_rerun_state["results"].append({
+                        "source_id": next_id,
+                        "new_id": new_id,
+                        "ok": new_id is not None,
+                    })
+
+                # Wait for the last one to finish
+                r = _get_runner(notebook_path)
+                while r.is_running:
+                    time.sleep(5)
+                _batch_rerun_state["completed"] += 1
+
+            except Exception as e:
+                logger.error(f"Batch rerun worker error: {e}\n{traceback.format_exc()}")
+            finally:
+                _batch_rerun_state["active"] = False
+                _batch_rerun_state["current"] = None
+                _batch_rerun_state["remaining"] = []
+
+        t = threading.Thread(target=_batch_worker, daemon=True)
+        t.start()
+
+        return jsonify({
+            "status": "queued",
+            "total": len(experiment_ids),
+            "started": first_id,
+            "queued": queue,
+        })
+
+    @app.route("/api/experiments/batch-rerun/status", methods=["GET"])
+    def api_batch_rerun_status():
+        """Poll batch rerun progress."""
+        return jsonify({
+            "active": _batch_rerun_state["active"],
+            "total": _batch_rerun_state["total"],
+            "completed": _batch_rerun_state["completed"],
+            "current": _batch_rerun_state["current"],
+            "remaining": _batch_rerun_state["remaining"],
+            "results": _batch_rerun_state["results"],
+        })
+
+    @app.route("/api/experiments/batch-rerun/cancel", methods=["POST"])
+    def api_batch_rerun_cancel():
+        """Cancel remaining batch reruns. Current experiment keeps running."""
+        if not _batch_rerun_state["active"]:
+            return jsonify({"status": "no_batch_active"})
+        cancelled = list(_batch_rerun_state["remaining"])
+        _batch_rerun_state["remaining"] = []
+        return jsonify({
+            "status": "cancelled",
+            "cancelled_count": len(cancelled),
+            "completed_so_far": _batch_rerun_state["completed"],
+        })
+
     @app.route("/api/experiments/<experiment_id>/fill-gaps", methods=["POST"])
     def api_fill_experiment_gaps(experiment_id):
         """Backfill missing summary metrics for an existing experiment row."""
@@ -8833,6 +9001,7 @@ def create_app(
 
             graph_json_str = row["graph_json"]
             workflow = import_research_program(graph_json_str)
+            workflow.setdefault("schema_version", "workflow_graph.v1")
             return jsonify({"success": True, "workflow": workflow})
         finally:
             nb.close()
@@ -9296,6 +9465,7 @@ def create_app(
                 return jsonify({"error": "Program not found"}), 404
             graph_json_str = row["graph_json"]
             workflow = import_research_program(graph_json_str)
+            workflow.setdefault("schema_version", "workflow_graph.v1")
             return jsonify({"success": True, "workflow": workflow})
         except Exception as e:
             logger.error(f"Error in /api/v1/import/survivors/{result_id}: {e}")
@@ -9321,6 +9491,23 @@ def create_app(
     def api_v1_components():
         """Return designer components (v1 alias)."""
         return jsonify(get_designer_components())
+
+    # ── Catch-all proxy for remaining /api/v1/ designer routes ──
+    # The embedded designer iframe makes requests to /api/v1/... which hit
+    # this Flask server (same origin).  Specific aliases above handle some
+    # routes; everything else is proxied to the aria-designer backend.
+
+    @app.route("/api/v1/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+    def api_v1_catchall(subpath):
+        """Proxy unhandled /api/v1/ requests to the aria-designer backend."""
+        method = request.method
+        json_body = request.get_json(silent=True)
+        params = dict(request.args) if request.args else None
+        resp = _designer_proxy(method, f"/api/v1/{subpath}", json_body=json_body, params=params)
+        result = _proxy_or_error(resp)
+        if result is not None:
+            return result
+        return jsonify({"error": f"Designer backend unavailable for /api/v1/{subpath}"}), 502
 
     # ── Designer static files (same-origin iframe) ──
 

@@ -50,7 +50,7 @@ from ..eval.sandbox import safe_eval
 from ..eval.metrics import novelty_score
 from ..eval.flops import estimate_flops
 from ..eval.baseline import TransformerBaseline
-from ..eval.fingerprint import compute_fingerprint
+from ..eval.fingerprint import compute_fingerprint, BehavioralFingerprint
 from ..eval.diagnostic_tasks import run_diagnostic_suite, DiagnosticSuiteResult
 from ..eval.regression_gate import RegressionGate
 from ..eval.perf_budget import evaluate_perf_budget_gate
@@ -1034,6 +1034,9 @@ class ExperimentRunner:
         self._last_stagnation_agent_cycle = -10
         self._last_anti_stagnation_cycle = -10
         self._last_chat_config_overrides: Dict[str, Any] = {}
+        self._excluded_ops_overrides: Set[str] = set()
+        self._op_weights_overrides: Dict[str, float] = {}
+        self._structured_sparsity_bias_override: float = 0.0
         try:
             self._healer = CodeHealer(self.notebook_path)
         except Exception:
@@ -1512,6 +1515,25 @@ class ExperimentRunner:
         mode_reasoning = mode_rec.get("reasoning", "")
         mode_confidence = mode_rec.get("confidence", 0)
         mode_config_overrides = mode_rec.get("config") or {}
+
+        # Extract op_weights and structured_sparsity_bias from mode config
+        # (these aren't RunConfig attrs, so _config_with_overrides would ignore them)
+        if "op_weights" in mode_config_overrides:
+            mode_op_weights = mode_config_overrides.pop("op_weights")
+            if isinstance(mode_op_weights, dict):
+                self._op_weights_overrides.update({
+                    str(k): max(0.01, min(10.0, float(v)))
+                    for k, v in mode_op_weights.items()
+                    if isinstance(v, (int, float))
+                })
+                logger.info("Mode recommendation applied op_weights: %s", mode_op_weights)
+        if "structured_sparsity_bias" in mode_config_overrides:
+            bias = mode_config_overrides.pop("structured_sparsity_bias")
+            if isinstance(bias, (int, float)):
+                # Store as grammar weight override so _build_grammar_config picks it up
+                self._structured_sparsity_bias_override = max(0.0, min(1.0, float(bias)))
+                logger.info("Mode recommendation applied structured_sparsity_bias: %.2f", bias)
+
         cycle_config, override_report = self._config_with_overrides(config, mode_config_overrides)
 
         if override_report.get("applied"):
@@ -2222,6 +2244,9 @@ class ExperimentRunner:
         elif action_type == "edit_file":
             return self._execute_edit_file_action(action, nb)
 
+        elif action_type == "maintain_database":
+            return self._execute_maintain_database_action(action, nb)
+
         else:
             return {"status": "error", "error": f"Unknown action type: {action_type}"}
 
@@ -2308,6 +2333,128 @@ class ExperimentRunner:
 
         return {"status": "applied", "path": path, "backup": backup_path,
                 "description": description}
+
+    # ── Database Maintenance Actions ──────────────────────────────────────
+
+    _MAINTENANCE_OPS = {
+        "purge_empty_experiments",
+        "purge_junk_programs",
+        "reset_op_stats",
+        "clear_toxic_signatures",
+        "vacuum",
+        "backfill_failure_signatures",
+    }
+
+    def _execute_maintain_database_action(
+        self, action: Dict[str, Any], nb: LabNotebook,
+    ) -> Dict[str, Any]:
+        """Execute a database maintenance operation.
+
+        Allowed operations:
+          purge_empty_experiments  — delete failed experiments with no results
+          purge_junk_programs      — delete S0 failures with no error classification
+          reset_op_stats           — reset op_success_rates for specific ops
+          clear_toxic_signatures   — remove failure_signatures for specific ops
+          vacuum                   — reclaim disk space
+          backfill_failure_signatures — one-time backfill from existing results
+        """
+        operation = str(action.get("operation") or "").strip()
+        if operation not in self._MAINTENANCE_OPS:
+            return {
+                "status": "error",
+                "error": f"Unknown maintenance operation: {operation}. "
+                         f"Allowed: {', '.join(sorted(self._MAINTENANCE_OPS))}",
+            }
+
+        try:
+            if operation == "purge_empty_experiments":
+                n = nb.purge_empty_experiments()
+                nb.log_learning_event(
+                    "maintenance_purge_experiments",
+                    f"Aria purged {n} empty failed experiments",
+                )
+                return {"status": "applied", "deleted_experiments": n}
+
+            elif operation == "purge_junk_programs":
+                # Delete S0 failures with no error_type (no learning signal)
+                cur = nb.conn.execute(
+                    "DELETE FROM program_results "
+                    "WHERE (stage0_passed = 0 OR stage0_passed IS NULL) "
+                    "AND (error_type IS NULL OR error_type = '')"
+                )
+                n = cur.rowcount
+                nb._maybe_commit()
+                nb.log_learning_event(
+                    "maintenance_purge_junk",
+                    f"Aria purged {n} junk S0 failure records",
+                )
+                return {"status": "applied", "deleted_programs": n}
+
+            elif operation == "reset_op_stats":
+                ops = action.get("ops") or []
+                if not isinstance(ops, list) or not ops:
+                    return {"status": "error", "error": "Provide 'ops' list of op names to reset"}
+                op_names = [str(o).strip() for o in ops if str(o).strip()]
+                if not op_names:
+                    return {"status": "error", "error": "No valid op names provided"}
+                placeholders = ",".join("?" * len(op_names))
+                cur = nb.conn.execute(
+                    f"DELETE FROM op_success_rates WHERE op_name IN ({placeholders})",
+                    op_names,
+                )
+                n = cur.rowcount
+                nb._maybe_commit()
+                nb.log_learning_event(
+                    "maintenance_reset_op_stats",
+                    f"Aria reset op stats for {op_names} ({n} rows)",
+                    ops=op_names,
+                )
+                return {"status": "applied", "ops_reset": op_names, "rows_deleted": n}
+
+            elif operation == "clear_toxic_signatures":
+                ops = action.get("ops") or []
+                if not isinstance(ops, list) or not ops:
+                    return {"status": "error", "error": "Provide 'ops' list of op names to clear signatures for"}
+                total = 0
+                for op in ops:
+                    op = str(op).strip()
+                    if not op:
+                        continue
+                    cur = nb.conn.execute(
+                        "DELETE FROM failure_signatures WHERE signature LIKE ?",
+                        (f"%{op}%",),
+                    )
+                    total += cur.rowcount
+                nb._maybe_commit()
+                nb.log_learning_event(
+                    "maintenance_clear_toxic",
+                    f"Aria cleared {total} toxic signatures for {ops}",
+                    ops=[str(o).strip() for o in ops],
+                )
+                return {"status": "applied", "signatures_deleted": total, "ops": [str(o).strip() for o in ops]}
+
+            elif operation == "vacuum":
+                nb.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # VACUUM requires isolation_level=None; run on a fresh connection
+                import sqlite3
+                vac_conn = sqlite3.connect(nb.db_path, isolation_level=None)
+                vac_conn.execute("VACUUM")
+                vac_conn.close()
+                nb.log_learning_event(
+                    "maintenance_vacuum",
+                    "Aria ran VACUUM to reclaim disk space",
+                )
+                return {"status": "applied", "operation": "vacuum"}
+
+            elif operation == "backfill_failure_signatures":
+                n = nb.backfill_failure_signatures()
+                return {"status": "applied", "signatures_created": n}
+
+        except Exception as e:
+            logger.warning("Maintenance action %s failed: %s", operation, e)
+            return {"status": "error", "error": str(e)[:200]}
+
+        return {"status": "error", "error": "Unreachable"}
 
     def _compression_focus_override(
         self,
@@ -3345,6 +3492,10 @@ class ExperimentRunner:
 
             # Update op success rates and failure signatures after experiment
             nb.update_op_success_rates(exp_id)
+            s0_op_counts = results.pop("_s0_op_counts", None)
+            if s0_op_counts:
+                nb.merge_op_failure_counts(s0_op_counts)
+            nb.strip_graph_json_for_failures(exp_id)
             nb.update_failure_signatures(exp_id)
 
             # Save effective weights + S1 outcome for EMA continuity
@@ -4733,12 +4884,47 @@ class ExperimentRunner:
             avg_novelty = (sum(novelty_scores) / len(novelty_scores)
                            if novelty_scores else 0)
 
+            # Count candidates ready for investigation, excluding those already
+            # attempted and failed (checked via program_results in investigation experiments)
+            _investigated_fps = set()
+            try:
+                _inv_rows = nb.conn.execute(
+                    "SELECT DISTINCT pr.graph_fingerprint "
+                    "FROM program_results pr "
+                    "JOIN experiments e ON e.experiment_id = pr.experiment_id "
+                    "WHERE e.experiment_type = 'investigation'"
+                ).fetchall()
+                _investigated_fps = {r[0] for r in _inv_rows if r[0]}
+            except Exception:
+                pass
+
             investigation_ready = len([
                 e for e in leaderboard
                 if e.get("tier") == "screening"
                 and e.get("screening_loss_ratio") is not None
                 and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
+                and e.get("result_id") not in _investigated_fps
+                # Also check by fingerprint from the linked program_result
             ])
+            # More robust: filter by fingerprint
+            if _investigated_fps:
+                _inv_candidates = []
+                for e in leaderboard:
+                    if (e.get("tier") == "screening"
+                            and e.get("screening_loss_ratio") is not None
+                            and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold):
+                        # Look up the fingerprint for this result
+                        try:
+                            fp_row = nb.conn.execute(
+                                "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+                                (e["result_id"],)
+                            ).fetchone()
+                            fp = fp_row[0] if fp_row else None
+                        except Exception:
+                            fp = None
+                        if fp and fp not in _investigated_fps:
+                            _inv_candidates.append(e)
+                investigation_ready = len(_inv_candidates)
             validation_ready = len([
                 e for e in leaderboard
                 if e.get("tier") == "investigation"
@@ -5196,6 +5382,10 @@ class ExperimentRunner:
         if summary:
             logger.info("Aria summary: %s", summary[:200])
         nb.update_op_success_rates(exp_id)
+        s0_op_counts = results.pop("_s0_op_counts", None)
+        if s0_op_counts:
+            nb.merge_op_failure_counts(s0_op_counts)
+        nb.strip_graph_json_for_failures(exp_id)
         nb.update_failure_signatures(exp_id)
         self._auto_recommend(results, config, hypothesis, nb)
 
@@ -5593,11 +5783,11 @@ class ExperimentRunner:
     def _compute_multi_objective_fitness(self, s1_result, sandbox_result, graph, config):
         """Multi-objective fitness: quality + efficiency + speed + learning + compactness."""
         weights = {
-            "quality": 0.40,
-            "efficiency": 0.20,
-            "speed": 0.15,
-            "learning_speed": 0.15,
-            "compactness": 0.10,
+            "quality": 0.30,
+            "efficiency": 0.25,
+            "speed": 0.10,
+            "learning_speed": 0.20,
+            "compactness": 0.15,
         }
 
         components = {}
@@ -7411,7 +7601,64 @@ class ExperimentRunner:
             except Exception as e:
                 logger.warning("Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e)
 
+        # Novelty scoring for S1 survivors
+        n_score = None
+        nov = None
+        if s1_passed:
+            try:
+                fp = None
+                fp_dict = s1_result.get("_behavioral_fingerprint")
+                if fp_dict is not None:
+                    # Option B: reconstruct behavioral fingerprint from S1 worker
+                    fp = BehavioralFingerprint()
+                    for k, v in fp_dict.items():
+                        if hasattr(fp, k):
+                            setattr(fp, k, v)
+
+                    calibration_row = self._ensure_novelty_calibration(nb, config, fp)
+                    calibration = None
+                    if calibration_row:
+                        calibration = {
+                            "noise_floor_mean": calibration_row.get("noise_floor_mean"),
+                            "noise_floor_std": calibration_row.get("noise_floor_std"),
+                        }
+                    nov = novelty_score(graph, fingerprint=fp, calibration=calibration)
+                else:
+                    # Option A fallback: structural-only novelty
+                    nov = novelty_score(graph)
+
+                n_score = nov.overall_novelty
+                novelty_valid, novelty_valid_reason, novelty_requires_justification = (
+                    self._resolve_novelty_promotion_validity(
+                        config,
+                        nov.novelty_valid_for_promotion,
+                        nov.novelty_validity_reason,
+                    )
+                )
+                program_metrics["novelty_raw_score"] = nov.raw_novelty
+                program_metrics["novelty_z_score"] = nov.novelty_z_score
+                program_metrics["novelty_reference_version"] = (
+                    nov.novelty_reference_version
+                    or (fp.novelty_reference_version if fp is not None else None)
+                )
+                program_metrics["novelty_valid_for_promotion"] = int(novelty_valid)
+                program_metrics["novelty_validity_reason"] = novelty_valid_reason
+                program_metrics["novelty_requires_justification"] = int(
+                    novelty_requires_justification
+                )
+            except Exception as e:
+                logger.debug("Novelty scoring failed for %s: %s", graph.fingerprint()[:10], e)
+
         # Record result
+        novelty_kwargs = {}
+        if nov is not None:
+            novelty_kwargs = dict(
+                novelty_score=n_score,
+                structural_novelty=nov.structural_novelty,
+                behavioral_novelty=nov.behavioral_novelty,
+                most_similar_to=nov.most_similar_to,
+                novelty_confidence=nov.novelty_confidence,
+            )
         rid = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=graph.fingerprint(),
@@ -7422,6 +7669,7 @@ class ExperimentRunner:
             final_loss=final_loss,
             loss_ratio=loss_ratio,
             throughput_tok_s=throughput,
+            **novelty_kwargs,
             **program_metrics,
         )
 
@@ -7451,6 +7699,10 @@ class ExperimentRunner:
             "result": "pass" if s1_passed else "fail",
             "loss_ratio": f"{loss_ratio:.4f}" if loss_ratio is not None else None,
             "result_id": rid,
+            "throughput": f"{throughput:.0f}" if throughput else None,
+            "params": program_metrics.get("param_count"),
+            "memory_mb": f"{program_metrics.get('peak_memory_mb', 0):.1f}" if program_metrics.get("peak_memory_mb") else None,
+            "novelty": f"{program_metrics.get('novelty_score', 0):.3f}" if program_metrics.get("novelty_score") is not None else None,
         })
 
     def _execute_experiment(self, exp_id: str, config: RunConfig,
@@ -7576,6 +7828,9 @@ class ExperimentRunner:
             except Exception as e:
                 logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
 
+        # Merge Aria's overrides into excluded_ops and op_weights
+        excluded_ops = excluded_ops | self._excluded_ops_overrides
+        op_weights = {**op_weights, **self._op_weights_overrides}
         grammar = self._build_grammar_config(config, excluded_ops=excluded_ops, op_weights=op_weights)
         old_weights = dict(grammar.category_weights)
 
@@ -7714,13 +7969,84 @@ class ExperimentRunner:
 
         last_log_time = time.time()
 
+        # Dedup: load fingerprints already evaluated in previous experiments
+        # to avoid wasting compute re-testing identical architectures.
+        try:
+            _existing_fps = {
+                r[0] for r in nb.conn.execute(
+                    "SELECT DISTINCT graph_fingerprint FROM program_results"
+                ).fetchall() if r[0]
+            }
+        except Exception:
+            _existing_fps = set()
+
+        # Pre-filter known fingerprints and adaptively generate more if needed
+        original_count = len(graphs)
+        _dedup_max_rounds = 3
+        _dedup_target = max(1, int(original_count * 0.5))  # want at least 50% novel
+        for _dedup_round in range(_dedup_max_rounds):
+            novel = []
+            seen_this_batch = set()
+            for g in graphs:
+                fp = g.fingerprint()
+                if fp not in _existing_fps and fp not in seen_this_batch:
+                    novel.append(g)
+                    seen_this_batch.add(fp)
+            graphs = novel
+            if len(graphs) >= _dedup_target or config.model_source == "fingerprint_refine":
+                break
+            # Generate extra graphs to compensate for high dedup rate
+            shortfall = original_count - len(graphs)
+            if shortfall <= 0:
+                break
+            extra = batch_generate(min(shortfall * 2, original_count), grammar)
+            graphs.extend(extra)
+            logger.info(
+                "Experiment %s dedup round %d: %d novel / %d generated, "
+                "added %d extra candidates",
+                exp_id[:8], _dedup_round + 1, len(novel), original_count,
+                len(extra),
+            )
+
+        # Mark all novel fingerprints as seen for within-run dedup
+        for g in graphs:
+            _existing_fps.add(g.fingerprint())
+
+        dedup_rate = 1.0 - (len(graphs) / max(original_count, 1))
+        results["skipped_dedup"] = original_count - len(graphs)
+        results["dedup_rate"] = round(dedup_rate, 3)
+        results["dedup_novel_count"] = len(graphs)
+        results["dedup_known_fingerprints"] = len(_existing_fps)
+        results["total"] = len(graphs)  # update to reflect actual novel count
+
+        if dedup_rate > 0.1:
+            logger.info(
+                "Experiment %s dedup: %d/%d candidates were duplicates (%.0f%% dedup rate), "
+                "%d novel candidates remain, %d known fingerprints in DB",
+                exp_id[:8], original_count - len(graphs), original_count,
+                dedup_rate * 100, len(graphs), len(_existing_fps),
+            )
+        if dedup_rate > 0.8:
+            logger.warning(
+                "Experiment %s: grammar diversity exhaustion — %.0f%% dedup rate. "
+                "Consider increasing grammar depth/ops or switching to refinement mode.",
+                exp_id[:8], dedup_rate * 100,
+            )
+
+        with self._lock:
+            self._progress.total_programs = len(graphs)
+
+        # Track ops from S0 failures for op_success_rates (not stored in DB)
+        _s0_op_counts: Dict[str, Dict[str, int]] = {}  # op -> {n_used, n_s0, n_s05}
+
         for i, graph in enumerate(graphs):
             if self._stop_event.is_set():
                 break
 
+            fp = graph.fingerprint()
             with self._lock:
                 self._progress.current_program = i + 1
-                self._progress.current_fingerprint = graph.fingerprint()[:10]
+                self._progress.current_fingerprint = fp[:10]
                 self._progress.elapsed_seconds = time.time() - t_start
 
             # Pre-screen: skip graphs whose op-pair structure is toxic
@@ -7767,17 +8093,17 @@ class ExperimentRunner:
                 max_depth=max(1, int(config.max_depth)),
             )
             if not validation.valid:
-                rid = nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=graph.fingerprint(),
-                    graph_json=graph_to_json(graph),
-                    stage0_passed=False, stage05_passed=False, stage1_passed=False,
-                    stage0_error="; ".join(validation.errors),
-                    stage_at_death="stage0",
-                    **program_metrics,
-                )
+                # Don't store S0 validation failures — they carry no learning
+                # signal. Error counts are tracked in results dict and live feed.
+                # But DO track op usage for grammar weight adaptation.
+                results.setdefault("s0_validation_failures", 0)
+                results["s0_validation_failures"] += 1
+                for node in graph.nodes.values():
+                    if not node.is_input and node.op_name:
+                        c = _s0_op_counts.setdefault(node.op_name, {"n_used": 0, "n_s0": 0, "n_s05": 0})
+                        c["n_used"] += 1
                 self._emit_event("program_evaluated", {
-                    "index": i, "fingerprint": graph.fingerprint()[:10],
+                    "index": i, "fingerprint": fp[:10],
                     "result": "invalid", "error": validation.errors[0] if validation.errors else "",
                 })
                 continue
@@ -7823,18 +8149,32 @@ class ExperimentRunner:
                     with self._lock: self._progress.stage05_passed += 1
 
                 if not s0_passed or not s05_passed:
-                    nb.record_program_result(
-                        experiment_id=exp_id,
-                        graph_fingerprint=graph.fingerprint(),
-                        graph_json=graph_to_json(graph),
-                        stage0_passed=s0_passed, stage05_passed=s05_passed, stage1_passed=False,
-                        stage0_error=sandbox_result.error,
-                        stage_at_death="stage0" if not s0_passed else "stage05",
-                        **program_metrics,
+                    # Don't store S0/S0.5 failures — error counts are tracked
+                    # in results dict and error_type in the live feed event.
+                    # But DO track op usage for grammar weight adaptation.
+                    error_type = sandbox_result.error_type or "unknown"
+                    results.setdefault("failure_error_types", {})
+                    results["failure_error_types"][error_type] = (
+                        results["failure_error_types"].get(error_type, 0) + 1
                     )
+                    for node in graph.nodes.values():
+                        if not node.is_input and node.op_name:
+                            c = _s0_op_counts.setdefault(node.op_name, {"n_used": 0, "n_s0": 0, "n_s05": 0})
+                            c["n_used"] += 1
+                            if s0_passed:
+                                c["n_s0"] += 1
+                            if s05_passed:
+                                c["n_s05"] += 1
                     self._emit_event("program_evaluated", {
-                        "index": i, "fingerprint": graph.fingerprint()[:10],
+                        "index": i, "fingerprint": fp[:10],
                         "result": "fail_s0" if not s0_passed else "fail_s05",
+                        "error": (sandbox_result.error or "")[:120] if not s0_passed else None,
+                        "error_type": error_type,
+                        "stability": f"{sandbox_result.stability_score:.2f}" if s0_passed and not s05_passed else None,
+                        "params": sandbox_result.param_count if sandbox_result.param_count else None,
+                        "memory_mb": f"{sandbox_result.peak_memory_mb:.1f}" if sandbox_result.peak_memory_mb else None,
+                        "has_nan": sandbox_result.has_nan_output or sandbox_result.has_nan_grad or None,
+                        "has_inf": sandbox_result.has_inf_output or None,
                     })
                     continue
 
@@ -7881,6 +8221,8 @@ class ExperimentRunner:
         results.pop("_perf_traces", None)
         results.pop("_gpu_starvation", None)
         results.pop("_kernel_timing", None)
+        if _s0_op_counts:
+            results["_s0_op_counts"] = _s0_op_counts
 
         elapsed = time.time() - t_start
         with self._lock:
@@ -7890,12 +8232,15 @@ class ExperimentRunner:
 
         best = results.get("best_loss_ratio")
         best_str = f", best loss={best:.4f}" if best else ""
+        dedup_str = ""
+        if results.get("skipped_dedup", 0) > 0:
+            dedup_str = f", dedup={results['skipped_dedup']} ({results.get('dedup_rate', 0)*100:.0f}%)"
         logger.info(
             "Experiment %s complete: %d programs → S0=%d → S0.5=%d → S1=%d "
-            "(%.1fs)%s",
+            "(%.1fs)%s%s",
             exp_id[:8], results["total"],
             results["stage0_passed"], results["stage05_passed"],
-            results["stage1_passed"], elapsed, best_str,
+            results["stage1_passed"], elapsed, best_str, dedup_str,
         )
 
         return results
@@ -8622,6 +8967,20 @@ class ExperimentRunner:
                 arch_telemetry = self._extract_architecture_telemetry(model)
                 result.update(arch_telemetry)
 
+                # Behavioral fingerprint for S1 survivors (novelty scoring)
+                if result.get("passed") and model is not None:
+                    try:
+                        _fp = compute_fingerprint(
+                            model,
+                            seq_len=min(64, config.max_seq_len),
+                            model_dim=config.model_dim,
+                            vocab_size=config.vocab_size,
+                            device=str(dev),
+                        )
+                        result["_behavioral_fingerprint"] = _fp.to_dict()
+                    except Exception as e_fp:
+                        logger.debug("Fingerprint failed in S1 worker: %s", e_fp)
+
         except Exception as e:
             result["error"] = str(e)
 
@@ -8783,6 +9142,26 @@ class ExperimentRunner:
 
     # ── Rich Context Helpers ──
 
+    def _gather_designer_telemetry(self) -> Dict:
+        """Fetch telemetry from aria-designer if available."""
+        import requests
+        base = os.environ.get("ARIA_DESIGNER_PROXY_BASE", "http://127.0.0.1:8091")
+        result: Dict = {}
+        try:
+            r = requests.get(f"{base}/api/v1/integration/bridge-gap-report", timeout=3)
+            if r.ok:
+                result["bridge_gap_report"] = r.json()
+        except Exception:
+            pass
+        try:
+            r = requests.get(f"{base}/api/v1/blocks/builtin", params={"model_dim": 256}, timeout=3)
+            if r.ok:
+                blocks = r.json()
+                result["builtin_blocks"] = [b.get("name") for b in blocks if isinstance(b, dict) and b.get("name")]
+        except Exception:
+            pass
+        return result
+
     def _gather_analytics_data(self, nb: LabNotebook) -> Dict:
         """Gather all analytics data for rich context."""
         try:
@@ -8802,6 +9181,7 @@ class ExperimentRunner:
                 "insights": nb.get_insights(limit=20),
                 "negative_results": analytics.negative_results_synthesis(),
                 "decision_outcomes": analytics.decision_outcome_analysis(),
+                "designer_telemetry": self._gather_designer_telemetry(),
             }
         except Exception:
             return {}
@@ -9001,20 +9381,80 @@ class ExperimentRunner:
         if not suggested_config:
             return
 
-        # Apply grammar weight overrides if present
+        # Categorize suggested keys into bins
+        GRAMMAR_WEIGHT_KEYS = {"math_space_weight"}
+        CATEGORY_WEIGHT_KEY = "category_weights"
+        CONFIG_OVERRIDE_KEYS = {
+            "n_programs", "model_dim", "max_depth", "max_ops",
+            "model_source", "morph_focus_sparse",
+            "use_synthesized_training", "novelty_weight",
+            "selection_family_bonus_weight", "refinement_top_k",
+            "refinement_generations", "refinement_budget_programs",
+            "grammar_split_prob", "grammar_merge_prob",
+            "grammar_risky_op_prob", "grammar_freq_domain_prob",
+            "structured_sparsity_bias", "residual_prob",
+            "optimizer_preference",
+        }
+        OP_CONTROL_KEYS = {"excluded_ops", "op_weights"}
+
+        # Sanity clamps for numeric config values
+        CLAMP_RANGES: Dict[str, Tuple[float, float]] = {
+            "grammar_split_prob": (0.0, 1.0),
+            "grammar_merge_prob": (0.0, 1.0),
+            "grammar_risky_op_prob": (0.0, 1.0),
+            "grammar_freq_domain_prob": (0.0, 1.0),
+            "structured_sparsity_bias": (0.0, 1.0),
+            "residual_prob": (0.0, 1.0),
+            "n_programs": (4, 500),
+            "max_depth": (2, 30),
+            "max_ops": (3, 40),
+            "model_dim": (32, 1024),
+        }
+        GRAMMAR_WEIGHT_CLAMP = (0.1, 10.0)  # category weights & math_space_weight
+        OP_WEIGHT_CLAMP = (0.01, 10.0)
+
+        def _clamp(val: float, lo: float, hi: float) -> float:
+            return max(lo, min(hi, val))
+
         grammar_overrides = {}
         config_overrides = {}
         for k, v in suggested_config.items():
-            if k in ("math_space_weight",):
-                # This is a grammar-level override
-                grammar_overrides[k] = v
-            elif k in (
-                "n_programs", "model_dim", "max_depth", "max_ops",
-                "model_source", "morph_focus_sparse",
-                "use_synthesized_training", "novelty_weight",
-                "selection_family_bonus_weight", "refinement_top_k",
-                "refinement_generations", "refinement_budget_programs",
-            ):
+            if k in GRAMMAR_WEIGHT_KEYS:
+                if isinstance(v, (int, float)):
+                    grammar_overrides[k] = _clamp(float(v), *GRAMMAR_WEIGHT_CLAMP)
+            elif k == CATEGORY_WEIGHT_KEY and isinstance(v, dict):
+                # Category weights dict → merge into grammar weight overrides
+                for cat_name, weight in v.items():
+                    if isinstance(weight, (int, float)):
+                        grammar_overrides[cat_name] = _clamp(float(weight), *GRAMMAR_WEIGHT_CLAMP)
+            elif k == "excluded_ops" and isinstance(v, list):
+                new_excluded = {str(op) for op in v if isinstance(op, str)}
+                if new_excluded:
+                    self._excluded_ops_overrides |= new_excluded
+                    nb.log_learning_event(
+                        "auto_excluded_ops",
+                        f"Aria excluded ops: {sorted(new_excluded)}",
+                        excluded_ops=sorted(new_excluded),
+                    )
+                    logger.info("Aria auto-excluded ops: %s", sorted(new_excluded))
+            elif k == "op_weights" and isinstance(v, dict):
+                new_op_weights = {
+                    str(op): _clamp(float(w), *OP_WEIGHT_CLAMP)
+                    for op, w in v.items()
+                    if isinstance(op, str) and isinstance(w, (int, float))
+                }
+                if new_op_weights:
+                    self._op_weights_overrides.update(new_op_weights)
+                    nb.log_learning_event(
+                        "auto_op_weights",
+                        f"Aria adjusted op weights: {new_op_weights}",
+                        op_weights=new_op_weights,
+                    )
+                    logger.info("Aria auto-applied op weights: %s", new_op_weights)
+            elif k in CONFIG_OVERRIDE_KEYS:
+                if k in CLAMP_RANGES and isinstance(v, (int, float)):
+                    lo, hi = CLAMP_RANGES[k]
+                    v = type(v)(max(lo, min(hi, v)))
                 config_overrides[k] = v
 
         if grammar_overrides:
@@ -10813,6 +11253,10 @@ class ExperimentRunner:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
         from ..synthesis.grammar import GrammarConfig
         
+        # Pick up structured_sparsity_bias from mode recommendation or config
+        sparsity_bias = getattr(self, "_structured_sparsity_bias_override",
+                                getattr(config, "structured_sparsity_bias", 0.0))
+
         grammar = GrammarConfig(
             model_dim=config.model_dim,
             min_depth=config.min_depth,
@@ -10823,13 +11267,13 @@ class ExperimentRunner:
             merge_prob=config.grammar_merge_prob,
             risky_op_prob=config.grammar_risky_op_prob,
             freq_domain_prob=config.grammar_freq_domain_prob,
-            structured_sparsity_bias=getattr(config, "structured_sparsity_bias", 0.0),
+            structured_sparsity_bias=sparsity_bias,
             excluded_ops=excluded_ops or set(),
             op_weights=op_weights or {},
         )
         # Apply specialized weights
         grammar.category_weights["math_space"] = config.math_space_weight
-        
+
         return grammar
 
     def _auto_escalate(self, results: Dict, config: RunConfig,
@@ -10987,7 +11431,7 @@ class ExperimentRunner:
                         self._emit_event("decision_recorded", {
                             "decision_type": decision["decision"],
                             "subject": p["result_id"][:8],
-                            "rationale": decision["rationale"][:100],
+                            "rationale": decision["rationale"][:200],
                             "evidence_pack": evidence_pack,
                         })
                         if decision["decision"] in ("go", "pivot"):

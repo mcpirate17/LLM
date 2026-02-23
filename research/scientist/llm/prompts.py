@@ -87,7 +87,13 @@ Based on the full experimental data below, suggest a specific experiment configu
 
 You must:
 - Identify the most promising direction based on op success rates, structural correlations, and past results
-- Suggest concrete parameter changes (n_programs, model_dim, max_depth, max_ops, math_space_weight, etc.)
+- Suggest concrete parameter changes:
+  * Core: n_programs, model_dim, max_depth, max_ops, residual_prob
+  * Grammar probabilities: grammar_split_prob (0-1), grammar_merge_prob (0-1), grammar_risky_op_prob (0-1), grammar_freq_domain_prob (0-1)
+  * Category weights (higher = more likely): elementwise_unary, elementwise_binary, reduction, linear_algebra, structural, parameterized, sequence, frequency, math_space, functional
+  * Op control: excluded_ops (list of op names to ban), op_weights (dict of op_name: multiplier)
+  * Sparsity: structured_sparsity_bias (0-1), morph_focus_sparse (bool)
+  * Source: model_source ("graph_synthesis" | "morphological_box" | "mixed")
 - If you detect recurring failures in the data, describe the pattern and what config change addresses it
 - Explain WHY each change is warranted by the data
 - Rate your confidence (0-1) in this recommendation
@@ -97,7 +103,7 @@ REASONING: [2-3 sentences analyzing the data and recommending changes]
 CONFIDENCE: [0.0-1.0]
 CONFIG:
 ```json
-{{"n_programs": 50, "model_dim": 256, "max_depth": 10, "max_ops": 16, "math_space_weight": 2.0, "residual_prob": 0.7}}
+{{"n_programs": 50, "max_depth": 10, "max_ops": 16, "math_space_weight": 2.0, "residual_prob": 0.7, "grammar_split_prob": 0.3, "category_weights": {{"functional": 2.5, "elementwise_unary": 2.6}}, "excluded_ops": ["lif_neuron", "stdp_attention"]}}
 ```
 
 RULES: No Python code. No shell commands. No code blocks except the CONFIG json above. Describe findings in plain English."""
@@ -162,7 +168,15 @@ CONFIDENCE: [0.0-1.0]
 CONFIG_ADJUSTMENTS:
 ```json
 {{"key": "value"}}
-```"""
+```
+
+Available CONFIG_ADJUSTMENTS keys:
+  Core: n_programs, model_dim, max_depth, max_ops, residual_prob
+  Grammar probabilities: grammar_split_prob, grammar_merge_prob, grammar_risky_op_prob, grammar_freq_domain_prob
+  Category weights: category_weights (dict, e.g. {{"functional": 2.5, "math_space": 3.0}})
+  Op control: excluded_ops (list of op names to ban), op_weights (dict of op_name: multiplier)
+  Sparsity: structured_sparsity_bias (0-1), morph_focus_sparse (bool)
+  Source: model_source ("graph_synthesis" | "morphological_box" | "mixed")"""
 
 NEXT_EXPERIMENT_PLAN_SYSTEM_PROMPT = """\
 You are Dr. Aria Nexus's planning engine. Return valid JSON only.
@@ -239,14 +253,20 @@ You must produce a hypothesis with ALL of the following fields:
 - PREDICTION: A specific, testable prediction (e.g., "Combining tropical geometry with residual connections will produce loss_ratio < 0.5")
 - REASONING: Data-backed reasoning from recent experiments explaining WHY you expect this
 - TEST_METHOD: How this hypothesis will be tested in the next experiment (e.g., "by running synthesis with math_space_weight=3.0 and max_depth=12")
-- SUCCESS_METRIC: A measurable criterion (e.g., "loss_ratio < 0.5" or "s1_pass_rate > 10%")
+- SUCCESS_CRITERIA: A measurable threshold with baseline comparison (e.g., "success_criteria=(s1_pass_rate >= 15% AND delta_loss_ratio <= -0.05 vs_recent baseline)")
+- PRIMARY_METRIC: The single most important metric to track (e.g., "primary_metric=s1_pass_rate")
+- CONFOUNDERS: Known confounds that could invalidate results (e.g., "confounders_checklist=[sample_size < 30, grammar_weight_drift, stochastic_variance]")
+- FALLBACK_PLAN: What to do if the hypothesis fails (e.g., "fallback_plan=if(s1_rate < 5%) then revert grammar weights and try novelty mode")
 - CONFIDENCE: Your prior confidence 0.0-1.0
 
 Return in this exact format:
 PREDICTION: [specific testable prediction]
 REASONING: [data-backed reasoning]
 TEST_METHOD: [how to test this]
-SUCCESS_METRIC: [measurable criterion, e.g. "loss_ratio < 0.5"]
+SUCCESS_CRITERIA: [measurable threshold with baseline, e.g. "success_criteria=(s1_pass_rate >= 15% AND delta_loss_ratio <= -0.05 vs_recent)"]
+PRIMARY_METRIC: [single metric, e.g. "primary_metric=loss_ratio"]
+CONFOUNDERS: [list of confounds, e.g. "confounders_checklist=[small_sample, weight_drift]"]
+FALLBACK_PLAN: [what to do if it fails, e.g. "fallback_plan=if(no_improvement) revert to previous config"]
 CONFIDENCE: [0.0-1.0]"""
 
 HYPOTHESIS_VALIDATION_PROMPT = """\
@@ -415,16 +435,23 @@ User message:
 ACTION BLOCKS — include one or more in your response:
 
 ```action
-{{"type": "adjust_config", "changes": {{"max_depth": 4, "max_ops": 6}}}}
+{{"type": "adjust_config", "changes": {{"max_depth": 4, "max_ops": 6, "grammar_split_prob": 0.3, "structured_sparsity_bias": 0.5}}}}
 ```
 
 ```action
-{{"type": "adjust_grammar", "weights": {{"parameterized": 5.0, "frequency_domain": 0.1}}}}
+{{"type": "adjust_grammar", "weights": {{"parameterized": 5.0, "frequency_domain": 0.1, "functional": 3.0}}}}
+```
+
+```action
+{{"type": "adjust_config", "changes": {{"excluded_ops": ["lif_neuron", "stdp_attention"], "op_weights": {{"selective_scan": 2.0, "swiglu_mlp": 1.5}}, "category_weights": {{"functional": 2.5, "math_space": 3.0}}}}}}
 ```
 
 ```action
 {{"type": "start_experiment", "mode": "synthesis", "config": {{}}}}
 ```
+
+Available adjust_config keys: n_programs, model_dim, max_depth, max_ops, residual_prob, grammar_split_prob (0-1), grammar_merge_prob (0-1), grammar_risky_op_prob (0-1), grammar_freq_domain_prob (0-1), structured_sparsity_bias (0-1), morph_focus_sparse (bool), model_source, category_weights (dict), excluded_ops (list), op_weights (dict).
+Available adjust_grammar keys: any category name (elementwise_unary, elementwise_binary, reduction, linear_algebra, structural, parameterized, sequence, frequency, math_space, functional, mixing).
 
 ```action
 {{"type": "edit_file", "path": "relative/path.py", "description": "Fix X",
@@ -434,6 +461,21 @@ ACTION BLOCKS — include one or more in your response:
 ```action
 {{"type": "spawn_agent", "goal": "Investigate and fix the grammar weight collapse for sequence ops"}}
 ```
+
+```action
+{{"type": "maintain_database", "operation": "reset_op_stats", "ops": ["broken_op_name"]}}
+```
+
+```action
+{{"type": "maintain_database", "operation": "clear_toxic_signatures", "ops": ["fixed_op_name"]}}
+```
+
+```action
+{{"type": "maintain_database", "operation": "purge_empty_experiments"}}
+```
+
+Available maintain_database operations: purge_empty_experiments, purge_junk_programs, reset_op_stats (needs "ops" list), clear_toxic_signatures (needs "ops" list), vacuum, backfill_failure_signatures.
+Use maintain_database proactively when you notice: ops with 0% S0 rate that shouldn't be failing, stale toxic signatures after fixing ops, database bloat from empty experiments, or corrupted op statistics.
 
 For complex or multi-file investigations, ALWAYS use spawn_agent — it uses local Ollama models (cheap, fast) before falling back to the primary LLM. This saves money and is faster.
 Respond with actions first, brief explanation second. No fluff. Never include fake executable Python/JS examples."""

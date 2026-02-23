@@ -46,8 +46,9 @@ class GrammarConfig:
         "linear_algebra": 1.0,
         "structural": 1.0,
         "parameterized": 2.0,
+        "mixing": 1.5,
         "sequence": 1.2,
-        "frequency": 0.5,
+        "frequency": 1.0,  # Increased from 0.5 to encourage basic ops
         "math_space": 1.5,
         "functional": 1.0,
     })

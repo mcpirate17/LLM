@@ -438,6 +438,114 @@ def _op_moe_topk(module, inputs, config):
         
     return output
 
+@register_op("swiglu_mlp")
+def _op_swiglu_mlp(module, inputs, _):
+    """SwiGLU MLP channel mixer."""
+    x = inputs[0]
+    if not hasattr(module, 'gate_proj'):
+        return x
+    return module.down_proj(F.silu(module.gate_proj(x)) * module.up_proj(x))
+
+@register_op("rwkv_channel")
+def _op_rwkv_channel(module, inputs, _):
+    """RWKV-style channel mixing with time-shift."""
+    x = inputs[0]
+    if not hasattr(module, 'mix_k'):
+        return x
+    shifted = F.pad(x[:, :-1], (0, 0, 1, 0))
+    xk = x * module.mix_k + shifted * (1 - module.mix_k)
+    xr = x * module.mix_r + shifted * (1 - module.mix_r)
+    k = torch.square(torch.relu(module.key_proj(xk)))
+    return torch.sigmoid(module.receptance_proj(xr)) * module.value_proj(k)
+
+@register_op("softmax_attention")
+def _op_softmax_attention(module, inputs, _):
+    """Standard causal multi-head softmax attention."""
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    q = module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    k = module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
+    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    attn.masked_fill_(mask, float("-inf"))
+    attn = F.softmax(attn, dim=-1)
+    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
+    return module.o_proj(out)
+
+@register_op("linear_attention")
+def _op_linear_attention(module, inputs, _):
+    """Linear attention with ELU kernel (O(S) complexity)."""
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    q = F.elu(module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
+    k = F.elu(module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
+    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    # Causal linear attention via cumulative sum
+    kv = torch.einsum("bhsd,bhse->bhsde", k, v)
+    kv_cumsum = kv.cumsum(dim=2)
+    k_cumsum = k.cumsum(dim=2)
+    out = torch.einsum("bhsd,bhsde->bhse", q, kv_cumsum)
+    denom = torch.einsum("bhsd,bhsd->bhs", q, k_cumsum).unsqueeze(-1).clamp(min=1e-6)
+    out = out / denom
+    return module.o_proj(out.transpose(1, 2).reshape(B, S, -1))
+
+@register_op("graph_attention")
+def _op_graph_attention(module, inputs, _):
+    """Graph attention with learned edge features + causal softmax attention."""
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    x_e = x + module.edge_proj(x)
+    q = module.q_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
+    k = module.k_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
+    v = module.v_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
+    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
+    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    attn.masked_fill_(mask, float("-inf"))
+    attn = F.softmax(attn, dim=-1)
+    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
+    return module.o_proj(out)
+
+@register_op("state_space")
+def _op_state_space(module, inputs, _):
+    """S4-style state space mixer with parallel scan via causal convolution."""
+    x = inputs[0]
+    if not hasattr(module, 'ssm_A'):
+        return x
+    B, S, D = x.shape
+    N = module.ssm_state_dim
+    dt = F.softplus(module.ssm_dt(x))  # (B, S, D)
+    A = torch.exp(module.ssm_A.unsqueeze(0).unsqueeze(0) * dt.unsqueeze(-1))  # (B, S, D, N)
+    b_x = module.ssm_B(x).reshape(B, S, D, N)
+    # Sequential scan (correctness-first; small S in synthesis eval)
+    h = torch.zeros(B, D, N, device=x.device, dtype=x.dtype)
+    outs = []
+    for t in range(S):
+        h = A[:, t] * h + b_x[:, t]
+        y = module.ssm_C(h.reshape(B, -1))
+        outs.append(y)
+    y = torch.stack(outs, dim=1)
+    return y + x * module.ssm_D
+
+@register_op("conv_only")
+def _op_conv_only(module, inputs, _):
+    """Depthwise causal convolution sequence mixer."""
+    x = inputs[0]
+    if not hasattr(module, 'conv_dw'):
+        return x
+    B, S, D = x.shape
+    out = module.conv_dw(x.transpose(1, 2))[:, :, :S].transpose(1, 2)
+    return module.conv_proj(out)
+
 @register_op("nm_sparse_linear")
 def _op_nm_sparse_linear(module, inputs, config):
     if not hasattr(module, 'weight'): return inputs[0]
@@ -742,6 +850,59 @@ class CompiledOp(nn.Module):
         elif op.name == "tied_proj":
             rank = max(D_in // 4, 1)
             self.tied_weight = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(D_in)))
+        elif op.name == "swiglu_mlp":
+            hidden = int(D_in * config.get("mlp_ratio", 3.0))
+            self.gate_proj = nn.Linear(D_in, hidden, bias=False)
+            self.up_proj = nn.Linear(D_in, hidden, bias=False)
+            self.down_proj = nn.Linear(hidden, D_in, bias=False)
+        elif op.name == "rwkv_channel":
+            hidden = int(D_in * config.get("mlp_ratio", 3.0))
+            self.mix_k = nn.Parameter(torch.ones(D_in) * 0.5)
+            self.mix_r = nn.Parameter(torch.ones(D_in) * 0.5)
+            self.key_proj = nn.Linear(D_in, hidden, bias=False)
+            self.receptance_proj = nn.Linear(D_in, D_in, bias=False)
+            self.value_proj = nn.Linear(hidden, D_in, bias=False)
+        elif op.name == "softmax_attention":
+            n_heads = max(1, D_in // 64)  # 64 head_dim default
+            head_dim = D_in // n_heads
+            self.n_heads = n_heads
+            self.head_dim = head_dim
+            self.attn_scale = head_dim ** -0.5
+            self.q_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
+        elif op.name == "linear_attention":
+            n_heads = max(1, D_in // 64)
+            head_dim = D_in // n_heads
+            self.n_heads = n_heads
+            self.head_dim = head_dim
+            self.q_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
+        elif op.name == "graph_attention":
+            n_heads = max(1, D_in // 64)
+            head_dim = D_in // n_heads
+            self.n_heads = n_heads
+            self.head_dim = head_dim
+            self.attn_scale = head_dim ** -0.5
+            self.q_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
+            self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
+            self.edge_proj = nn.Linear(D_in, D_in, bias=False)
+        elif op.name == "state_space":
+            state_dim = 16
+            self.ssm_state_dim = state_dim
+            self.ssm_A = nn.Parameter(torch.randn(D_in, state_dim) * 0.01)
+            self.ssm_B = nn.Linear(D_in, D_in * state_dim, bias=False)
+            self.ssm_C = nn.Linear(D_in * state_dim, D_in, bias=False)
+            self.ssm_D = nn.Parameter(torch.ones(D_in))
+            self.ssm_dt = nn.Linear(D_in, D_in)
+        elif op.name == "conv_only":
+            self.conv_dw = nn.Conv1d(D_in, D_in, 3, padding=2, groups=D_in)
+            self.conv_proj = nn.Linear(D_in, D_in, bias=False)
         else:
             if hasattr(op, 'init_params'):
                 op.init_params(self, D_in)

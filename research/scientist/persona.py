@@ -619,7 +619,7 @@ class Aria:
                     "n_programs": 50, "model_dim": 256,
                     "max_depth": 6, "max_ops": 12,
                     "math_space_weight": 2.5, "residual_prob": 0.7,
-                    "split_prob": 0.5,
+                    "grammar_split_prob": 0.5, "grammar_merge_prob": 0.4,
                 },
             },
             {
@@ -630,8 +630,8 @@ class Aria:
                     "n_programs": 50, "model_dim": 256,
                     "max_depth": 10, "max_ops": 16,
                     "math_space_weight": 3.5, "residual_prob": 0.5,
-                    "risky_op_prob": 0.25,
-                    "freq_domain_prob": 0.2,
+                    "grammar_risky_op_prob": 0.25,
+                    "grammar_freq_domain_prob": 0.2,
                 },
             },
             {
@@ -653,6 +653,19 @@ class Aria:
                     "max_depth": 7, "max_ops": 12,
                     "math_space_weight": 3.0, "residual_prob": 0.7,
                     "optimizer_preference": "alternative",
+                },
+            },
+            {
+                "reasoning": ("Functional-heavy exploration: boosting functional "
+                              "and elementwise_unary categories to discover novel "
+                              "activation and gating patterns."),
+                "config": {
+                    "n_programs": 60, "model_dim": 256,
+                    "max_depth": 8, "max_ops": 14,
+                    "residual_prob": 0.7,
+                    "category_weights": {
+                        "functional": 3.0, "elementwise_unary": 2.5,
+                    },
                 },
             },
         ]
@@ -1111,6 +1124,13 @@ class Aria:
                 failures = report_data.get("failure_patterns", {})
                 if failures:
                     context_parts.append(f"Failure patterns: {failures}")
+                dedup = summary.get("latest_dedup")
+                if dedup:
+                    context_parts.append(
+                        f"Grammar diversity: {dedup.get('dedup_rate', 0)*100:.0f}% dedup rate "
+                        f"(last experiment), {summary.get('unique_fingerprints', '?')} unique "
+                        f"fingerprints in DB, {dedup.get('known_fingerprints', '?')} known at eval time"
+                    )
                 frontier = report_data.get("efficiency_frontier", [])
                 if frontier:
                     context_parts.append(
@@ -1551,7 +1571,7 @@ class Aria:
                 _add("mutation_mechanism")
             if "intent=" in h_lower and not any(token in h_lower for token in ["weights=", "score=", "intent_weights"]):
                 _add("intent_weights")
-            if not any(token in h_lower for token in ["success_criteria", "threshold", "delta_", "baseline", ">=", "<="]):
+            if not any(token in h_lower for token in ["success_criteria", "success_metric", "primary_metric", "threshold", "delta_", "baseline", ">=", "<="]):
                 _add("success_criteria")
 
         if "undefined" in concern_text and "intent" in concern_text:
@@ -1582,13 +1602,14 @@ class Aria:
         has_testability = has_metric and any(w in h_lower for w in testability_words)
 
         fallback_words = [
-            "fallback", "backup", "otherwise", "if not", "if this fails",
-            "ablation", "control", "next step", "alternative",
+            "fallback", "fallback_plan", "backup", "otherwise", "if not", "if this fails",
+            "ablation", "control", "next step", "alternative", "revert",
         ]
         has_fallback = any(w in h_lower for w in fallback_words)
         has_success_criteria = any(
             token in h_lower
-            for token in ["success_criteria", "threshold", ">=", "<=", "delta_", "baseline", "vs_recent"]
+            for token in ["success_criteria", "success_metric", "primary_metric",
+                          "threshold", ">=", "<=", "delta_", "baseline", "vs_recent"]
         )
         has_mutation_mechanism = any(
             token in h_lower
@@ -1607,6 +1628,13 @@ class Aria:
             token in concern_text
             for token in ["vague", "specific", "architectural", "measurable", "confound", "undefined", "no mechanism"]
         )
+        # If the hypothesis itself addresses confounders, give credit
+        has_confounders = any(
+            token in h_lower
+            for token in ["confounders_checklist", "confounders", "confound"]
+        )
+        if has_confounders:
+            confound_signal = False
 
         def _status(pass_cond: bool, warn_cond: bool = False) -> str:
             if pass_cond:
@@ -2152,7 +2180,7 @@ class Aria:
                 "reasoning": (f"{validation_ready} candidates passed investigation "
                               "with good robustness. Time to validate at scale."),
                 "confidence": 0.8,
-                "config": {},
+                "config": {"structured_sparsity_bias": 0.15},
             }
 
         if investigation_ready >= 2:
@@ -2162,7 +2190,7 @@ class Aria:
                               "promising loss ratios. Deepening study with "
                               "multiple training programs."),
                 "confidence": 0.7,
-                "config": {},
+                "config": {"structured_sparsity_bias": 0.15},
             }
 
         # Compression examination guardrail: keep compact tracks represented.
@@ -2187,8 +2215,8 @@ class Aria:
                 "reasoning": (
                     "Compression remains underrepresented in examined candidates "
                     f"({compressed_share:.1%} coverage across {n_tested} tested). "
-                    "Scheduling a compact synthesis cycle to improve compression evidence "
-                    "and quality-retention-per-byte tracking."
+                    "Scheduling a compact synthesis cycle with boosted sparse/compression "
+                    "op weights to improve coverage."
                 ),
                 "confidence": 0.72,
                 "config": {
@@ -2199,6 +2227,16 @@ class Aria:
                     "residual_prob": 0.82,
                     "model_source": "mixed",
                     "morph_ratio": 0.85,
+                    "structured_sparsity_bias": 0.5,
+                    "op_weights": {
+                        "low_rank_proj": 2.5,
+                        "bottleneck_proj": 2.5,
+                        "grouped_linear": 2.0,
+                        "shared_basis_proj": 2.0,
+                        "nm_sparse_linear": 2.5,
+                        "block_sparse_linear": 2.5,
+                        "semi_structured_2_4_linear": 2.5,
+                    },
                 },
             }
 
@@ -2220,9 +2258,8 @@ class Aria:
                 "reasoning": (
                     "Sparse architectures are underrepresented "
                     f"({sparse_share:.1%} of {n_tested} tested programs). "
-                    "Scheduling a sparsity-focused synthesis cycle with morphological box "
-                    "rolls (for sparse weight storage) and synthesized training "
-                    "(for RigL dynamic sparse training)."
+                    "Scheduling a sparsity-focused synthesis cycle with boosted sparse "
+                    "op weights, morphological box rolls, and synthesized training."
                 ),
                 "confidence": 0.70,
                 "config": {
@@ -2231,8 +2268,16 @@ class Aria:
                     "max_ops": 10,
                     "math_space_weight": 2.0,
                     "model_source": "morphological_box",
+                    "morph_focus_sparse": True,
                     "use_synthesized_training": True,
                     "one_shot_pruning_baseline": True,
+                    "structured_sparsity_bias": 0.8,
+                    "op_weights": {
+                        "nm_sparse_linear": 3.0,
+                        "block_sparse_linear": 3.0,
+                        "semi_structured_2_4_linear": 3.0,
+                        "moe_topk": 2.5,
+                    },
                 },
             }
 
@@ -2279,34 +2324,101 @@ class Aria:
 
         # --- Decision logic: diverse, data-driven strategies ---
 
-        # No survivors and many experiments — try different approach
+        # No survivors and many experiments — rotate through diverse recovery strategies
         if total_s1 == 0:
-            if n_experiments >= 10:
-                failure_hint = ""
-                if top_failure[1] > 0:
-                    failure_hint = (f" Top failure: {top_failure[0]} "
-                                    f"({top_failure[1]} cases).")
+            failure_hint = ""
+            if top_failure[1] > 0:
+                failure_hint = (f" Top failure: {top_failure[0]} "
+                                f"({top_failure[1]} cases).")
+
+            if n_experiments < 3:
                 return {
                     "mode": "synthesis",
-                    "reasoning": ("No S1 survivors after multiple experiments."
-                                  f"{failure_hint} "
-                                  "Increasing residual_prob and reducing max_depth "
-                                  "to improve gradient flow. Consider pivoting "
-                                  "hypothesis or pausing campaign."),
-                    "confidence": 0.8,
+                    "reasoning": "No S1 survivors yet. Continuing broad exploration.",
+                    "confidence": 0.6,
+                    "config": {"structured_sparsity_bias": 0.15},
+                }
+
+            # Rotate through different recovery strategies instead of always
+            # returning the same conservative config
+            recovery_idx = n_experiments % 5
+            if recovery_idx == 0:
+                return {
+                    "mode": "synthesis",
+                    "reasoning": (f"No S1 survivors.{failure_hint} "
+                                  "Conservative: high residual, shallow depth."),
+                    "confidence": 0.7,
                     "config": {
                         "residual_prob": 0.85,
-                        "max_depth": 6,
-                        "pivot_recommended": True,
-                        "stop_recommended": True,
+                        "max_depth": 5,
+                        "max_ops": 8,
+                        "n_programs": 80,
+                        "structured_sparsity_bias": 0.15,
                     },
                 }
-            return {
-                "mode": "synthesis",
-                "reasoning": "No S1 survivors yet. Continuing broad exploration.",
-                "confidence": 0.6,
-                "config": {},
-            }
+            elif recovery_idx == 1:
+                return {
+                    "mode": "synthesis",
+                    "reasoning": (f"No S1 survivors.{failure_hint} "
+                                  "Trying compact sparse architectures."),
+                    "confidence": 0.65,
+                    "config": {
+                        "max_depth": 4,
+                        "max_ops": 6,
+                        "residual_prob": 0.9,
+                        "n_programs": 80,
+                        "structured_sparsity_bias": 0.6,
+                        "op_weights": {
+                            "nm_sparse_linear": 2.5,
+                            "low_rank_proj": 2.5,
+                            "bottleneck_proj": 2.0,
+                        },
+                    },
+                }
+            elif recovery_idx == 2:
+                return {
+                    "mode": "synthesis",
+                    "reasoning": (f"No S1 survivors.{failure_hint} "
+                                  "Trying morphological box for structured diversity."),
+                    "confidence": 0.65,
+                    "config": {
+                        "model_source": "mixed",
+                        "morph_ratio": 0.7,
+                        "n_programs": 70,
+                        "max_depth": 6,
+                        "residual_prob": 0.8,
+                        "structured_sparsity_bias": 0.15,
+                    },
+                }
+            elif recovery_idx == 3:
+                return {
+                    "mode": "synthesis",
+                    "reasoning": (f"No S1 survivors.{failure_hint} "
+                                  "Boosting frequency/exotic ops for novel designs."),
+                    "confidence": 0.6,
+                    "config": {
+                        "math_space_weight": 3.5,
+                        "grammar_freq_domain_prob": 0.3,
+                        "max_depth": 7,
+                        "n_programs": 60,
+                        "structured_sparsity_bias": 0.15,
+                    },
+                }
+            else:
+                # recovery_idx == 4: evolution from any S0-passing programs
+                return {
+                    "mode": "evolution",
+                    "reasoning": (f"No S1 survivors.{failure_hint} "
+                                  "Trying evolution to find viable variants "
+                                  "of S0-passing architectures."),
+                    "confidence": 0.55,
+                    "config": {
+                        "n_generations": 12,
+                        "population_size": 25,
+                        "mutation_rate": 0.8,
+                        "structured_sparsity_bias": 0.15,
+                    },
+                }
 
         # --- Rotate between diverse data-driven strategies ---
         # Use experiment number to cycle through different analysis-driven modes
@@ -2315,7 +2427,7 @@ class Aria:
         if strategy_index == 0 and underexplored_cats:
             # Strategy: Explore underrepresented op categories
             boost_cat = self._rng.choice(underexplored_cats)
-            config_override = {}
+            config_override = {"structured_sparsity_bias": 0.15}
             if boost_cat == "math_space":
                 config_override["math_space_weight"] = 4.0
             elif boost_cat == "frequency":
@@ -2344,6 +2456,7 @@ class Aria:
                 "config": {
                     "n_generations": 15,
                     "population_size": 30,
+                    "structured_sparsity_bias": 0.15,
                 },
             }
 
@@ -2360,23 +2473,24 @@ class Aria:
                 "config": {
                     "n_generations": 10,
                     "population_size": 30,
+                    "structured_sparsity_bias": 0.15,
                 },
             }
 
         elif strategy_index == 3 and top_failure[1] > 5:
             # Strategy: Target the dominant failure mode
-            config_override = {}
+            config_override = {"structured_sparsity_bias": 0.15}
             reasoning_extra = ""
             if top_failure[0] == "zero_grad":
-                config_override = {"residual_prob": 0.9, "max_depth": 6}
+                config_override.update({"residual_prob": 0.9, "max_depth": 6})
                 reasoning_extra = ("Increasing residual connections and reducing "
                                    "depth to ensure gradient flow.")
             elif top_failure[0] in ("nan", "inf", "RuntimeError"):
-                config_override = {"risky_op_prob": 0.05, "max_ops": 10}
+                config_override.update({"risky_op_prob": 0.05, "max_ops": 10})
                 reasoning_extra = ("Reducing risky ops and graph complexity "
                                    "to avoid numerical instability.")
             else:
-                config_override = {"n_programs": 80}
+                config_override.update({"n_programs": 80})
                 reasoning_extra = "Broadening search to find stable regions."
             return {
                 "mode": "synthesis",
@@ -2399,6 +2513,7 @@ class Aria:
                 "config": {
                     "math_space_weight": 3.5,
                     "n_programs": 60,
+                    "structured_sparsity_bias": 0.15,
                 },
             }
 
@@ -2414,6 +2529,7 @@ class Aria:
                 "config": {
                     "n_generations": 10,
                     "population_size": 30,
+                    "structured_sparsity_bias": 0.15,
                 },
             }
 
@@ -2422,8 +2538,8 @@ class Aria:
             return {
                 "mode": "synthesis",
                 "reasoning": ("Exploring compact, parameter-efficient architectures. "
-                              "Lower depth and fewer ops to find lightweight "
-                              "designs that may generalize better. "
+                              "Lower depth and fewer ops with boosted compression/sparse ops "
+                              "to find lightweight designs that may generalize better. "
                               f"{len(failed_ops)} ops excluded from negative results."),
                 "confidence": 0.55,
                 "config": {
@@ -2432,6 +2548,14 @@ class Aria:
                     "math_space_weight": 2.5,
                     "residual_prob": 0.8,
                     "n_programs": 80,
+                    "structured_sparsity_bias": 0.4,
+                    "op_weights": {
+                        "low_rank_proj": 2.0,
+                        "bottleneck_proj": 2.0,
+                        "grouped_linear": 2.0,
+                        "nm_sparse_linear": 2.0,
+                        "block_sparse_linear": 2.0,
+                    },
                 },
             }
 
@@ -2450,6 +2574,7 @@ class Aria:
                     "freq_domain_prob": 0.25,
                     "max_depth": 10,
                     "n_programs": 50,
+                    "structured_sparsity_bias": 0.15,
                 },
             }
 
@@ -2485,6 +2610,7 @@ class Aria:
                     "math_space_weight": 3.0,
                     "residual_prob": 0.7,
                     "optimizer_preference": "alternative",
+                    "structured_sparsity_bias": 0.15,
                 },
             }
 
@@ -2496,7 +2622,7 @@ class Aria:
                               f"is only {avg_novelty:.3f}. Using novelty search "
                               "to find behaviorally diverse architectures."),
                 "confidence": 0.7,
-                "config": {},
+                "config": {"structured_sparsity_bias": 0.15},
             }
 
         # Good survivors -> evolve
@@ -2506,17 +2632,34 @@ class Aria:
                 "reasoning": (f"{total_s1} diverse S1 survivors provide a good "
                               "seed population. Evolving to optimize."),
                 "confidence": 0.6,
-                "config": {},
+                "config": {"structured_sparsity_bias": 0.15},
             }
 
-        # Default: synthesis with variety
+        # Default: synthesis with variety — rotate configs to avoid repetition
+        default_idx = n_experiments % 3
+        if default_idx == 0:
+            default_config = {
+                "n_programs": 80, "residual_prob": 0.75,
+                "structured_sparsity_bias": 0.15,
+            }
+        elif default_idx == 1:
+            default_config = {
+                "n_programs": 60, "model_source": "mixed", "morph_ratio": 0.5,
+                "structured_sparsity_bias": 0.3,
+            }
+        else:
+            default_config = {
+                "n_programs": 70, "math_space_weight": 3.0,
+                "grammar_freq_domain_prob": 0.2,
+                "structured_sparsity_bias": 0.15,
+            }
         return {
             "mode": "synthesis",
-            "reasoning": ("Continuing exploration. "
+            "reasoning": ("Continuing exploration with varied config. "
                           f"Leaderboard: {leaderboard_size} entries, "
                           f"{leaderboard_diversity} unique architectures."),
             "confidence": 0.5,
-            "config": {},
+            "config": default_config,
         }
 
     # ── Structured Hypothesis Methods ──
@@ -2552,11 +2695,24 @@ class Aria:
             "confidence": 0.5,
         }
 
-        for field in ("prediction", "reasoning", "test_method", "success_metric"):
-            pattern = rf'{field.upper().replace("_", ".")}:\s*(.+?)(?=(?:PREDICTION|REASONING|TEST.METHOD|SUCCESS.METRIC|CONFIDENCE):|$)'
+        # All fields the LLM might return (including new gate-required fields)
+        all_headers = (
+            "PREDICTION", "REASONING", "TEST.METHOD", "SUCCESS.CRITERIA",
+            "SUCCESS.METRIC", "PRIMARY.METRIC", "CONFOUNDERS", "FALLBACK.PLAN",
+            "CONFIDENCE",
+        )
+        header_pattern = "|".join(all_headers)
+
+        for field in ("prediction", "reasoning", "test_method", "success_criteria",
+                       "success_metric", "primary_metric", "confounders", "fallback_plan"):
+            pattern = rf'{field.upper().replace("_", ".")}:\s*(.+?)(?=(?:{header_pattern}):|$)'
             match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
             if match:
                 result[field] = match.group(1).strip()
+
+        # Merge success_criteria into success_metric if only the new field was provided
+        if result.get("success_criteria") and not result.get("success_metric"):
+            result["success_metric"] = result["success_criteria"]
 
         conf_match = re.search(r'CONFIDENCE:\s*([\d.]+)', text)
         if conf_match:
