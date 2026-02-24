@@ -311,7 +311,9 @@ class Aria:
             prompt = (
                 "You are an AI research analyst. Condense the following raw experimental data "
                 "into a high-density SITUATION REPORT for a senior scientist. "
-                "Extract: top 3 winners, top 3 failure modes, and net grammar shifts. "
+                "Extract: top 3 winners (note which ops/compression techniques they use), "
+                "top 3 failure modes, net grammar shifts, and compression/sparsity patterns "
+                "(which techniques have best survival rates, quality retention). "
                 "Be extremely concise. Use bullets.\n\n"
                 f"{enriched_context}"
             )
@@ -521,7 +523,9 @@ class Aria:
             logger.warning(f"LLM strategy failed: {e}")
             return None
 
-    def suggest_experiment(self, context: str = "") -> Dict:
+    def suggest_experiment(self, context: str = "",
+                           op_success_rates: Optional[Dict] = None,
+                           compression_coverage: Optional[Dict] = None) -> Dict:
         """Suggest an experiment configuration based on data."""
         llm = self._get_llm()
         if llm and context:
@@ -529,7 +533,10 @@ class Aria:
             situation_report = self.generate_situation_report(context)
             try:
                 from .llm.prompts import BRIEFING_SYSTEM_PROMPT, SUGGESTION_PROMPT
-                prompt = SUGGESTION_PROMPT.format(context=situation_report)
+                from .llm.context import build_op_reference
+                op_ref = build_op_reference(op_success_rates, compression_coverage)
+                prompt = SUGGESTION_PROMPT.format(
+                    context=situation_report, op_reference=op_ref)
                 resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
                 self._track_cost(resp)
                 if resp.text.strip():
@@ -2032,7 +2039,9 @@ class Aria:
 
     def recommend_next_mode(self, context: str = "",
                             fallback_data: Optional[Dict] = None,
-                            digest=None) -> Dict:
+                            digest=None,
+                            op_success_rates: Optional[Dict] = None,
+                            compression_coverage: Optional[Dict] = None) -> Dict:
         """Recommend the next experiment mode based on research progress.
 
         Returns {mode: str, reasoning: str, confidence: float, config: Dict}.
@@ -2058,7 +2067,10 @@ class Aria:
             situation_report = self.generate_situation_report(context, digest=digest)
             try:
                 from .llm.prompts import SYSTEM_PROMPT, MODE_SELECTION_PROMPT
-                prompt = MODE_SELECTION_PROMPT.format(context=situation_report)
+                from .llm.context import build_op_reference
+                op_ref = build_op_reference(op_success_rates, compression_coverage)
+                prompt = MODE_SELECTION_PROMPT.format(
+                    context=situation_report, op_reference=op_ref)
                 resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
                 self._track_cost(resp)
                 if resp.text.strip():

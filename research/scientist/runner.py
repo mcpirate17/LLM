@@ -42,6 +42,7 @@ from .native_runner import (
     compile_model_native_first as compile_model,
     native_runner_capability_report,
     record_native_abi_parity_result,
+    reset_native_runner_telemetry,
 )
 from ..synthesis.validator import validate_graph
 from ..synthesis.serializer import graph_to_json, graph_from_json, graph_summary
@@ -52,7 +53,6 @@ from ..eval.flops import estimate_flops
 from ..eval.baseline import TransformerBaseline
 from ..eval.fingerprint import compute_fingerprint, BehavioralFingerprint
 from ..eval.diagnostic_tasks import run_diagnostic_suite, DiagnosticSuiteResult
-from ..eval.regression_gate import RegressionGate
 from ..eval.perf_budget import evaluate_perf_budget_gate
 from ..eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
 from ..training.loss_synthesis import synthesize_loss
@@ -3314,6 +3314,10 @@ class ExperimentRunner:
         with self._lock:
             self._progress.status = "stopped"
             self._progress.aria_message = "Stopping... wrapping up current evaluation."
+            
+            # Z17: Clear global native-runner counters immediately on stop
+            reset_native_runner_telemetry()
+            
         self._emit_event("experiment_stopping", {})
 
     # ── Routing Benchmark Harness (Track C) ──
@@ -3483,6 +3487,14 @@ class ExperimentRunner:
     def _run_experiment_thread(self, exp_id: str, config: RunConfig,
                                 hypothesis: str):
         """Execute a single experiment in background."""
+        with self._lock:
+            # Z17: Clear any stale progress data from previous runs
+            self._progress = LiveProgress(
+                experiment_id=exp_id,
+                status="generating",
+                aria_message=f"{self.aria.NAME}: Starting experiment {exp_id[:8]}...",
+            )
+            
         nb = self._make_notebook()
         try:
             results = self._execute_experiment(exp_id, config, nb)
@@ -4087,6 +4099,10 @@ class ExperimentRunner:
         )
         meta = dict(hypothesis_metadata or {})
         meta["preregistration_id"] = prereg_id
+        
+        # Z17: Reset global native-runner counters between experiments
+        reset_native_runner_telemetry()
+        
         return nb.start_experiment(
             experiment_type=experiment_type,
             config=config,
@@ -5125,7 +5141,9 @@ class ExperimentRunner:
             }
 
             rec = self.aria.recommend_next_mode(
-                context=context, fallback_data=fallback_data, digest=digest)
+                context=context, fallback_data=fallback_data, digest=digest,
+                op_success_rates=analytics_data.get("op_success_rates"),
+                compression_coverage=analytics_data.get("compression_coverage"))
 
             compression_override = self._compression_focus_override(rec, fallback_data)
             if compression_override is not None:
@@ -7222,10 +7240,10 @@ class ExperimentRunner:
                     except Exception as e:
                         logger.debug("Scaling comparison failed: %s", e)
 
-                # Quantization gate: test INT8 retention
+                # Quantization eval: test INT8 retention for all validation candidates
                 quant_int8_retention = None
                 quant_quality_per_byte = None
-                if is_breakthrough:
+                if best_seed is not None:
                     try:
                         from ..eval.quantization import evaluate_sparse_quant_quality
                         # Build a fresh model for quant eval
@@ -7256,7 +7274,7 @@ class ExperimentRunner:
                         if quant_result is not None:
                             quant_int8_retention = quant_result.get("full_retention")
                             quant_quality_per_byte = quant_result.get("quality_per_byte")
-                            if quant_int8_retention is not None and quant_int8_retention < 0.80:
+                            if is_breakthrough and quant_int8_retention is not None and quant_int8_retention < 0.80:
                                 is_breakthrough = False
                                 logger.info(
                                     "Quant gate downgraded %s: INT8 retention=%.3f < 0.80",
@@ -7264,11 +7282,11 @@ class ExperimentRunner:
                                 )
                         del quant_model
                     except Exception as e:
-                        logger.debug("Quantization gate skipped: %s", e)
+                        logger.debug("Quantization eval skipped: %s", e)
 
                 # Long-context sweep (informational, non-blocking)
                 long_context_score = None
-                if is_breakthrough and best_seed is not None:
+                if best_seed is not None:
                     try:
                         from ..eval.long_context import run_long_context_sweep
                         base_loss_val = best_seed.get("final_loss", 0)
@@ -7301,7 +7319,7 @@ class ExperimentRunner:
 
                 # Noise sensitivity (informational, non-blocking)
                 noise_score = None
-                if is_breakthrough and best_seed is not None:
+                if best_seed is not None:
                     try:
                         from ..eval.noise_sensitivity import evaluate_noise_sensitivity
                         if model_source == "morphological_box" and arch_spec_json_str:
@@ -8001,29 +8019,19 @@ class ExperimentRunner:
                 except Exception:
                     pass
 
-            # Z12: Regression Gate - Run diagnostic suite for S1 survivors
-            # Note: We re-compile a small version or use the worker's model if we had access to it.
-            # For now, we compile a single layer version for speed.
+            # Z12: Diagnostic suite — record metrics for S1 survivors (informational only).
+            # The regression gate is NOT applied at screening tier because a single-layer
+            # model trained for 50 steps cannot learn the copy/induction tasks the gate
+            # requires. The gate should only be applied at investigation/validation tiers
+            # where multi-layer models are trained for longer.
             try:
-                gate = RegressionGate()
-                # Use standard device for diagnostics
                 diag_dev = str(config.device) if torch.cuda.is_available() else "cpu"
-                
-                # Build a single-layer model for fast capability testing
                 diag_model = compile_model([graph], vocab_size=config.vocab_size, max_seq_len=64)
                 diag_result = run_diagnostic_suite(diag_model, device=diag_dev, n_steps=50)
-                
-                # Check against gate (using default absolute floor for now)
-                verdict = gate.check(diag_result)
                 program_metrics["diagnostic_score"] = diag_result.diagnostic_score
-                program_metrics["regression_gate_pass"] = int(verdict["pass"])
-                program_metrics["regression_gate_reason"] = verdict["reason"]
                 program_metrics["diagnostic_tasks_json"] = json.dumps(diag_result.to_dict())
-                
-                if not verdict["pass"]:
-                    logger.info("  ! Gated: %s failed regression gate: %s", graph.fingerprint()[:10], verdict["reason"])
             except Exception as e:
-                logger.warning("Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e)
+                logger.debug("Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e)
 
         # Novelty scoring for S1 survivors
         n_score = None
@@ -8133,6 +8141,15 @@ class ExperimentRunner:
                             nb: LabNotebook,
                             use_learned_grammar: bool = True) -> Dict:
         """Core experiment logic shared by single and continuous modes."""
+        with self._lock:
+            # Z17: Explicitly reset progress object at start of execution
+            self._progress = LiveProgress(
+                experiment_id=exp_id,
+                status="generating",
+                total_programs=config.n_programs,
+                aria_message=f"{self.aria.NAME}: Initializing experiment {exp_id[:8]}...",
+            )
+            
         results = {
             "total": 0, "stage0_passed": 0, "stage05_passed": 0,
             "stage1_passed": 0, "novel_count": 0,
@@ -9727,7 +9744,12 @@ class ExperimentRunner:
         try:
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb)
-            heuristic = self.aria.suggest_experiment(context) or {}
+            _analytics = self._gather_analytics_data(nb)
+            op_rates = _analytics.get("op_success_rates")
+            comp_cov = _analytics.get("compression_coverage")
+            heuristic = self.aria.suggest_experiment(
+                context, op_success_rates=op_rates,
+                compression_coverage=comp_cov) or {}
             summary_payload = self._build_next_experiment_summary(nb, results)
             planner = NextExperimentDecisionPlanner.from_run_config(config)
             plan = planner.propose_plan(
@@ -11670,10 +11692,10 @@ class ExperimentRunner:
                     except Exception as e:
                         logger.debug("Scaling comparison failed: %s", e)
 
-                # Quantization gate: test INT8 retention
+                # Quantization eval: test INT8 retention for all validation candidates
                 quant_int8_retention = None
                 quant_quality_per_byte = None
-                if is_breakthrough:
+                if best_seed is not None:
                     try:
                         from ..eval.quantization import evaluate_sparse_quant_quality
                         if model_source == "morphological_box" and arch_spec_json_str:
@@ -11702,7 +11724,7 @@ class ExperimentRunner:
                         if quant_result is not None:
                             quant_int8_retention = quant_result.get("full_retention")
                             quant_quality_per_byte = quant_result.get("quality_per_byte")
-                            if quant_int8_retention is not None and quant_int8_retention < 0.80:
+                            if is_breakthrough and quant_int8_retention is not None and quant_int8_retention < 0.80:
                                 is_breakthrough = False
                                 logger.info(
                                     "Quant gate downgraded %s: INT8 retention=%.3f < 0.80",
@@ -11710,11 +11732,11 @@ class ExperimentRunner:
                                 )
                         del quant_model
                     except Exception as e:
-                        logger.debug("Quantization gate skipped: %s", e)
+                        logger.debug("Quantization eval skipped: %s", e)
 
                 # Long-context sweep (informational, non-blocking)
                 long_context_score = None
-                if is_breakthrough and best_seed is not None:
+                if best_seed is not None:
                     try:
                         from ..eval.long_context import run_long_context_sweep
                         base_loss_val = best_seed.get("final_loss", 0)
@@ -11747,7 +11769,7 @@ class ExperimentRunner:
 
                 # Noise sensitivity (informational, non-blocking)
                 noise_score = None
-                if is_breakthrough and best_seed is not None:
+                if best_seed is not None:
                     try:
                         from ..eval.noise_sensitivity import evaluate_noise_sensitivity
                         if model_source == "morphological_box" and arch_spec_json_str:

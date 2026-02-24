@@ -87,6 +87,8 @@ Based on the full experimental data below, suggest a specific experiment configu
 
 {context}
 
+{op_reference}
+
 You must:
 - Identify the most promising direction based on op success rates, structural correlations, and past results
 - Pay close attention to the SCALING GATE section — this is the ultimate success criterion:
@@ -151,6 +153,8 @@ MODE_SELECTION_PROMPT = """\
 Based on the research progress so far, decide what type of experiment to run next.
 
 {context}
+
+{op_reference}
 
 Available modes:
 - "synthesis": Standard high-throughput screening. Generate many random architectures and test them. Best when: exploring broadly, early in research, or after changing grammar weights.

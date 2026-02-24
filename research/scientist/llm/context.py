@@ -12,6 +12,85 @@ from typing import Dict, List, Optional
 _OP_REGISTRY_CACHE: Optional[str] = None
 
 
+def build_op_reference(op_success_rates: Optional[Dict] = None,
+                       compression_coverage: Optional[Dict] = None) -> str:
+    """Build a compact op reference for injection into config-producing prompts.
+
+    Combines the primitive registry (valid names) with op success rates so
+    the LLM knows exactly which op names exist and how they perform.
+    This MUST NOT go through analyst compression — inject it directly.
+
+    *compression_coverage*: output of analytics.compression_coverage(), used
+    to add quality retention and compression ratio per technique.
+    """
+    lines = ["VALID OP NAMES — you MUST only use these exact names in op_weights and excluded_ops:"]
+
+    # Registry by category
+    try:
+        try:
+            from ...synthesis.primitives import PRIMITIVE_REGISTRY
+        except (ImportError, SystemError):
+            from synthesis.primitives import PRIMITIVE_REGISTRY
+        by_cat: Dict[str, List[str]] = {}
+        for name, op in sorted(PRIMITIVE_REGISTRY.items()):
+            cat = op.category.value if hasattr(op.category, "value") else str(op.category)
+            by_cat.setdefault(cat, []).append(name)
+        for cat in sorted(by_cat):
+            lines.append(f"  {cat}: {', '.join(by_cat[cat])}")
+    except Exception:
+        pass
+
+    # Success rates for ops with enough data
+    if op_success_rates:
+        rated = sorted(op_success_rates.items(),
+                       key=lambda x: -x[1].get("s1_rate", 0))
+        # Routing ops
+        routing = [(n, s) for n, s in rated
+                   if any(k in n for k in ("gate", "routing", "moe", "router", "expert"))]
+        # Compression/efficiency ops
+        compress = [(n, s) for n, s in rated
+                    if any(k in n for k in ("sparse", "low_rank", "grouped", "shared_basis",
+                                             "semi_structured", "nm_sparse", "block_sparse",
+                                             "factorized", "bottleneck", "tied_proj"))]
+        if routing:
+            lines.append("  Routing ops (S1 rate): " + ", ".join(
+                f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in routing))
+        if compress:
+            lines.append("  Compression ops (S1 rate): " + ", ".join(
+                f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in compress))
+        # Top 10 overall
+        top10 = [(n, s) for n, s in rated if s.get("n_used", 0) >= 20][:10]
+        if top10:
+            lines.append("  Top 10 by S1 rate (n>=20): " + ", ".join(
+                f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in top10))
+
+    # Compression technique quality retention (from analytics)
+    if compression_coverage:
+        dense_markers = {"dense", "dense_matrix", "standard_float"}
+        techniques = compression_coverage.get("techniques") or []
+        tech_parts = []
+        for tech in techniques:
+            name = tech.get("technique", "")
+            if name in dense_markers or tech.get("n_tested", 0) < 3:
+                continue
+            qr = tech.get("avg_quality_retention")
+            sr = tech.get("survival_rate", 0)
+            parts = [f"{name}: {sr:.0%} survival"]
+            if qr is not None:
+                parts.append(f"quality={qr:.2f}")
+            cr = tech.get("avg_compression_ratio")
+            if cr is not None:
+                parts.append(f"{cr:.1f}x compression")
+            tech_parts.append(", ".join(parts))
+        if tech_parts:
+            lines.append("  Compression technique performance:")
+            for tp in tech_parts:
+                lines.append(f"    {tp}")
+
+    lines.append("WARNING: Do NOT invent op names. If an op name is not in the list above, it does not exist.")
+    return "\n".join(lines)
+
+
 def _build_op_registry_section() -> str:
     """Build a compact category→ops listing from the primitive registry.
 
@@ -717,11 +796,32 @@ def build_mode_selection_context(
                 if n_compressed_tested > 0
                 else 0.0
             )
-            sections.append(
-                "\nCompression coverage: "
+            comp_lines = [
+                "Compression coverage: "
                 f"{n_compressed_tested}/{n_tested} tested ({compressed_share:.1%}), "
                 f"compressed survival={compressed_survival:.1%}"
-            )
+            ]
+            # Per-technique breakdown (skip dense/standard categories)
+            dense_markers = {"dense", "dense_matrix", "standard_float"}
+            techniques = compression.get("techniques") or []
+            for tech in techniques:
+                name = tech.get("technique", "")
+                if name in dense_markers or tech.get("n_tested", 0) == 0:
+                    continue
+                t_n = tech["n_tested"]
+                t_surv = tech.get("survival_rate", 0)
+                parts = [f"{name}: {t_n} tested, {t_surv:.0%} survival"]
+                qr = tech.get("avg_quality_retention")
+                if qr is not None:
+                    parts.append(f"quality={qr:.2f}")
+                mem = tech.get("avg_estimated_memory_mb")
+                if mem is not None:
+                    parts.append(f"mem={mem:.1f}MB")
+                cr = tech.get("avg_compression_ratio")
+                if cr is not None:
+                    parts.append(f"compress={cr:.2f}x")
+                comp_lines.append(f"  {', '.join(parts)}")
+            sections.append("\n".join(comp_lines))
 
         # Refuted hypotheses — avoid re-testing failed directions
         neg = analytics_data.get("negative_results") or {}

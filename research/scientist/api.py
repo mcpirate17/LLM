@@ -7801,7 +7801,9 @@ def create_app(
                 history=history,
                 past_hypotheses=past_hypotheses,
             )
-            suggestion = aria.suggest_experiment(context)
+            suggestion = aria.suggest_experiment(
+                context, op_success_rates=analytics_data.get("op_success_rates"),
+                compression_coverage=analytics_data.get("compression_coverage"))
             if suggestion:
                 suggestion["evidence_pack"] = build_evidence_pack(
                     nb,

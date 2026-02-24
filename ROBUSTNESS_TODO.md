@@ -1,30 +1,49 @@
-# Future Work: Deep Robustness & Generalization Checks
+# Robustness & Generalization Checks
 
-This document tracks planned deeper robustness checks for computational architectures that have already passed the screening, investigation, and multi-seed validation stages.
+Status tracker for deeper robustness checks on architecture candidates.
 
-## 1. Domain Generalization (Real-World Data)
-Current checks use synthetic data or micro-scale proxies.
-- [ ] **TinyStories Validation:** Add a stage to train survivors on the TinyStories dataset (~10k steps) to verify semantic coherence.
-- [ ] **WikiText-103 Perplexity:** Measure zero-shot or micro-train perplexity on WikiText-103.
-- [ ] **Cross-Task Robustness:** Train on code (e.g., Python snippet prediction) vs natural language to ensure the architecture isn't overfitted to English grammar.
+## Implemented (backend only — no UI)
 
-## 2. Long-Context Scaling Behavior
-- [ ] **Context Length Sweep:** Systematically increase sequence length from 128 -> 1024 -> 4096.
-- [ ] **Memory/FLOP Efficiency:** Automated "Efficiency Wall" detection — identify where the architecture's memory usage becomes non-linear or exceeds hardware budgets.
-- [ ] **Passkey Retrieval:** Implement a needle-in-a-haystack test for long-context architectures.
+These metrics have eval modules and runner integration but **all leaderboard values are NULL** and the dashboard doesn't display them. Two problems: (1) the leaderboard `promote_to_tier` path may not be passing these values through, and (2) no dashboard components exist.
 
-## 3. Representation & Numerical Stability
-- [ ] **Noise Sensitivity Pass:** Perturb input embeddings with Gaussian noise and measure the change in internal activations (Representational Drift) using CKA.
-- [ ] **Spectral Analysis:** Automatically monitor the spectral radius of layer weights during training to detect potential explosion/vanishing gradients before they happen.
-- [ ] **Weight Initialization Sensitivity:** Test the same architecture with 5 different initialization schemes (Xavier, Kaiming, Orthogonal, etc.) to ensure it's not a "lucky init" outlier.
+- [x] **Context Length Sweep** — `eval/long_context.py` → `run_long_context_sweep()`, trains at seq_len 512/1024, stores `robustness_long_ctx_score`. Wired in runner at lines ~7272 and ~11708.
+- [x] **Noise Sensitivity** — `eval/noise_sensitivity.py` → `evaluate_noise_sensitivity()`, Gaussian perturbation at 0.01/0.05/0.1, stores `noise_sensitivity_score`. Wired in runner at lines ~7305 and ~11741.
+- [x] **Weight Init Sensitivity** — Runner computes `init_sensitivity_std` (default vs Xavier mean delta). Wired in runner at lines ~6980 and ~11430.
+- [x] **Fake-Quantization Gate** — `eval/quantization.py` → INT8/INT4 fake-quant, 80% retention gate, stores `quant_int8_retention` and `quant_quality_per_byte`. Wired in runner at lines ~7225 and ~11663. Has 6 integration tests.
+- [x] **Spectral Analysis (partial)** — Embedded in `eval/fingerprint.py` as SVD geometry (`isotropy`, `intrinsic_dim`, `rank_ratio`) and Jacobian spectral norm. Stored as `fp_jacobian_spectral_norm`. No standalone module.
 
-## 4. Hardware & Deployment Robustness
-- [ ] **Fake-Quantization Gate:** Integrate `research/eval/quantization.py` into the main validation pipeline. Reject models that lose >10% accuracy when quantized to INT8 or FP8.
-- [ ] **Triton/Flash Compatibility:** Automated check to see if the architecture's operations can be easily lowered to optimized Triton kernels or if they rely on "slow" fallback paths.
+### Dashboard work needed
 
-## 5. Interpretability & Mechanistic Checks
-- [ ] **Activation Sparsity Map:** Measure the percentage of "dead" or redundant neurons across the model during validation.
-- [ ] **Attention/Routing Heatmaps:** For MoE/Attention models, automatically generate and store heatmaps to detect "Route Collapse" (where all tokens take the same path).
+All 5 implemented metrics need:
+1. **Debug why leaderboard values are NULL** — the eval code runs but values aren't reaching the leaderboard table. Check `promote_to_tier()` column whitelist and the runner's `program_metrics` → leaderboard propagation path.
+2. **ProgramDetail.js** — Add a "Robustness Profile" section showing:
+   - Noise sensitivity score (0-1, lower = more robust)
+   - Long-context score (0-1, higher = better scaling)
+   - Init sensitivity std (lower = less dependent on init luck)
+   - Quantization INT8 retention % and quality-per-byte
+   - Spectral norm from fingerprint
+3. **Leaderboard.js** — Add optional columns for key robustness metrics (at minimum quant retention and noise sensitivity)
+4. **Filtering/sorting** — Allow sorting leaderboard by robustness metrics
+5. **Discovery Score** — Consider incorporating robustness metrics into `scoringEngine.js` composite
+
+## Partially Implemented
+
+- [ ] **Triton/Flash Compatibility** — Triton kernels exist in `synthesis/kernels.py` with `validate_kernels()` stability tests and `tools/validate_kernel_stability.py`. Missing: explicit compatibility check that flags architectures relying on slow fallback ops instead of fused Triton paths.
+
+## Not Implemented
+
+### Domain Generalization (Real-World Data)
+- [ ] **TinyStories Validation** — Train survivors on TinyStories (~10k steps) to verify semantic coherence beyond synthetic data.
+- [ ] **WikiText-103 Perplexity** — Micro-train perplexity on WikiText-103 as a real-world benchmark.
+- [ ] **Cross-Task Robustness** — Train on code vs natural language to ensure architecture isn't overfitted to one domain.
+
+### Long-Context (extensions)
+- [ ] **Passkey Retrieval** — Needle-in-a-haystack test for long-context architectures (the context sweep exists but doesn't test retrieval).
+- [ ] **Memory/FLOP Efficiency Wall** — Detect where memory usage becomes non-linear or exceeds hardware budgets as seq_len increases.
+
+### Interpretability
+- [ ] **Activation Sparsity Map** — Measure dead/redundant neurons during validation. Weight sparsity exists (`eval/pruning.py`) but activation sparsity does not.
+- [ ] **Routing Heatmaps** — For MoE/attention models, generate heatmaps to detect route collapse (all tokens taking same path).
 
 ---
-*Generated by Gemini CLI - Feb 22, 2026*
+*Originally generated by Gemini CLI - Feb 22, 2026. Updated Feb 23, 2026.*
