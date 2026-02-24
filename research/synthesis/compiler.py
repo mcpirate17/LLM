@@ -452,9 +452,17 @@ def _op_rwkv_channel(module, inputs, _):
     x = inputs[0]
     if not hasattr(module, 'mix_k'):
         return x
-    shifted = F.pad(x[:, :-1], (0, 0, 1, 0))
+    # Safe causal time-shift for 3D tensors (B, S, D)
+    if x.ndim == 3:
+        # F.pad expects (left, right, top, bottom) for last 2 dims
+        # x[:, :-1] removes last token, F.pad adds 0-token at beginning
+        shifted = F.pad(x[:, :-1], (0, 0, 1, 0))
+    else:
+        # Fallback for non-sequence tensors
+        shifted = x
     xk = x * module.mix_k + shifted * (1 - module.mix_k)
     xr = x * module.mix_r + shifted * (1 - module.mix_r)
+    # Receptance-weighted gated linear update
     k = torch.square(torch.relu(module.key_proj(xk)))
     return torch.sigmoid(module.receptance_proj(xr)) * module.value_proj(k)
 
@@ -779,7 +787,8 @@ class CompiledOp(nn.Module):
         """Initialize learnable parameters for this op."""
         D_in = input_shape.dim
         D_out = config.get("out_dim", D_in)
-        std = 1.0 / math.sqrt(D_in)
+        # Avoid division by zero for symbolic or unset shapes
+        std = 1.0 / math.sqrt(D_in) if D_in > 0 else 0.02
 
         if op.name in ("linear_proj", "linear_proj_down", "linear_proj_up"):
             self.weight = self._make_param((D_out, D_in), std=std)
@@ -803,7 +812,7 @@ class CompiledOp(nn.Module):
             n_experts = int(config.get("num_experts", 4))
             self.gate_weight = self._make_param((n_experts, D_in), std=std)
             # Create a minimal MLP for each expert to keep CompiledOp self-contained
-            hidden = int(D_in * config.get("mlp_ratio", 2.0))
+            hidden = int(D_in * float(config.get("mlp_ratio", 2.0)))
             self.experts = nn.ModuleList([
                 nn.Sequential(
                     nn.Linear(D_in, hidden, bias=False),
@@ -811,6 +820,10 @@ class CompiledOp(nn.Module):
                     nn.Linear(hidden, D_in, bias=False)
                 ) for _ in range(n_experts)
             ])
+            # Custom initialization matching project style
+            for expert in self.experts:
+                expert[0].weight.data.normal_(mean=0.0, std=std)
+                expert[2].weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
         elif op.name == "nm_sparse_linear":
             self.weight = self._make_param((D_out, D_in), std=std)
             self.sparsity_n = int(config.get("n", 2))
@@ -851,17 +864,27 @@ class CompiledOp(nn.Module):
             rank = max(D_in // 4, 1)
             self.tied_weight = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(D_in)))
         elif op.name == "swiglu_mlp":
-            hidden = int(D_in * config.get("mlp_ratio", 3.0))
+            # SwiGLU MLP: gated linear unit with SiLU activation
+            hidden = int(D_in * float(config.get("mlp_ratio", 3.0)))
             self.gate_proj = nn.Linear(D_in, hidden, bias=False)
             self.up_proj = nn.Linear(D_in, hidden, bias=False)
             self.down_proj = nn.Linear(hidden, D_in, bias=False)
+            # Match project initialization style
+            self.gate_proj.weight.data.normal_(mean=0.0, std=std)
+            self.up_proj.weight.data.normal_(mean=0.0, std=std)
+            self.down_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
         elif op.name == "rwkv_channel":
-            hidden = int(D_in * config.get("mlp_ratio", 3.0))
+            # RWKV-style channel mixing: time-shift + gated update
+            hidden = int(D_in * float(config.get("mlp_ratio", 3.0)))
             self.mix_k = nn.Parameter(torch.ones(D_in) * 0.5)
             self.mix_r = nn.Parameter(torch.ones(D_in) * 0.5)
             self.key_proj = nn.Linear(D_in, hidden, bias=False)
             self.receptance_proj = nn.Linear(D_in, D_in, bias=False)
             self.value_proj = nn.Linear(hidden, D_in, bias=False)
+            # Match project initialization style
+            self.key_proj.weight.data.normal_(mean=0.0, std=std)
+            self.receptance_proj.weight.data.normal_(mean=0.0, std=std)
+            self.value_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
         elif op.name == "softmax_attention":
             n_heads = max(1, D_in // 64)  # 64 head_dim default
             head_dim = D_in // n_heads

@@ -339,7 +339,7 @@ function ScoreBreakdown({ entry }) {
 const COLUMNS = [
   {
     key: '_score',
-    label: 'Score',
+    label: 'Utility Score',
     title: 'Internal 0-100 composite for relative ranking only; not a claim of GPT-level replacement or external benchmark parity.',
   },
   { key: 'tier', label: 'Tier' },

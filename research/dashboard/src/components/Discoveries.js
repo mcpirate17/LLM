@@ -324,7 +324,7 @@ function FingerprintLeaderboardChart({ entries }) {
                     textAnchor="middle" transform={`rotate(45 ${x + barW / 2} ${H - 5})`}>
                 {e.display_name?.slice(0, 8) || e.graph_fingerprint?.slice(0, 6)}
               </text>
-              <title>{e.display_name || e.graph_fingerprint}: Score {score}</title>
+              <title>{e.display_name || e.graph_fingerprint}: Discovery Score {score}</title>
             </g>
           );
         })}
@@ -336,7 +336,7 @@ function FingerprintLeaderboardChart({ entries }) {
 // ── Main Component ─────────────────────────────────────────────────
 
 const COLUMNS = [
-  { key: '_score', label: 'Score' },
+  { key: '_score', label: 'Discovery Score' },
   { key: 'display_name', label: 'Architecture' },
   { key: 'architecture_family', label: 'Family' },
   { key: '_best_loss', label: 'Loss' },
@@ -412,7 +412,7 @@ function Discoveries({
 
   const fetchData = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ sort: 'composite_score', limit: '100', view: 'ranked' });
+      const params = new URLSearchParams({ sort: 'composite_score', limit: '200', view: 'ranked' });
       if (activeTier !== 'all') params.set('tier', activeTier);
       const res = await fetch(`${API_BASE}/api/discoveries?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

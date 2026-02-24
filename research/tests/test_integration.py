@@ -8342,7 +8342,8 @@ class TestSpikingPrimitives(unittest.TestCase):
         self.x = torch.randn(self.B, self.S, self.D, requires_grad=True)
 
     def _run_op(self, fn):
-        return fn([self.x], {}, self.D)
+        # Harmonized signature: fn(module, *inputs)
+        return fn(None, self.x)
 
     # Shape preservation
     def test_lif_shape(self):
@@ -8400,8 +8401,8 @@ class TestSpikingPrimitives(unittest.TestCase):
         x_base = torch.randn(1, 8, 16)
         x_mod = x_base.clone().detach()
         x_mod[:, 6:, :] = torch.randn(1, 2, 16)  # Change last 2 tokens
-        out1 = execute_stdp_attention([x_base], {}, 16)
-        out2 = execute_stdp_attention([x_mod], {}, 16)
+        out1 = execute_stdp_attention(None, x_base)
+        out2 = execute_stdp_attention(None, x_mod)
         # First 6 positions (0-5) attend only to themselves and earlier,
         # so they should be unaffected by changes at positions 6-7
         torch.testing.assert_close(out1[:, :6, :], out2[:, :6, :])
@@ -8410,7 +8411,7 @@ class TestSpikingPrimitives(unittest.TestCase):
     def test_sparse_threshold_sparsity(self):
         from research.mathspaces.spiking import execute_sparse_threshold
         x = torch.randn(4, 32, 64)
-        out = execute_sparse_threshold([x], {}, 64)
+        out = execute_sparse_threshold(None, x)
         # At least 20% near-zero (threshold targets ~50%)
         near_zero = (out.abs() < 1e-6).float().mean().item()
         self.assertGreater(near_zero, 0.2)

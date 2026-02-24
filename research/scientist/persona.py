@@ -285,31 +285,43 @@ class Aria:
         self.state.research_focus = "analysis"
         return self._rng.choice(self.ANALYSIS_COMMENTS)
 
-    def generate_situation_report(self, context: str) -> str:
+    def generate_situation_report(self, context: str, digest=None) -> str:
         """Use analyst LLM to condense raw data into a SITUATION REPORT brief.
         This offloads 'lighter thinking' (summarization, trend extraction)
         to the local model, saving tokens and focus for the primary LLM.
+
+        If *digest* is provided, its narrative summary is prepended to give
+        the analyst richer historical context.
         """
         llm = self._get_analyst_llm()
         if not llm or not context:
             return context # Fallback to raw context
-            
+
+        # Prepend digest narrative for richer analyst context
+        enriched_context = context
+        if digest is not None:
+            narrative = getattr(digest, "narrative", "")
+            if narrative:
+                enriched_context = (
+                    f"KNOWLEDGE DIGEST (historical analysis):\n{narrative}\n\n"
+                    f"RAW DATA:\n{context}"
+                )
+
         try:
             prompt = (
                 "You are an AI research analyst. Condense the following raw experimental data "
                 "into a high-density SITUATION REPORT for a senior scientist. "
                 "Extract: top 3 winners, top 3 failure modes, and net grammar shifts. "
                 "Be extremely concise. Use bullets.\n\n"
-                f"RAW DATA:\n{context}"
+                f"{enriched_context}"
             )
-            # Use lower max tokens for speed
-            resp = llm.generate(prompt, max_tokens=400, temperature=0.1)
+            resp = llm.generate(prompt, max_tokens=800, temperature=0.1)
             self._track_cost(resp)
             if resp.text.strip():
                 return f"SITUATION REPORT (pre-digested by Analyst):\n{resp.text.strip()}"
         except Exception as e:
             logger.warning(f"Situation report generation failed: {e}")
-            
+
         return context
 
     # ── LLM-enhanced methods with rule-based fallback ──
@@ -2019,7 +2031,8 @@ class Aria:
         )
 
     def recommend_next_mode(self, context: str = "",
-                            fallback_data: Optional[Dict] = None) -> Dict:
+                            fallback_data: Optional[Dict] = None,
+                            digest=None) -> Dict:
         """Recommend the next experiment mode based on research progress.
 
         Returns {mode: str, reasoning: str, confidence: float, config: Dict}.
@@ -2028,6 +2041,8 @@ class Aria:
 
         After computing the recommendation, applies decision outcome feedback
         to adjust confidence for modes with poor historical performance.
+
+        *digest*: optional ExperimentDigest for knowledge-driven overrides.
         """
         llm = self._get_llm()
         use_llm = False
@@ -2040,7 +2055,7 @@ class Aria:
                     use_llm = True
         if use_llm:
             # Z17: Offload lighter thinking locally
-            situation_report = self.generate_situation_report(context)
+            situation_report = self.generate_situation_report(context, digest=digest)
             try:
                 from .llm.prompts import SYSTEM_PROMPT, MODE_SELECTION_PROMPT
                 prompt = MODE_SELECTION_PROMPT.format(context=situation_report)
@@ -2048,12 +2063,14 @@ class Aria:
                 self._track_cost(resp)
                 if resp.text.strip():
                     rec = self._parse_mode_recommendation(resp.text.strip())
-                    return self._apply_decision_feedback(rec, fallback_data)
+                    rec = self._apply_decision_feedback(rec, fallback_data)
+                    return self._apply_digest_overrides(rec, digest)
             except Exception as e:
                 logger.warning(f"LLM mode recommendation failed, falling back: {e}")
 
-        rec = self._rule_based_mode_recommendation(fallback_data or {})
-        return self._apply_decision_feedback(rec, fallback_data)
+        rec = self._rule_based_mode_recommendation(fallback_data or {}, digest=digest)
+        rec = self._apply_decision_feedback(rec, fallback_data)
+        return self._apply_digest_overrides(rec, digest)
 
     def _apply_decision_feedback(self, rec: Dict,
                                   fallback_data: Optional[Dict] = None) -> Dict:
@@ -2097,6 +2114,83 @@ class Aria:
             "consecutive_failures": consec_failures,
             "mode_success_rate": stats.get("success_rate"),
         }
+
+        return rec
+
+    @staticmethod
+    def _apply_digest_overrides(rec: Dict, digest) -> Dict:
+        """Apply knowledge digest findings to a mode recommendation.
+
+        Adjusts config values based on statistically significant findings
+        from the digest. Only modifies synthesis/evolution modes.
+        """
+        if digest is None:
+            return rec
+
+        mode = rec.get("mode", "synthesis")
+        if mode not in ("synthesis", "evolution", "refinement"):
+            return rec
+
+        config = rec.setdefault("config", {})
+        reasoning_additions = []
+
+        # Config effects (significant correlations)
+        for eff in getattr(digest, "config_effects", []):
+            if eff.p_value >= 0.05 or eff.target != "s1_count":
+                continue
+            param = eff.param_name
+            # Only nudge if not already explicitly set
+            if param in config:
+                continue
+            if eff.direction == "positive" and param == "residual_prob":
+                config["residual_prob"] = 0.85
+                reasoning_additions.append(f"boosted {param} (rho={eff.rho:+.2f})")
+            elif eff.direction == "negative" and param == "max_depth":
+                config.setdefault("max_depth", 5)
+                reasoning_additions.append(f"capped {param} (rho={eff.rho:+.2f})")
+            elif eff.direction == "positive" and param == "math_space_weight":
+                config.setdefault("math_space_weight", 3.0)
+                reasoning_additions.append(f"boosted {param}")
+
+        # Op weight boosts from successful families
+        op_weights = config.get("op_weights", {})
+        for fam in getattr(digest, "architecture_families", []):
+            if fam.s1_rate > 0.4 and fam.representative_ops:
+                for op in fam.representative_ops[:4]:
+                    if op not in op_weights:
+                        op_weights[op] = 1.5
+                if not config.get("op_weights"):
+                    reasoning_additions.append(
+                        f"boosted ops from family {fam.family_id} "
+                        f"(S1 rate {fam.s1_rate:.0%})"
+                    )
+        if op_weights:
+            config["op_weights"] = op_weights
+
+        # Anti-synergistic pair exclusion (append to excluded_combinations)
+        anti_pairs = [
+            (s.op_a, s.op_b) for s in getattr(digest, "op_synergies", [])
+            if s.label == "anti_synergistic" and s.lift < 0.3
+        ]
+        if anti_pairs:
+            existing = config.get("excluded_combinations", [])
+            for a, b in anti_pairs[:3]:
+                existing.append([a, b])
+            config["excluded_combinations"] = existing
+            reasoning_additions.append(
+                f"excluding {len(anti_pairs[:3])} anti-synergistic pairs"
+            )
+
+        # Digest recommendations: use first recommendation to inform mode
+        recs = getattr(digest, "recommendations", [])
+        if recs:
+            reasoning_additions.append(f"Digest advice: {recs[0][:80]}")
+
+        if reasoning_additions:
+            rec["reasoning"] = (
+                rec.get("reasoning", "") +
+                " | Digest: " + "; ".join(reasoning_additions)
+            )
 
         return rec
 
@@ -2144,7 +2238,7 @@ class Aria:
 
         return result
 
-    def _rule_based_mode_recommendation(self, data: Dict) -> Dict:
+    def _rule_based_mode_recommendation(self, data: Dict, digest=None) -> Dict:
         """Data-driven mode recommendation when LLM is unavailable.
 
         Analyzes op success rates, failure patterns, math family coverage,
@@ -2156,6 +2250,9 @@ class Aria:
         ``decision_outcomes``, per-mode success rates from past selection
         decisions are used to adjust confidence and redirect away from
         modes that have consistently failed.
+
+        If *digest* (ExperimentDigest) is provided, its statistical findings
+        are used to inform config overrides and op weight adjustments.
         """
         total_s1 = data.get("total_s1_survivors", 0)
         avg_novelty = data.get("avg_novelty", 0)
@@ -2204,10 +2301,10 @@ class Aria:
             n_compressed_tested / n_tested if n_tested > 0 else 0.0
         )
         compression_cooldown_ok = (
-            (n_experiments - self._last_compression_rec_cycle) >= 3
+            (n_experiments - self._last_compression_rec_cycle) >= 2
             and n_compressed_tested > self._last_compression_n_tested
         )
-        if n_tested >= 8 and compressed_share < 0.20 and compression_cooldown_ok:
+        if n_tested >= 8 and compressed_share < 0.30 and compression_cooldown_ok:
             self._last_compression_rec_cycle = n_experiments
             self._last_compression_n_tested = n_compressed_tested
             return {
@@ -2280,6 +2377,49 @@ class Aria:
                     },
                 },
             }
+
+        # --- Digest-informed overrides (before Priority 2) ---
+        _digest_config_hints: Dict = {}
+        _digest_op_boosts: Dict = {}
+        _digest_excluded_pairs: list = []
+        _digest_reasoning_parts: list = []
+
+        if digest is not None:
+            # Config effects: use significant findings to adjust parameters
+            for eff in getattr(digest, "config_effects", []):
+                if eff.p_value < 0.05 and eff.target == "s1_count":
+                    if eff.direction == "positive" and eff.param_name in (
+                        "residual_prob", "max_depth", "max_ops", "model_dim",
+                        "math_space_weight", "structured_sparsity_bias",
+                    ):
+                        # Nudge toward higher values
+                        _digest_config_hints[eff.param_name] = "boost"
+                        _digest_reasoning_parts.append(
+                            f"{eff.param_name} positively correlated with S1 (rho={eff.rho:+.2f})"
+                        )
+                    elif eff.direction == "negative" and eff.param_name in (
+                        "max_depth", "max_ops", "model_dim",
+                    ):
+                        _digest_config_hints[eff.param_name] = "reduce"
+                        _digest_reasoning_parts.append(
+                            f"{eff.param_name} negatively correlated with S1 (rho={eff.rho:+.2f})"
+                        )
+
+            # Architecture families: bias op weights toward high-S1 families
+            for fam in getattr(digest, "architecture_families", []):
+                if fam.s1_rate > 0.4 and fam.representative_ops:
+                    for op in fam.representative_ops[:5]:
+                        _digest_op_boosts[op] = max(
+                            _digest_op_boosts.get(op, 1.0), 1.5
+                        )
+                    _digest_reasoning_parts.append(
+                        f"Family {fam.family_id} has {fam.s1_rate:.0%} S1 rate"
+                    )
+
+            # Anti-synergistic pairs: note for exclusion
+            for syn in getattr(digest, "op_synergies", []):
+                if syn.label == "anti_synergistic" and syn.lift < 0.3:
+                    _digest_excluded_pairs.append((syn.op_a, syn.op_b))
 
         # --- Priority 2: Data-driven analysis to choose mode & config ---
 

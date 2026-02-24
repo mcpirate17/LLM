@@ -16,7 +16,8 @@ Provide 3-5 specific, actionable insights about:
 1. What patterns distinguish programs that passed Stage 1 (learning) from those that failed
 2. Whether the failure modes suggest grammar adjustments
 3. Any surprising or novel findings in the behavioral fingerprints
-4. Concrete suggestions for the next experiment
+4. Scaling gate progress: are any survivors likely to achieve 3x parameter efficiency vs GPT-2? What architectural features might close the gap?
+5. Concrete suggestions for the next experiment
 
 Be specific — reference actual pass rates, error types, and architectural patterns. Keep each insight to 1-2 sentences.
 
@@ -36,6 +37,7 @@ Your hypothesis should:
 - Reference specific patterns from recent results
 - Suggest a concrete change to the grammar or evaluation pipeline
 - Be falsifiable within one experiment run
+- Prioritize PARAMETER EFFICIENCY — the ultimate goal is 3x fewer parameters than GPT-2 for the same loss. Check the scaling gate data: if current best is far below 3x, hypothesize about HOW to close that gap (routing, sparsity, weight sharing, conditional compute), not just how to lower loss_ratio further.
 - Follow the format: "Hypothesis: [specific prediction] because [reasoning from data]"
 
 One hypothesis only, 2-3 sentences max. Plain English with specific numbers only — no code."""
@@ -87,6 +89,12 @@ Based on the full experimental data below, suggest a specific experiment configu
 
 You must:
 - Identify the most promising direction based on op success rates, structural correlations, and past results
+- Pay close attention to the SCALING GATE section — this is the ultimate success criterion:
+  * Architectures must achieve 3x parameter efficiency vs GPT-2 (same loss, 3x fewer params)
+  * If no candidates pass the gate, prioritize strategies that improve parameter efficiency:
+    MoE/routing (activate only a subset of parameters), weight sharing, aggressive sparsity,
+    sublinear attention mechanisms, or fundamentally new compute patterns
+  * A high novelty score with poor scaling efficiency is NOT progress
 - Suggest concrete parameter changes:
   * Core: n_programs, model_dim, max_depth, max_ops, residual_prob
   * Grammar probabilities: grammar_split_prob (0-1), grammar_merge_prob (0-1), grammar_risky_op_prob (0-1), grammar_freq_domain_prob (0-1)
@@ -160,6 +168,7 @@ Decision criteria:
 5. If investigation survivors show robustness (> 0.5) -> validation (confirm)
 6. Periodically return to synthesis to avoid getting stuck
 7. If sparsity coverage is low (< 15% of tested programs use sparse ops) -> consider synthesis with sparse-focused config (model_source="morphological_box", use_synthesized_training=true) to explore sparse architectures and training (RigL, structured sparsity, block-sparse). Sparse architectures offer parameter efficiency — they deserve deliberate exploration, not just random chance.
+8. SCALING GATE (highest priority): Check the scaling gate section in the context. If no candidates pass the 3x parameter efficiency gate vs GPT-2, this is the #1 problem. Prioritize architectures that achieve the same loss with fewer active parameters: MoE routing, conditional computation, weight sharing, structured sparsity. Low loss_ratio alone is NOT enough — the architecture must be fundamentally more efficient than a standard transformer.
 
 Return your response in this exact format:
 MODE: [one of: synthesis, evolution, novelty, refinement, investigation, validation]

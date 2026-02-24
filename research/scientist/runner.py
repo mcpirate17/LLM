@@ -362,6 +362,8 @@ class RunConfig:
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
     auto_validate_max_baseline_ratio: float = 0.90
+    breakthrough_raw_threshold: float = 0.70
+    breakthrough_normalized_threshold: float = 0.85
     auto_validate_min_novelty_confidence: float = 0.50
     auto_validate_top_n: int = 3
     require_preregistration: bool = True
@@ -383,6 +385,12 @@ class RunConfig:
     safety_plateau_min_delta: float = 0.01
     switch_epic_breakthrough_confidence_min: float = 0.75
     switch_epic_stagnation_cycles: int = 6
+    # External scaling comparison
+    enable_scaling_comparison: bool = True
+    scaling_reference_families: str = "gpt2"        # comma-separated: "gpt2,mamba"
+    scaling_d512_enabled: bool = True                # retrain breakthrough candidates at d=512
+    scaling_param_efficiency_target: float = 3.0     # min param efficiency for breakthrough
+    scaling_flop_ceiling: float = 2.0                # max FLOP ratio vs reference
     # Checkpoint/resume
     checkpoint_dir: str = "checkpoints"
     checkpoint_interval: int = 1  # save continuous checkpoint every N experiments
@@ -1061,6 +1069,13 @@ class ExperimentRunner:
             self._baseline = TransformerBaseline()
         return self._baseline
 
+    def _get_scaling_reference_manager(self):
+        if not hasattr(self, "_scaling_ref_mgr"):
+            from ..eval.scaling_reference import ScalingReferenceManager
+            cache_path = str(Path(self.notebook_path).parent / "scaling_reference_cache.db")
+            self._scaling_ref_mgr = ScalingReferenceManager(cache_path=cache_path)
+        return self._scaling_ref_mgr
+
     def _make_notebook(self) -> LabNotebook:
         """Create a new notebook connection (thread-safe)."""
         return LabNotebook(self.notebook_path)
@@ -1510,7 +1525,16 @@ class ExperimentRunner:
             note=f"Planning cycle {n_experiments}.",
         )
 
-        mode_rec = self._select_next_mode(config, nb, n_experiments)
+        # Get digest from distiller if available
+        _digest = None
+        _distiller = getattr(self, "_knowledge_distiller", None)
+        if _distiller is not None:
+            try:
+                _digest = _distiller.get_digest()
+            except Exception:
+                pass
+
+        mode_rec = self._select_next_mode(config, nb, n_experiments, digest=_digest)
         selected_mode = mode_rec.get("mode", "synthesis")
         mode_reasoning = mode_rec.get("reasoning", "")
         mode_confidence = mode_rec.get("confidence", 0)
@@ -2903,8 +2927,8 @@ class ExperimentRunner:
                 or (mean_op_success is not None and mean_op_success < 0.35)):
             intent = "quality"
             rationale = "weak_quality_signal"
-        elif (mean_params is not None and mean_params >= 5_000_000
-              and (mean_loss is None or mean_loss <= 0.95)):
+        elif (mean_params is not None and mean_params >= 500_000
+              and (mean_loss is None or mean_loss <= 0.80)):
             intent = "compression"
             rationale = "high_parameter_budget"
         elif mean_novelty is not None and mean_novelty < 0.45:
@@ -2914,6 +2938,13 @@ class ExperimentRunner:
               and mean_params is not None and mean_params >= 1_000_000):
             intent = "sparsity"
             rationale = "sparse_operator_gap"
+        elif (mean_params is not None and mean_params > 0
+              and mean_loss is not None and mean_loss < 0.60):
+            # Good quality but check FLOP efficiency
+            baseline_params = 6 * 256 ** 2  # ~393K for a minimal 2-layer transformer
+            if mean_params > 3 * baseline_params:
+                intent = "compression"
+                rationale = "low_flop_efficiency"
 
         recommendation = {
             "intent": intent,
@@ -4683,6 +4714,33 @@ class ExperimentRunner:
         # LLM is still available for user-initiated chat and campaign formulation.
         self.aria._continuous_mode = True
         self.aria._llm_decision_interval = config.llm_decision_interval
+
+        # Knowledge distiller — background intelligence thread
+        distiller = None
+        try:
+            from .intelligence.distiller import KnowledgeDistiller
+            from .intelligence.digest import ExperimentDigest
+            db_path = self.notebook_path
+            distiller = KnowledgeDistiller(
+                db_path=db_path,
+                distill_interval_cycles=3,
+            )
+            # Recover last digest from DB
+            try:
+                init_nb = self._make_notebook()
+                saved = init_nb.get_latest_digest()
+                if saved:
+                    distiller.set_digest(ExperimentDigest.from_dict(saved))
+                    logger.info("Recovered knowledge digest from DB")
+                init_nb.close()
+            except Exception as e:
+                logger.debug("Digest recovery failed: %s", e)
+            distiller.start()
+            self._knowledge_distiller = distiller
+        except Exception as e:
+            logger.warning("KnowledgeDistiller init failed (degrading gracefully): %s", e)
+            distiller = None
+            self._knowledge_distiller = None
         self._set_aria_cycle_phase(
             "planning",
             continuous_active=True,
@@ -4772,6 +4830,12 @@ class ExperimentRunner:
                     "elapsed_minutes": (time.time() - t_start) / 60,
                     "estimated_cost": self.aria.total_cost,
                 })
+                # Stop knowledge distiller
+                if distiller is not None:
+                    try:
+                        distiller.stop()
+                    except Exception:
+                        pass
                 # Launch queued auto-scale-up
                 self._run_pending_scale_up()
                 return
@@ -4782,6 +4846,13 @@ class ExperimentRunner:
                 self.run_aria_cycle(config, nb, n_experiments, t_start)
             finally:
                 nb.close()
+
+            # Notify distiller that a cycle completed
+            if distiller is not None:
+                try:
+                    distiller.notify_cycle_complete()
+                except Exception:
+                    pass
 
             # Update cost in progress
             with self._lock:
@@ -4816,6 +4887,13 @@ class ExperimentRunner:
 
             if config.rest_between_experiments > 0 and not self._stop_event.is_set():
                 time.sleep(config.rest_between_experiments)
+
+        # Stop knowledge distiller
+        if distiller is not None:
+            try:
+                distiller.stop()
+            except Exception:
+                pass
 
         # Re-enable LLM for interactive use after continuous mode ends.
         self.aria._continuous_mode = False
@@ -4858,7 +4936,7 @@ class ExperimentRunner:
         self._run_pending_scale_up()
 
     def _select_next_mode(self, config: RunConfig, nb: LabNotebook,
-                          n_experiments: int) -> Dict:
+                          n_experiments: int, digest=None) -> Dict:
         """Have Aria decide the next experiment mode."""
         try:
             recent = nb.get_recent_experiments(10)
@@ -4873,6 +4951,7 @@ class ExperimentRunner:
                 n_experiments_in_session=n_experiments,
                 cost_spent=self.aria.total_cost,
                 budget=config.max_cost_dollars,
+                digest=digest,
             )
 
             # Build fallback data for rule-based recommendation
@@ -4934,6 +5013,56 @@ class ExperimentRunner:
 
             # Gather richer analytics for data-driven rule-based recommendation
             recent_modes = [e.get("experiment_type", "synthesis") for e in recent]
+            
+            # Z16: Hard-coded fallback logic to prevent pipeline starvation
+            # Only promote 'worth it' candidates: Top performer per fingerprint
+            # that also meets a 'worthiness' bar (e.g. low loss OR high novelty)
+            worth_it_investigation = []
+            seen_fps = set()
+            
+            # Sort leaderboard by best loss to prioritize performance
+            sorted_lb = sorted(leaderboard, key=lambda x: x.get("screening_loss_ratio") or 1.0)
+            
+            for e in sorted_lb:
+                if e.get("tier") != "screening": continue
+                lr = e.get("screening_loss_ratio") or 1.0
+                nov = e.get("screening_novelty") or 0.0
+                fp = e.get("graph_fingerprint") or e.get("result_id")
+                
+                if fp in seen_fps: continue
+                seen_fps.add(fp)
+                
+                # Worthiness Bar:
+                # 1. Exceptional performance (LR < 0.2)
+                # 2. Good performance + decent novelty (LR < 0.4 AND Nov > 0.4)
+                # 3. High novelty + moderate performance (LR < 0.6 AND Nov > 0.7)
+                is_worth_it = (
+                    lr < 0.2 or 
+                    (lr < 0.4 and nov > 0.4) or 
+                    (lr < 0.6 and nov > 0.7)
+                )
+                
+                if is_worth_it and fp not in _investigated_fps:
+                    worth_it_investigation.append(e["result_id"])
+
+            investigation_backlog = len(worth_it_investigation)
+            
+            if investigation_backlog >= 5 and "investigation" not in recent_modes[:3]:
+                return {
+                    "mode": "investigation",
+                    "reasoning": f"Backlog of {investigation_backlog} ELITE investigation-ready candidates detected. Prioritizing unique, high-performing architectures.",
+                    "confidence": 1.0,
+                    "config": {"n_programs": min(investigation_backlog, 20)}
+                }
+            
+            if validation_ready >= 3 and "validation" not in recent_modes[:3]:
+                return {
+                    "mode": "validation",
+                    "reasoning": f"Pipeline bottleneck at validation: {validation_ready} candidates ready. Switching to multi-seed verification.",
+                    "confidence": 1.0,
+                    "config": {"n_programs": min(validation_ready, 10)}
+                }
+
             recent_failures = [e for e in recent if e.get("status") == "failed"]
             unique_fingerprints = set()
             for e in leaderboard:
@@ -4996,7 +5125,7 @@ class ExperimentRunner:
             }
 
             rec = self.aria.recommend_next_mode(
-                context=context, fallback_data=fallback_data)
+                context=context, fallback_data=fallback_data, digest=digest)
 
             compression_override = self._compression_focus_override(rec, fallback_data)
             if compression_override is not None:
@@ -5637,6 +5766,26 @@ class ExperimentRunner:
         ablation_experiments: List[str] = []
         queued_plan: List[str] = []
         ablation_outcome = "none"
+
+        # Dedup: skip if this signal was already ablated (in any hypothesis)
+        if strong_corr and top_signal_interpretable and hypothesis_text:
+            try:
+                already_tested = nb.conn.execute(
+                    "SELECT COUNT(*) FROM experiments "
+                    "WHERE experiment_type = 'ablation' "
+                    "AND hypothesis LIKE ?",
+                    (f"%{hypothesis_text}%",),
+                ).fetchone()[0]
+                if already_tested > 0:
+                    logger.info(
+                        "Skipping ablation for '%s' — already tested %d time(s)",
+                        hypothesis_text, already_tested,
+                    )
+                    ablation_outcome = "skipped_already_tested"
+                    strong_corr = False  # prevent triggering below
+            except Exception:
+                pass
+
         if strong_corr and top_signal_interpretable:
             row = nb.conn.execute(
                 """SELECT graph_json FROM program_results
@@ -6446,6 +6595,14 @@ class ExperimentRunner:
                         torch.cuda.empty_cache()
                     gc.collect()
 
+                # Skip candidates where no training program could reconstruct the model
+                if not tp_results:
+                    logger.debug(
+                        f"Investigation: skipping {source_result_id[:8]} — "
+                        f"model failed to reconstruct for all {len(training_programs)} programs"
+                    )
+                    continue
+
                 # Compute robustness
                 n_passed = sum(1 for r in tp_results if r.get("passed"))
                 robustness = n_passed / max(len(tp_results), 1)
@@ -6713,6 +6870,7 @@ class ExperimentRunner:
                     torch.manual_seed(seed * 42 + 7)
 
                     # Reconstruct model fresh
+                    init_scheme = "default"
                     try:
                         model = self._build_model_from_source(
                             model_source,
@@ -6723,6 +6881,12 @@ class ExperimentRunner:
                         )
                         if model is None:
                             continue
+                        # Multi-init: use Xavier uniform for the last seed
+                        if seed == config.validation_n_seeds - 1:
+                            init_scheme = "xavier_uniform"
+                            for p in model.parameters():
+                                if p.dim() >= 2:
+                                    nn.init.xavier_uniform_(p)
                     except Exception as e:
                         logger.debug(f"Model reconstruction failed: {e}")
                         continue
@@ -6770,6 +6934,7 @@ class ExperimentRunner:
 
                     seed_results.append({
                         "seed": seed,
+                        "init_scheme": init_scheme,
                         "passed": s1_result.get("passed", False),
                         "loss_ratio": s1_result.get("loss_ratio"),
                         "final_loss": s1_result.get("final_loss"),
@@ -6789,6 +6954,14 @@ class ExperimentRunner:
                         torch.cuda.empty_cache()
                     gc.collect()
 
+                # Skip candidates where no seed could reconstruct the model
+                if not seed_results:
+                    logger.debug(
+                        f"Inline validation: skipping {source_result_id[:8]} — "
+                        f"model failed to reconstruct for all {config.validation_n_seeds} seeds"
+                    )
+                    continue
+
                 # Compute validation metrics
                 passed_seeds = [r for r in seed_results if r.get("passed")]
                 loss_ratios = [r["loss_ratio"] for r in seed_results
@@ -6803,6 +6976,21 @@ class ExperimentRunner:
                         sum((lr - mean_lr) ** 2 for lr in loss_ratios)
                         / len(loss_ratios)
                     ) ** 0.5
+
+                # Init sensitivity: std between default and xavier seeds
+                init_sensitivity_std = None
+                default_losses = [
+                    r["loss_ratio"] for r in seed_results
+                    if r.get("init_scheme") == "default" and r.get("loss_ratio") is not None
+                ]
+                xavier_losses = [
+                    r["loss_ratio"] for r in seed_results
+                    if r.get("init_scheme") == "xavier_uniform" and r.get("loss_ratio") is not None
+                ]
+                if default_losses and xavier_losses:
+                    default_mean = sum(default_losses) / len(default_losses)
+                    xavier_mean = sum(xavier_losses) / len(xavier_losses)
+                    init_sensitivity_std = abs(default_mean - xavier_mean)
 
                 # Baseline comparison at validation scale
                 val_baseline_ratio = None
@@ -6838,6 +7026,42 @@ class ExperimentRunner:
                             )
                         except Exception:
                             pass
+
+                # Parameter-normalized baseline comparison
+                val_normalized_ratio = None
+                val_param_efficiency = None
+                source_params = (source.get("param_count")
+                                 or source.get("graph_n_params_estimate")
+                                 or 0) if source else 0
+                if loss_ratios and best_seed is not None and source_params > 0:
+                    try:
+                        baseline = self._get_baseline()
+                        baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
+                        baseline_recipe = self._resolve_baseline_recipe(
+                            best_seed, default_lr=config.stage1_lr)
+                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        norm_result = baseline.compare_normalized(
+                            best_seed["final_loss"],
+                            program_params=int(source_params),
+                            d_model=config.model_dim,
+                            seq_len=min(128, config.validation_seq_len),
+                            n_steps=max(1, baseline_steps),
+                            vocab_size=config.vocab_size,
+                            batch_size=config.validation_batch_size,
+                            lr=baseline_recipe["lr"],
+                            device=dev_str,
+                            n_layers=config.n_layers,
+                            optimizer_name=baseline_recipe["optimizer_name"],
+                            weight_decay=baseline_recipe["weight_decay"],
+                            momentum=baseline_recipe["momentum"],
+                            betas=baseline_recipe["betas"],
+                            data_fn=bl_data_fn,
+                            data_tag=bl_data_tag,
+                        )
+                        val_normalized_ratio = norm_result.get("normalized_ratio")
+                        val_param_efficiency = norm_result.get("param_efficiency")
+                    except Exception:
+                        pass
 
                 if len(passed_seeds) > 0:
                     results["stage1_passed"] += 1
@@ -6906,7 +7130,7 @@ class ExperimentRunner:
                     except Exception as e:
                         logger.debug("Sensitivity check failed: %s", e)
 
-                # Determine if breakthrough — aligned with Aria publication thresholds
+                # Determine if breakthrough — requires both raw AND normalized thresholds
                 ood_ok = (ood_result is not None
                           and ood_result.get("ood_robustness", 0) >= 0.67)
                 hp_ok = (sensitivity_result is not None
@@ -6917,9 +7141,16 @@ class ExperimentRunner:
                     novelty_valid = bool(source.get("novelty_valid_for_promotion"))
                     if not novelty_valid and source.get("cka_source") == "artifact":
                         novelty_valid = True
+
+                raw_threshold = config.breakthrough_raw_threshold
+                norm_threshold = config.breakthrough_normalized_threshold
+                raw_ok = (val_baseline_ratio is not None
+                          and val_baseline_ratio < raw_threshold)
+                norm_ok = (val_normalized_ratio is None
+                           or val_normalized_ratio < norm_threshold)
                 is_breakthrough = (
-                    val_baseline_ratio is not None
-                    and val_baseline_ratio < 0.90
+                    raw_ok
+                    and norm_ok
                     and multi_seed_std <= 0.03
                     and len(passed_seeds) >= 5
                     and len(passed_seeds) == config.validation_n_seeds
@@ -6929,16 +7160,193 @@ class ExperimentRunner:
                     and novelty_valid
                 )
 
+                # FLOP gate: reject breakthrough if >5x baseline FLOPs per token
+                flop_gated = False
+                if is_breakthrough and source_params > 0:
+                    candidate_fpt = source_params * 2.0
+                    baseline_fpt_gate = 2.0 * config.model_dim ** 2 * config.n_layers
+                    if candidate_fpt > 5.0 * baseline_fpt_gate:
+                        is_breakthrough = False
+                        flop_gated = True
+                        logger.info(
+                            "FLOP gate downgraded %s: %.0f FPT > 5x baseline %.0f",
+                            source_result_id[:8], candidate_fpt, baseline_fpt_gate,
+                        )
+
+                # Scaling law comparison gate
+                scaling_result = None
+                scaling_param_efficiency = None
+                scaling_flop_efficiency = None
+                scaling_gate_passed_val = None
+                scaling_best_family = None
+                scaling_confidence = None
+                if is_breakthrough and config.enable_scaling_comparison:
+                    try:
+                        scaling_mgr = self._get_scaling_reference_manager()
+                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        candidate_flops = (source.get("flops_forward", 0) or 0)
+                        if candidate_flops <= 0:
+                            candidate_flops = source_params * 2
+
+                        scaling_result = scaling_mgr.compare_candidate(
+                            candidate_loss=best_seed_loss,
+                            candidate_params=source_params,
+                            candidate_flops=candidate_flops,
+                            d_model=config.model_dim,
+                            n_steps=config.validation_steps,
+                            seq_len=config.validation_seq_len,
+                            vocab_size=config.vocab_size,
+                            batch_size=config.validation_batch_size,
+                            lr=config.stage1_lr,
+                            device=dev_str,
+                            data_fn=bl_data_fn, data_tag=bl_data_tag,
+                            families=config.scaling_reference_families.split(","),
+                            param_efficiency_target=config.scaling_param_efficiency_target,
+                            flop_ceiling=config.scaling_flop_ceiling,
+                        )
+                        scaling_param_efficiency = scaling_result.best_param_efficiency
+                        scaling_flop_efficiency = scaling_result.flop_efficiency
+                        scaling_gate_passed_val = scaling_result.scaling_gate_passed
+                        scaling_best_family = scaling_result.best_param_efficiency_family
+                        scaling_confidence = scaling_result.confidence
+
+                        if not scaling_result.scaling_gate_passed:
+                            is_breakthrough = False
+                            logger.info(
+                                "Scaling gate downgraded %s: param_eff=%.2f (need %.1f), flop_eff=%.2f",
+                                source_result_id[:8],
+                                scaling_result.best_param_efficiency,
+                                config.scaling_param_efficiency_target,
+                                scaling_result.flop_efficiency,
+                            )
+                    except Exception as e:
+                        logger.debug("Scaling comparison failed: %s", e)
+
+                # Quantization gate: test INT8 retention
+                quant_int8_retention = None
+                quant_quality_per_byte = None
+                if is_breakthrough:
+                    try:
+                        from ..eval.quantization import evaluate_sparse_quant_quality
+                        # Build a fresh model for quant eval
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            from ..morphological_box import ArchSpec
+                            from ..arch_builder import build_model, BuildConfig
+                            _spec = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            quant_model = build_model(_spec, _bc).to(dev)
+                        else:
+                            quant_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        # Generate test batches
+                        quant_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        quant_result = evaluate_sparse_quant_quality(
+                            quant_model, quant_batches, dev,
+                            target_sparsity=0.5, bits=8)
+                        if quant_result is not None:
+                            quant_int8_retention = quant_result.get("full_retention")
+                            quant_quality_per_byte = quant_result.get("quality_per_byte")
+                            if quant_int8_retention is not None and quant_int8_retention < 0.80:
+                                is_breakthrough = False
+                                logger.info(
+                                    "Quant gate downgraded %s: INT8 retention=%.3f < 0.80",
+                                    source_result_id[:8], quant_int8_retention,
+                                )
+                        del quant_model
+                    except Exception as e:
+                        logger.debug("Quantization gate skipped: %s", e)
+
+                # Long-context sweep (informational, non-blocking)
+                long_context_score = None
+                if is_breakthrough and best_seed is not None:
+                    try:
+                        from ..eval.long_context import run_long_context_sweep
+                        base_loss_val = best_seed.get("final_loss", 0)
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _asjs_lc = arch_spec_json_str
+                            _cfg_lc = config
+                            def _make_model_lc():
+                                from ..morphological_box import ArchSpec
+                                from ..arch_builder import build_model, BuildConfig
+                                _sp = ArchSpec(**json.loads(_asjs_lc))
+                                _bc2 = BuildConfig(
+                                    dim=_cfg_lc.model_dim, n_layers=_cfg_lc.n_layers,
+                                    vocab_size=_cfg_lc.vocab_size, max_seq_len=1024)
+                                return build_model(_sp, _bc2)
+                        else:
+                            _gjs_lc = graph_json_str
+                            _cfg_lc = config
+                            def _make_model_lc():
+                                return compile_model(
+                                    [graph_from_json(_gjs_lc)] * _cfg_lc.n_layers,
+                                    vocab_size=_cfg_lc.vocab_size, max_seq_len=1024)
+                        lc_result = run_long_context_sweep(
+                            _make_model_lc, config.vocab_size, dev,
+                            base_loss=base_loss_val, seq_lens=(512, 1024),
+                            n_steps=200, batch_size=2,
+                        )
+                        long_context_score = lc_result.get("long_context_score")
+                    except Exception as e:
+                        logger.debug("Long-context sweep skipped: %s", e)
+
+                # Noise sensitivity (informational, non-blocking)
+                noise_score = None
+                if is_breakthrough and best_seed is not None:
+                    try:
+                        from ..eval.noise_sensitivity import evaluate_noise_sensitivity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_ns = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_ns = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            ns_model = build_model(_spec_ns, _bc_ns).to(dev)
+                        else:
+                            ns_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        ns_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        ns_result = evaluate_noise_sensitivity(
+                            ns_model, ns_batches, dev)
+                        noise_score = ns_result.get("noise_sensitivity_score")
+                        del ns_model
+                    except Exception as e:
+                        logger.debug("Noise sensitivity skipped: %s", e)
+
                 tier = "breakthrough" if is_breakthrough else "validation"
 
                 validation_entry = {
                     "result_id": source_result_id,
                     "val_loss_ratio": val_loss_ratio,
                     "val_baseline_ratio": val_baseline_ratio,
+                    "val_normalized_ratio": val_normalized_ratio,
+                    "param_efficiency": val_param_efficiency,
                     "multi_seed_std": multi_seed_std,
                     "seeds_passed": len(passed_seeds),
                     "total_seeds": config.validation_n_seeds,
                     "is_breakthrough": is_breakthrough,
+                    "flop_gated": flop_gated,
+                    "quant_int8_retention": quant_int8_retention,
+                    "quant_quality_per_byte": quant_quality_per_byte,
+                    "long_context_score": long_context_score,
+                    "noise_sensitivity_score": noise_score,
+                    "init_sensitivity_std": init_sensitivity_std,
                     "novelty_confidence": nov_conf,
                     "ood_robustness": ood_result,
                     "sensitivity": sensitivity_result,
@@ -6959,7 +7367,23 @@ class ExperimentRunner:
                             validation_baseline_ratio=val_baseline_ratio,
                             validation_multi_seed_std=multi_seed_std,
                             validation_passed=len(passed_seeds) > 0,
+                            normalized_baseline_ratio=val_normalized_ratio,
+                            param_efficiency=val_param_efficiency,
+                            quant_int8_retention=quant_int8_retention,
+                            quant_quality_per_byte=quant_quality_per_byte,
+                            robustness_long_ctx_score=long_context_score,
+                            robustness_noise_score=noise_score,
+                            init_sensitivity_std=init_sensitivity_std,
+                            scaling_param_efficiency=scaling_param_efficiency,
+                            scaling_flop_efficiency=scaling_flop_efficiency,
+                            scaling_gate_passed=scaling_gate_passed_val,
+                            scaling_best_family=scaling_best_family,
+                            scaling_confidence=scaling_confidence,
                         )
+                        # Store detailed scaling result in external_benchmarks_json
+                        if scaling_result is not None:
+                            nb.set_external_benchmarks(
+                                source_result_id, scaling_result.to_dict())
                         break
 
                 # Record validation result
@@ -8470,7 +8894,18 @@ class ExperimentRunner:
         if ops:
             learned_quality = sum(op_success.get(op, 0.5) for op in ops) / len(ops)
 
-        compression_proxy = 1.0 / (1.0 + math.log1p(params) + 0.25 * n_ops + 0.15 * depth)
+        # FLOP-aware compression proxy
+        _cfg_dim = 256  # default model_dim
+        _cfg_layers = 4  # default n_layers
+        try:
+            flop_est = estimate_flops(graph, seq_len=128, d_model=_cfg_dim)
+            flops_per_token = flop_est.flops_per_token if flop_est and flop_est.flops_per_token > 0 else (params * 2)
+        except Exception:
+            flops_per_token = params * 2
+        baseline_fpt = 2.0 * _cfg_dim ** 2 * _cfg_layers
+        flop_efficiency = min(1.0, baseline_fpt / max(flops_per_token, 1.0))
+        param_efficiency_proxy = min(1.0, (6 * _cfg_dim ** 2) / max(params, 1.0))
+        compression_proxy = 0.5 * flop_efficiency + 0.3 * param_efficiency_proxy + 0.2 / (1.0 + 0.1 * depth)
         novelty_proxy = min(1.0, (unique_ops / max(1, n_ops)) + (0.1 if depth >= 4 else 0.0))
 
         sparse_hint_ops = (
@@ -8686,15 +9121,19 @@ class ExperimentRunner:
 
             seq_len = min(128, config.max_seq_len)
             random_mode = str(config.data_mode or "random").strip().lower() == "random"
-            random_input_batches: Optional[torch.Tensor] = None
-            if random_mode:
-                rand_generator = torch.Generator(device=dev)
-                rand_generator.manual_seed(int(seed))
-                random_input_batches = torch.randint(
-                    0,
-                    int(config.vocab_size),
-                    (max(1, int(config.stage1_steps)), config.stage1_batch_size, seq_len),
-                    generator=rand_generator,
+            _seed_int = int(seed)
+
+            def _make_random_batch(step: int) -> torch.Tensor:
+                """Generate a deterministic random batch for a given step.
+
+                Uses per-step seeding so all candidates see the same batch
+                at each step (fair comparison, #56), but each step is
+                independently seeded to prevent cross-batch memorization.
+                """
+                torch.manual_seed(_seed_int * 100_000 + step)
+                return torch.randint(
+                    0, int(config.vocab_size),
+                    (config.stage1_batch_size, seq_len),
                     device=dev,
                 )
             starvation_interval = max(1, int(getattr(config, "starvation_check_interval", 8) or 8))
@@ -8702,7 +9141,7 @@ class ExperimentRunner:
             use_cuda_graph = bool(
                 dev.type == "cuda"
                 and bool(getattr(config, "enable_cuda_graphs", True))
-                and random_input_batches is not None
+                and random_mode
                 and not op_profiler.enabled
                 and not trace_enabled
                 and not collect_curve
@@ -8738,7 +9177,7 @@ class ExperimentRunner:
                         return loss_t, grad_norm_t
 
                     for wi in range(min(warmup_steps, int(config.stage1_steps))):
-                        static_input_ids.copy_(random_input_batches[wi], non_blocking=True)
+                        static_input_ids.copy_(_make_random_batch(wi), non_blocking=True)
                         loss_t, grad_norm_t = _graph_step()
                         captured_loss.copy_(loss_t.detach())
                         captured_grad_norm.copy_(torch.as_tensor(grad_norm_t, device=dev).detach())
@@ -8755,7 +9194,7 @@ class ExperimentRunner:
                         if self._stop_event.is_set():
                             break
                         t_step = time.perf_counter()
-                        static_input_ids.copy_(random_input_batches[step], non_blocking=True)
+                        static_input_ids.copy_(_make_random_batch(step), non_blocking=True)
                         graph.replay()
                         t_step_end = time.perf_counter()
                         step_time_ms = (t_step_end - t_step) * 1000.0
@@ -8797,13 +9236,13 @@ class ExperimentRunner:
                     if self._stop_event.is_set():
                         break
 
-                    starvation_sample = (random_input_batches is None) and ((step % starvation_interval) == 0)
+                    starvation_sample = (not random_mode) and ((step % starvation_interval) == 0)
                     if starvation_sample:
                         starvation_detector.start_wait()
                     data_t0 = time.perf_counter()
                     with _trace_ctx("data_sampling"):
-                        if random_input_batches is not None:
-                            input_ids = random_input_batches[step]
+                        if random_mode:
+                            input_ids = _make_random_batch(step)
                         else:
                             input_ids = self._sample_training_input_ids(
                                 config=config,
@@ -9182,6 +9621,7 @@ class ExperimentRunner:
                 "negative_results": analytics.negative_results_synthesis(),
                 "decision_outcomes": analytics.decision_outcome_analysis(),
                 "designer_telemetry": self._gather_designer_telemetry(),
+                "scaling_summary": nb.get_scaling_summary(),
             }
         except Exception:
             return {}
@@ -10514,6 +10954,14 @@ class ExperimentRunner:
                         torch.cuda.empty_cache()
                     gc.collect()
 
+                # Skip candidates where no training program could reconstruct the model
+                if not tp_results:
+                    logger.debug(
+                        f"Threaded investigation: skipping {source_result_id[:8]} — "
+                        f"model failed to reconstruct for all {len(training_programs)} programs"
+                    )
+                    continue
+
                 # Compute robustness
                 n_passed = sum(1 for r in tp_results if r.get("passed"))
                 robustness = n_passed / max(len(tp_results), 1)
@@ -10859,7 +11307,7 @@ class ExperimentRunner:
                         best_tp_json = entry.get("investigation_best_training")
                         break
 
-                # Multi-seed evaluation
+                # Multi-seed evaluation (threaded validation)
                 seed_results = []
                 for seed in range(config.validation_n_seeds):
                     if self._stop_event.is_set():
@@ -10868,6 +11316,7 @@ class ExperimentRunner:
                     torch.manual_seed(seed * 42 + 7)
 
                     # Reconstruct model fresh
+                    init_scheme = "default"
                     try:
                         if model_source == "morphological_box" and arch_spec_json_str:
                             from ..morphological_box import ArchSpec
@@ -10891,6 +11340,12 @@ class ExperimentRunner:
                             )
                         else:
                             continue
+                        # Multi-init: use Xavier uniform for the last seed
+                        if seed == config.validation_n_seeds - 1:
+                            init_scheme = "xavier_uniform"
+                            for p in model.parameters():
+                                if p.dim() >= 2:
+                                    nn.init.xavier_uniform_(p)
                     except Exception as e:
                         logger.debug(f"Model reconstruction failed: {e}")
                         continue
@@ -10938,6 +11393,7 @@ class ExperimentRunner:
 
                     seed_results.append({
                         "seed": seed,
+                        "init_scheme": init_scheme,
                         "passed": s1_result.get("passed", False),
                         "loss_ratio": s1_result.get("loss_ratio"),
                         "final_loss": s1_result.get("final_loss"),
@@ -10957,6 +11413,15 @@ class ExperimentRunner:
                         torch.cuda.empty_cache()
                     gc.collect()
 
+
+                # Skip candidates where no seed could reconstruct the model
+                if not seed_results:
+                    logger.debug(
+                        f"Threaded validation: skipping {source_result_id[:8]} — "
+                        f"model failed to reconstruct for all {config.validation_n_seeds} seeds"
+                    )
+                    continue
+
                 # Compute validation metrics
                 passed_seeds = [r for r in seed_results if r.get("passed")]
                 loss_ratios = [r["loss_ratio"] for r in seed_results
@@ -10971,6 +11436,21 @@ class ExperimentRunner:
                         sum((lr - mean_lr) ** 2 for lr in loss_ratios)
                         / len(loss_ratios)
                     ) ** 0.5
+
+                # Init sensitivity: std between default and xavier seeds
+                init_sensitivity_std = None
+                default_losses = [
+                    r["loss_ratio"] for r in seed_results
+                    if r.get("init_scheme") == "default" and r.get("loss_ratio") is not None
+                ]
+                xavier_losses = [
+                    r["loss_ratio"] for r in seed_results
+                    if r.get("init_scheme") == "xavier_uniform" and r.get("loss_ratio") is not None
+                ]
+                if default_losses and xavier_losses:
+                    default_mean = sum(default_losses) / len(default_losses)
+                    xavier_mean = sum(xavier_losses) / len(xavier_losses)
+                    init_sensitivity_std = abs(default_mean - xavier_mean)
 
                 # Baseline comparison at validation scale
                 val_baseline_ratio = None
@@ -11006,6 +11486,42 @@ class ExperimentRunner:
                             )
                         except Exception:
                             pass
+
+                # Parameter-normalized baseline comparison
+                val_normalized_ratio = None
+                val_param_efficiency = None
+                source_params = (source.get("param_count")
+                                 or source.get("graph_n_params_estimate")
+                                 or 0) if source else 0
+                if loss_ratios and best_seed is not None and source_params > 0:
+                    try:
+                        baseline = self._get_baseline()
+                        baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
+                        baseline_recipe = self._resolve_baseline_recipe(
+                            best_seed, default_lr=config.stage1_lr)
+                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        norm_result = baseline.compare_normalized(
+                            best_seed["final_loss"],
+                            program_params=int(source_params),
+                            d_model=config.model_dim,
+                            seq_len=min(128, config.validation_seq_len),
+                            n_steps=max(1, baseline_steps),
+                            vocab_size=config.vocab_size,
+                            batch_size=config.validation_batch_size,
+                            lr=baseline_recipe["lr"],
+                            device=dev_str,
+                            n_layers=config.n_layers,
+                            optimizer_name=baseline_recipe["optimizer_name"],
+                            weight_decay=baseline_recipe["weight_decay"],
+                            momentum=baseline_recipe["momentum"],
+                            betas=baseline_recipe["betas"],
+                            data_fn=bl_data_fn,
+                            data_tag=bl_data_tag,
+                        )
+                        val_normalized_ratio = norm_result.get("normalized_ratio")
+                        val_param_efficiency = norm_result.get("param_efficiency")
+                    except Exception:
+                        pass
 
                 if len(passed_seeds) > 0:
                     results["stage1_passed"] += 1
@@ -11062,7 +11578,7 @@ class ExperimentRunner:
                     except Exception as e:
                         logger.debug("Sensitivity check failed: %s", e)
 
-                # Determine if breakthrough — aligned with Aria publication thresholds
+                # Determine if breakthrough — requires both raw AND normalized thresholds
                 ood_ok = (ood_result is not None
                           and ood_result.get("ood_robustness", 0) >= 0.67)
                 hp_ok = (sensitivity_result is not None
@@ -11073,9 +11589,16 @@ class ExperimentRunner:
                     novelty_valid = bool(source.get("novelty_valid_for_promotion"))
                     if not novelty_valid and source.get("cka_source") == "artifact":
                         novelty_valid = True
+
+                raw_threshold = config.breakthrough_raw_threshold
+                norm_threshold = config.breakthrough_normalized_threshold
+                raw_ok = (val_baseline_ratio is not None
+                          and val_baseline_ratio < raw_threshold)
+                norm_ok = (val_normalized_ratio is None
+                           or val_normalized_ratio < norm_threshold)
                 is_breakthrough = (
-                    val_baseline_ratio is not None
-                    and val_baseline_ratio < 0.90
+                    raw_ok
+                    and norm_ok
                     and multi_seed_std <= 0.03
                     and len(passed_seeds) >= 5
                     and len(passed_seeds) == config.validation_n_seeds
@@ -11085,16 +11608,193 @@ class ExperimentRunner:
                     and novelty_valid
                 )
 
+                # FLOP gate: reject breakthrough if >5x baseline FLOPs per token
+                flop_gated = False
+                if is_breakthrough and source_params > 0:
+                    candidate_fpt = source_params * 2.0
+                    baseline_fpt_gate = 2.0 * config.model_dim ** 2 * config.n_layers
+                    if candidate_fpt > 5.0 * baseline_fpt_gate:
+                        is_breakthrough = False
+                        flop_gated = True
+                        logger.info(
+                            "FLOP gate downgraded %s: %.0f FPT > 5x baseline %.0f",
+                            source_result_id[:8], candidate_fpt, baseline_fpt_gate,
+                        )
+
+                # Scaling law comparison gate
+                scaling_result = None
+                scaling_param_efficiency = None
+                scaling_flop_efficiency = None
+                scaling_gate_passed_val = None
+                scaling_best_family = None
+                scaling_confidence = None
+                if is_breakthrough and config.enable_scaling_comparison:
+                    try:
+                        scaling_mgr = self._get_scaling_reference_manager()
+                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        candidate_flops = (source.get("flops_forward", 0) or 0)
+                        if candidate_flops <= 0:
+                            candidate_flops = source_params * 2
+
+                        scaling_result = scaling_mgr.compare_candidate(
+                            candidate_loss=best_seed_loss,
+                            candidate_params=source_params,
+                            candidate_flops=candidate_flops,
+                            d_model=config.model_dim,
+                            n_steps=config.validation_steps,
+                            seq_len=config.validation_seq_len,
+                            vocab_size=config.vocab_size,
+                            batch_size=config.validation_batch_size,
+                            lr=config.stage1_lr,
+                            device=dev_str,
+                            data_fn=bl_data_fn, data_tag=bl_data_tag,
+                            families=config.scaling_reference_families.split(","),
+                            param_efficiency_target=config.scaling_param_efficiency_target,
+                            flop_ceiling=config.scaling_flop_ceiling,
+                        )
+                        scaling_param_efficiency = scaling_result.best_param_efficiency
+                        scaling_flop_efficiency = scaling_result.flop_efficiency
+                        scaling_gate_passed_val = scaling_result.scaling_gate_passed
+                        scaling_best_family = scaling_result.best_param_efficiency_family
+                        scaling_confidence = scaling_result.confidence
+
+                        if not scaling_result.scaling_gate_passed:
+                            is_breakthrough = False
+                            logger.info(
+                                "Scaling gate downgraded %s: param_eff=%.2f (need %.1f), flop_eff=%.2f",
+                                source_result_id[:8],
+                                scaling_result.best_param_efficiency,
+                                config.scaling_param_efficiency_target,
+                                scaling_result.flop_efficiency,
+                            )
+                    except Exception as e:
+                        logger.debug("Scaling comparison failed: %s", e)
+
+                # Quantization gate: test INT8 retention
+                quant_int8_retention = None
+                quant_quality_per_byte = None
+                if is_breakthrough:
+                    try:
+                        from ..eval.quantization import evaluate_sparse_quant_quality
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            from ..morphological_box import ArchSpec
+                            from ..arch_builder import build_model, BuildConfig
+                            _spec = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            quant_model = build_model(_spec, _bc).to(dev)
+                        else:
+                            quant_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        quant_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        quant_result = evaluate_sparse_quant_quality(
+                            quant_model, quant_batches, dev,
+                            target_sparsity=0.5, bits=8)
+                        if quant_result is not None:
+                            quant_int8_retention = quant_result.get("full_retention")
+                            quant_quality_per_byte = quant_result.get("quality_per_byte")
+                            if quant_int8_retention is not None and quant_int8_retention < 0.80:
+                                is_breakthrough = False
+                                logger.info(
+                                    "Quant gate downgraded %s: INT8 retention=%.3f < 0.80",
+                                    source_result_id[:8], quant_int8_retention,
+                                )
+                        del quant_model
+                    except Exception as e:
+                        logger.debug("Quantization gate skipped: %s", e)
+
+                # Long-context sweep (informational, non-blocking)
+                long_context_score = None
+                if is_breakthrough and best_seed is not None:
+                    try:
+                        from ..eval.long_context import run_long_context_sweep
+                        base_loss_val = best_seed.get("final_loss", 0)
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _asjs_lc2 = arch_spec_json_str
+                            _cfg_lc2 = config
+                            def _make_model_lc2():
+                                from ..morphological_box import ArchSpec
+                                from ..arch_builder import build_model, BuildConfig
+                                _sp2 = ArchSpec(**json.loads(_asjs_lc2))
+                                _bc3 = BuildConfig(
+                                    dim=_cfg_lc2.model_dim, n_layers=_cfg_lc2.n_layers,
+                                    vocab_size=_cfg_lc2.vocab_size, max_seq_len=1024)
+                                return build_model(_sp2, _bc3)
+                        else:
+                            _gjs_lc2 = graph_json_str
+                            _cfg_lc2 = config
+                            def _make_model_lc2():
+                                return compile_model(
+                                    [graph_from_json(_gjs_lc2)] * _cfg_lc2.n_layers,
+                                    vocab_size=_cfg_lc2.vocab_size, max_seq_len=1024)
+                        lc_result = run_long_context_sweep(
+                            _make_model_lc2, config.vocab_size, dev,
+                            base_loss=base_loss_val, seq_lens=(512, 1024),
+                            n_steps=200, batch_size=2,
+                        )
+                        long_context_score = lc_result.get("long_context_score")
+                    except Exception as e:
+                        logger.debug("Long-context sweep skipped: %s", e)
+
+                # Noise sensitivity (informational, non-blocking)
+                noise_score = None
+                if is_breakthrough and best_seed is not None:
+                    try:
+                        from ..eval.noise_sensitivity import evaluate_noise_sensitivity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            from ..morphological_box import ArchSpec
+                            from ..arch_builder import build_model, BuildConfig
+                            _spec_ns2 = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_ns2 = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            ns_model = build_model(_spec_ns2, _bc_ns2).to(dev)
+                        else:
+                            ns_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        ns_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        ns_result = evaluate_noise_sensitivity(
+                            ns_model, ns_batches, dev)
+                        noise_score = ns_result.get("noise_sensitivity_score")
+                        del ns_model
+                    except Exception as e:
+                        logger.debug("Noise sensitivity skipped: %s", e)
+
                 tier = "breakthrough" if is_breakthrough else "validation"
 
                 validation_entry = {
                     "result_id": source_result_id,
                     "val_loss_ratio": val_loss_ratio,
                     "val_baseline_ratio": val_baseline_ratio,
+                    "val_normalized_ratio": val_normalized_ratio,
+                    "param_efficiency": val_param_efficiency,
                     "multi_seed_std": multi_seed_std,
                     "seeds_passed": len(passed_seeds),
                     "total_seeds": config.validation_n_seeds,
                     "is_breakthrough": is_breakthrough,
+                    "flop_gated": flop_gated,
+                    "quant_int8_retention": quant_int8_retention,
+                    "quant_quality_per_byte": quant_quality_per_byte,
+                    "long_context_score": long_context_score,
+                    "noise_sensitivity_score": noise_score,
+                    "init_sensitivity_std": init_sensitivity_std,
                     "novelty_confidence": nov_conf,
                     "ood_robustness": ood_result,
                     "sensitivity": sensitivity_result,
@@ -11115,7 +11815,23 @@ class ExperimentRunner:
                             validation_baseline_ratio=val_baseline_ratio,
                             validation_multi_seed_std=multi_seed_std,
                             validation_passed=len(passed_seeds) > 0,
+                            normalized_baseline_ratio=val_normalized_ratio,
+                            param_efficiency=val_param_efficiency,
+                            quant_int8_retention=quant_int8_retention,
+                            quant_quality_per_byte=quant_quality_per_byte,
+                            robustness_long_ctx_score=long_context_score,
+                            robustness_noise_score=noise_score,
+                            init_sensitivity_std=init_sensitivity_std,
+                            scaling_param_efficiency=scaling_param_efficiency,
+                            scaling_flop_efficiency=scaling_flop_efficiency,
+                            scaling_gate_passed=scaling_gate_passed_val,
+                            scaling_best_family=scaling_best_family,
+                            scaling_confidence=scaling_confidence,
                         )
+                        # Store detailed scaling result
+                        if scaling_result is not None:
+                            nb.set_external_benchmarks(
+                                source_result_id, scaling_result.to_dict())
                         break
 
                 # Breakthrough detection

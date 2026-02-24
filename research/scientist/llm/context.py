@@ -181,12 +181,16 @@ def build_rich_context(
     analytics_data: Optional[Dict] = None,
     history: Optional[List[Dict]] = None,
     past_hypotheses: Optional[List[Dict]] = None,
+    digest: Optional[object] = None,
 ) -> str:
     """Build comprehensive context including all analytics data.
 
     Aggregates experiment results, history, op success rates, structural
     correlations, failure patterns, efficiency frontier, grammar weights,
     learning log, and past hypothesis outcomes into a single context string.
+
+    If *digest* (an ExperimentDigest) is provided, a compact knowledge
+    section is appended.
     """
     sections = []
 
@@ -270,6 +274,63 @@ def build_rich_context(
                 lines.append(f"  Most efficient: {most_eff.get('flops_forward', 0):.0f} FLOPs, "
                              f"loss={most_eff.get('final_loss', 0):.4f}")
             sections.append("\n".join(lines))
+
+        # ── Scaling Gate: External Baseline Comparison ──
+        scaling = analytics_data.get("scaling_summary", {})
+        n_eval = scaling.get("n_evaluated", 0)
+        if n_eval > 0:
+            n_pass = scaling.get("n_gate_passed", 0)
+            target = scaling.get("target", 3.0)
+            best_eff = scaling.get("best_param_efficiency", 0)
+            mean_eff = scaling.get("mean_param_efficiency", 0)
+            lines = [
+                "SCALING GATE — External Baseline Comparison (CRITICAL):",
+                f"  Goal: Architectures must use {target:.0f}x FEWER parameters than GPT-2 for the same loss.",
+                f"  {n_eval} candidates evaluated, {n_pass} passed the {target:.0f}x gate.",
+                f"  Best param efficiency: {best_eff:.2f}x (need {target:.0f}x)  Mean: {mean_eff:.2f}x",
+            ]
+            if n_pass == 0:
+                gap = target - best_eff
+                lines.append(
+                    f"  *** NO CANDIDATES PASS THE GATE. Best is {gap:.1f}x short of target. ***"
+                )
+                lines.append(
+                    "  This means: current architectures are NOT more parameter-efficient than a standard transformer."
+                )
+                lines.append(
+                    "  Priority: find architectures that achieve the SAME loss with FEWER parameters."
+                )
+                lines.append(
+                    "  Strategies: MoE routing (only activate subset of params), "
+                    "aggressive sparsity, weight sharing, "
+                    "sublinear attention, or fundamentally different compute patterns."
+                )
+            best_e = scaling.get("best_entry", {})
+            if best_e:
+                lines.append(
+                    f"  Current best: {best_e.get('fingerprint', '??')} "
+                    f"({best_e.get('param_efficiency', 0):.2f}x vs {best_e.get('family', 'gpt2')}, "
+                    f"loss_ratio={best_e.get('loss_ratio', '?')})"
+                )
+            top_entries = scaling.get("entries", [])
+            if len(top_entries) > 1:
+                lines.append("  Top evaluated candidates:")
+                for e in top_entries[:5]:
+                    gate_str = "PASS" if e.get("gate") else "FAIL"
+                    lines.append(
+                        f"    {e.get('fingerprint', '??')}: "
+                        f"{e.get('param_eff', 0):.2f}x param, "
+                        f"{e.get('flop_eff', 0):.2f}x flop, "
+                        f"lr={e.get('loss_ratio', '?'):.4f} [{gate_str}]"
+                    )
+            sections.append("\n".join(lines))
+        else:
+            sections.append(
+                "SCALING GATE — External Baseline Comparison:\n"
+                "  No candidates evaluated yet against GPT-2/Mamba scaling laws.\n"
+                "  Goal: achieve 3x parameter efficiency vs standard transformer.\n"
+                "  Candidates that pass validation will be compared automatically."
+            )
 
         # Grammar weights
         grammar_weights = analytics_data.get("grammar_weights")
@@ -393,6 +454,10 @@ def build_rich_context(
         delta_lines = _build_session_delta(analytics_data, history)
         if delta_lines:
             sections.append("\n".join(delta_lines))
+
+    # Knowledge digest
+    if digest is not None:
+        inject_digest_context(sections, digest)
 
     return "\n\n".join(sections)
 
@@ -544,6 +609,7 @@ def build_mode_selection_context(
     n_experiments_in_session: int = 0,
     cost_spent: float = 0.0,
     budget: float = 0.0,
+    digest: Optional[object] = None,
 ) -> str:
     """Build context for mode selection decisions."""
     sections = []
@@ -693,6 +759,10 @@ def build_mode_selection_context(
                     f"{pruning_count} pruning baselines"
                 )
             sections.append("\n".join(lines))
+
+    # Knowledge digest
+    if digest is not None:
+        inject_digest_context(sections, digest)
 
     return "\n\n".join(sections)
 
@@ -967,6 +1037,7 @@ def build_briefing_context(
     top_programs: Optional[List[Dict]] = None,
     just_completed: Optional[Dict] = None,
     sparse_coverage: Optional[Dict] = None,
+    scaling_summary: Optional[Dict] = None,
 ) -> str:
     """Build compact context for the Aria briefing prompt.
 
@@ -1075,6 +1146,26 @@ def build_briefing_context(
             lines.append(f"  {', '.join(parts)}")
         sections.append("\n".join(lines))
 
+    # Scaling gate summary (compact for briefing)
+    if scaling_summary:
+        n_eval = scaling_summary.get("n_evaluated", 0)
+        if n_eval > 0:
+            n_pass = scaling_summary.get("n_gate_passed", 0)
+            best = scaling_summary.get("best_param_efficiency", 0)
+            target = scaling_summary.get("target", 3.0)
+            if n_pass == 0:
+                sections.append(
+                    f"Scaling Gate: 0/{n_eval} pass {target:.0f}x target "
+                    f"(best: {best:.2f}x). Priority: improve param efficiency."
+                )
+            else:
+                sections.append(
+                    f"Scaling Gate: {n_pass}/{n_eval} pass {target:.0f}x target "
+                    f"(best: {best:.2f}x)."
+                )
+        else:
+            sections.append("Scaling Gate: no candidates evaluated yet (target: 3x param efficiency vs GPT-2).")
+
     # Sparsity coverage
     if sparse_coverage:
         n_sparse = int(sparse_coverage.get("n_sparse_tested") or 0)
@@ -1093,6 +1184,87 @@ def build_briefing_context(
             sections.append(line)
 
     return "\n\n".join(sections)
+
+
+def inject_digest_context(sections: list, digest) -> None:
+    """Append a compact knowledge digest section (~300 tokens).
+
+    *digest* should be an ExperimentDigest instance (or duck-typed equivalent).
+    Fails silently if digest is malformed.
+    """
+    try:
+        lines = ["Knowledge Digest (distilled from historical analysis):"]
+
+        # Training curve profiles
+        profiles = getattr(digest, "convergence_profiles", [])
+        if profiles:
+            parts = []
+            for p in profiles:
+                parts.append(f"{p.category}={p.count}(S1:{p.s1_pass_rate:.0%})")
+            lines.append(f"  Curve profiles: {', '.join(parts)}")
+
+        # Architecture families
+        families = getattr(digest, "architecture_families", [])
+        if families:
+            for f in families[:3]:
+                ops_str = ", ".join(f.representative_ops[:4])
+                lines.append(
+                    f"  Family {f.family_id}: {f.n_members} members "
+                    f"[{ops_str}] novelty={f.avg_novelty:.3f} loss={f.avg_loss_ratio:.4f}"
+                )
+
+        # Significant config effects
+        effects = getattr(digest, "config_effects", [])
+        sig = [e for e in effects if e.p_value < 0.05]
+        if sig:
+            lines.append("  Config effects (p<0.05):")
+            for e in sig[:5]:
+                lines.append(
+                    f"    {e.param_name}->{e.target}: {e.direction} (rho={e.rho:+.3f})"
+                )
+
+        # Synergies
+        synergies = getattr(digest, "op_synergies", [])
+        syn = [s for s in synergies if s.label == "synergistic"][:3]
+        anti = [s for s in synergies if s.label == "anti_synergistic"][:3]
+        if syn:
+            lines.append("  Synergistic pairs: " + "; ".join(
+                f"{s.op_a}+{s.op_b}({s.lift:.1f}x)" for s in syn
+            ))
+        if anti:
+            lines.append("  Anti-synergistic: " + "; ".join(
+                f"{s.op_a}+{s.op_b}({s.lift:.2f}x)" for s in anti
+            ))
+
+        # Efficiency profiles (Pareto-optimal families)
+        eff_profiles = getattr(digest, "efficiency_profiles", [])
+        pareto = [p for p in eff_profiles if p.pareto_optimal]
+        if pareto:
+            lines.append("  Pareto-optimal families (best loss/param tradeoff):")
+            for p in pareto[:3]:
+                lines.append(
+                    f"    Family {p.family_id}: {p.avg_params/1e6:.2f}M params, "
+                    f"loss/Mparam={p.loss_per_megaparam:.3f}"
+                )
+
+        # Hypothesis closure
+        outcomes = getattr(digest, "hypothesis_outcomes", [])
+        if outcomes:
+            confirmed = sum(1 for h in outcomes if h.outcome == "confirmed")
+            refuted = sum(1 for h in outcomes if h.outcome == "refuted")
+            lines.append(f"  Hypotheses: {confirmed} confirmed, {refuted} refuted")
+
+        # Recommendations
+        recs = getattr(digest, "recommendations", [])
+        if recs:
+            lines.append("  Strategic recommendations:")
+            for r in recs[:5]:
+                lines.append(f"    - {r[:120]}")
+
+        if len(lines) > 1:
+            sections.append("\n".join(lines))
+    except Exception:
+        pass  # Graceful degradation
 
 
 def _pct(n: int, total: int) -> str:

@@ -37,7 +37,7 @@ function progScoreColor(score) {
 }
 
 const PROG_COLUMNS = [
-  { key: '_score', label: 'Score' },
+  { key: '_score', label: 'Utility Score' },
   { key: 'rating', label: 'Rating' },
   { key: 'graph_fingerprint', label: 'Fingerprint' },
   { key: 'stage0_passed', label: 'S0' },

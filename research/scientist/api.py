@@ -4039,6 +4039,27 @@ def create_app(
         static_folder = str(Path(__file__).parent.parent / "dashboard" / "build")
 
     app = Flask(__name__, static_folder=static_folder, static_url_path="")
+
+    # Custom JSON encoder to handle bytes/numpy types leaking from SQLite
+    import json as _json
+
+    class _SafeEncoder(_json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, bytes):
+                try:
+                    return o.decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
+            if isinstance(o, (memoryview, bytearray)):
+                return None
+            # numpy scalar types
+            type_name = type(o).__name__
+            if type_name in ("bool_", "int64", "int32", "float64", "float32", "float16"):
+                return o.item()
+            return super().default(o)
+
+    app.json.default = _SafeEncoder().default
+
     CORS(app)
     _ensure_designer_idle_watchdog()
 
@@ -7191,6 +7212,11 @@ def create_app(
                     top_progs = None
 
                 try:
+                    scaling_summary_data = None
+                    try:
+                        scaling_summary_data = nb.get_scaling_summary()
+                    except Exception:
+                        pass
                     briefing_context = build_briefing_context(
                         recent_experiments=recent,
                         pipeline_tiers=tiers,
@@ -7201,6 +7227,7 @@ def create_app(
                         top_programs=top_progs,
                         just_completed=just_completed_exp,
                         sparse_coverage=sparse_coverage_data,
+                        scaling_summary=scaling_summary_data,
                     )
                 except Exception:
                     briefing_context = {

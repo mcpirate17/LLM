@@ -604,6 +604,18 @@ CREATE TABLE IF NOT EXISTS designer_run_lineage (
 
 CREATE INDEX IF NOT EXISTS idx_designer_lineage_workflow ON designer_run_lineage(workflow_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_designer_lineage_status ON designer_run_lineage(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_digests (
+    digest_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    cycle_number INTEGER,
+    digest_json TEXT NOT NULL,
+    narrative_summary TEXT,
+    n_experiments_analyzed INTEGER,
+    n_curves_analyzed INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_digests_ts ON knowledge_digests(timestamp DESC);
 """
 
 # Columns added in the schema expansion — used for migration
@@ -946,6 +958,36 @@ class LabNotebook:
             self.conn.execute(
                 "ALTER TABLE campaigns ADD COLUMN successor_campaign_id TEXT"
             )
+
+        # Migrate leaderboard: add efficiency and robustness columns
+        lb_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
+        }
+        for col in (
+            "normalized_baseline_ratio REAL",
+            "param_efficiency REAL",
+            "quant_int8_retention REAL",
+            "quant_quality_per_byte REAL",
+            "robustness_long_ctx_score REAL",
+            "robustness_noise_score REAL",
+            "init_sensitivity_std REAL",
+            "scaling_param_efficiency REAL",
+            "scaling_flop_efficiency REAL",
+            "scaling_gate_passed INTEGER",
+            "scaling_best_family TEXT",
+            "scaling_d512_param_efficiency REAL",
+            "scaling_confidence TEXT",
+        ):
+            col_name = col.split()[0]
+            if col_name not in lb_cols:
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE leaderboard ADD COLUMN {col}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
         self._program_results_columns = None
 
     def _get_program_results_columns(self) -> set[str]:
@@ -994,6 +1036,42 @@ class LabNotebook:
         return cls._cached_code_version
 
         self._maybe_commit()
+
+    # ── Knowledge Digests ──
+
+    def store_digest(self, digest_dict: Dict) -> str:
+        """Store a knowledge digest and return its ID."""
+        digest_id = str(uuid.uuid4())
+        ts = digest_dict.get("timestamp", time.time())
+        self.conn.execute(
+            """INSERT OR REPLACE INTO knowledge_digests
+               (digest_id, timestamp, cycle_number, digest_json,
+                narrative_summary, n_experiments_analyzed, n_curves_analyzed)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                digest_id,
+                ts,
+                digest_dict.get("cycle_number"),
+                json.dumps(digest_dict),
+                digest_dict.get("narrative", "")[:2000],
+                digest_dict.get("n_experiments_analyzed"),
+                digest_dict.get("n_curves_analyzed"),
+            ),
+        )
+        self._maybe_commit()
+        return digest_id
+
+    def get_latest_digest(self) -> Optional[Dict]:
+        """Return the most recent knowledge digest, or None."""
+        try:
+            row = self.conn.execute(
+                "SELECT digest_json FROM knowledge_digests ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                return json.loads(row[0])
+        except Exception as e:
+            LOGGER.debug("Failed to load latest digest: %s", e)
+        return None
 
     def close(self):
         if hasattr(self, "_stop_event"):
@@ -1762,6 +1840,11 @@ class LabNotebook:
         for f in bool_fields:
             if f in kwargs and kwargs[f] is not None:
                 kwargs[f] = int(kwargs[f])
+
+        # Sanitize numpy scalar types → native Python to prevent blob storage
+        for k, v in kwargs.items():
+            if v is not None and hasattr(v, 'item'):
+                kwargs[k] = v.item()
 
         # Handle legacy 'throughput' -> 'throughput_tok_s' alias
         if "throughput" in kwargs:
@@ -3249,6 +3332,7 @@ class LabNotebook:
         val_baseline: Optional[float] = None,
         val_std: Optional[float] = None,
         novelty_confidence: Optional[float] = None,
+        scaling_param_efficiency: Optional[float] = None,
     ) -> float:
         """Compute normalized composite score across research phases.
 
@@ -3262,6 +3346,10 @@ class LabNotebook:
         Novelty contribution is scaled by novelty_confidence so that
         low-confidence scores (structural-only, failed fingerprint)
         don't inflate rankings.
+
+        When scaling_param_efficiency is available (from external scaling
+        law comparison), it's blended into the validation score:
+        1x=0, 3x=0.5, 5x=1.0 normalized efficiency.
         """
         # Screening tier: [0, 1]
         screening_score = 0.0
@@ -3273,7 +3361,7 @@ class LabNotebook:
 
         # Investigation tier: [0, 1]
         inv_score = 0.0
-        has_inv = inv_lr is not None or inv_robust is not None
+        has_inv = inv_lr is not None
         if inv_lr is not None:
             inv_score += 0.6 * max(0, 1 - inv_lr)
         if inv_robust is not None:
@@ -3282,14 +3370,24 @@ class LabNotebook:
         # Validation tier: [0, 1]
         val_score = 0.0
         has_val = val_baseline is not None
-        if val_baseline is not None:
+        if val_baseline is not None and scaling_param_efficiency is not None:
+            # With scaling data: blend baseline ratio, efficiency, and stability
+            eff_score = min(1.0, max(0.0, (scaling_param_efficiency - 1.0) / 4.0))
+            val_score += 0.4 * max(0, 1 - val_baseline)
+            val_score += 0.3 * eff_score
+            if val_std is not None:
+                if val_std > 0.5:
+                    val_score = min(val_score, 0.3)
+                else:
+                    val_score += 0.3 * (1 / (1 + val_std))
+        elif val_baseline is not None:
+            # Without scaling data: original formula
             val_score += 0.6 * max(0, 1 - val_baseline)
-        if val_std is not None:
-            # Hard threshold: high variability strongly penalized
-            if val_std > 0.5:
-                val_score = min(val_score, 0.3)
-            else:
-                val_score += 0.4 * (1 / (1 + val_std))
+            if val_std is not None:
+                if val_std > 0.5:
+                    val_score = min(val_score, 0.3)
+                else:
+                    val_score += 0.4 * (1 / (1 + val_std))
 
         # Weighted combination — later tiers matter more but are
         # normalized so a screening-only program isn't artificially low
@@ -3408,7 +3506,29 @@ class LabNotebook:
             "pr.graph_n_params_estimate AS _graph_n_params_estimate, "
             "pr.novelty_confidence AS _novelty_confidence, "
             "pr.cka_source AS _cka_source, "
-            "pr.routing_confidence_mean AS _routing_confidence_mean "
+            "pr.routing_confidence_mean AS _routing_confidence_mean, "
+            # Fields for client-side candidateScore computation
+            "pr.loss_ratio AS loss_ratio, "
+            "pr.novelty_score AS novelty_score, "
+            "pr.final_loss AS final_loss, "
+            "pr.throughput_tok_s AS throughput_tok_s, "
+            "pr.peak_memory_mb AS peak_memory_mb, "
+            "pr.loss_improvement_rate AS loss_improvement_rate, "
+            "pr.forward_time_ms AS forward_time_ms, "
+            "pr.flops_forward AS flops_forward, "
+            "pr.flops_per_param AS flops_per_param, "
+            "pr.sparsity_ratio AS sparsity_ratio, "
+            "pr.baseline_loss_ratio AS baseline_loss_ratio, "
+            "pr.routing_utilization_entropy AS routing_utilization_entropy, "
+            "pr.routing_drop_rate AS routing_drop_rate, "
+            "pr.routing_confidence_std AS routing_confidence_std, "
+            "pr.routing_tokens_total AS routing_tokens_total, "
+            "pr.routing_tokens_processed AS routing_tokens_processed, "
+            "pr.routing_capacity_overflow_count AS routing_capacity_overflow_count, "
+            "pr.depth_savings_ratio AS depth_savings_ratio, "
+            "pr.effective_depth_ratio AS effective_depth_ratio, "
+            "pr.recursion_savings_ratio AS recursion_savings_ratio, "
+            "pr.recursion_depth_ratio AS recursion_depth_ratio "
             "FROM leaderboard l "
             "LEFT JOIN program_results pr ON pr.result_id = l.result_id "
             "WHERE 1=1"
@@ -3431,7 +3551,7 @@ class LabNotebook:
                     routing_mode=d.get("_routing_mode"),
                 )
             d.pop("_graph_json", None)
-            d.pop("_routing_mode", None)
+            d["routing_mode"] = d.pop("_routing_mode", None)
             d["arch_spec_json"] = d.pop("_arch_spec_json", None)
             d["param_count"] = d.pop("_param_count", None)
             d["graph_n_params_estimate"] = d.pop("_graph_n_params_estimate", None)
@@ -3464,9 +3584,9 @@ class LabNotebook:
                 seen_fingerprints[fp] = len(deduped)
             deduped.append(entry)
 
-        # Clean up internal field
+        # Expose fingerprint as public field, drop internal alias
         for entry in deduped:
-            entry.pop("_graph_fingerprint", None)
+            entry["graph_fingerprint"] = entry.pop("_graph_fingerprint", None)
 
         return deduped[:limit]
 
@@ -3603,6 +3723,13 @@ class LabNotebook:
                      "investigation_best_training", "investigation_passed",
                      "validation_loss_ratio", "validation_baseline_ratio",
                      "validation_multi_seed_std", "validation_passed",
+                     "normalized_baseline_ratio", "param_efficiency",
+                     "quant_int8_retention", "quant_quality_per_byte",
+                     "robustness_long_ctx_score", "robustness_noise_score",
+                     "init_sensitivity_std",
+                     "scaling_param_efficiency", "scaling_flop_efficiency",
+                     "scaling_gate_passed", "scaling_best_family",
+                     "scaling_d512_param_efficiency", "scaling_confidence",
                      "notes"):
             if col in kwargs:
                 sets.append(f"{col} = ?")
@@ -3637,6 +3764,7 @@ class LabNotebook:
                 val_baseline=d.get("validation_baseline_ratio"),
                 val_std=d.get("validation_multi_seed_std"),
                 novelty_confidence=nov_conf,
+                scaling_param_efficiency=d.get("scaling_param_efficiency"),
             )
             sets.append("composite_score = ?")
             params.append(composite)
@@ -3650,6 +3778,66 @@ class LabNotebook:
             params,
         )
         self._maybe_commit()
+
+    # ── Scaling Summary ──
+
+    def get_scaling_summary(self) -> Dict:
+        """Get a summary of scaling gate results for Aria's context.
+
+        Returns aggregate stats on how candidates compare to external
+        baselines (GPT-2/Mamba) in parameter efficiency, plus the best
+        and worst performers.
+        """
+        rows = self.conn.execute(
+            """SELECT l.entry_id, l.scaling_param_efficiency, l.scaling_flop_efficiency,
+                      l.scaling_gate_passed, l.scaling_best_family, l.scaling_confidence,
+                      l.screening_loss_ratio, l.screening_novelty, l.composite_score,
+                      pr.graph_fingerprint
+               FROM leaderboard l
+               JOIN program_results pr ON l.result_id = pr.result_id
+               WHERE l.scaling_param_efficiency IS NOT NULL
+               ORDER BY l.scaling_param_efficiency DESC"""
+        ).fetchall()
+        if not rows:
+            return {
+                "n_evaluated": 0,
+                "n_gate_passed": 0,
+                "message": "No candidates have been evaluated against external scaling laws yet.",
+            }
+
+        entries = [dict(r) for r in rows]
+        n_passed = sum(1 for e in entries if e.get("scaling_gate_passed"))
+        efficiencies = [e["scaling_param_efficiency"] for e in entries]
+
+        return {
+            "n_evaluated": len(entries),
+            "n_gate_passed": n_passed,
+            "target": 3.0,
+            "best_param_efficiency": max(efficiencies),
+            "worst_param_efficiency": min(efficiencies),
+            "mean_param_efficiency": sum(efficiencies) / len(efficiencies),
+            "best_entry": {
+                "fingerprint": (entries[0].get("graph_fingerprint") or "")[:12],
+                "param_efficiency": entries[0]["scaling_param_efficiency"],
+                "family": entries[0].get("scaling_best_family", "gpt2"),
+                "loss_ratio": entries[0].get("screening_loss_ratio"),
+            },
+            "worst_entry": {
+                "fingerprint": (entries[-1].get("graph_fingerprint") or "")[:12],
+                "param_efficiency": entries[-1]["scaling_param_efficiency"],
+                "loss_ratio": entries[-1].get("screening_loss_ratio"),
+            },
+            "entries": [
+                {
+                    "fingerprint": (e.get("graph_fingerprint") or "")[:12],
+                    "param_eff": round(e["scaling_param_efficiency"], 2),
+                    "flop_eff": round(e.get("scaling_flop_efficiency") or 0, 2),
+                    "gate": bool(e.get("scaling_gate_passed")),
+                    "loss_ratio": round(e.get("screening_loss_ratio") or 0, 4),
+                }
+                for e in entries[:10]
+            ],
+        }
 
     # ── Campaigns ──
 

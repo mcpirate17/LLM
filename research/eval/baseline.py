@@ -292,12 +292,105 @@ class TransformerBaseline:
         data_fn=None,
         data_tag: str = "random",
     ) -> float:
-        """Compare program loss to baseline. Returns ratio (< 1.0 = better)."""
+        """Compare program loss to baseline. Returns ratio (< 1.0 = better).
+
+        The baseline is always a 2-layer transformer regardless of the caller's
+        n_layers — it's meant as a *minimal* reference, not a matched one.
+        (Use compare_normalized() for param-matched comparison.)
+
+        If the baseline hasn't learned (loss within 5% of random chance),
+        returns 1.0 to avoid meaningless ratios.
+        """
+        # Always use 2 layers for the raw baseline — callers may pass
+        # config.n_layers but the baseline is intentionally minimal.
         baseline_loss = self.get_baseline_loss(
             d_model, seq_len, n_steps, vocab_size, batch_size, lr, device,
-            n_layers, optimizer_name, weight_decay, momentum, betas,
+            n_layers=2, optimizer_name=optimizer_name,
+            weight_decay=weight_decay, momentum=momentum, betas=betas,
             data_fn=data_fn, data_tag=data_tag,
         )
         if baseline_loss <= 0 or math.isnan(baseline_loss):
             return 1.0
+
+        # Sanity check: if baseline hasn't learned beyond random chance,
+        # the ratio is meaningless.  ln(vocab_size) is the expected loss
+        # when predicting uniformly at random.
+        random_chance = math.log(max(vocab_size, 2))
+        if baseline_loss >= random_chance * 0.95:
+            # Baseline didn't learn — ratio is unreliable
+            return 1.0
+
         return program_loss / baseline_loss
+
+    def compare_normalized(
+        self,
+        program_loss: float,
+        program_params: int,
+        d_model: int = 256,
+        seq_len: int = 128,
+        n_steps: int = 500,
+        vocab_size: int = 32000,
+        batch_size: int = 4,
+        lr: float = 3e-4,
+        device: str = "cuda",
+        n_layers: int = 2,
+        optimizer_name: str = "adamw",
+        weight_decay: float = 0.01,
+        momentum: float = 0.0,
+        betas: Optional[Tuple[float, float]] = None,
+        data_fn=None,
+        data_tag: str = "random",
+    ) -> Dict[str, float]:
+        """Compare program loss to a parameter-matched baseline.
+
+        Trains a baseline with enough layers to approximately match program_params,
+        giving a fair comparison that penalizes parameter-inefficient architectures.
+
+        Returns dict with raw_ratio, normalized_ratio, and param_efficiency.
+        """
+        # Raw comparison against standard 2-layer baseline (compare() forces 2 layers)
+        raw_ratio = self.compare(
+            program_loss, d_model, seq_len, n_steps, vocab_size,
+            batch_size, lr, device, n_layers, optimizer_name,
+            weight_decay, momentum, betas, data_fn, data_tag,
+        )
+
+        # Estimate how many layers the baseline needs to match program_params
+        # Each transformer layer has ~12 * d_model^2 params (attn + FF + LN)
+        params_per_layer = 12 * d_model * d_model
+        embed_params = vocab_size * d_model
+        non_embed_params = max(0, program_params - embed_params)
+        matched_layers = max(2, min(12, int(math.ceil(non_embed_params / max(params_per_layer, 1)))))
+
+        if matched_layers <= 2:
+            # Program is smaller or equal to standard baseline — normalized = raw
+            return {
+                "raw_ratio": raw_ratio,
+                "normalized_ratio": raw_ratio,
+                "param_efficiency": (1.0 - raw_ratio) / max(1, program_params / 1e6),
+                "matched_baseline_layers": 2,
+            }
+
+        # Train a matched-param baseline
+        matched_loss = self.get_baseline_loss(
+            d_model, seq_len, n_steps, vocab_size, batch_size, lr,
+            device, n_layers=matched_layers,
+            optimizer_name=optimizer_name, weight_decay=weight_decay,
+            momentum=momentum, betas=betas,
+            data_fn=data_fn, data_tag=data_tag,
+        )
+
+        random_chance = math.log(max(vocab_size, 2))
+        if matched_loss <= 0 or math.isnan(matched_loss) or matched_loss >= random_chance * 0.95:
+            normalized_ratio = raw_ratio
+        else:
+            normalized_ratio = program_loss / matched_loss
+
+        param_efficiency = (1.0 - raw_ratio) / max(1, program_params / 1e6)
+
+        return {
+            "raw_ratio": raw_ratio,
+            "normalized_ratio": normalized_ratio,
+            "param_efficiency": param_efficiency,
+            "matched_baseline_layers": matched_layers,
+        }

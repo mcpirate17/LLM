@@ -70,7 +70,7 @@ function programQualityFlags(program) {
 }
 
 const COLUMNS_FULL = [
-  { key: 'score', label: 'Score' },
+  { key: 'score', label: 'Utility Score' },
   { key: 'rating', label: 'Rating' },
   { key: 'graph_fingerprint', label: 'Program Fingerprint ID' },
   { key: 'novelty_score', label: 'Novelty' },
@@ -83,7 +83,7 @@ const COLUMNS_FULL = [
 ];
 
 const COLUMNS_COMPACT = [
-  { key: 'score', label: 'Score' },
+  { key: 'score', label: 'Utility Score' },
   { key: 'rating', label: 'Rating' },
   { key: 'graph_fingerprint', label: 'Program Fingerprint ID' },
   { key: 'novelty_score', label: 'Novelty' },
@@ -296,7 +296,7 @@ function TopPrograms({
               <tr>
                 <th>Fingerprint (ID)</th>
                 <th>Appearances</th>
-                <th>Best Score</th>
+                <th>Best Utility Score</th>
                 <th>Best Loss</th>
                 <th>Best Novelty</th>
               </tr>

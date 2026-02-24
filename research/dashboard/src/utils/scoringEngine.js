@@ -27,20 +27,23 @@ function clampScore(score) {
 
 /**
  * Normalize a loss ratio to 0-1 where lower loss = higher score.
- * Maps 0.0 → 1.0, 0.2 → 1.0, 1.0 → 0.0. Clamped to [0, 1].
+ * Linear: 0.0 → 1.0, 0.5 → 0.5, 1.0 → 0.0. No floor — every improvement counts.
  */
 export function normalizeLossRatio(lossRatio) {
-  return lossRatio != null ? clamp01(1 - (lossRatio - 0.2) / 0.8) : 0;
+  return lossRatio != null ? clamp01(1 - lossRatio) : 0;
 }
 
 const BONUS_WEIGHTS = {
-  efficiency: 12,
-  routing: 10,
-  adaptive: 8,
-  sparsity: 10,
-  learningSpeed: 8,
-  externalComparison: 12,
+  efficiency: 6,
+  routing: 5,
+  adaptive: 4,
+  sparsity: 5,
+  learningSpeed: 4,
+  externalComparison: 6,
 };
+
+// Maximum total bonus contribution (prevents bonus stacking from inflating scores)
+const MAX_TOTAL_BONUS = 20;
 
 const ARCHITECTURE_TARGETS = {
   moe: { capacity_multiplier: 4.0, flops_iso: true },
@@ -212,8 +215,8 @@ function computeEfficiencyBonus(entry) {
   if (flopsScore != null) scores.push(flopsScore);
   
   if (throughput != null) {
-    // Baseline target for dense is 5000 tok/s; Mamba/MoD targets 10000+
-    const targetThroughput = (entry.routing_mode || entry.compute_routing === 'mod_topk') ? 10000 : 5000;
+    // Baseline throughput targets calibrated to current model performance
+    const targetThroughput = (entry.routing_mode || entry.compute_routing === 'mod_topk') ? 50000 : 25000;
     scores.push(clamp01(Number(throughput) / targetThroughput));
   }
 
@@ -275,7 +278,7 @@ function computeLearningSpeedBonus(entry) {
   if (lir != null) scores.push(clamp01(Number(lir)));
 
   const throughput = entry?.throughput_tok_s;
-  if (throughput != null) scores.push(clamp01(Number(throughput) / 5000));
+  if (throughput != null) scores.push(clamp01(Number(throughput) / 25000));
 
   const forwardMs = entry?.forward_time_ms;
   if (forwardMs != null) scores.push(clamp01(1 - Number(forwardMs) / 50));
@@ -285,6 +288,11 @@ function computeLearningSpeedBonus(entry) {
 }
 
 function computeExternalComparisonBonus(entry) {
+  // If real scaling comparison data exists and shows poor efficiency,
+  // don't award a bonus based on hardcoded baseline estimates.
+  const scalingEff = entry?.scaling_param_efficiency;
+  if (scalingEff != null && scalingEff < 1.5) return 0;
+
   const resolved = resolveBaseline(entry?.architecture_family);
   if (!resolved) return null;
   const { baseline } = resolved;
@@ -322,7 +330,7 @@ function computeExternalComparisonBonus(entry) {
   // (c) Throughput sub-score
   const throughput = entry?.throughput_tok_s;
   if (throughput != null) {
-    const expectedThroughput = 5000 * baseline.throughputRatio;
+    const expectedThroughput = 25000 * baseline.throughputRatio;
     scores.push(clamp01(Number(throughput) / expectedThroughput));
   }
 
@@ -342,7 +350,7 @@ function computeExternalComparisonBonus(entry) {
 }
 
 function computeBonusBreakdown(entry) {
-  return {
+  const raw = {
     efficiencyBonus: computeEfficiencyBonus(entry) ?? 0,
     routingBonus: computeRoutingBonus(entry) ?? 0,
     adaptiveBonus: computeAdaptiveBonus(entry) ?? 0,
@@ -350,6 +358,17 @@ function computeBonusBreakdown(entry) {
     learningSpeedBonus: computeLearningSpeedBonus(entry) ?? 0,
     externalComparisonBonus: computeExternalComparisonBonus(entry) ?? 0,
   };
+
+  // Cap total bonus contribution to prevent score inflation
+  const totalRaw = Object.values(raw).reduce((s, v) => s + v, 0);
+  if (totalRaw > MAX_TOTAL_BONUS && totalRaw > 0) {
+    const scale = MAX_TOTAL_BONUS / totalRaw;
+    for (const key of Object.keys(raw)) {
+      raw[key] *= scale;
+    }
+  }
+
+  return raw;
 }
 
 // ── Candidate score (programs + leaderboard entries) ────────────────
@@ -422,7 +441,7 @@ function flatBreakdown(program) {
   const lossScore = normalizeLossRatio(program.loss_ratio);
   const noveltyScore = program.novelty_score != null ? Math.min(program.novelty_score, 1.0) : 0;
   const baselineScore = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) : 0;
-  const throughputScore = program.throughput_tok_s != null ? Math.min(program.throughput_tok_s / 5000, 1.0) : 0;
+  const throughputScore = program.throughput_tok_s != null ? Math.min(program.throughput_tok_s / 25000, 1.0) : 0;
   const bonus = computeBonusBreakdown(program);
   // Penalize programs that explicitly failed S1 (passed S0 but couldn't learn)
   const s1Penalty = program.stage1_passed === false || program.stage1_passed === 0 ? 0.5 : 1.0;
@@ -451,10 +470,22 @@ export function candidateScoreBreakdown(entry, tierOrder = TIER_ORDER) {
 /**
  * Unified candidate score (0-100).
  * This is the canonical score for any individual architecture.
+ * Applies scaling gate penalty when real scaling comparison data exists.
  */
 export function candidateScore(entry, tierOrder = TIER_ORDER) {
   const breakdown = candidateScoreBreakdown(entry, tierOrder);
-  const score = Object.values(breakdown).reduce((sum, v) => sum + v, 0);
+  let score = Object.values(breakdown).reduce((sum, v) => sum + v, 0);
+
+  // Scaling gate penalty: if real scaling comparison data exists and the
+  // candidate doesn't meet the 3x param efficiency target, penalize the score.
+  // scaling_gate_passed=0 means the gate was evaluated and failed.
+  const scalingEff = entry?.scaling_param_efficiency;
+  if (scalingEff != null && entry?.scaling_gate_passed === 0) {
+    // Scale linearly: 3.0x → 1.0 (no penalty), 1.0x → 0.33, 0.5x → 0.17
+    const scalingPenalty = clamp01(scalingEff / 3.0);
+    score *= Math.max(0.3, scalingPenalty);
+  }
+
   return clampScore(score);
 }
 
@@ -477,9 +508,17 @@ export function discoveryScoreBreakdown(program) {
   const learningSpeed = program.loss_improvement_rate != null ? clamp01(program.loss_improvement_rate) * 10 : 0;
   const bonus = computeBonusBreakdown(program);
   const bonusTotal = Object.values(bonus).reduce((s, v) => s + v, 0);
-  const total = clampScore(loss + novelty + baseline + id + paramEff + learningSpeed + bonusTotal);
+  let total = loss + novelty + baseline + id + paramEff + learningSpeed + bonusTotal;
+
+  // Scaling gate penalty (same as candidateScore)
+  const scalingEff = program?.scaling_param_efficiency;
+  if (scalingEff != null && program?.scaling_gate_passed === 0) {
+    const scalingPenalty = clamp01(scalingEff / 3.0);
+    total *= Math.max(0.3, scalingPenalty);
+  }
+
   return {
-    total,
+    total: clampScore(total),
     loss,
     novelty,
     baseline,

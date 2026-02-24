@@ -54,7 +54,7 @@ class _BernoulliSTE(torch.autograd.Function):
 
 # ── Spiking primitives ──
 
-def execute_lif(inputs: list, params: dict, dim: int) -> torch.Tensor:
+def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     """Leaky Integrate-and-Fire neuron.
 
     Treats the sequence dimension as time steps. Accumulates membrane
@@ -62,9 +62,8 @@ def execute_lif(inputs: list, params: dict, dim: int) -> torch.Tensor:
     and resets on fire.
 
     Args:
-        inputs: Single tensor of shape (B, S, D)
-        params: Unused (parameter-free)
-        dim: Model dimension (unused)
+        module: The CompiledOp instance
+        inputs: Variadic input tensors (expects inputs[0] as (B, S, D))
 
     Returns:
         Binary spike tensor of shape (B, S, D), values in {0, 1}
@@ -89,7 +88,7 @@ def execute_lif(inputs: list, params: dict, dim: int) -> torch.Tensor:
     return torch.stack(spikes, dim=1)  # (B, S, D)
 
 
-def execute_spike_rate_code(inputs: list, params: dict, dim: int) -> torch.Tensor:
+def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     """Continuous → spike → continuous rate coding.
 
     Maps continuous activations to firing probabilities via sigmoid,
@@ -97,9 +96,8 @@ def execute_spike_rate_code(inputs: list, params: dict, dim: int) -> torch.Tenso
     to preserve information content.
 
     Args:
-        inputs: Single tensor of shape (B, S, D)
-        params: Unused (parameter-free)
-        dim: Model dimension (unused)
+        module: The CompiledOp instance
+        inputs: Variadic input tensors (expects inputs[0] as (B, S, D))
 
     Returns:
         Spike-coded tensor of shape (B, S, D)
@@ -114,7 +112,7 @@ def execute_spike_rate_code(inputs: list, params: dict, dim: int) -> torch.Tenso
     return spikes * magnitude
 
 
-def execute_stdp_attention(inputs: list, params: dict, dim: int) -> torch.Tensor:
+def execute_stdp_attention(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     """STDP-inspired causal attention.
 
     Uses an exponential temporal decay kernel to create causal attention
@@ -124,9 +122,8 @@ def execute_stdp_attention(inputs: list, params: dict, dim: int) -> torch.Tensor
     No learnable parameters — purely temporal structure.
 
     Args:
-        inputs: Single tensor of shape (B, S, D)
-        params: Unused (parameter-free)
-        dim: Model dimension (unused)
+        module: The CompiledOp instance
+        inputs: Variadic input tensors (expects inputs[0] as (B, S, D))
 
     Returns:
         Attended tensor of shape (B, S, D)
@@ -153,7 +150,7 @@ def execute_stdp_attention(inputs: list, params: dict, dim: int) -> torch.Tensor
     return torch.matmul(weights.unsqueeze(0), x)
 
 
-def execute_sparse_threshold(inputs: list, params: dict, dim: int) -> torch.Tensor:
+def execute_sparse_threshold(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     """Adaptive median-based threshold gate.
 
     Zeros activations below the median absolute value, targeting ~50%
@@ -161,9 +158,8 @@ def execute_sparse_threshold(inputs: list, params: dict, dim: int) -> torch.Tens
     thresholding operation.
 
     Args:
-        inputs: Single tensor of shape (B, S, D)
-        params: Unused (parameter-free)
-        dim: Model dimension (unused)
+        module: The CompiledOp instance
+        inputs: Variadic input tensors (expects inputs[0] as (B, S, D))
 
     Returns:
         Sparsified tensor of shape (B, S, D)

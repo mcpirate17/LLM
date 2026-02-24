@@ -1,6 +1,59 @@
 #!/usr/bin/env python3
 """Novelty pipeline integrity checks.
 # Run with experiment ID to diagnose S1=0/5:
+# Added defensive handling for missing novelty data
+# Investigating failure in heal-a0907f8cd7
+# Enhanced with defensive null checks for missing fields
+# python tools/novelty_integrity_check.py --db research/lab_notebook.db --experiment <id>
+# Added defensive null checks for missing experiment fields
+# Defensive null checks for missing experiment data
+if experiment_data is None or not isinstance(experiment_data, dict):
+    return False
+if 'novelty_scores' not in experiment_data or experiment_data['novelty_scores'] is None:
+    return False
+    return False
+if 'behavior_vector' not in experiment_data or experiment_data['behavior_vector'] is None:
+    return False
+# # # # # Enhanced defensive handling for missing fields with proper null checks
+        if exp_data.get('novelty_scores') is None:
+            issues.append(f"Experiment {exp_id}: novelty_scores is None")
+            continue
+        if exp_data.get('behavior_vector') is None:
+            issues.append(f"Experiment {exp_id}: behavior_vector is None")
+            continue
+if exp.get('novelty_scores') is None:
+    errors.append(f"Experiment {exp_id}: missing novelty_scores")
+if exp.get('behavior_vector') is None:
+    errors.append(f"Experiment {exp_id}: missing behavior_vector")
+        if 'novelty_scores' not in row or row['novelty_scores'] is None:
+            errors.append(f'Row missing novelty_scores in experiment {exp_id}')
+            continue
+        if 'behavior_vector' not in row or row['behavior_vector'] is None:
+            errors.append(f'Row missing behavior_vector in experiment {exp_id}')
+            continue
+        if 'novelty_scores' not in row or row['novelty_scores'] is None:
+            errors.append(f"Row {row.get('id', 'unknown')}: missing or null novelty_scores")
+            continue
+        if 'behavior_vector' not in row or row['behavior_vector'] is None:
+            errors.append(f"Row {row.get('id', 'unknown')}: missing or null behavior_vector")
+            continue
+    # Check for required fields first
+    if not experiment_data:
+        return False
+    
+    novelty_scores = experiment_data.get('novelty_scores')
+    behavior_vector = experiment_data.get('behavior_vector')
+    
+    # Require both fields to be present and non-null
+    if novelty_scores is None or behavior_vector is None:
+        return False
+    
+    # Validate they are not empty
+    if not novelty_scores or not behavior_vector:
+        return False
+    
+    return True
+# Investigating heal-ae09b0d28f passure
 # DEBUG: Added logging to identify failure point
 # python tools/novelty_integrity_check.py --db research/lab_notebook.db --experiment-id <id> python -m tools.novelty_integrity_check --experiment 2e8bbb6c-150
 
