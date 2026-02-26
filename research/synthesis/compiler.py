@@ -351,29 +351,24 @@ def _op_selective_scan(module, inputs, _):
     # h[t] = sum_{i=0}^t a^{t-i} u[i]
     A = -torch.exp(module.A_log.clamp(-10, 10))
     dt = F.softplus(module.dt_proj)
-    log_a = A * dt  # (D,)
-    
-    u = torch.sigmoid(x * module.B_proj) * x  # (B, S, D)
-    
-    # Vectorized computation of h[t]
-    # log(h[t]) = log(sum exp(log(a^{t-i}) + log(u[i]))) -- unstable for negative u
-    # Use standard linear recurrence vectorized via cumsum if possible.
-    # For small S, or constant a, we can use a convolution-like approach.
-    
-    # h_t = a^t * sum_{i=0}^t a^{-i} u_i
-    # We use a 1D convolution with an exponential kernel for numerical stability and memory efficiency.
-    # The recurrence h_t = a * h_{t-1} + u_t is equivalent to a causal convolution with kernel [a^{S-1}, ..., a, 1].
-    a = torch.exp(log_a)  # (D,)
+    log_a = (A * dt).clamp(-10, 0)  # (D,) — clamp to stable range
+
+    u = torch.sigmoid(module.B_proj(x)) * x  # (B, S, D)
+
+    # Vectorized linear recurrence via causal convolution with exponential kernel.
+    # h_t = a * h_{t-1} + u_t, kernel = [a^{S-1}, ..., a, 1].
+    # Use log-space arithmetic for numerical stability.
     indices = torch.arange(S, device=x.device, dtype=x.dtype)
-    # kernel: (D, 1, S)
-    kernel = torch.pow(a.view(D, 1, 1), indices.flip(0).view(1, 1, S))
-    
+    # log_kernel[d, 1, s] = log_a[d] * (S-1-s)
+    log_kernel = log_a.view(D, 1, 1) * (S - 1 - indices).view(1, 1, S)
+    kernel = torch.exp(log_kernel)  # (D, 1, S) — single exp, stable
+
     u_swapped = u.permute(0, 2, 1) # (B, D, S)
     # Causal convolution via padding
     h_swapped = F.conv1d(F.pad(u_swapped, (S - 1, 0)), kernel, groups=D) # (B, D, S)
     h = h_swapped.permute(0, 2, 1) # (B, S, D)
     
-    C_x = torch.sigmoid(x * module.C_proj)
+    C_x = torch.sigmoid(module.C_proj(x))
     return C_x * h
 
 @register_op("conv1d_seq")
@@ -435,7 +430,32 @@ def _op_moe_topk(module, inputs, config):
     else:
         # Fallback to a learned projection if experts sub-modules aren't ready
         output = F.linear(x, module.weight) if hasattr(module, 'weight') else x
-        
+
+    return output
+
+
+@register_op("moe_2expert")
+def _op_moe_2expert(module, inputs, config):
+    """Lightweight 2-expert MoE with learned gating."""
+    x = inputs[0]
+    B, S, D = x.shape
+
+    if not hasattr(module, 'gate_proj'):
+        return x
+
+    # Compute gate scores
+    logits = F.linear(x, module.gate_proj)  # (B, S, 2)
+    weights = F.softmax(logits, dim=-1)     # (B, S, 2)
+
+    # Record routing telemetry
+    _record_routing_telemetry(module, 2, weights.argmax(dim=-1), logits=logits)
+
+    # Each expert is a simple linear projection
+    e0 = F.linear(x, module.expert_0_weight)  # (B, S, D)
+    e1 = F.linear(x, module.expert_1_weight)  # (B, S, D)
+
+    # Weighted combination
+    output = weights[..., 0:1] * e0 + weights[..., 1:2] * e1
     return output
 
 @register_op("swiglu_mlp")
@@ -526,22 +546,46 @@ def _op_graph_attention(module, inputs, _):
 @register_op("state_space")
 def _op_state_space(module, inputs, _):
     """S4-style state space mixer with parallel scan via causal convolution."""
-    x = inputs[0]
     if not hasattr(module, 'ssm_A'):
-        return x
+        return inputs[0]
+    x = inputs[0]
     B, S, D = x.shape
     N = module.ssm_state_dim
-    dt = F.softplus(module.ssm_dt(x))  # (B, S, D)
-    A = torch.exp(module.ssm_A.unsqueeze(0).unsqueeze(0) * dt.unsqueeze(-1))  # (B, S, D, N)
-    b_x = module.ssm_B(x).reshape(B, S, D, N)
-    # Sequential scan (correctness-first; small S in synthesis eval)
-    h = torch.zeros(B, D, N, device=x.device, dtype=x.dtype)
-    outs = []
-    for t in range(S):
-        h = A[:, t] * h + b_x[:, t]
-        y = module.ssm_C(h.reshape(B, -1))
-        outs.append(y)
-    y = torch.stack(outs, dim=1)
+    
+    # dt: (B, S, D)
+    dt = F.softplus(module.ssm_dt(x))
+    # A: (D, N), dt: (B, S, D) -> log_a: (B, S, D, N)
+    log_a = module.ssm_A.view(1, 1, D, N) * dt.unsqueeze(-1)
+    # Clamp log_a for stability: -10 to 0 (decay factor 4e-5 to 1.0)
+    log_a = torch.clamp(log_a, min=-10.0, max=0.0)
+    
+    # b_x: (B, S, D, N)
+    b_x = module.ssm_B(x).view(B, S, D, N)
+    
+    # Parallel scan approximation via exponential decay convolution.
+    # For simplicity and correctness in the synthesis context, we'll use
+    # the same vectorized scan as selective_scan but extended to state_dim N.
+    # h[t] = sum_{i=0}^t exp(sum_{j=i+1}^t log_a[j]) * b_x[i]
+    
+    # In state_space, log_a depends on x, so a simple conv1d with constant kernel 
+    # only works if log_a is constant over time. If not, we need a true parallel scan.
+    # For the synthesis baseline, we'll use the average log_a over the sequence
+    # to allow vectorized execution while preserving some input-dependence.
+    avg_log_a = log_a.mean(dim=1) # (B, D, N)
+    
+    indices = torch.arange(S, device=x.device, dtype=x.dtype)
+    # kernel: (B, D, N, S)
+    log_kernel = avg_log_a.unsqueeze(-1) * (S - 1 - indices).view(1, 1, 1, S)
+    kernel = torch.exp(log_kernel)
+    
+    # Reshape for grouped conv1d: (B*D*N, 1, S)
+    kernel_grouped = kernel.view(B * D * N, 1, S)
+    u_swapped = b_x.permute(0, 2, 3, 1).reshape(1, B * D * N, S)
+    
+    h_swapped = F.conv1d(F.pad(u_swapped, (S - 1, 0)), kernel_grouped, groups=B * D * N)
+    h = h_swapped.view(B, D, N, S).permute(0, 3, 1, 2) # (B, S, D, N)
+    
+    y = module.ssm_C(h.reshape(B, S, D * N))
     return y + x * module.ssm_D
 
 @register_op("conv_only")
@@ -607,6 +651,85 @@ def _op_rmsnorm(module, inputs, _):
     eps = 1e-6
     rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + eps)
     return (x / rms) * module.weight
+
+@register_op("layernorm")
+def _op_layernorm(module, inputs, _):
+    if not hasattr(module, 'weight'): return inputs[0]
+    return F.layer_norm(inputs[0], [inputs[0].shape[-1]], module.weight, module.bias)
+
+@register_op("gated_linear")
+def _op_gated_linear(module, inputs, _):
+    if not hasattr(module, 'linear_weight'): return inputs[0]
+    linear = F.linear(inputs[0], module.linear_weight, module.linear_bias)
+    gate = torch.sigmoid(F.linear(inputs[0], module.gate_weight, module.gate_bias))
+    return linear * gate
+
+@register_op("rwkv_time_mixing")
+def _op_rwkv_time_mixing(module, inputs, _):
+    if not hasattr(module, 'W_k'): return inputs[0]
+    x = inputs[0]
+    B, S, D = x.shape
+    k = F.linear(x, module.W_k)
+    v = F.linear(x, module.W_v)
+    r = torch.sigmoid(F.linear(x, module.W_r))
+    # WKV: sequential scan with exponential decay
+    # Use parameters directly — .float() breaks autograd gradient flow
+    w = module.w_decay
+    u = module.u_bonus
+    exp_w = torch.exp(w).unsqueeze(0)  # (1, D) — compute once
+    wkv = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    wkv_denom = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    outputs = []
+    for t in range(S):
+        kt, vt = k[:, t], v[:, t]
+        eu_kt = torch.exp(u.unsqueeze(0) + kt)
+        wkv = wkv * exp_w + eu_kt * vt
+        wkv_denom = wkv_denom * exp_w + eu_kt
+        outputs.append(r[:, t] * wkv / wkv_denom.clamp(min=1e-8))
+    out = torch.stack(outputs, dim=1)
+    return F.linear(out, module.W_o)
+
+@register_op("embedding_lookup")
+def _op_embedding_lookup(module, inputs, _):
+    # In compiled model context, input is already embedded — pass through
+    if not hasattr(module, 'embed_table'): return inputs[0]
+    return inputs[0]
+
+@register_op("rope_rotate")
+def _op_rope_rotate(_, inputs, __):
+    x = inputs[0]
+    B, S, D = x.shape
+    pos = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
+    dim_pairs = D // 2
+    freqs = 1.0 / (10000.0 ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D))
+    angles = pos * freqs.unsqueeze(0)
+    cos_a = torch.cos(angles).unsqueeze(0)
+    sin_a = torch.sin(angles).unsqueeze(0)
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    out = torch.zeros_like(x)
+    out[..., 0::2] = x1 * cos_a - x2 * sin_a
+    out[..., 1::2] = x1 * sin_a + x2 * cos_a
+    return out
+
+@register_op("cosine_similarity")
+def _op_cosine_similarity(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    sim = F.cosine_similarity(a, b, dim=-1)
+    return sim.unsqueeze(-1)
+
+@register_op("gather_topk")
+def _op_gather_topk(_, inputs, config):
+    x, scores = inputs[0], inputs[1]
+    k = min(int(config.get("k", 4)), x.shape[1])
+    if scores.dim() == 3:
+        scores = scores.squeeze(-1)
+    _, indices = torch.topk(scores, k, dim=-1)
+    gathered = torch.gather(x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+    # Pad back to original seq length for shape compatibility
+    if gathered.shape[1] < x.shape[1]:
+        pad = x[:, :x.shape[1] - gathered.shape[1]]
+        gathered = torch.cat([gathered, pad], dim=1)
+    return gathered
 
 @register_op("softmax_last")
 def _op_softmax_last(_, inputs, __): return F.softmax(inputs[0], dim=-1)
@@ -791,9 +914,9 @@ class CompiledOp(nn.Module):
         std = 1.0 / math.sqrt(D_in) if D_in > 0 else 0.02
 
         if op.name in ("linear_proj", "linear_proj_down", "linear_proj_up"):
-            self.weight = self._make_param((D_out, D_in), std=std)
+            self.weight = self._make_param((D_out, D_in), std=0.02)
         elif op.name == "fused_linear_gelu":
-            self.weight = self._make_param((D_out, D_in), std=std)
+            self.weight = self._make_param((D_out, D_in), std=0.02)
             self.bias = nn.Parameter(torch.zeros(D_out))
         elif op.name == "learnable_scale":
             self.scale = nn.Parameter(torch.ones(D_in))
@@ -802,15 +925,17 @@ class CompiledOp(nn.Module):
         elif op.name == "selective_scan":
             self.A_log = self._make_param((D_in,), std=0.1)
             self.dt_proj = self._make_param((D_in,), std=0.1)
-            self.B_proj = self._make_param((D_in,), std=std)
-            self.C_proj = self._make_param((D_in,), std=std)
+            self.B_proj = nn.Linear(D_in, D_in, bias=False)
+            self.C_proj = nn.Linear(D_in, D_in, bias=False)
+            self.B_proj.weight.data.normal_(std=0.02)
+            self.C_proj.weight.data.normal_(std=0.02)
         elif op.name == "conv1d_seq":
             self.conv_weight = self._make_param((D_in, 1, 3), std=1.0 / math.sqrt(3))
         elif op.name == "topk_gate":
-            self.gate_proj = self._make_param((2, D_in), std=std)
+            self.gate_proj = self._make_param((2, D_in), std=0.02)
         elif op.name == "moe_topk":
             n_experts = int(config.get("num_experts", 4))
-            self.gate_weight = self._make_param((n_experts, D_in), std=std)
+            self.gate_weight = self._make_param((n_experts, D_in), std=0.02)
             # Create a minimal MLP for each expert to keep CompiledOp self-contained
             hidden = int(D_in * float(config.get("mlp_ratio", 2.0)))
             self.experts = nn.ModuleList([
@@ -822,47 +947,75 @@ class CompiledOp(nn.Module):
             ])
             # Custom initialization matching project style
             for expert in self.experts:
-                expert[0].weight.data.normal_(mean=0.0, std=std)
+                expert[0].weight.data.normal_(mean=0.0, std=0.02)
                 expert[2].weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
+        elif op.name == "moe_2expert":
+            self.gate_proj = self._make_param((2, D_in), std=0.02)
+            self.expert_0_weight = self._make_param((D_in, D_in), std=0.02)
+            self.expert_1_weight = self._make_param((D_in, D_in), std=0.02)
         elif op.name == "nm_sparse_linear":
-            self.weight = self._make_param((D_out, D_in), std=std)
+            self.weight = self._make_param((D_out, D_in), std=0.02)
             self.sparsity_n = int(config.get("n", 2))
             self.sparsity_m = int(config.get("m", 4))
         elif op.name == "block_sparse_linear":
-            self.weight = self._make_param((D_out, D_in), std=std)
+            self.weight = self._make_param((D_out, D_in), std=0.02)
             self.block_size = max(1, int(config.get("block_size", 16)))
             self.block_density = float(max(0.05, min(1.0, config.get("block_density", 0.25))))
         elif op.name == "rmsnorm":
             self.weight = nn.Parameter(torch.ones(D_in))
+        elif op.name == "layernorm":
+            self.weight = nn.Parameter(torch.ones(D_in))
+            self.bias = nn.Parameter(torch.zeros(D_in))
+        elif op.name == "gated_linear":
+            self.linear_weight = self._make_param((D_out, D_in), std=0.02)
+            self.gate_weight = self._make_param((D_out, D_in), std=0.02)
+            self.linear_bias = nn.Parameter(torch.zeros(D_out))
+            self.gate_bias = nn.Parameter(torch.zeros(D_out))
+        elif op.name == "rwkv_time_mixing":
+            self.w_decay = nn.Parameter(torch.ones(D_in) * -0.5)
+            self.u_bonus = nn.Parameter(torch.zeros(D_in))
+            self.W_k = self._make_param((D_in, D_in), std=0.02)
+            self.W_v = self._make_param((D_in, D_in), std=0.02)
+            self.W_r = self._make_param((D_in, D_in), std=0.02)
+            self.W_o = self._make_param((D_in, D_in), std=0.02)
+        elif op.name == "embedding_lookup":
+            vocab = int(config.get("vocab_size", 32000))
+            self.embed_table = nn.Embedding(vocab, D_in)
+        elif op.name == "rope_rotate":
+            pass  # no learnable params, just position encoding
+        elif op.name == "cosine_similarity":
+            pass  # no learnable params
+        elif op.name == "gather_topk":
+            pass  # no learnable params
         elif op.name == "semi_structured_2_4_linear":
-            self.weight = self._make_param((D_out, D_in), std=std)
+            self.weight = self._make_param((D_out, D_in), std=0.02)
             self.sparse_kernel_ready = bool(D_in % 4 == 0 and D_out % 4 == 0)
         elif op.name == "basis_expansion":
             self.weight = nn.Parameter(torch.randn(4, D_in) * 0.5)
         elif op.name == "integral_kernel":
-            self.weight = nn.Parameter(torch.randn(D_in, D_in) * (1.0 / math.sqrt(D_in)))
+            self.weight = nn.Parameter(torch.randn(D_in, D_in) * 0.02)
         elif op.name == "fixed_point_iter":
-            self.weight = nn.Parameter(torch.randn(D_in + 1, D_in) * (1.0 / math.sqrt(D_in)))
+            self.weight = nn.Parameter(torch.randn(D_in + 1, D_in) * 0.02)
         elif op.name == "low_rank_proj":
             rank = max(D_in // 4, 1)
-            self.U = nn.Parameter(torch.randn(D_in, rank) * (1.0 / math.sqrt(D_in)))
-            self.V = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(rank)))
+            self.U = nn.Parameter(torch.randn(D_in, rank) * 0.02)
+            self.V = nn.Parameter(torch.randn(rank, D_in) * 0.02)
         elif op.name == "grouped_linear":
             g = 4
             group_dim = max(D_in // g, 1)
-            self.weight = nn.Parameter(torch.randn(g, group_dim, group_dim) * (1.0 / math.sqrt(group_dim)))
+            self.weight = nn.Parameter(torch.randn(g, group_dim, group_dim) * 0.02)
             self.n_groups = g
         elif op.name == "bottleneck_proj":
             rank = max(D_in // 4, 1)
-            self.down = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(D_in)))
-            self.up = nn.Parameter(torch.randn(D_in, rank) * (1.0 / math.sqrt(rank)))
+            self.down = nn.Parameter(torch.randn(rank, D_in) * 0.02)
+            self.up = nn.Parameter(torch.randn(D_in, rank) * 0.02)
         elif op.name == "shared_basis_proj":
             k = 8
-            self.basis = nn.Parameter(torch.randn(k, D_in) * (1.0 / math.sqrt(D_in)))
-            self.mixing = nn.Parameter(torch.randn(D_in, k) * (1.0 / math.sqrt(k)))
+            self.basis = nn.Parameter(torch.randn(k, D_in) * 0.02)
+            self.mixing = nn.Parameter(torch.randn(D_in, k) * 0.02)
         elif op.name == "tied_proj":
             rank = max(D_in // 4, 1)
-            self.tied_weight = nn.Parameter(torch.randn(rank, D_in) * (1.0 / math.sqrt(D_in)))
+            self.tied_weight = nn.Parameter(torch.randn(rank, D_in) * 0.02)
         elif op.name == "swiglu_mlp":
             # SwiGLU MLP: gated linear unit with SiLU activation
             hidden = int(D_in * float(config.get("mlp_ratio", 3.0)))
@@ -870,8 +1023,8 @@ class CompiledOp(nn.Module):
             self.up_proj = nn.Linear(D_in, hidden, bias=False)
             self.down_proj = nn.Linear(hidden, D_in, bias=False)
             # Match project initialization style
-            self.gate_proj.weight.data.normal_(mean=0.0, std=std)
-            self.up_proj.weight.data.normal_(mean=0.0, std=std)
+            self.gate_proj.weight.data.normal_(mean=0.0, std=0.02)
+            self.up_proj.weight.data.normal_(mean=0.0, std=0.02)
             self.down_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
         elif op.name == "rwkv_channel":
             # RWKV-style channel mixing: time-shift + gated update
@@ -882,8 +1035,8 @@ class CompiledOp(nn.Module):
             self.receptance_proj = nn.Linear(D_in, D_in, bias=False)
             self.value_proj = nn.Linear(hidden, D_in, bias=False)
             # Match project initialization style
-            self.key_proj.weight.data.normal_(mean=0.0, std=std)
-            self.receptance_proj.weight.data.normal_(mean=0.0, std=std)
+            self.key_proj.weight.data.normal_(mean=0.0, std=0.02)
+            self.receptance_proj.weight.data.normal_(mean=0.0, std=0.02)
             self.value_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
         elif op.name == "softmax_attention":
             n_heads = max(1, D_in // 64)  # 64 head_dim default
@@ -895,6 +1048,10 @@ class CompiledOp(nn.Module):
             self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
             self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
             self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
+            self.q_proj.weight.data.normal_(std=0.02)
+            self.k_proj.weight.data.normal_(std=0.02)
+            self.v_proj.weight.data.normal_(std=0.02)
+            self.o_proj.weight.data.normal_(std=0.02)
         elif op.name == "linear_attention":
             n_heads = max(1, D_in // 64)
             head_dim = D_in // n_heads
@@ -904,6 +1061,10 @@ class CompiledOp(nn.Module):
             self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
             self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
             self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
+            self.q_proj.weight.data.normal_(std=0.02)
+            self.k_proj.weight.data.normal_(std=0.02)
+            self.v_proj.weight.data.normal_(std=0.02)
+            self.o_proj.weight.data.normal_(std=0.02)
         elif op.name == "graph_attention":
             n_heads = max(1, D_in // 64)
             head_dim = D_in // n_heads
@@ -915,6 +1076,11 @@ class CompiledOp(nn.Module):
             self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
             self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
             self.edge_proj = nn.Linear(D_in, D_in, bias=False)
+            self.q_proj.weight.data.normal_(std=0.02)
+            self.k_proj.weight.data.normal_(std=0.02)
+            self.v_proj.weight.data.normal_(std=0.02)
+            self.o_proj.weight.data.normal_(std=0.02)
+            self.edge_proj.weight.data.normal_(std=0.02)
         elif op.name == "state_space":
             state_dim = 16
             self.ssm_state_dim = state_dim
@@ -923,9 +1089,13 @@ class CompiledOp(nn.Module):
             self.ssm_C = nn.Linear(D_in * state_dim, D_in, bias=False)
             self.ssm_D = nn.Parameter(torch.ones(D_in))
             self.ssm_dt = nn.Linear(D_in, D_in)
+            self.ssm_B.weight.data.normal_(std=0.02)
+            self.ssm_C.weight.data.normal_(std=0.02)
+            self.ssm_dt.weight.data.normal_(std=0.02)
         elif op.name == "conv_only":
             self.conv_dw = nn.Conv1d(D_in, D_in, 3, padding=2, groups=D_in)
             self.conv_proj = nn.Linear(D_in, D_in, bias=False)
+            self.conv_proj.weight.data.normal_(std=0.02)
         else:
             if hasattr(op, 'init_params'):
                 op.init_params(self, D_in)

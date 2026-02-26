@@ -1,19 +1,21 @@
-"""Auto-generated Python fallback kernel for mul."""
+"""Python fallback kernel for mul (element-wise multiplication)."""
 import torch
 import torch.nn as nn
 
 
-class ComponentHandler:
-    """Fallback handler for mul."""
+class MulModule(nn.Module):
+    def forward(self, a, b):
+        return a * b
 
+
+class ComponentHandler:
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        return nn.Identity()
+        return MulModule()
 
     def forward(self, inputs, config):
         a = inputs["a"]
         b = inputs["b"]
-        # TODO: implement mul
-        return {"y": a}
+        return {"y": a * b}

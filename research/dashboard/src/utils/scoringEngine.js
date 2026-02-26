@@ -40,10 +40,12 @@ const BONUS_WEIGHTS = {
   sparsity: 5,
   learningSpeed: 4,
   externalComparison: 6,
+  robustness: 5,
+  referenceDelta: 8,
 };
 
 // Maximum total bonus contribution (prevents bonus stacking from inflating scores)
-const MAX_TOTAL_BONUS = 20;
+const MAX_TOTAL_BONUS = 25;
 
 const ARCHITECTURE_TARGETS = {
   moe: { capacity_multiplier: 4.0, flops_iso: true },
@@ -349,6 +351,40 @@ function computeExternalComparisonBonus(entry) {
   return avg * BONUS_WEIGHTS.externalComparison * excellenceFactor;
 }
 
+// ── Robustness Scorers ──────────────────────────────────────────────
+
+function computeRobustnessBonus(entry) {
+  const noise = entry?.robustness_noise_score;
+  const longCtx = entry?.robustness_long_ctx_score;
+  const quant = entry?.quant_int8_retention;
+  const initStd = entry?.init_sensitivity_std;
+  const spectralNorm = entry?.jacobian_spectral_norm;
+
+  const scores = [];
+  if (noise != null) scores.push(clamp01(1 - Number(noise)));
+  if (longCtx != null) scores.push(clamp01(Number(longCtx)));
+  if (quant != null) {
+    const qPct = Number(quant) <= 1 ? Number(quant) : Number(quant) / 100;
+    scores.push(clamp01((qPct - 0.5) / 0.5)); // 0.5 -> 0, 1.0 -> 1
+  }
+  if (initStd != null) scores.push(clamp01(1 - Number(initStd) / 0.2));
+  if (spectralNorm != null) scores.push(clamp01(1 - Number(spectralNorm) / 20));
+
+  const avg = averageScores(scores);
+  return avg == null ? null : avg * BONUS_WEIGHTS.robustness;
+}
+
+function computeReferenceDeltaBonus(entry) {
+  // If candidate explicitly beats a pinned reference in the same family/paradigm
+  const blRatio = entry?.validation_baseline_ratio ?? entry?.baseline_loss_ratio;
+  if (blRatio != null && blRatio < 0.90) {
+    // 10% improvement over baseline baseline is worth a lot
+    const gain = clamp01((1.0 - blRatio) / 0.2); // 0.9 -> 0.5, 0.8 -> 1.0
+    return gain * BONUS_WEIGHTS.referenceDelta;
+  }
+  return 0;
+}
+
 function computeBonusBreakdown(entry) {
   const raw = {
     efficiencyBonus: computeEfficiencyBonus(entry) ?? 0,
@@ -357,6 +393,8 @@ function computeBonusBreakdown(entry) {
     sparsityBonus: computeSparsityBonus(entry) ?? 0,
     learningSpeedBonus: computeLearningSpeedBonus(entry) ?? 0,
     externalComparisonBonus: computeExternalComparisonBonus(entry) ?? 0,
+    robustnessBonus: computeRobustnessBonus(entry) ?? 0,
+    referenceDeltaBonus: computeReferenceDeltaBonus(entry) ?? 0,
   };
 
   // Cap total bonus contribution to prevent score inflation

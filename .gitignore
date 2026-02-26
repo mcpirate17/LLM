@@ -34,6 +34,14 @@ research/dashboard/build/
 *.log.[0-9]
 *.db.bak.*
 
+# SQLite databases & WAL files
+*.db
+*.db-shm
+*.db-wal
+
+# PID files
+*.pid
+
 # Separate projects (managed independently)
 AbstractMoE/
 HYDRA/

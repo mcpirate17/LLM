@@ -51,10 +51,10 @@ _DEFAULT_COMPONENT_ALIASES = {
     # SSM / normalization components used in examples
     "state_space": "selective_scan",
     "rmsnorm_pre": "rmsnorm",
-    "layernorm_pre": "rmsnorm",
-    # Transformer-mini example compatibility aliases
-    "softmax_attention": "local_window_attn",
-    "swiglu_mlp": "fused_linear_gelu",
+    "layernorm_pre": "layernorm",
+    # Transformer components
+    "softmax_attention": "softmax_attention",
+    "swiglu_mlp": "swiglu_mlp",
 }
 
 # IO components that don't map to primitives

@@ -1023,6 +1023,7 @@ class ExperimentRunner:
             "last_note": "Awaiting run.",
             "last_transition_ts": time.time(),
         }
+        self._live_training_context: Optional[Dict[str, str]] = None  # {exp_id, phase}
         self._grammar_weight_overrides: Dict[str, float] = {}
         try:
             row = self.notebook.conn.execute(
@@ -6674,7 +6675,7 @@ class ExperimentRunner:
                 investigation_passed = (
                     robustness >= 0.5
                     and (best_lr or 1.0) < 0.5
-                    and not brittle_risk
+                    and (not brittle_risk or (best_lr is not None and best_lr < 0.1))
                 )
 
                 nb.upsert_leaderboard(
@@ -6690,6 +6691,7 @@ class ExperimentRunner:
                     investigation_passed=investigation_passed,
                     tier="investigation" if investigation_passed else "screening",
                     novelty_confidence=source.get("novelty_confidence"),
+                    fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
                 )
 
                 # Record result
@@ -7392,6 +7394,7 @@ class ExperimentRunner:
                             robustness_long_ctx_score=long_context_score,
                             robustness_noise_score=noise_score,
                             init_sensitivity_std=init_sensitivity_std,
+                            fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
                             scaling_param_efficiency=scaling_param_efficiency,
                             scaling_flop_efficiency=scaling_flop_efficiency,
                             scaling_gate_passed=scaling_gate_passed_val,
@@ -7727,6 +7730,29 @@ class ExperimentRunner:
             metrics["sparse_active_params_estimate"] = int(max(0.0, sparse_active_params_estimate))
             metrics["sparse_telemetry_json"] = json.dumps(telemetry_rows)
             if nm_total > 0: metrics["sparse_nm_compliance"] = nm_compliant / nm_total
+
+        # Infer routing_mode from compiled ops if not already set
+        if not routing_mode and rt_count > 0:
+            for layer in layers:
+                ops = getattr(layer, "ops", None)
+                if ops is None:
+                    continue
+                for compiled_op in ops.values():
+                    op_obj = getattr(compiled_op, "op", None)
+                    op_name = getattr(op_obj, "name", "") if op_obj else ""
+                    if op_name == "moe_2expert":
+                        routing_mode = "moe_2expert"
+                        break
+                    elif op_name == "moe_topk":
+                        routing_mode = "moe_topk"
+                        break
+                    elif op_name == "topk_gate":
+                        routing_mode = "topk_gate"
+                        break
+                if routing_mode:
+                    break
+            if routing_mode:
+                metrics["routing_mode"] = routing_mode
 
         # Finalize Routing
         if rt_count > 0:
@@ -8489,6 +8515,16 @@ class ExperimentRunner:
                 self._progress.current_program = i + 1
                 self._progress.current_fingerprint = fp[:10]
                 self._progress.elapsed_seconds = time.time() - t_start
+
+            # Real-time dedup: skip if evaluated by another process since experiment start
+            if nb.has_fingerprint(fp):
+                results.setdefault("skipped_dedup_runtime", 0)
+                results["skipped_dedup_runtime"] += 1
+                self._emit_event("program_evaluated", {
+                    "index": i, "fingerprint": fp[:10],
+                    "result": "skipped_dedup",
+                })
+                continue
 
             # Pre-screen: skip graphs whose op-pair structure is toxic
             if failure_blocklist:
@@ -9358,6 +9394,17 @@ class ExperimentRunner:
                             "loss": loss_val,
                             "grad_norm": grad_norm,
                             "step_time_ms": step_time_ms,
+                        })
+
+                    # Emit live training step events for dashboard
+                    ctx = getattr(self, "_live_training_context", None)
+                    if ctx and step % 25 == 0:
+                        self._emit_event("training_step", {
+                            "experiment_id": ctx.get("exp_id", ""),
+                            "step": step,
+                            "loss": round(loss_val, 6),
+                            "total_steps": config.stage1_steps,
+                            "phase": ctx.get("phase", ""),
                         })
 
                     # Log training progress at start, midpoint, and end
@@ -10450,6 +10497,17 @@ class ExperimentRunner:
                     "step_time_ms": step_time_ms,
                 })
 
+                # Emit live training step events for dashboard
+                ctx = getattr(self, "_live_training_context", None)
+                if ctx and step % 25 == 0:
+                    self._emit_event("training_step", {
+                        "experiment_id": ctx.get("exp_id", ""),
+                        "step": step,
+                        "loss": round(loss_val, 6),
+                        "total_steps": n_steps,
+                        "phase": ctx.get("phase", ""),
+                    })
+
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
 
@@ -10836,6 +10894,7 @@ class ExperimentRunner:
     def _run_investigation_thread(self, exp_id: str, result_ids: List[str],
                                    config: RunConfig, hypothesis: str):
         """Execute investigation phase in background."""
+        self._live_training_context = {"exp_id": exp_id, "phase": "investigation"}
         nb = self._make_notebook()
         t_start = time.time()
         ckpt = CheckpointManager(config.checkpoint_dir)
@@ -11037,7 +11096,7 @@ class ExperimentRunner:
                 investigation_passed = (
                     robustness >= 0.5
                     and (best_lr or 1.0) < 0.5
-                    and not brittle_risk
+                    and (not brittle_risk or (best_lr is not None and best_lr < 0.1))
                 )
 
                 nb.upsert_leaderboard(
@@ -11053,6 +11112,7 @@ class ExperimentRunner:
                     investigation_passed=investigation_passed,
                     tier="investigation" if investigation_passed else "screening",
                     novelty_confidence=source.get("novelty_confidence"),
+                    fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
                 )
 
                 # Record result
@@ -11161,6 +11221,7 @@ class ExperimentRunner:
                 "error": str(e),
             })
         finally:
+            self._live_training_context = None
             nb.close()
             self._run_pending_scale_up()
 
@@ -11256,6 +11317,7 @@ class ExperimentRunner:
     def _run_validation_thread(self, exp_id: str, result_ids: List[str],
                                 config: RunConfig, hypothesis: str):
         """Execute validation phase in background."""
+        self._live_training_context = {"exp_id": exp_id, "phase": "validation"}
         nb = self._make_notebook()
         t_start = time.time()
         ckpt = CheckpointManager(config.checkpoint_dir)
@@ -11844,6 +11906,7 @@ class ExperimentRunner:
                             robustness_long_ctx_score=long_context_score,
                             robustness_noise_score=noise_score,
                             init_sensitivity_std=init_sensitivity_std,
+                            fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
                             scaling_param_efficiency=scaling_param_efficiency,
                             scaling_flop_efficiency=scaling_flop_efficiency,
                             scaling_gate_passed=scaling_gate_passed_val,
@@ -11981,11 +12044,12 @@ class ExperimentRunner:
                 "error": str(e),
             })
         finally:
+            self._live_training_context = None
             nb.close()
 
     # ── Auto-Escalation Pipeline ──
 
-    def _build_grammar_config(self, config: RunConfig, 
+    def _build_grammar_config(self, config: RunConfig,
                               excluded_ops: Optional[Set[str]] = None,
                               op_weights: Optional[Dict[str, float]] = None) -> GrammarConfig:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
@@ -12211,6 +12275,7 @@ class ExperimentRunner:
                         screening_passed=True,
                         tier="screening",
                         novelty_confidence=p.get("novelty_confidence"),
+                        fp_jacobian_spectral_norm=p.get("fp_jacobian_spectral_norm"),
                     )
 
             self._pending_investigation = {

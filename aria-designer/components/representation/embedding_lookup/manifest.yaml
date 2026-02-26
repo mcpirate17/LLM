@@ -1,0 +1,54 @@
+id: embedding_lookup
+version: 1.0.0
+name: Embedding Lookup
+category: representation
+tags:
+- parameterized
+- embedding
+status: approved
+description: Token embedding lookup table
+inputs:
+- name: indices
+  dtype: tensor
+  shape:
+  - B
+  - S
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  vocab_size:
+    type: integer
+    default: 32000
+    description: Size of the vocabulary
+implementation:
+  native: aria_embedding_lookup_f32
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: vocab_size * D
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Token embedding lookup table.
+
+
+  Inputs: indices:tensor[B, S] (integer).
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: vocab_size (integer).
+
+
+  ### Plain Language
+
+  Converts discrete token IDs into dense vectors.
+
+  '

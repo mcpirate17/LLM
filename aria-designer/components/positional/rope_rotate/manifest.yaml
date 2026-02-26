@@ -1,0 +1,51 @@
+id: rope_rotate
+version: 1.0.0
+name: RoPE Rotate
+category: positional
+tags:
+- functional
+- positional_encoding
+status: approved
+description: Rotary Position Embedding (RoPE)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: aria_rope_rotate_f32
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Rotary Position Embedding (RoPE).
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Applies rotation-based positional information to vectors.
+
+  '

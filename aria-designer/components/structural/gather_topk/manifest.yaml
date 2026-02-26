@@ -1,0 +1,60 @@
+id: gather_topk
+version: 1.0.0
+name: Gather Top-K
+category: structural
+tags:
+- functional
+- selection
+status: approved
+description: Select top-k vectors by score
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: scores
+  dtype: tensor
+  shape:
+  - B
+  - S
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - k
+  - D
+params:
+  k:
+    type: integer
+    default: 4
+    description: Number of top vectors to select
+implementation:
+  native: aria_gather_topk_f32
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Select top-k vectors from x based on scores.
+
+
+  Inputs: x:tensor[B, S, D], scores:tensor[B, S].
+
+  Outputs: y:tensor[B, k, D].
+
+  Params: k (integer).
+
+
+  ### Plain Language
+
+  Filters a set of vectors to keep only the most relevant ones.
+
+  '

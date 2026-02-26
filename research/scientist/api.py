@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import re
+import struct
 import threading
 import time
 import traceback
@@ -380,6 +381,42 @@ def _proxy_or_error(resp: _requests.Response | None):
         body = {"error": resp.text or "Proxy returned non-JSON response"}
     return jsonify(body), resp.status_code
 
+
+def _proxy_stream(method: str, path: str, *, json_body=None, params=None):
+    """Stream-proxy an SSE endpoint from the aria-designer backend.
+
+    Unlike _designer_proxy which buffers the entire response, this streams
+    chunks through to the browser so SSE events arrive incrementally.
+    """
+    if not _DESIGNER_PROXY_ENABLED:
+        return jsonify({"error": "Designer proxy not enabled"}), 502
+    url = f"{_DESIGNER_PROXY_BASE.rstrip('/')}{path}"
+    try:
+        upstream = _requests.request(
+            method, url, json=json_body, params=params,
+            stream=True, timeout=120,
+        )
+
+        def generate():
+            try:
+                for chunk in upstream.iter_content(chunk_size=None):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        content_type = upstream.headers.get("content-type", "text/event-stream")
+        return Response(generate(), status=upstream.status_code,
+                        content_type=content_type)
+    except _requests.ConnectionError:
+        return jsonify({"error": "Designer backend unavailable"}), 502
+    except _requests.Timeout:
+        return jsonify({"error": "Designer backend timeout"}), 504
+    except Exception as e:
+        logger.exception("Stream proxy error for %s %s", method, path)
+        return jsonify({"error": str(e)}), 502
+
+
 # Singleton runner shared across requests
 _runner: Optional[ExperimentRunner] = None
 _CODE_AGENT_TASKS: Dict[str, Dict[str, Any]] = {}
@@ -553,6 +590,26 @@ def _with_native_runner_progress(progress_payload: Optional[Dict[str, Any]]) -> 
 
 def _to_safe_float(value: Any, default: float = 0.0) -> float:
     """Best-effort float parse with NaN/inf guard."""
+    if value is None:
+        return float(default)
+    
+    # Handle stringified bytes if they look like "b'...'"
+    if isinstance(value, str) and value.startswith("b'") and value.endswith("'"):
+        try:
+            value = ast.literal_eval(value)
+        except Exception:
+            pass
+
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            if len(value) == 4:
+                value = struct.unpack("<f", value)[0]
+            elif len(value) == 8:
+                value = struct.unpack("<d", value)[0]
+            else:
+                value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return float(default)
     try:
         parsed = float(value)
     except (TypeError, ValueError):
@@ -3218,6 +3275,26 @@ def _compute_recommendation(program: dict, leaderboard_entry: Optional[dict]) ->
 
 
 def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    
+    # Handle stringified bytes if they look like "b'...'"
+    if isinstance(value, str) and value.startswith("b'") and value.endswith("'"):
+        try:
+            value = ast.literal_eval(value)
+        except Exception:
+            pass
+
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            if len(value) == 4:
+                value = struct.unpack("<f", value)[0]
+            elif len(value) == 8:
+                value = struct.unpack("<d", value)[0]
+            else:
+                value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -3290,17 +3367,21 @@ def _promotion_evidence_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _decision_gate_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    investigation_robustness = _safe_float(entry.get("investigation_robustness"))
+    validation_baseline_ratio = _safe_float(entry.get("validation_baseline_ratio"))
+    validation_multi_seed_std = _safe_float(entry.get("validation_multi_seed_std"))
+
     checks = {
         "screeningEvidence": entry.get("screening_loss_ratio") is not None and entry.get("screening_novelty") is not None,
         "investigationEvidence": entry.get("investigation_loss_ratio") is not None and entry.get("investigation_robustness") is not None,
-        "robustnessFloor": entry.get("investigation_robustness") is not None and float(entry.get("investigation_robustness") or 0.0) >= 0.5,
+        "robustnessFloor": investigation_robustness is not None and investigation_robustness >= 0.5,
         "validationEvidence": (
             entry.get("validation_loss_ratio") is not None
             and entry.get("validation_baseline_ratio") is not None
             and entry.get("validation_multi_seed_std") is not None
         ),
-        "baselineBeatsReference": entry.get("validation_baseline_ratio") is not None and float(entry.get("validation_baseline_ratio") or 0.0) < 1.0,
-        "consistencyBounded": entry.get("validation_multi_seed_std") is not None and float(entry.get("validation_multi_seed_std") or 1.0) <= 0.12,
+        "baselineBeatsReference": validation_baseline_ratio is not None and validation_baseline_ratio < 1.0,
+        "consistencyBounded": validation_multi_seed_std is not None and validation_multi_seed_std <= 0.12,
     }
     decision_ready = all(checks.values())
     missing = [name for name, ok in checks.items() if not ok]
@@ -3488,7 +3569,7 @@ def _compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) 
         evaluated.append({
             "result_id": row.get("result_id"),
             "architecture_family": row.get("architecture_family"),
-            "composite_score": row.get("composite_score"),
+            "composite_score": _to_safe_float(row.get("composite_score"), 0.0),
             "promotion_confidence_score": promotion["score"],
             "seen_runs": promotion["seen_runs"],
             "decision_ready": gate["decision_ready"],
@@ -3529,7 +3610,7 @@ def _compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) 
         key=lambda row: (
             int(bool(row.get("decision_ready"))),
             int(row.get("promotion_confidence_score") or 0),
-            float(row.get("composite_score") or 0.0),
+            _to_safe_float(row.get("composite_score"), 0.0),
         ),
         reverse=True,
     )[:3]
@@ -3898,10 +3979,10 @@ def _compute_action_queue(nb, analytics=None) -> List[Dict[str, Any]]:
                 "priority": 1,
                 "icon": "trophy",
                 "title": f"Architecture {rid[:8]} — Breakthrough",
-                "summary": f"Composite score {entry.get('composite_score', 0):.3f}. Tier: breakthrough.",
+                "summary": f"Composite score {_to_safe_float(entry.get('composite_score'), 0.0):.3f}. Tier: breakthrough.",
                 "detail": {
                     "result_id": rid,
-                    "composite_score": entry.get("composite_score"),
+                    "composite_score": _to_safe_float(entry.get("composite_score"), 0.0),
                     "screening_loss_ratio": entry.get("screening_loss_ratio"),
                     "tier": "breakthrough",
                 },
@@ -5972,6 +6053,24 @@ def create_app(
 
     # ── Leaderboard endpoints ──
 
+    @app.route("/api/references")
+    def api_references():
+        """Get pinned reference architectures."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .naming import annotate_display_names
+            refs = nb.get_references()
+            annotate_display_names(refs)
+            return jsonify({
+                "entries": _json_safe(refs),
+                "total": len(refs),
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/references: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/leaderboard")
     def api_leaderboard():
         """Get leaderboard entries, optionally filtered by tier."""
@@ -6019,6 +6118,54 @@ def create_app(
             })
         except Exception as e:
             logger.error(f"Error in /api/leaderboard: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/leaderboard/status", methods=["POST"])
+    def api_leaderboard_update_status():
+        """Update status (tier) for an existing leaderboard record."""
+        body = request.get_json(silent=True) or {}
+        tier = str(body.get("tier") or "").strip().lower()
+        entry_id = str(body.get("entry_id") or "").strip()
+        result_id = str(body.get("result_id") or "").strip()
+
+        valid_tiers = {"screening", "investigation", "validation", "breakthrough"}
+        if tier not in valid_tiers:
+            return jsonify({"error": "tier must be one of screening, investigation, validation, breakthrough"}), 400
+        if not entry_id and not result_id:
+            return jsonify({"error": "entry_id or result_id is required"}), 400
+
+        nb = LabNotebook(notebook_path)
+        try:
+            row = None
+            if entry_id:
+                row = nb.conn.execute(
+                    "SELECT entry_id, result_id, tier FROM leaderboard WHERE entry_id = ?",
+                    (entry_id,),
+                ).fetchone()
+            if row is None and result_id:
+                row = nb.conn.execute(
+                    "SELECT entry_id, result_id, tier FROM leaderboard WHERE result_id = ?",
+                    (result_id,),
+                ).fetchone()
+            if row is None:
+                return jsonify({"error": "Leaderboard entry not found"}), 404
+
+            resolved_entry_id = row["entry_id"]
+            nb.promote_to_tier(resolved_entry_id, tier)
+
+            updated = nb.conn.execute(
+                "SELECT entry_id, result_id, tier, timestamp FROM leaderboard WHERE entry_id = ?",
+                (resolved_entry_id,),
+            ).fetchone()
+
+            return jsonify({
+                "success": True,
+                "entry": dict(updated) if updated else {"entry_id": resolved_entry_id, "tier": tier},
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/leaderboard/status: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -9532,6 +9679,11 @@ def create_app(
         method = request.method
         json_body = request.get_json(silent=True)
         params = dict(request.args) if request.args else None
+
+        # SSE streaming endpoints need special handling — don't buffer the response
+        if "stream" in subpath:
+            return _proxy_stream(method, f"/api/v1/{subpath}", json_body=json_body, params=params)
+
         resp = _designer_proxy(method, f"/api/v1/{subpath}", json_body=json_body, params=params)
         result = _proxy_or_error(resp)
         if result is not None:

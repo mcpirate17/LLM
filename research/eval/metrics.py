@@ -48,6 +48,20 @@ class NoveltyMetrics:
         return self.__dict__.copy()
 
 
+def _reference_similarity_penalty(max_cka_similarity: float) -> float:
+    """Penalty factor for reference-like behavior.
+
+    Higher CKA similarity to known reference families should reduce novelty.
+    Returns a multiplicative factor in [0.25, 1.0].
+    """
+    try:
+        sim = float(max_cka_similarity)
+    except (TypeError, ValueError):
+        return 1.0
+    sim = max(0.0, min(1.0, sim))
+    return max(0.25, 1.0 - 0.75 * sim)
+
+
 def novelty_score(
     graph: ComputationGraph,
     fingerprint: Optional[BehavioralFingerprint] = None,
@@ -205,6 +219,10 @@ def batch_novelty_scores(
             metrics.novelty_validity_reason = "structural_only"
 
         metrics.overall_novelty = metrics.raw_novelty
+
+        # Down-weight reference-like candidates (high CKA to known families)
+        if fp_obj is not None:
+            metrics.overall_novelty *= _reference_similarity_penalty(metrics.max_cka_similarity)
         
         # Internal diversity penalty
         if metrics.graph_fingerprint in seen_fps:
@@ -310,6 +328,10 @@ def _novelty_score_from_ir(
         metrics.raw_novelty = metrics.structural_novelty * 0.6
 
     metrics.overall_novelty = metrics.raw_novelty
+
+    # Down-weight reference-like candidates (high CKA to known families)
+    if fingerprint is not None:
+        metrics.overall_novelty *= _reference_similarity_penalty(metrics.max_cka_similarity)
 
     # ── Confidence Score ──
     if fingerprint is not None:

@@ -131,6 +131,16 @@ ffibuilder.cdef("""
                                  int64_t n, int overwrite);
     void aria_rmsnorm_f32(const float *x, const float *weight, float *y,
                           int64_t batch, int64_t dim, float eps);
+    void aria_swiglu_f32(const float *x,
+                         const float *W_gate, const float *W_up, const float *W_down,
+                         const float *bias_gate, const float *bias_up, const float *bias_down,
+                         float *y, float *tmp_gate, float *tmp_up,
+                         int64_t batch, int64_t dim, int64_t hidden_dim);
+    void aria_rwkv_channel_f32(const float *x,
+                               const float *mix_k, const float *mix_r,
+                               const float *W_k, const float *W_r, const float *W_v,
+                               float *y, float *tmp_xk, float *tmp_xr, float *tmp_k,
+                               int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
     void aria_tropical_center_f32(const float *x, float *y,
                           int64_t batch, int64_t seq, int64_t dim);
     void aria_hyp_distance_f32(const float *x, const float *y, float *out,

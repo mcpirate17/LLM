@@ -1,0 +1,34 @@
+id: output
+version: 1.0.0
+name: Graph output
+category: io
+tags:
+- io
+status: approved
+description: Graph output passthrough
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: 'Graph output node. Passes through input unchanged.'

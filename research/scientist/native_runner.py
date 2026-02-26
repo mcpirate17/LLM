@@ -169,6 +169,9 @@ _NATIVE_C_KERNEL_OPS: Set[str] = {
     "rotor_transform", "grade_select", "grade_mix", "clifford_attention",
     # Tier 3: Spiking
     "lif_neuron", "spike_rate_code", "stdp_attention",
+    # Reference architecture ops
+    "embedding_lookup", "rope_rotate", "gated_linear",
+    "cosine_similarity", "gather_topk", "rwkv_time_mixing",
 }
 
 # Tier 4: Cython wrappers around PyTorch (still count as "native" for coverage).

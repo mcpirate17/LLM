@@ -387,12 +387,30 @@ CREATE TABLE IF NOT EXISTS leaderboard (
     validation_baseline_ratio REAL,
     validation_multi_seed_std REAL,
     validation_passed INTEGER DEFAULT 0,
+    -- Robustness & Efficiency (Detailed)
+    normalized_baseline_ratio REAL,
+    param_efficiency REAL,
+    quant_int8_retention REAL,
+    quant_quality_per_byte REAL,
+    robustness_long_ctx_score REAL,
+    robustness_noise_score REAL,
+    init_sensitivity_std REAL,
+    fp_jacobian_spectral_norm REAL,
+    -- Scaling
+    scaling_param_efficiency REAL,
+    scaling_flop_efficiency REAL,
+    scaling_gate_passed INTEGER,
+    scaling_best_family TEXT,
+    scaling_d512_param_efficiency REAL,
+    scaling_confidence TEXT,
     -- Composite score
     composite_score REAL,
     tier TEXT DEFAULT 'screening',  -- 'screening', 'investigation', 'validation', 'breakthrough'
     -- Metadata
     tags TEXT,
-    notes TEXT
+    notes TEXT,
+    is_reference INTEGER DEFAULT 0,
+    reference_name TEXT DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_leaderboard_tier ON leaderboard(tier);
@@ -890,7 +908,9 @@ class LabNotebook:
                 composite_score REAL,
                 tier TEXT DEFAULT 'screening',
                 tags TEXT,
-                notes TEXT
+                notes TEXT,
+                is_reference INTEGER DEFAULT 0,
+                reference_name TEXT DEFAULT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_leaderboard_tier ON leaderboard(tier);
             CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON leaderboard(composite_score);
@@ -972,12 +992,14 @@ class LabNotebook:
             "robustness_long_ctx_score REAL",
             "robustness_noise_score REAL",
             "init_sensitivity_std REAL",
+            "fp_jacobian_spectral_norm REAL",
             "scaling_param_efficiency REAL",
             "scaling_flop_efficiency REAL",
             "scaling_gate_passed INTEGER",
             "scaling_best_family TEXT",
             "scaling_d512_param_efficiency REAL",
             "scaling_confidence TEXT",
+            "campaign_id TEXT",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:
@@ -988,7 +1010,24 @@ class LabNotebook:
                 except sqlite3.OperationalError:
                     pass
 
+        # Migrate leaderboard: add reference/pin columns
+        if "is_reference" not in lb_cols:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE leaderboard ADD COLUMN is_reference INTEGER DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+        if "reference_name" not in lb_cols:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE leaderboard ADD COLUMN reference_name TEXT DEFAULT NULL"
+                )
+            except sqlite3.OperationalError:
+                pass
+
         self._program_results_columns = None
+        self._maybe_commit()
 
     def _get_program_results_columns(self) -> set[str]:
         """Return current program_results columns for defensive inserts."""
@@ -1023,19 +1062,7 @@ class LabNotebook:
             pass
 
         cls._cached_code_version = "unknown"
-
-        # Migrate leaderboard: add campaign_id if missing
-        lb_cols = {
-            row[1] for row in
-            self.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
-        }
-        if "campaign_id" not in lb_cols:
-            self.conn.execute(
-                "ALTER TABLE leaderboard ADD COLUMN campaign_id TEXT"
-            )
         return cls._cached_code_version
-
-        self._maybe_commit()
 
     # ── Knowledge Digests ──
 
@@ -1123,6 +1150,41 @@ class LabNotebook:
         """Commit unless inside a batch() context."""
         if self._batch_depth == 0:
             self.conn.commit()
+
+    def _sanitize_numeric(self, value: Any) -> Any:
+        """Deep sanitize values for SQLite: convert NumPy/Torch scalars to Python types.
+        
+        Prevents binary blob corruption when NumPy float32/int64 values are 
+        inserted into REAL/INTEGER columns.
+        """
+        if value is None:
+            return None
+        
+        # Handle NumPy/Torch scalars
+        if hasattr(value, 'item') and callable(getattr(value, 'item')):
+            try:
+                # Returns a standard Python float or int
+                return value.item()
+            except Exception:
+                pass
+        
+        # Handle explicit NumPy types
+        if hasattr(value, 'dtype'):
+            try:
+                return float(value)
+            except Exception:
+                pass
+
+        if isinstance(value, dict):
+            return {k: self._sanitize_numeric(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._sanitize_numeric(v) for v in value]
+        
+        # Final pass for floating point safety
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            return None
+            
+        return value
 
     def cleanup_stale_experiments(
         self,
@@ -1788,8 +1850,19 @@ class LabNotebook:
 
     # ── Program Results ──
 
+    def has_fingerprint(self, graph_fingerprint: str) -> bool:
+        """Check if a computation graph has already been evaluated."""
+        if not graph_fingerprint:
+            return False
+        row = self.conn.execute(
+            "SELECT 1 FROM program_results WHERE graph_fingerprint = ? LIMIT 1",
+            (graph_fingerprint,),
+        ).fetchone()
+        return row is not None
+
     def record_program_result(self, experiment_id: str,
                               graph_fingerprint: str, graph_json: str,
+                              result_id: Optional[str] = None,
                               **kwargs) -> str:
         """Record results for a single synthesized program.
 
@@ -1826,7 +1899,8 @@ class LabNotebook:
                 LOGGER.debug("Quality gate: dropping S1 failure with no signal (fp=%s)", graph_fingerprint)
                 return ""
 
-        result_id = str(uuid.uuid4())[:12]
+        if not result_id:
+            result_id = str(uuid.uuid4())[:12]
         now = time.time()
 
         # Convert booleans to int for SQLite
@@ -1841,10 +1915,8 @@ class LabNotebook:
             if f in kwargs and kwargs[f] is not None:
                 kwargs[f] = int(kwargs[f])
 
-        # Sanitize numpy scalar types → native Python to prevent blob storage
-        for k, v in kwargs.items():
-            if v is not None and hasattr(v, 'item'):
-                kwargs[k] = v.item()
+        # Sanitize numeric types (NumPy/Torch scalars) → native Python to prevent blob storage
+        kwargs = self._sanitize_numeric(kwargs)
 
         # Handle legacy 'throughput' -> 'throughput_tok_s' alias
         if "throughput" in kwargs:
@@ -3333,6 +3405,7 @@ class LabNotebook:
         val_std: Optional[float] = None,
         novelty_confidence: Optional[float] = None,
         scaling_param_efficiency: Optional[float] = None,
+        is_reference: bool = False,
     ) -> float:
         """Compute normalized composite score across research phases.
 
@@ -3350,14 +3423,20 @@ class LabNotebook:
         When scaling_param_efficiency is available (from external scaling
         law comparison), it's blended into the validation score:
         1x=0, 3x=0.5, 5x=1.0 normalized efficiency.
+
+        For is_reference=True, the novelty penalty is waived (novelty=1.0)
+        since baseline architectures are used for performance reference,
+        not for their novelty in the search space.
         """
         # Screening tier: [0, 1]
         screening_score = 0.0
         if screening_lr is not None:
             screening_score += 0.6 * max(0, 1 - screening_lr)
-        if screening_nov is not None:
-            conf = novelty_confidence if novelty_confidence is not None else 1.0
-            screening_score += 0.4 * screening_nov * conf
+        
+        # Reference models get full credit for novelty component (waived)
+        effective_nov = 1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
+        conf = 1.0 if is_reference else (novelty_confidence if novelty_confidence is not None else 1.0)
+        screening_score += 0.4 * effective_nov * conf
 
         # Investigation tier: [0, 1]
         inv_score = 0.0
@@ -3392,95 +3471,164 @@ class LabNotebook:
         # Weighted combination — later tiers matter more but are
         # normalized so a screening-only program isn't artificially low
         if has_val:
-            return 0.2 * screening_score + 0.3 * inv_score + 0.5 * val_score
+            total = 0.2 * screening_score + 0.3 * inv_score + 0.5 * val_score
         elif has_inv:
-            return 0.4 * screening_score + 0.6 * inv_score
+            total = 0.4 * screening_score + 0.6 * inv_score
         else:
-            return screening_score
+            total = screening_score
+
+        if not math.isfinite(total):
+            return 0.0
+        return total
+
+    @staticmethod
+    def _reference_novelty_for_display(novelty: Optional[float]) -> Optional[float]:
+        """Compress reference novelty values for dashboard display.
+
+        Reference architectures are anchor points, so we intentionally present
+        their novelty on a reduced scale to avoid implying they are frontier
+        discoveries in the same sense as synthesized candidates.
+        """
+        if novelty is None:
+            return None
+        try:
+            value = float(novelty)
+        except (TypeError, ValueError):
+            return None
+        value = max(0.0, min(1.0, value))
+        return min(0.35, value * 0.4)
 
     def upsert_leaderboard(
         self,
         result_id: str,
         model_source: str,
         architecture_desc: str = "",
-        screening_loss_ratio: Optional[float] = None,
-        screening_novelty: Optional[float] = None,
-        screening_passed: bool = False,
-        investigation_loss_ratio: Optional[float] = None,
-        investigation_robustness: Optional[float] = None,
-        investigation_best_training: Optional[str] = None,
-        investigation_passed: bool = False,
-        validation_loss_ratio: Optional[float] = None,
-        validation_baseline_ratio: Optional[float] = None,
-        validation_multi_seed_std: Optional[float] = None,
-        validation_passed: bool = False,
         tier: str = "screening",
         tags: Optional[str] = None,
         notes: Optional[str] = None,
-        novelty_confidence: Optional[float] = None,
+        is_reference: bool = False,
+        reference_name: Optional[str] = None,
+        **kwargs,
     ) -> str:
-        """Insert or update a leaderboard entry."""
+        """Insert or update a leaderboard entry.
+
+        Accepts all leaderboard columns as keyword arguments.
+        Fields are only updated if provided and not None (prevents accidental NULLing).
+        """
         # Check if entry exists for this result_id
         existing = self.conn.execute(
-            "SELECT entry_id FROM leaderboard WHERE result_id = ?",
+            "SELECT * FROM leaderboard WHERE result_id = ?",
             (result_id,),
         ).fetchone()
 
+        # Combine kwargs with existing data for composite score recomputation
+        d = dict(existing) if existing else {}
+        # Sanitize all incoming values
+        kwargs = self._sanitize_numeric(kwargs)
+        
+        d.update({k: v for k, v in kwargs.items() if v is not None})
+        if tags is not None: d["tags"] = tags
+        if notes is not None: d["notes"] = notes
+        d["tier"] = tier
+        d["model_source"] = model_source
+        if architecture_desc: d["architecture_desc"] = architecture_desc
+        d["is_reference"] = int(is_reference)
+        if reference_name: d["reference_name"] = reference_name
+
+        # Look up novelty_confidence from linked program_results
+        nov_conf = d.get("novelty_confidence")
+        if nov_conf is None:
+            pr = self.conn.execute(
+                "SELECT novelty_confidence FROM program_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if pr:
+                nov_conf = pr["novelty_confidence"]
+
         composite = self.compute_composite_score(
-            screening_lr=screening_loss_ratio,
-            screening_nov=screening_novelty,
-            inv_lr=investigation_loss_ratio,
-            inv_robust=investigation_robustness,
-            val_lr=validation_loss_ratio,
-            val_baseline=validation_baseline_ratio,
-            val_std=validation_multi_seed_std,
-            novelty_confidence=novelty_confidence,
+            screening_lr=d.get("screening_loss_ratio"),
+            screening_nov=d.get("screening_novelty"),
+            inv_lr=d.get("investigation_loss_ratio"),
+            inv_robust=d.get("investigation_robustness"),
+            val_lr=d.get("validation_loss_ratio"),
+            val_baseline=d.get("validation_baseline_ratio"),
+            val_std=d.get("validation_multi_seed_std"),
+            novelty_confidence=nov_conf,
+            scaling_param_efficiency=d.get("scaling_param_efficiency"),
+            is_reference=bool(is_reference),
         )
 
         if existing:
             entry_id = existing["entry_id"]
+            sets = ["timestamp = ?", "model_source = ?", "tier = ?", "composite_score = ?", "is_reference = ?"]
+            params = [time.time(), model_source, tier, composite, int(is_reference)]
+            
+            if architecture_desc:
+                sets.append("architecture_desc = ?")
+                params.append(architecture_desc)
+            if tags is not None:
+                sets.append("tags = ?")
+                params.append(tags)
+            if notes is not None:
+                sets.append("notes = ?")
+                params.append(notes)
+            if reference_name is not None:
+                sets.append("reference_name = ?")
+                params.append(reference_name)
+
+            # Whitelist for other columns from kwargs
+            for col in ("screening_loss_ratio", "screening_novelty", "screening_passed",
+                         "investigation_loss_ratio", "investigation_robustness",
+                         "investigation_best_training", "investigation_passed",
+                         "validation_loss_ratio", "validation_baseline_ratio",
+                         "validation_multi_seed_std", "validation_passed",
+                         "normalized_baseline_ratio", "param_efficiency",
+                         "quant_int8_retention", "quant_quality_per_byte",
+                         "robustness_long_ctx_score", "robustness_noise_score",
+                         "init_sensitivity_std", "fp_jacobian_spectral_norm",
+                         "scaling_param_efficiency", "scaling_flop_efficiency",
+                         "scaling_gate_passed", "scaling_best_family",
+                         "scaling_d512_param_efficiency", "scaling_confidence"):
+                if col in kwargs and kwargs[col] is not None:
+                    sets.append(f"{col} = ?")
+                    val = kwargs[col]
+                    if isinstance(val, bool): val = int(val)
+                    params.append(val)
+
+            params.append(entry_id)
             self.conn.execute(
-                """UPDATE leaderboard SET
-                    timestamp = ?, model_source = ?, architecture_desc = ?,
-                    screening_loss_ratio = ?, screening_novelty = ?,
-                    screening_passed = ?,
-                    investigation_loss_ratio = ?, investigation_robustness = ?,
-                    investigation_best_training = ?, investigation_passed = ?,
-                    validation_loss_ratio = ?, validation_baseline_ratio = ?,
-                    validation_multi_seed_std = ?, validation_passed = ?,
-                    composite_score = ?, tier = ?, tags = ?, notes = ?
-                WHERE entry_id = ?""",
-                (time.time(), model_source, architecture_desc,
-                 screening_loss_ratio, screening_novelty,
-                 int(screening_passed),
-                 investigation_loss_ratio, investigation_robustness,
-                 investigation_best_training, int(investigation_passed),
-                 validation_loss_ratio, validation_baseline_ratio,
-                 validation_multi_seed_std, int(validation_passed),
-                 composite, tier, tags, notes,
-                 entry_id),
+                f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",
+                params,
             )
         else:
             entry_id = str(uuid.uuid4())[:12]
+            cols = ["entry_id", "result_id", "timestamp", "model_source", "architecture_desc", 
+                    "tier", "composite_score", "is_reference", "reference_name", "tags", "notes"]
+            vals = [entry_id, result_id, time.time(), model_source, architecture_desc, 
+                    tier, composite, int(is_reference), reference_name, tags, notes]
+            
+            for col in ("screening_loss_ratio", "screening_novelty", "screening_passed",
+                         "investigation_loss_ratio", "investigation_robustness",
+                         "investigation_best_training", "investigation_passed",
+                         "validation_loss_ratio", "validation_baseline_ratio",
+                         "validation_multi_seed_std", "validation_passed",
+                         "normalized_baseline_ratio", "param_efficiency",
+                         "quant_int8_retention", "quant_quality_per_byte",
+                         "robustness_long_ctx_score", "robustness_noise_score",
+                         "init_sensitivity_std", "fp_jacobian_spectral_norm",
+                         "scaling_param_efficiency", "scaling_flop_efficiency",
+                         "scaling_gate_passed", "scaling_best_family",
+                         "scaling_d512_param_efficiency", "scaling_confidence"):
+                if col in kwargs and kwargs[col] is not None:
+                    cols.append(col)
+                    val = kwargs[col]
+                    if isinstance(val, bool): val = int(val)
+                    vals.append(val)
+            
+            placeholders = ", ".join(["?"] * len(cols))
             self.conn.execute(
-                """INSERT INTO leaderboard
-                (entry_id, result_id, timestamp, model_source, architecture_desc,
-                 screening_loss_ratio, screening_novelty, screening_passed,
-                 investigation_loss_ratio, investigation_robustness,
-                 investigation_best_training, investigation_passed,
-                 validation_loss_ratio, validation_baseline_ratio,
-                 validation_multi_seed_std, validation_passed,
-                 composite_score, tier, tags, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (entry_id, result_id, time.time(), model_source,
-                 architecture_desc,
-                 screening_loss_ratio, screening_novelty,
-                 int(screening_passed),
-                 investigation_loss_ratio, investigation_robustness,
-                 investigation_best_training, int(investigation_passed),
-                 validation_loss_ratio, validation_baseline_ratio,
-                 validation_multi_seed_std, int(validation_passed),
-                 composite, tier, tags, notes),
+                f"INSERT INTO leaderboard ({', '.join(cols)}) VALUES ({placeholders})",
+                vals,
             )
 
         self._maybe_commit()
@@ -3489,11 +3637,14 @@ class LabNotebook:
     def get_leaderboard(self, tier: Optional[str] = None,
                         limit: int = 50,
                         sort_by: str = "composite_score",
-                        include_family: bool = True) -> List[Dict]:
+                        include_family: bool = True,
+                        include_references: bool = True) -> List[Dict]:
         """Get leaderboard entries, optionally filtered by tier."""
         valid_sorts = {"composite_score", "screening_loss_ratio",
                        "investigation_loss_ratio", "validation_loss_ratio",
-                       "screening_novelty", "timestamp"}
+                       "screening_novelty", "timestamp",
+                       "robustness_noise_score", "quant_int8_retention",
+                       "robustness_long_ctx_score"}
         if sort_by not in valid_sorts:
             sort_by = "composite_score"
 
@@ -3507,6 +3658,7 @@ class LabNotebook:
             "pr.novelty_confidence AS _novelty_confidence, "
             "pr.cka_source AS _cka_source, "
             "pr.routing_confidence_mean AS _routing_confidence_mean, "
+            "pr.fp_jacobian_spectral_norm AS jacobian_spectral_norm, "
             # Fields for client-side candidateScore computation
             "pr.loss_ratio AS loss_ratio, "
             "pr.novelty_score AS novelty_score, "
@@ -3535,10 +3687,13 @@ class LabNotebook:
         )
         params: List[Any] = []
         if tier:
-            query += " AND l.tier = ?"
+            query += " AND (l.tier = ? OR COALESCE(l.is_reference, 0) = 1)"
             params.append(tier)
         oversample = max(limit * 6, 200)
-        query += f" ORDER BY l.{sort_by} DESC NULLS LAST LIMIT ?"
+        query += (
+            f" ORDER BY COALESCE(l.is_reference, 0) DESC, "
+            f"l.{sort_by} DESC NULLS LAST LIMIT ?"
+        )
         params.append(oversample)
 
         rows = self.conn.execute(query, params).fetchall()
@@ -3565,14 +3720,49 @@ class LabNotebook:
                         d["investigation_best_training"])
                 except (json.JSONDecodeError, TypeError):
                     pass
+            if d.get("is_reference"):
+                d["screening_novelty"] = self._reference_novelty_for_display(
+                    d.get("screening_novelty")
+                )
+                if d.get("novelty_score") is not None:
+                    d["novelty_score"] = self._reference_novelty_for_display(
+                        d.get("novelty_score")
+                    )
             results.append(d)
 
-        # Deduplicate by graph fingerprint: keep best composite_score per arch
-        seen_fingerprints: Dict[str, int] = {}
-        deduped = []
+        # Separate reference entries so they survive dedup and limit
+        references = []
+        non_references = []
         for entry in results:
+            if include_references and entry.get("is_reference"):
+                references.append(entry)
+            else:
+                non_references.append(entry)
+
+        # Deduplicate references by graph fingerprint first
+        seen_ref_fps: Dict[str, int] = {}
+        deduped_refs = []
+        for entry in references:
             fp = entry.get("_graph_fingerprint")
             if fp:
+                if fp in seen_ref_fps:
+                    # Keep best reference for this fingerprint
+                    existing_idx = seen_ref_fps[fp]
+                    if (entry.get("composite_score") or 0) > (deduped_refs[existing_idx].get("composite_score") or 0):
+                        deduped_refs[existing_idx] = entry
+                    continue
+                seen_ref_fps[fp] = len(deduped_refs)
+            deduped_refs.append(entry)
+
+        # Deduplicate non-references by graph fingerprint
+        seen_fingerprints: Dict[str, int] = {}
+        deduped = []
+        for entry in non_references:
+            fp = entry.get("_graph_fingerprint")
+            if fp:
+                # If this fingerprint is already in references, skip it in non-references
+                if fp in seen_ref_fps:
+                    continue
                 if fp in seen_fingerprints:
                     # Keep the one with higher composite_score
                     existing_idx = seen_fingerprints[fp]
@@ -3587,8 +3777,17 @@ class LabNotebook:
         # Expose fingerprint as public field, drop internal alias
         for entry in deduped:
             entry["graph_fingerprint"] = entry.pop("_graph_fingerprint", None)
+        for entry in deduped_refs:
+            entry["graph_fingerprint"] = entry.pop("_graph_fingerprint", None)
 
-        return deduped[:limit]
+        # Always include reference entries regardless of limit
+        merged = deduped[:limit]
+        if include_references:
+            ref_ids = {e.get("entry_id") for e in merged}
+            for ref in deduped_refs:
+                if ref.get("entry_id") not in ref_ids:
+                    merged.append(ref)
+        return merged
 
     def get_leaderboard_entry(self, result_id: str) -> Optional[Dict]:
         """Fetch a single leaderboard entry by result_id."""
@@ -3599,6 +3798,43 @@ class LabNotebook:
             (result_id,),
         ).fetchone()
         return dict(rows) if rows else None
+
+    def pin_reference(self, entry_id: str, reference_name: str) -> None:
+        """Pin a leaderboard entry as a reference architecture."""
+        self.conn.execute(
+            """UPDATE leaderboard
+               SET is_reference = 1,
+                   reference_name = ?,
+                   model_source = 'reference'
+               WHERE entry_id = ?""",
+            (reference_name, entry_id),
+        )
+        self._maybe_commit()
+
+    def get_references(self) -> List[Dict]:
+        """Get all pinned reference architectures."""
+        rows = self.conn.execute(
+            """SELECT l.*, pr.graph_json AS _graph_json,
+                      pr.routing_mode AS _routing_mode,
+                      pr.graph_fingerprint AS _graph_fingerprint
+               FROM leaderboard l
+               LEFT JOIN program_results pr ON pr.result_id = l.result_id
+               WHERE COALESCE(l.is_reference, 0) = 1
+               ORDER BY l.composite_score DESC NULLS LAST, l.reference_name ASC, l.timestamp DESC"""
+        ).fetchall()
+        refs: List[Dict] = []
+        for row in rows:
+            entry = dict(row)
+            entry["graph_fingerprint"] = entry.pop("_graph_fingerprint", None)
+            entry["architecture_family"] = self._classify_architecture_family(
+                graph_json=entry.pop("_graph_json", None),
+                routing_mode=entry.pop("_routing_mode", None),
+            )
+            entry["screening_novelty"] = self._reference_novelty_for_display(
+                entry.get("screening_novelty")
+            )
+            refs.append(entry)
+        return refs
 
     def get_investigated_fingerprints(self) -> set:
         """Return fingerprints that have already been investigated or beyond.
@@ -3719,6 +3955,9 @@ class LabNotebook:
         sets = ["tier = ?"]
         params: List[Any] = [tier]
 
+        # Sanitize all incoming values
+        kwargs = self._sanitize_numeric(kwargs)
+
         for col in ("investigation_loss_ratio", "investigation_robustness",
                      "investigation_best_training", "investigation_passed",
                      "validation_loss_ratio", "validation_baseline_ratio",
@@ -3726,12 +3965,12 @@ class LabNotebook:
                      "normalized_baseline_ratio", "param_efficiency",
                      "quant_int8_retention", "quant_quality_per_byte",
                      "robustness_long_ctx_score", "robustness_noise_score",
-                     "init_sensitivity_std",
+                     "init_sensitivity_std", "fp_jacobian_spectral_norm",
                      "scaling_param_efficiency", "scaling_flop_efficiency",
                      "scaling_gate_passed", "scaling_best_family",
                      "scaling_d512_param_efficiency", "scaling_confidence",
                      "notes"):
-            if col in kwargs:
+            if col in kwargs and kwargs[col] is not None:
                 sets.append(f"{col} = ?")
                 val = kwargs[col]
                 if isinstance(val, bool):
@@ -3745,7 +3984,8 @@ class LabNotebook:
         ).fetchone()
         if row:
             d = dict(row)
-            d.update(kwargs)
+            # Only update with non-None values from kwargs
+            d.update({k: v for k, v in kwargs.items() if v is not None})
             # Look up novelty_confidence from linked program_results
             nov_conf = None
             if d.get("result_id"):
@@ -3765,6 +4005,7 @@ class LabNotebook:
                 val_std=d.get("validation_multi_seed_std"),
                 novelty_confidence=nov_conf,
                 scaling_param_efficiency=d.get("scaling_param_efficiency"),
+                is_reference=bool(d.get("is_reference")),
             )
             sets.append("composite_score = ?")
             params.append(composite)

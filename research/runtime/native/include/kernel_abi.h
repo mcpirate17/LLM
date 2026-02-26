@@ -83,6 +83,22 @@ typedef nk_status_t (*nk_matmul_gelu_f32_fn)(
     const float* A, const float* B, float* C,
     int64_t M, int64_t K, int64_t N);
 
+/** swiglu: y = down(silu(gate) * up) */
+typedef nk_status_t (*nk_swiglu_f32_fn)(
+    const float* x,
+    const float* W_gate, const float* W_up, const float* W_down,
+    const float* bias_gate, const float* bias_up, const float* bias_down,
+    float* y, float* tmp_gate, float* tmp_up,
+    int64_t batch, int64_t dim, int64_t hidden_dim);
+
+/** rwkv_channel: time-shift mixing + gated MLP */
+typedef nk_status_t (*nk_rwkv_channel_f32_fn)(
+    const float* x,
+    const float* mix_k, const float* mix_r,
+    const float* W_k, const float* W_r, const float* W_v,
+    float* y, float* tmp_xk, float* tmp_xr, float* tmp_k,
+    int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
+
 /* --------------- backward function pointer signatures --------------- */
 
 /* Unary backward: grad_in = f'(input_or_output) * grad_out
@@ -130,6 +146,8 @@ typedef struct {
   nk_matmul_bias_relu_f32_fn        matmul_bias_relu_fn;
   nk_layernorm_residual_f32_fn      layernorm_residual_fn;
   nk_matmul_gelu_f32_fn             matmul_gelu_fn;
+  nk_swiglu_f32_fn                  swiglu_fn;
+  nk_rwkv_channel_f32_fn            rwkv_channel_fn;
   /* Backward */
   nk_unary_backward_f32_fn          unary_backward_fn;
   nk_binary_backward_simple_f32_fn  binary_backward_simple_fn;

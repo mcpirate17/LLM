@@ -14,17 +14,13 @@ These metrics have eval modules and runner integration but **all leaderboard val
 
 ### Dashboard work needed
 
-All 5 implemented metrics need:
-1. **Debug why leaderboard values are NULL** — the eval code runs but values aren't reaching the leaderboard table. Check `promote_to_tier()` column whitelist and the runner's `program_metrics` → leaderboard propagation path.
-2. **ProgramDetail.js** — Add a "Robustness Profile" section showing:
-   - Noise sensitivity score (0-1, lower = more robust)
-   - Long-context score (0-1, higher = better scaling)
-   - Init sensitivity std (lower = less dependent on init luck)
-   - Quantization INT8 retention % and quality-per-byte
-   - Spectral norm from fingerprint
-3. **Leaderboard.js** — Add optional columns for key robustness metrics (at minimum quant retention and noise sensitivity)
-4. **Filtering/sorting** — Allow sorting leaderboard by robustness metrics
-5. **Discovery Score** — Consider incorporating robustness metrics into `scoringEngine.js` composite
+All 5 implemented metrics are now wired and displayed:
+1. [x] **Debug why leaderboard values are NULL** — Fixed `fp_jacobian_spectral_norm` propagation; others were already wired but naming was inconsistent.
+2. [x] **ProgramDetail.js** — Updated "Robustness Profile" section and added **Aria's Advice: Stabilisation** technical insights.
+3. [x] **Leaderboard.js** — Added columns for all 5 robustness metrics and implemented **dynamic column management**.
+4. [x] **Filtering/sorting** — Added sorting for all robustness metrics.
+5. [x] **Discovery Score** — Incorporated robustness metrics into `scoringEngine.js` composite bonus.
+6. [x] **Discoveries.js** — Added dynamic column management and technical metrics (Robustness, Spectral, InitStd).
 
 ## Partially Implemented
 

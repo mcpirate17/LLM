@@ -1,0 +1,47 @@
+id: rwkv_channel
+version: 1.0.0
+name: RWKV channel mixing
+category: linear_algebra
+tags:
+- gating
+- rwkv
+status: approved
+description: RWKV-style channel mixing with key/value/receptance gates
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  dim:
+    type: int
+    default: 64
+    description: Hidden dimension
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: 3*D*D
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  RWKV channel mixing with key/value/receptance gating.
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  '

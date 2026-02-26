@@ -10,15 +10,15 @@ aliases:
   linear_up: linear_proj_up
   state_space: selective_scan
   rmsnorm_pre: rmsnorm
-  layernorm_pre: rmsnorm
-  softmax_attention: local_window_attn
-  swiglu_mlp: fused_linear_gelu
+  layernorm_pre: layernorm
+  softmax_attention: softmax_attention
+  swiglu_mlp: swiglu_mlp
   block_sparse: block_sparse_linear
   semi_structured_2_4: semi_structured_2_4_linear
   structured_sparse: nm_sparse_linear
   dense_matrix: linear_proj
-  low_rank: linear_proj
-  shared_basis: basis_expansion
+  low_rank: low_rank_proj
+  shared_basis: shared_basis_proj
   basis_expansion_layer: basis_expansion
   conv1d_glu: conv1d_seq
   compressed_attention: local_window_attn
@@ -51,14 +51,45 @@ aliases:
   residual_quantized: sign_ste
   sparse_topk: topk_gate
   join: concat
+  # Direct primitive mappings
+  embedding_lookup: embedding_lookup
+  rope_rotate: rope_rotate
+  gated_linear: gated_linear
+  cosine_similarity: cosine_similarity
+  gather_topk: gather_topk
+  rwkv_time_mixing: rwkv_time_mixing
+  # Weight compression ops (mathspaces)
+  bottleneck_proj: bottleneck_proj
+  grouped_linear: grouped_linear
+  tied_proj: tied_proj
+  # Hyperbolic geometry ops
+  poincare_add: poincare_add
+  exp_map: exp_map
+  log_map: log_map
+  hyp_linear: hyp_linear
+  hyp_tangent_nonlinear: hyp_tangent_nonlinear
+  hyperbolic_norm: hyperbolic_norm
+  # Tropical semiring ops
+  tropical_gate: tropical_gate
+  tropical_center: tropical_center
+  tropical_attention: tropical_attention
+  # p-adic / ultrametric ops
+  padic_gate: padic_gate
+  padic_expand: padic_expand
+  ultrametric_attention: ultrametric_attention
+  # Clifford algebra ops
+  grade_select: grade_select
+  grade_mix: grade_mix
+  clifford_attention: clifford_attention
+  # Spiking ops
+  stdp_attention: stdp_attention
 
 # Optional semantic notes for aliases that are intentionally approximate
 # (not strict equivalence), surfaced in execution-capability + compile/eval warnings.
 approximate_alias_notes:
-  softmax_attention: "Mapped to local_window_attn for bridge compatibility; attention pattern differs."
   state_space: "Mapped to selective_scan; exact state-space formulation may differ."
-  low_rank: "Mapped to linear_proj for bridge compatibility; low-rank factorization is approximated."
-  shared_basis: "Mapped to basis_expansion as an approximation of shared-basis parametrization."
+  low_rank: "Mapped to low_rank_proj; uses rank=D/4 factorization."
+  shared_basis: "Mapped to shared_basis_proj; uses 8 shared basis vectors."
   implicit_fixed_point: "Mapped to fixed_point_iter; solver semantics are approximate."
   kan_spline: "Mapped to basis_expansion; spline basis/gating semantics are approximate."
   polynomial_expansion: "Mapped to basis_expansion; polynomial order semantics are approximate."

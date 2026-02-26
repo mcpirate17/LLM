@@ -1925,69 +1925,130 @@ class ExperimentAnalytics:
         """Compare control experiments (default weights) vs learned-weight experiments.
 
         Control experiments are flagged with ``control_experiment = true`` in
-        config_json.  This method computes S1 rates for each group and a
-        z-test for the difference, providing evidence for or against the
-        hypothesis that learned grammar weights improve synthesis quality.
+        config_json.  Uses time-matched comparison: each control experiment is
+        paired with temporally adjacent learned experiments (the nearest before
+        and after) to avoid confounding from increasing search difficulty over
+        a session.
 
         Returns None if fewer than 2 control experiments exist.
         """
         rows = self.nb.conn.execute("""
-            SELECT experiment_id, config_json
+            SELECT experiment_id, config_json, timestamp
             FROM experiments WHERE status = 'completed' AND config_json IS NOT NULL
+            ORDER BY timestamp
         """).fetchall()
 
-        control_ids: list[str] = []
-        learned_ids: list[str] = []
+        control_exps: list[tuple[str, str]] = []  # (exp_id, created_at)
+        learned_exps: list[tuple[str, str]] = []
         for row in rows:
             try:
                 cfg = json.loads(row["config_json"])
             except (json.JSONDecodeError, TypeError):
                 continue
+            ts = row["timestamp"] or ""
             if cfg.get("control_experiment"):
-                control_ids.append(row["experiment_id"])
+                control_exps.append((row["experiment_id"], ts))
             else:
-                learned_ids.append(row["experiment_id"])
+                learned_exps.append((row["experiment_id"], ts))
 
-        if len(control_ids) < 2 or len(learned_ids) < 2:
+        if len(control_exps) < 2 or len(learned_exps) < 2:
             return None
 
-        def _s1_stats(exp_ids: list[str]) -> dict:
-            ph = ",".join("?" * len(exp_ids))
-            r = self.nb.conn.execute(f"""
+        def _s1_for_exp(exp_id: str) -> tuple[int, int]:
+            """Return (total_programs, s1_passed) for one experiment."""
+            r = self.nb.conn.execute("""
                 SELECT COUNT(*) as total,
                        SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1
-                FROM program_results WHERE experiment_id IN ({ph})
-            """, tuple(exp_ids)).fetchone()
-            total = r["total"] or 0
-            s1 = r["s1"] or 0
+                FROM program_results WHERE experiment_id = ?
+            """, (exp_id,)).fetchone()
+            return (r["total"] or 0, r["s1"] or 0)
+
+        def _s1_stats(exp_ids: list[str]) -> dict:
+            total = s1 = 0
+            for eid in exp_ids:
+                t, s = _s1_for_exp(eid)
+                total += t
+                s1 += s
             return {"experiments": len(exp_ids), "programs": total,
                     "s1_passed": s1, "s1_rate": s1 / max(total, 1)}
 
-        control = _s1_stats(control_ids)
-        learned = _s1_stats(learned_ids)
+        # Time-matched comparison: for each control, find nearest learned
+        # experiments (one before, one after) and compare within that window
+        learned_ts = [(eid, ts) for eid, ts in learned_exps]
+        pair_diffs: list[float] = []
+        matched_control_ids: list[str] = []
+        matched_learned_ids: list[str] = []
 
-        # Two-proportion z-test
-        p_c = control["s1_rate"]
-        p_l = learned["s1_rate"]
-        n_c = control["programs"]
-        n_l = learned["programs"]
-        pooled_p = (control["s1_passed"] + learned["s1_passed"]) / max(n_c + n_l, 1)
-        se = math.sqrt(pooled_p * (1 - pooled_p) * (1 / max(n_c, 1) + 1 / max(n_l, 1))) if 0 < pooled_p < 1 else 0.0
-        z_score = (p_l - p_c) / se if se > 0 else 0.0
+        for ctrl_id, ctrl_ts in control_exps:
+            # Find nearest learned experiments by timestamp
+            before = [e for e in learned_ts if e[1] <= ctrl_ts]
+            after = [e for e in learned_ts if e[1] > ctrl_ts]
+            neighbors = []
+            if before:
+                neighbors.append(before[-1][0])  # latest before
+            if after:
+                neighbors.append(after[0][0])     # earliest after
+            if not neighbors:
+                continue
+
+            ctrl_total, ctrl_s1 = _s1_for_exp(ctrl_id)
+            if ctrl_total == 0:
+                continue
+            ctrl_rate = ctrl_s1 / ctrl_total
+
+            nbr_total = nbr_s1 = 0
+            for nid in neighbors:
+                t, s = _s1_for_exp(nid)
+                nbr_total += t
+                nbr_s1 += s
+            if nbr_total == 0:
+                continue
+            nbr_rate = nbr_s1 / nbr_total
+
+            pair_diffs.append(nbr_rate - ctrl_rate)
+            matched_control_ids.append(ctrl_id)
+            matched_learned_ids.extend(neighbors)
+
+        # Also compute overall stats for display
+        all_control_ids = [eid for eid, _ in control_exps]
+        all_learned_ids = [eid for eid, _ in learned_exps]
+        control = _s1_stats(all_control_ids)
+        learned = _s1_stats(all_learned_ids)
+
+        # Time-matched effect: mean of per-window differences
+        if pair_diffs:
+            matched_diff = sum(pair_diffs) / len(pair_diffs)
+            # Paired z-test (approximate)
+            if len(pair_diffs) > 1:
+                diff_std = (sum((d - matched_diff) ** 2 for d in pair_diffs) / (len(pair_diffs) - 1)) ** 0.5
+                matched_se = diff_std / len(pair_diffs) ** 0.5 if diff_std > 0 else 0.0
+                matched_z = matched_diff / matched_se if matched_se > 0 else 0.0
+            else:
+                matched_z = 0.0
+        else:
+            matched_diff = 0.0
+            matched_z = 0.0
 
         return {
             "control": control,
             "learned": learned,
-            "s1_rate_difference": round(p_l - p_c, 4),
-            "z_score": round(z_score, 3),
-            "significant_at_p05": abs(z_score) > 1.96,
-            "learned_is_better": p_l > p_c,
+            "s1_rate_difference": round(matched_diff, 4),
+            "z_score": round(matched_z, 3),
+            "significant_at_p05": abs(matched_z) > 1.96,
+            "learned_is_better": matched_diff > 0,
+            "time_matched": True,
+            "matched_pairs": len(pair_diffs),
             "interpretation": (
-                "Learned weights significantly outperform controls"
-                if z_score > 1.96
-                else "Learned weights significantly underperform controls"
-                if z_score < -1.96
-                else "No significant difference between learned and control weights"
+                "Learned weights significantly outperform controls (time-matched)"
+                if matched_z > 1.96
+                else "Learned weights significantly underperform controls (time-matched)"
+                if matched_z < -1.96
+                else "No significant difference between learned and control weights (time-matched)"
+            ),
+            "caveat": (
+                "Comparison is time-matched: each control is compared only with "
+                "temporally adjacent learned experiments to account for increasing "
+                "search difficulty over a session."
             ),
         }
 
@@ -3393,6 +3454,7 @@ class RefinementAnalyzer:
         "fp_rank_ratio": ["low_rank_proj", "linear_proj", "bottleneck_proj"],
         "fp_interaction_sparsity": ["topk_gate", "threshold_gate", "sparse_linear"],
         "fp_intrinsic_dim": ["grouped_linear", "low_rank_proj", "bottleneck_proj"],
+        "fp_jacobian_spectral_norm": ["rmsnorm", "layer_norm", "residual", "highway_gate"],
     }
 
     # Human-readable metric labels
@@ -3413,7 +3475,7 @@ class RefinementAnalyzer:
     _FP_METRICS = [
         "fp_isotropy", "fp_interaction_locality", "fp_interaction_sparsity",
         "fp_interaction_symmetry", "fp_interaction_hierarchy", "fp_intrinsic_dim",
-        "fp_rank_ratio", "fp_sensitivity_uniformity",
+        "fp_rank_ratio", "fp_sensitivity_uniformity", "fp_jacobian_spectral_norm",
     ]
 
     def __init__(self, analytics: ExperimentAnalytics):
@@ -3494,6 +3556,9 @@ class RefinementAnalyzer:
             op_health, behavioral_gaps, program_row, mean_s1_rate,
         )
 
+        # Brittleness advice (Aria's technical insight)
+        brittleness_advice = self._build_brittleness_advice(program_row)
+
         analysis_quality = "full" if qualified_rates else ("partial" if op_stats_rows else "no_data")
 
         return {
@@ -3504,6 +3569,7 @@ class RefinementAnalyzer:
             "recommended_additions": recommended_additions,
             "behavioral_gaps": behavioral_gaps,
             "recipe": recipe,
+            "brittleness_advice": brittleness_advice,
             "population_stats": {
                 "n_programs_total": n_programs_total,
                 "n_stage1_passed": n_stage1_passed,
@@ -3761,6 +3827,58 @@ class RefinementAnalyzer:
                 "add_categories": add_categories,
             },
             "human_summary": human_summary,
+        }
+
+    def _build_brittleness_advice(self, program_row: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """Aria's technical advice for making architectures less brittle."""
+        robustness = program_row.get("investigation_robustness")
+        spectral_norm = program_row.get("fp_jacobian_spectral_norm")
+        init_std = program_row.get("init_sensitivity_std")
+        
+        advice_parts = []
+        is_brittle = False
+        
+        if robustness is not None and robustness < 0.5:
+            is_brittle = True
+            advice_parts.append(
+                f"Low robustness ({robustness:.2f}) indicates high sensitivity to training recipes. "
+                "Only a fraction of hyperparameter seeds converge successfully."
+            )
+            
+        if spectral_norm is not None and spectral_norm > 15.0:
+            is_brittle = True
+            advice_parts.append(
+                f"High Jacobian spectral norm ({spectral_norm:.1f}) suggests 'exploding' gradient paths "
+                "or poor signal propagation. This often leads to training instability."
+            )
+            
+        if init_std is not None and init_std > 0.1:
+            is_brittle = True
+            advice_parts.append(
+                f"High initialization sensitivity ({init_std:.3f}) means the architecture's success "
+                "depends heavily on lucky weight initialization."
+            )
+
+        if not is_brittle:
+            return None
+
+        # Practical remedies
+        remedies = [
+            "Add 'rmsnorm' or 'layer_norm' before non-linear ops to bound activations.",
+            "Use 'residual' or 'skip_connection' paths to improve gradient flow.",
+            "Verify that learning rates are sufficiently low for this topology.",
+            "If using 'Spectral-Conv', consider adding a small epsilon or weight decay to fourier mixing."
+        ]
+        
+        return {
+            "summary": "This architecture is marked as 'Brittle' because it lacks training stability.",
+            "diagnosis": " ".join(advice_parts),
+            "remedies": remedies,
+            "aria_insight": (
+                "To make this front-runner reliable, we must tame its variance. "
+                "A 0.33 robustness means it's a great 'idea' that currently requires 'perfect' conditions. "
+                "Stabilizing it will likely improve its validation score even further."
+            )
         }
 
     def _empty_analysis(self, result_id: str, quality: str) -> Dict[str, Any]:

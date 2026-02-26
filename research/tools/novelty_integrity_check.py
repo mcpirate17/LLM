@@ -14,7 +14,16 @@ if 'novelty_scores' not in experiment_data or experiment_data['novelty_scores'] 
     return False
 if 'behavior_vector' not in experiment_data or experiment_data['behavior_vector'] is None:
     return False
-# # # # # Enhanced defensive handling for missing fields with proper null checks
+# # # # # # # Enhanced defensive handling for missing fields with proper null checks
+if exp_data.get('novelty_scores') is None or exp_data.get('behavior_vector') is None:
+    return False, f"Missing required fields: novelty_scores={exp_data.get('novelty_scores')}, behavior_vector={exp_data.get('behavior_vector')}"
+# Added validation for experiment_id field and better error messages
+if not exp_data:
+    print(f"ERROR: No data found for experiment {exp_id}")
+    return False
+if 'experiment_id' not in exp_data:
+    print(f"ERROR: Missing experiment_id field in data")
+    return False
         if exp_data.get('novelty_scores') is None:
             issues.append(f"Experiment {exp_id}: novelty_scores is None")
             continue

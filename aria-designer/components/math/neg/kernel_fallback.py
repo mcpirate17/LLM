@@ -1,18 +1,20 @@
-"""Auto-generated Python fallback kernel for neg."""
+"""Python fallback kernel for neg (element-wise negation)."""
 import torch
 import torch.nn as nn
 
 
-class ComponentHandler:
-    """Fallback handler for neg."""
+class NegModule(nn.Module):
+    def forward(self, x):
+        return -x
 
+
+class ComponentHandler:
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        return nn.Identity()
+        return NegModule()
 
     def forward(self, inputs, config):
         x = inputs["x"]
-        # TODO: implement neg
-        return {"y": x}
+        return {"y": -x}

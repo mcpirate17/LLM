@@ -368,6 +368,36 @@ _register(PrimitiveOp("moe_topk", OpCategory.PARAMETERIZED, 1, "identity",
                        has_params=True, param_formula="D*D*8",
                        description="Sparse Mixture-of-Experts channel mixer",
                        config_keys=("num_experts", "top_k")))
+_register(PrimitiveOp("moe_2expert", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D*2",
+                       description="Lightweight 2-expert MoE with learned gating",
+                       config_keys=()))
+
+# ── Functional (operator-learning / neural-field) ────────────────────
+
+# ── Reference Architecture Ops ───────────────────────────────────────
+
+_register(PrimitiveOp("layernorm", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*2",
+                       description="Layer Normalization with learned affine"))
+_register(PrimitiveOp("embedding_lookup", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="32000*D",
+                       description="Token embedding lookup table",
+                       config_keys=("vocab_size",)))
+_register(PrimitiveOp("rope_rotate", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Rotary Position Embedding (RoPE)"))
+_register(PrimitiveOp("gated_linear", OpCategory.PARAMETERIZED, 1, "linear",
+                       has_params=True, param_formula="D*D*2",
+                       description="Fused gated linear: (x@W) * sigmoid(x@W_gate)",
+                       config_keys=("out_dim",)))
+_register(PrimitiveOp("cosine_similarity", OpCategory.LINEAR_ALGEBRA, 2, "reduce_last",
+                       description="Cosine similarity between two tensors along last dim"))
+_register(PrimitiveOp("gather_topk", OpCategory.STRUCTURAL, 2, "identity",
+                       description="Gather top-k vectors by score",
+                       config_keys=("k",)))
+_register(PrimitiveOp("rwkv_time_mixing", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D*3",
+                       description="RWKV WKV linear attention with learned decay"))
 
 # ── Functional (operator-learning / neural-field) ────────────────────
 

@@ -298,6 +298,13 @@ void aria_swiglu_f32(const float *x,
                       float *y, float *tmp_gate, float *tmp_up,
                       int64_t batch, int64_t dim, int64_t hidden_dim);
 
+/** RWKV-style channel mixing: time-shift + gated update */
+void aria_rwkv_channel_f32(const float *x,
+                            const float *mix_k, const float *mix_r,
+                            const float *W_k, const float *W_r, const float *W_v,
+                            float *y, float *tmp_xk, float *tmp_xr, float *tmp_k,
+                            int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
+
 /** Token pool-restore: pool adjacent pairs via mean, restore via repeat */
 void aria_token_pool_restore_f32(const float *x, float *y,
                                    int64_t batch, int64_t seq, int64_t dim);
@@ -365,6 +372,67 @@ void aria_spike_rate_code_f32(const float *x, float *y,
 void aria_stdp_attention_f32(const float *x, float *y,
                                int64_t batch, int64_t seq, int64_t dim,
                                float tau_plus, float tau_minus);
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 2: Reference Architecture Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** Embedding lookup: y[batch, dim] = table[indices[batch], :] + pos_embed[pos, :]
+ *  table: [vocab_size, dim], indices: [batch] as int32, pos_embed may be NULL */
+void aria_embedding_lookup_f32(const float *table, const int32_t *indices,
+                                const float *pos_embed,
+                                float *y, int64_t batch, int64_t dim,
+                                int64_t vocab_size);
+
+/** Rotary Position Embedding: apply RoPE rotation per head
+ *  x: [batch, seq, dim], positions implicit from seq index
+ *  dim must be even — pairs (x[2i], x[2i+1]) get rotated */
+void aria_rope_rotate_f32(const float *x, float *y,
+                           int64_t batch, int64_t seq, int64_t dim,
+                           float theta_base);
+
+/** Gated linear: y = (x @ W + b) * sigmoid(x @ W_gate + b_gate)
+ *  x: [batch, dim_in], W/W_gate: [dim_out, dim_in], b/b_gate: [dim_out] (may be NULL) */
+void aria_gated_linear_f32(const float *x,
+                            const float *W, const float *b,
+                            const float *W_gate, const float *b_gate,
+                            float *y, float *tmp_gate,
+                            int64_t batch, int64_t dim_in, int64_t dim_out);
+
+/** Cosine similarity: out[batch, seq] = cos_sim(a[batch, seq, dim], b[batch, seq, dim]) */
+void aria_cosine_similarity_f32(const float *a, const float *b, float *out,
+                                  int64_t batch, int64_t seq, int64_t dim);
+
+/** Gather top-k: select top-k vectors from values by scores
+ *  scores: [batch, n_items], values: [batch, n_items, dim]
+ *  out: [batch, k, dim], out_indices: [batch, k] */
+void aria_gather_topk_f32(const float *scores, const float *values,
+                            float *out, int32_t *out_indices,
+                            int64_t batch, int64_t n_items, int64_t dim,
+                            int64_t k);
+
+/** RWKV time-mixing WKV kernel: linear attention with learned exponential decay
+ *  x: [batch, seq, dim], w_decay: [dim], u_bonus: [dim]
+ *  W_k, W_v, W_r: [dim, dim] projections for key/value/receptance */
+void aria_rwkv_time_mixing_f32(const float *x,
+                                 const float *w_decay, const float *u_bonus,
+                                 const float *W_k, const float *W_v, const float *W_r,
+                                 float *y,
+                                 int64_t batch, int64_t seq, int64_t dim);
+
+/** Embedding lookup backward: accumulate gradients into table rows */
+void aria_embedding_lookup_backward_f32(const float *grad_out, const int32_t *indices,
+                                          float *grad_table, float *grad_pos_embed,
+                                          int64_t batch, int64_t dim,
+                                          int64_t vocab_size);
+
+/** Gated linear backward */
+void aria_gated_linear_backward_f32(const float *grad_out,
+                                      const float *x, const float *W, const float *W_gate,
+                                      const float *gate_sigmoid,
+                                      float *grad_x, float *grad_W, float *grad_W_gate,
+                                      float *grad_b, float *grad_b_gate,
+                                      int64_t batch, int64_t dim_in, int64_t dim_out);
 
 #ifdef __cplusplus
 }

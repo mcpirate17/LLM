@@ -45,6 +45,7 @@ const EVENT_TYPE_ALIASES = {
   campaign_completed: 'campaign_completed',
   continuous_limit_reached: 'limit_reached',
   learning_event: 'learning',
+  training_step: 'training_step',
 };
 
 const RENDERABLE_EVENT_TYPES = new Set([
@@ -132,8 +133,52 @@ function annotateGenerationHistory(events) {
   });
 }
 
+// Mini inline SVG chart for live training loss
+function MiniLossChart({ curve }) {
+  if (!curve || curve.length < 2) return null;
+  const W = 200, H = 60;
+  const pad = { l: 4, r: 4, t: 4, b: 4 };
+
+  const losses = curve.map(p => p.loss);
+  const minL = Math.min(...losses);
+  const maxL = Math.max(...losses);
+  const rangeL = maxL - minL || 1;
+
+  const xScale = i => pad.l + (i / Math.max(curve.length - 1, 1)) * (W - pad.l - pad.r);
+  const yScale = v => H - pad.b - ((v - minL) / rangeL) * (H - pad.t - pad.b);
+
+  const pathD = losses.map((l, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i).toFixed(1)} ${yScale(l).toFixed(1)}`).join(' ');
+  const currentLoss = losses[losses.length - 1];
+  const currentStep = curve[curve.length - 1].step;
+  const totalSteps = curve[curve.length - 1].total_steps;
+  const phase = curve[curve.length - 1].phase || '';
+
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 8,
+      padding: '4px 8px', borderRadius: 6,
+      background: 'rgba(63,185,80,0.08)', border: '1px solid rgba(63,185,80,0.2)',
+      marginBottom: 4,
+    }}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block' }}>
+        <rect width={W} height={H} rx={4} fill="rgba(0,0,0,0.3)" />
+        <path d={pathD} fill="none" stroke="var(--accent-green)" strokeWidth={1.5} />
+      </svg>
+      <div style={{ fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+        <div style={{ color: 'var(--accent-green)', fontWeight: 700, fontSize: 12, fontFamily: 'monospace' }}>
+          {currentLoss < 0.0001 && currentLoss !== 0 ? currentLoss.toExponential(2) : currentLoss.toFixed(4)}
+        </div>
+        <div>step {currentStep}/{totalSteps}</div>
+        {phase && <div style={{ textTransform: 'capitalize', color: 'var(--text-muted)' }}>{phase}</div>}
+      </div>
+    </div>
+  );
+}
+
 function LiveFeed({ apiBase, experimentId = null }) {
   const [events, setEvents] = useState([]);
+  const [lossCurve, setLossCurve] = useState([]);
+  const lossCurveExpRef = useRef(null);
   const feedRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showControls, setShowControls] = useState(false);
@@ -145,6 +190,20 @@ function LiveFeed({ apiBase, experimentId = null }) {
     const normalized = normalizeLiveFeedEvent({ type, ...data, ts: Date.now() });
     if (!normalized) return;
     setEvents(prev => [...prev.slice(-99), normalized]);
+  }, []);
+
+  // Handle training_step events for the mini loss chart
+  const handleTrainingStep = useCallback((data) => {
+    const expId = data.experiment_id || '';
+    setLossCurve(prev => {
+      // Clear buffer when experiment changes
+      if (lossCurveExpRef.current !== expId) {
+        lossCurveExpRef.current = expId;
+        return [{ step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase }];
+      }
+      const next = [...prev, { step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase }];
+      return next.slice(-200);
+    });
   }, []);
 
   // Subscribe to all SSE events via shared EventBus
@@ -183,10 +242,13 @@ function LiveFeed({ apiBase, experimentId = null }) {
   useEventBus('campaign_completed', addEvent('campaign_completed'));
   useEventBus('continuous_limit_reached', addEvent('limit_reached'));
   useEventBus('learning_event', addEvent('learning'));
+  useEventBus('training_step', handleTrainingStep);
 
   // Load history from REST when experimentId changes
   useEffect(() => {
     setEvents([]);
+    setLossCurve([]);
+    lossCurveExpRef.current = null;
     if (!experimentId) return;
 
     apiService.getLiveFeed(experimentId, 100)
@@ -303,6 +365,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
           Connection lost. Reconnecting and healing feed gaps...
         </div>
       )}
+      {lossCurve.length >= 2 && <MiniLossChart curve={lossCurve} />}
       <div className="feed-container" ref={feedRef}>
         {events.length === 0 ? (
           <div className="feed-empty">

@@ -92,7 +92,7 @@ function buildCandidateEligibility(entry) {
   }
 
   const tier = typeof entry.tier === 'string' ? entry.tier.toLowerCase() : '';
-  const hasInvestigationEvidence = entry.investigation_loss_ratio != null;
+  const hasInvestigationEvidence = entry.investigation_loss_ratio != null || entry.investigation_robustness != null;
   const hasValidationEvidence = entry.validation_loss_ratio != null || Boolean(entry.validation_passed);
 
   const investigationEligible = tier === 'screening' && !hasInvestigationEvidence;
@@ -186,6 +186,94 @@ const ANALYTICS_SUB_TABS = [
   { key: 'learning', label: 'Learning' },
 ];
 
+function ReferenceBaselinesPanel() {
+  const [refs, setRefs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchRefs() {
+      try {
+        const res = await fetch(`${API_BASE}/api/discoveries?sort=composite_score&limit=200&view=ranked`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const entries = (json.entries || []).filter(e => e.is_reference);
+        if (!cancelled) setRefs(entries);
+      } catch {
+        // silently fail — references panel is supplementary
+      }
+      if (!cancelled) setLoading(false);
+    }
+    fetchRefs();
+    const iv = setInterval(fetchRefs, 30000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, []);
+
+  if (loading) return null;
+  if (refs.length === 0) return null;
+
+  const metricKeys = [
+    { key: 'screening_loss_ratio', label: 'Loss Ratio', fmt: v => v?.toFixed(4) },
+    { key: 'screening_novelty', label: 'Novelty', fmt: v => v?.toFixed(4) },
+    { key: 'composite_score', label: 'Score', fmt: v => v?.toFixed(4) },
+    { key: 'validation_baseline_ratio', label: 'vs Baseline', fmt: v => v ? v.toFixed(2) + 'x' : '--' },
+    { key: 'param_efficiency', label: 'Param Eff', fmt: v => v ? v.toFixed(1) : '--' },
+    { key: 'quant_int8_retention', label: 'Quant Ret', fmt: v => v ? (v * 100).toFixed(1) + '%' : '--' },
+    { key: 'robustness_noise_score', label: 'Noise', fmt: v => v?.toFixed(2) },
+    { key: 'init_sensitivity_std', label: 'Init Std', fmt: v => v?.toFixed(4) },
+  ];
+
+  return (
+    <div className="card" style={{
+      padding: 16, marginTop: 16,
+      border: '1px solid var(--accent-purple)',
+      background: 'rgba(188, 140, 255, 0.04)',
+    }}>
+      <div style={{
+        fontSize: 13, fontWeight: 700, marginBottom: 12,
+        color: 'var(--accent-purple)', textTransform: 'uppercase', letterSpacing: 0.5,
+      }}>
+        Reference Architecture Baselines
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid var(--border)' }}>
+              <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Architecture</th>
+              {metricKeys.map(m => (
+                <th key={m.key} style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>{m.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {refs.sort((a, b) => (a.screening_loss_ratio || 99) - (b.screening_loss_ratio || 99)).map(ref => (
+              <tr key={ref.entry_id || ref.result_id} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '8px', fontWeight: 600, color: 'var(--accent-purple)' }}>
+                  {ref.reference_name || ref.architecture_desc || 'Reference'}
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400, marginTop: 2 }}>
+                    {ref.tags?.split(',').filter(t => t !== 'reference').join(', ')}
+                  </div>
+                </td>
+                {metricKeys.map(m => {
+                  const val = ref[m.key];
+                  return (
+                    <td key={m.key} style={{ textAlign: 'right', padding: '8px', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
+                      {val != null ? m.fmt(Number(val)) : '--'}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>
+        Aria-generated architectures should aim to beat these baselines. Target: 3-5x lower loss ratio than best reference.
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onRerunExperiment, onFillGapsExperiment, onNavigateStrategy, onStartExperiment }) {
   const [analyticsView, setAnalyticsView] = useState('trends');
   return (
@@ -241,6 +329,10 @@ function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onRerunExp
           <LearningPanel onNavigateStrategy={onNavigateStrategy} onStartExperiment={onStartExperiment} />
         </ErrorBoundary>
       )}
+      {/* Reference baselines pinned at bottom of all analytics views */}
+      <ErrorBoundary>
+        <ReferenceBaselinesPanel />
+      </ErrorBoundary>
     </>
   );
 }

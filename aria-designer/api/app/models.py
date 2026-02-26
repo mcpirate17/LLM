@@ -38,9 +38,9 @@ class GraphNodeModel(BaseModel):
 class GraphEdgeModel(BaseModel):
     id: str
     source: str
-    source_port: str
+    source_port: str = "out"
     target: str
-    target_port: str
+    target_port: str = "in"
 
 
 class WorkflowGraphModel(BaseModel):

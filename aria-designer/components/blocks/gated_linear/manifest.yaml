@@ -1,0 +1,55 @@
+id: gated_linear
+version: 1.0.0
+name: Gated Linear
+category: blocks
+tags:
+- parameterized
+- gating
+status: approved
+description: Fused gated linear layer
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  out_dim:
+    type: integer
+    default: 128
+    description: Output dimension
+implementation:
+  native: aria_gated_linear_f32
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D * out_dim * 2
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Fused gated linear: (x @ W) * sigmoid(x @ W_gate).
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, out_dim].
+
+  Params: out_dim (integer).
+
+
+  ### Plain Language
+
+  A linear projection with a learned gate.
+
+  '

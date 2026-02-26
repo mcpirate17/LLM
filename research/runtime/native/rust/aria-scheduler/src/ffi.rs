@@ -15,6 +15,22 @@ pub type NkMatmulF32Fn = Option<unsafe extern "C" fn(a: *const f32, b: *const f3
 pub type NkLinearF32Fn = Option<unsafe extern "C" fn(x: *const f32, w: *const f32, bias: *const f32, y: *mut f32, batch: i64, dim_in: i64, dim_out: i64) -> NkStatus>;
 pub type NkSoftmaxF32Fn = Option<unsafe extern "C" fn(x: *const f32, y: *mut f32, batch: i64, dim: i64) -> NkStatus>;
 pub type NkRmsnormF32Fn = Option<unsafe extern "C" fn(x: *const f32, weight: *const f32, y: *mut f32, batch: i64, dim: i64, eps: f32) -> NkStatus>;
+pub type NkConcatF32Fn = Option<unsafe extern "C" fn(inputs: *const *const f32, sizes: *const i64, n_inputs: i32, output: *mut f32, dim: i64) -> NkStatus>;
+pub type NkSplitF32Fn = Option<unsafe extern "C" fn(input: *const f32, outputs: *mut *mut f32, sizes: *const i64, n_outputs: i32, dim: i64) -> NkStatus>;
+
+pub type NkUnaryF16Fn = Option<unsafe extern "C" fn(x: *const u16, y: *mut u16, n: i64) -> NkStatus>;
+pub type NkBinaryF16Fn = Option<unsafe extern "C" fn(a: *const u16, b: *const u16, y: *mut u16, n: i64) -> NkStatus>;
+pub type NkMatmulF16Fn = Option<unsafe extern "C" fn(a: *const u16, b: *const u16, c: *mut u16, m: i64, k: i64, n: i64) -> NkStatus>;
+pub type NkSoftmaxF16Fn = Option<unsafe extern "C" fn(x: *const u16, y: *mut u16, batch: i64, dim: i64) -> NkStatus>;
+pub type NkRmsnormF16Fn = Option<unsafe extern "C" fn(x: *const u16, weight: *const u16, y: *mut u16, batch: i64, dim: i64, eps: f32) -> NkStatus>;
+
+pub type NkMatmulReluF32Fn = Option<unsafe extern "C" fn(a: *const f32, b: *const f32, c: *mut f32, m: i64, k: i64, n: i64) -> NkStatus>;
+pub type NkMatmulBiasReluF32Fn = Option<unsafe extern "C" fn(a: *const f32, b: *const f32, bias: *const f32, c: *mut f32, m: i64, k: i64, n: i64) -> NkStatus>;
+pub type NkLayernormResidualF32Fn = Option<unsafe extern "C" fn(x: *const f32, residual: *const f32, gamma: *const f32, beta: *const f32, y: *mut f32, rows: i64, cols: i64, eps: f32) -> NkStatus>;
+pub type NkMatmulGeluF32Fn = Option<unsafe extern "C" fn(a: *const f32, b: *const f32, c: *mut f32, m: i64, k: i64, n: i64) -> NkStatus>;
+
+pub type NkSwigluF32Fn = Option<unsafe extern "C" fn(x: *const f32, w_gate: *const f32, w_up: *const f32, w_down: *const f32, b_gate: *const f32, b_up: *const f32, b_down: *const f32, y: *mut f32, tmp_gate: *mut f32, tmp_up: *mut f32, batch: i64, dim: i64, hidden_dim: i64) -> NkStatus>;
+pub type NkRwkvChannelF32Fn = Option<unsafe extern "C" fn(x: *const f32, mix_k: *const f32, mix_r: *const f32, w_k: *const f32, w_r: *const f32, w_v: *const f32, y: *mut f32, tmp_xk: *mut f32, tmp_xr: *mut f32, tmp_k: *mut f32, batch: i64, seq: i64, dim: i64, hidden_dim: i64) -> NkStatus>;
 
 #[repr(C)]
 pub struct NkRegistration {
@@ -25,8 +41,26 @@ pub struct NkRegistration {
     pub linear_fn: NkLinearF32Fn,
     pub softmax_fn: NkSoftmaxF32Fn,
     pub rmsnorm_fn: NkRmsnormF32Fn,
-    pub concat_fn: *const std::ffi::c_void, // Simplified for now
-    pub split_fn: *const std::ffi::c_void,  // Simplified for now
+    pub concat_fn: NkConcatF32Fn,
+    pub split_fn: NkSplitF32Fn,
+    /* FP16 */
+    pub unary_f16_fn: NkUnaryF16Fn,
+    pub binary_f16_fn: NkBinaryF16Fn,
+    pub matmul_f16_fn: NkMatmulF16Fn,
+    pub softmax_f16_fn: NkSoftmaxF16Fn,
+    pub rmsnorm_f16_fn: NkRmsnormF16Fn,
+    /* Fused */
+    pub matmul_relu_fn: NkMatmulReluF32Fn,
+    pub matmul_bias_relu_fn: NkMatmulBiasReluF32Fn,
+    pub layernorm_residual_fn: NkLayernormResidualF32Fn,
+    pub matmul_gelu_fn: NkMatmulGeluF32Fn,
+    pub swiglu_fn: NkSwigluF32Fn,
+    pub rwkv_channel_fn: NkRwkvChannelF32Fn,
+    /* Backward */
+    pub unary_backward_fn: *const std::ffi::c_void,
+    pub binary_backward_simple_fn: *const std::ffi::c_void,
+    pub binary_backward_fn: *const std::ffi::c_void,
+    pub matmul_backward_fn: *const std::ffi::c_void,
 }
 
 extern "C" {

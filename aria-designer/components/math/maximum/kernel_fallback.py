@@ -1,19 +1,21 @@
-"""Auto-generated Python fallback kernel for maximum."""
+"""Python fallback kernel for maximum (element-wise max)."""
 import torch
 import torch.nn as nn
 
 
-class ComponentHandler:
-    """Fallback handler for maximum."""
+class MaximumModule(nn.Module):
+    def forward(self, a, b):
+        return torch.maximum(a, b)
 
+
+class ComponentHandler:
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        return nn.Identity()
+        return MaximumModule()
 
     def forward(self, inputs, config):
         a = inputs["a"]
         b = inputs["b"]
-        # TODO: implement maximum
-        return {"y": a}
+        return {"y": torch.maximum(a, b)}

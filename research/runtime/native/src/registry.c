@@ -71,6 +71,12 @@ static nk_status_t wrap_layernorm_residual(const float *x, const float *residual
 static nk_status_t wrap_matmul_gelu(const float *A, const float *B, float *C, int64_t M, int64_t K, int64_t N) {
     aria_matmul_gelu_f32(A, B, C, M, K, N); return NK_OK;
 }
+static nk_status_t wrap_swiglu(const float* x, const float* W_gate, const float* W_up, const float* W_down, const float* bias_gate, const float* bias_up, const float* bias_down, float* y, float* tmp_gate, float* tmp_up, int64_t batch, int64_t dim, int64_t hidden_dim) {
+    aria_swiglu_f32(x, W_gate, W_up, W_down, bias_gate, bias_up, bias_down, y, tmp_gate, tmp_up, batch, dim, hidden_dim); return NK_OK;
+}
+static nk_status_t wrap_rwkv_channel(const float* x, const float* mix_k, const float* mix_r, const float* W_k, const float* W_r, const float* W_v, float* y, float* tmp_xk, float* tmp_xr, float* tmp_k, int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim) {
+    aria_rwkv_channel_f32(x, mix_k, mix_r, W_k, W_r, W_v, y, tmp_xk, tmp_xr, tmp_k, batch, seq, dim, hidden_dim); return NK_OK;
+}
 
 /* --- Backward adapter wrappers --- */
 static nk_status_t wrap_relu_bwd(const float *go, const float *fwd, float *gi, int64_t n) {
@@ -147,6 +153,8 @@ void aria_registry_init(void) {
     memset(&r, 0, sizeof(r)); r.op_name = "matmul_bias_relu"; r.matmul_bias_relu_fn = wrap_matmul_bias_relu; nk_register(&r);
     memset(&r, 0, sizeof(r)); r.op_name = "layernorm_residual"; r.layernorm_residual_fn = wrap_layernorm_residual; nk_register(&r);
     memset(&r, 0, sizeof(r)); r.op_name = "matmul_gelu"; r.matmul_gelu_fn = wrap_matmul_gelu; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "swiglu"; r.swiglu_fn = wrap_swiglu; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "rwkv_channel"; r.rwkv_channel_fn = wrap_rwkv_channel; nk_register(&r);
 
     g_initialized = 1;
 }

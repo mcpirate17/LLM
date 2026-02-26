@@ -121,11 +121,49 @@ impl NativeKernelDispatch {
     ) -> usize {
         let mut output_len = if !inputs.is_empty() { inputs[0].len() } else { 0 };
 
-        if op_name == "linear" || op_name == "matmul" {
+        if op_name == "linear" {
             if let Some(dim_out) = config.get("dim_out").and_then(|v| v.as_i64()) {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
                 output_len = (batch * dim_out) as usize;
             }
+        } else if op_name == "matmul" {
+            if let (Some(m), Some(n)) = (
+                config.get("m").and_then(|v| v.as_i64()),
+                config.get("n").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (m * n) as usize;
+            }
+        } else if op_name == "matmul_relu" || op_name == "matmul_gelu" || op_name == "matmul_bias_relu" {
+            if let (Some(m), Some(n)) = (
+                config.get("m").and_then(|v| v.as_i64()),
+                config.get("n").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (m * n) as usize;
+            }
+        } else if op_name == "layernorm_residual" {
+            if let (Some(rows), Some(cols)) = (
+                config.get("rows").and_then(|v| v.as_i64()),
+                config.get("cols").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (rows * cols) as usize;
+            }
+        } else if op_name == "swiglu" {
+            if let (Some(batch), Some(dim)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("dim").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * dim) as usize;
+            }
+        } else if op_name == "rwkv_channel" {
+            if let (Some(batch), Some(seq), Some(dim)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("seq").and_then(|v| v.as_i64()),
+                config.get("dim").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * seq * dim) as usize;
+            }
+        } else if op_name == "concat" {
+            output_len = inputs.iter().map(|inp| inp.len()).sum();
         }
 
         output_len
@@ -165,6 +203,27 @@ impl NativeKernelDispatch {
                     output.as_mut_ptr(),
                     output_len as i64,
                 )
+            } else if let Some(matmul) = reg.matmul_fn {
+                let m = config
+                    .get("m")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul missing m".to_string()))?;
+                let k = config
+                    .get("k")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul missing k".to_string()))?;
+                let n = config
+                    .get("n")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul missing n".to_string()))?;
+                matmul(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    m,
+                    k,
+                    n,
+                )
             } else if let Some(linear) = reg.linear_fn {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
                 let dim_in = config.get("dim_in").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -185,6 +244,226 @@ impl NativeKernelDispatch {
                     .and_then(|v| v.as_i64())
                     .unwrap_or(output_len as i64 / batch);
                 softmax(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim)
+            } else if let Some(rmsnorm) = reg.rmsnorm_fn {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "rmsnorm dispatch requires x and weight inputs".to_string(),
+                    ));
+                }
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output_len as i64 / batch.max(1));
+                let eps = config
+                    .get("eps")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(1e-5f32);
+                rmsnorm(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    batch,
+                    dim,
+                    eps,
+                )
+            } else if let Some(matmul_relu) = reg.matmul_relu_fn {
+                let m = config
+                    .get("m")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_relu missing m".to_string()))?;
+                let k = config
+                    .get("k")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_relu missing k".to_string()))?;
+                let n = config
+                    .get("n")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_relu missing n".to_string()))?;
+                matmul_relu(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    m,
+                    k,
+                    n,
+                )
+            } else if let Some(matmul_bias_relu) = reg.matmul_bias_relu_fn {
+                if inputs.len() < 3 {
+                    return Err(AriaError::ExecutionFailed(
+                        "matmul_bias_relu dispatch requires A, B, bias".to_string(),
+                    ));
+                }
+                let m = config
+                    .get("m")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_bias_relu missing m".to_string()))?;
+                let k = config
+                    .get("k")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_bias_relu missing k".to_string()))?;
+                let n = config
+                    .get("n")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_bias_relu missing n".to_string()))?;
+                matmul_bias_relu(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    inputs[2].as_ptr(),
+                    output.as_mut_ptr(),
+                    m,
+                    k,
+                    n,
+                )
+            } else if let Some(layernorm_residual) = reg.layernorm_residual_fn {
+                if inputs.len() < 4 {
+                    return Err(AriaError::ExecutionFailed(
+                        "layernorm_residual dispatch requires x, residual, gamma, beta".to_string(),
+                    ));
+                }
+                let rows = config
+                    .get("rows")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("layernorm_residual missing rows".to_string()))?;
+                let cols = config
+                    .get("cols")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("layernorm_residual missing cols".to_string()))?;
+                let eps = config
+                    .get("eps")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(1e-5f32);
+                layernorm_residual(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    inputs[2].as_ptr(),
+                    inputs[3].as_ptr(),
+                    output.as_mut_ptr(),
+                    rows,
+                    cols,
+                    eps,
+                )
+            } else if let Some(matmul_gelu) = reg.matmul_gelu_fn {
+                let m = config
+                    .get("m")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_gelu missing m".to_string()))?;
+                let k = config
+                    .get("k")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_gelu missing k".to_string()))?;
+                let n = config
+                    .get("n")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_gelu missing n".to_string()))?;
+                matmul_gelu(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    m,
+                    k,
+                    n,
+                )
+            } else if let Some(swiglu) = reg.swiglu_fn {
+                if inputs.len() < 7 {
+                    return Err(AriaError::ExecutionFailed(
+                        "swiglu dispatch requires x, W_gate, W_up, W_down, b_gate, b_up, b_down".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing batch".to_string()))?;
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing dim".to_string()))?;
+                let hidden_dim = config
+                    .get("hidden_dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing hidden_dim".to_string()))?;
+
+                let mut tmp_gate = vec![0.0f32; (batch * hidden_dim) as usize];
+                let mut tmp_up = vec![0.0f32; (batch * hidden_dim) as usize];
+                swiglu(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    inputs[2].as_ptr(),
+                    inputs[3].as_ptr(),
+                    inputs[4].as_ptr(),
+                    inputs[5].as_ptr(),
+                    inputs[6].as_ptr(),
+                    output.as_mut_ptr(),
+                    tmp_gate.as_mut_ptr(),
+                    tmp_up.as_mut_ptr(),
+                    batch,
+                    dim,
+                    hidden_dim,
+                )
+            } else if let Some(rwkv_channel) = reg.rwkv_channel_fn {
+                if inputs.len() < 6 {
+                    return Err(AriaError::ExecutionFailed(
+                        "rwkv_channel dispatch requires x, mix_k, mix_r, W_k, W_r, W_v".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing batch".to_string()))?;
+                let seq = config
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing seq".to_string()))?;
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing dim".to_string()))?;
+                let hidden_dim = config
+                    .get("hidden_dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing hidden_dim".to_string()))?;
+
+                let mut tmp_xk = vec![0.0f32; (batch * seq * dim) as usize];
+                let mut tmp_xr = vec![0.0f32; (batch * seq * dim) as usize];
+                let mut tmp_k = vec![0.0f32; (batch * seq * hidden_dim) as usize];
+                rwkv_channel(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    inputs[2].as_ptr(),
+                    inputs[3].as_ptr(),
+                    inputs[4].as_ptr(),
+                    inputs[5].as_ptr(),
+                    output.as_mut_ptr(),
+                    tmp_xk.as_mut_ptr(),
+                    tmp_xr.as_mut_ptr(),
+                    tmp_k.as_mut_ptr(),
+                    batch,
+                    seq,
+                    dim,
+                    hidden_dim,
+                )
+            } else if let Some(concat) = reg.concat_fn {
+                if inputs.is_empty() {
+                    return Err(AriaError::ExecutionFailed(
+                        "concat dispatch requires at least one input".to_string(),
+                    ));
+                }
+                let input_ptrs: Vec<*const f32> = inputs.iter().map(|inp| inp.as_ptr()).collect();
+                let sizes: Vec<i64> = inputs.iter().map(|inp| inp.len() as i64).collect();
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(-1);
+                concat(
+                    input_ptrs.as_ptr(),
+                    sizes.as_ptr(),
+                    input_ptrs.len() as i32,
+                    output.as_mut_ptr(),
+                    dim,
+                )
+            } else if reg.split_fn.is_some() {
+                return Err(AriaError::ExecutionFailed(
+                    "split op is multi-output and is not supported by single-output executor path".to_string(),
+                ));
             } else {
                 return Err(AriaError::ExecutionFailed(format!(
                     "op {} has no dispatch handler",

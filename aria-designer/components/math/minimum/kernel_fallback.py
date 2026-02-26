@@ -1,19 +1,21 @@
-"""Auto-generated Python fallback kernel for minimum."""
+"""Python fallback kernel for minimum (element-wise min)."""
 import torch
 import torch.nn as nn
 
 
-class ComponentHandler:
-    """Fallback handler for minimum."""
+class MinimumModule(nn.Module):
+    def forward(self, a, b):
+        return torch.minimum(a, b)
 
+
+class ComponentHandler:
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        return nn.Identity()
+        return MinimumModule()
 
     def forward(self, inputs, config):
         a = inputs["a"]
         b = inputs["b"]
-        # TODO: implement minimum
-        return {"y": a}
+        return {"y": torch.minimum(a, b)}

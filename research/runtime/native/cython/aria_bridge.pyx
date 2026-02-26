@@ -104,6 +104,41 @@ cdef extern from "kernels.h":
     void aria_spike_rate_code_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim)
     void aria_stdp_attention_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim, float tau_plus, float tau_minus)
 
+    # Reference architecture ops
+    void aria_embedding_lookup_f32(const float* table, const int32_t* indices,
+                                     const float* pos_embed,
+                                     float* y, int64_t batch, int64_t dim,
+                                     int64_t vocab_size)
+    void aria_rope_rotate_f32(const float* x, float* y,
+                                int64_t batch, int64_t seq, int64_t dim,
+                                float theta_base)
+    void aria_gated_linear_f32(const float* x,
+                                 const float* W, const float* b,
+                                 const float* W_gate, const float* b_gate,
+                                 float* y, float* tmp_gate,
+                                 int64_t batch, int64_t dim_in, int64_t dim_out)
+    void aria_cosine_similarity_f32(const float* a, const float* b, float* out,
+                                      int64_t batch, int64_t seq, int64_t dim)
+    void aria_gather_topk_f32(const float* scores, const float* values,
+                                float* out, int32_t* out_indices,
+                                int64_t batch, int64_t n_items, int64_t dim,
+                                int64_t k)
+    void aria_rwkv_time_mixing_f32(const float* x,
+                                     const float* w_decay, const float* u_bonus,
+                                     const float* W_k, const float* W_v, const float* W_r,
+                                     float* y,
+                                     int64_t batch, int64_t seq, int64_t dim)
+    void aria_embedding_lookup_backward_f32(const float* grad_out, const int32_t* indices,
+                                              float* grad_table, float* grad_pos_embed,
+                                              int64_t batch, int64_t dim,
+                                              int64_t vocab_size)
+    void aria_gated_linear_backward_f32(const float* grad_out,
+                                          const float* x, const float* W, const float* W_gate,
+                                          const float* gate_sigmoid,
+                                          float* grad_x, float* grad_W, float* grad_W_gate,
+                                          float* grad_b, float* grad_b_gate,
+                                          int64_t batch, int64_t dim_in, int64_t dim_out)
+
     # Backward (gradient) kernels — unary
     void aria_relu_backward_f32(const float* grad_out, const float* input, float* grad_in, int64_t n)
     void aria_sigmoid_backward_f32(const float* grad_out, const float* output, float* grad_in, int64_t n)
@@ -164,6 +199,9 @@ _EXTENDED_OPS = {
     'sort_seq', 'argsort_seq', 'conv1d_seq', 'fused_linear_gelu',
     'swiglu', 'token_pool_restore', 'selective_scan', 'topk_gate',
     'basis_expansion', 'sparse_threshold',
+    # Reference architecture ops
+    'embedding_lookup', 'rope_rotate', 'gated_linear',
+    'cosine_similarity', 'gather_topk', 'rwkv_time_mixing',
     # Math space
     'exp_map', 'log_map', 'poincare_add', 'hyp_linear',
     'hyperbolic_norm', 'hyp_tangent_nonlinear',
@@ -497,9 +535,156 @@ def dispatch_rmsnorm_backward(cnp.ndarray[float, ndim=2] grad_output,
     return grad_in, grad_gamma
 
 
+# ── Reference architecture op dispatch ────────────────────────────
+
+def dispatch_embedding_lookup(cnp.ndarray[float, ndim=2] table,
+                                cnp.ndarray[int, ndim=1] indices,
+                                pos_embed=None):
+    """Embedding lookup: y[batch, dim] = table[indices[batch], :]."""
+    cdef int64_t batch = indices.shape[0]
+    cdef int64_t dim = table.shape[1]
+    cdef int64_t vocab_size = table.shape[0]
+    cdef cnp.ndarray[float, ndim=2] y = np.empty((batch, dim), dtype=np.float32)
+    cdef float* pe_ptr = NULL
+    cdef cnp.ndarray[float, ndim=2] pe_arr
+    if pos_embed is not None:
+        pe_arr = np.ascontiguousarray(pos_embed, dtype=np.float32)
+        pe_ptr = <float*>pe_arr.data
+    aria_embedding_lookup_f32(<float*>table.data, <int32_t*>indices.data,
+                               pe_ptr, <float*>y.data, batch, dim, vocab_size)
+    return y
+
+
+def dispatch_rope_rotate(cnp.ndarray[float, ndim=3] x, float theta_base=10000.0):
+    """Rotary Position Embedding on [batch, seq, dim] input."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_rope_rotate_f32(<float*>x.data, <float*>y.data, batch, seq, dim, theta_base)
+    return y
+
+
+def dispatch_gated_linear(cnp.ndarray[float, ndim=2] x,
+                            cnp.ndarray[float, ndim=2] W,
+                            cnp.ndarray[float, ndim=2] W_gate,
+                            bias=None, bias_gate=None):
+    """Gated linear: y = (x @ W^T + b) * sigmoid(x @ W_gate^T + b_gate)."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t dim_in = x.shape[1]
+    cdef int64_t dim_out = W.shape[0]
+    cdef cnp.ndarray[float, ndim=2] y = np.empty((batch, dim_out), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] tmp_gate = np.empty((batch, dim_out), dtype=np.float32)
+    cdef float* b_ptr = NULL
+    cdef float* bg_ptr = NULL
+    cdef cnp.ndarray[float, ndim=1] b_arr, bg_arr
+    if bias is not None:
+        b_arr = np.ascontiguousarray(bias, dtype=np.float32)
+        b_ptr = <float*>b_arr.data
+    if bias_gate is not None:
+        bg_arr = np.ascontiguousarray(bias_gate, dtype=np.float32)
+        bg_ptr = <float*>bg_arr.data
+    aria_gated_linear_f32(<float*>x.data, <float*>W.data, b_ptr,
+                           <float*>W_gate.data, bg_ptr,
+                           <float*>y.data, <float*>tmp_gate.data,
+                           batch, dim_in, dim_out)
+    return y
+
+
+def dispatch_cosine_similarity(cnp.ndarray[float, ndim=3] a,
+                                 cnp.ndarray[float, ndim=3] b):
+    """Cosine similarity: out[batch, seq] = cos_sim(a, b) along last dim."""
+    cdef int64_t batch = a.shape[0]
+    cdef int64_t seq = a.shape[1]
+    cdef int64_t dim = a.shape[2]
+    cdef cnp.ndarray[float, ndim=2] out = np.empty((batch, seq), dtype=np.float32)
+    aria_cosine_similarity_f32(<float*>a.data, <float*>b.data, <float*>out.data,
+                                batch, seq, dim)
+    return out
+
+
+def dispatch_gather_topk(cnp.ndarray[float, ndim=2] scores,
+                           cnp.ndarray[float, ndim=3] values,
+                           int64_t k):
+    """Gather top-k vectors from values by scores."""
+    cdef int64_t batch = scores.shape[0]
+    cdef int64_t n_items = scores.shape[1]
+    cdef int64_t dim = values.shape[2]
+    cdef cnp.ndarray[float, ndim=3] out = np.empty((batch, k, dim), dtype=np.float32)
+    cdef cnp.ndarray[int, ndim=2] out_indices = np.empty((batch, k), dtype=np.int32)
+    aria_gather_topk_f32(<float*>scores.data, <float*>values.data,
+                          <float*>out.data, <int32_t*>out_indices.data,
+                          batch, n_items, dim, k)
+    return out, out_indices
+
+
+def dispatch_rwkv_time_mixing(cnp.ndarray[float, ndim=3] x,
+                                cnp.ndarray[float, ndim=1] w_decay,
+                                cnp.ndarray[float, ndim=1] u_bonus,
+                                cnp.ndarray[float, ndim=2] W_k,
+                                cnp.ndarray[float, ndim=2] W_v,
+                                cnp.ndarray[float, ndim=2] W_r):
+    """RWKV time-mixing WKV kernel."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_rwkv_time_mixing_f32(<float*>x.data,
+                                <float*>w_decay.data, <float*>u_bonus.data,
+                                <float*>W_k.data, <float*>W_v.data, <float*>W_r.data,
+                                <float*>y.data,
+                                batch, seq, dim)
+    return y
+
+
+def dispatch_embedding_lookup_backward(cnp.ndarray[float, ndim=2] grad_out,
+                                         cnp.ndarray[int, ndim=1] indices,
+                                         int64_t vocab_size,
+                                         bint has_pos_embed=False):
+    """Embedding lookup backward: accumulate gradients into table rows."""
+    cdef int64_t batch = grad_out.shape[0]
+    cdef int64_t dim = grad_out.shape[1]
+    cdef cnp.ndarray[float, ndim=2] grad_table = np.zeros((vocab_size, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_pos = np.zeros((batch, dim), dtype=np.float32)
+    cdef float* gp_ptr = NULL
+    if has_pos_embed:
+        gp_ptr = <float*>grad_pos.data
+    aria_embedding_lookup_backward_f32(<float*>grad_out.data, <int32_t*>indices.data,
+                                        <float*>grad_table.data, gp_ptr,
+                                        batch, dim, vocab_size)
+    if has_pos_embed:
+        return grad_table, grad_pos
+    return grad_table
+
+
+def dispatch_gated_linear_backward(cnp.ndarray[float, ndim=2] grad_out,
+                                     cnp.ndarray[float, ndim=2] x,
+                                     cnp.ndarray[float, ndim=2] W,
+                                     cnp.ndarray[float, ndim=2] W_gate,
+                                     cnp.ndarray[float, ndim=2] gate_sigmoid):
+    """Gated linear backward: returns (grad_x, grad_W, grad_W_gate, grad_b, grad_b_gate)."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t dim_in = x.shape[1]
+    cdef int64_t dim_out = W.shape[0]
+    cdef cnp.ndarray[float, ndim=2] grad_x = np.zeros((batch, dim_in), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_W = np.zeros((dim_out, dim_in), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_Wg = np.zeros((dim_out, dim_in), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_b = np.zeros(dim_out, dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_bg = np.zeros(dim_out, dtype=np.float32)
+    aria_gated_linear_backward_f32(<float*>grad_out.data,
+                                     <float*>x.data, <float*>W.data, <float*>W_gate.data,
+                                     <float*>gate_sigmoid.data,
+                                     <float*>grad_x.data, <float*>grad_W.data,
+                                     <float*>grad_Wg.data,
+                                     <float*>grad_b.data, <float*>grad_bg.data,
+                                     batch, dim_in, dim_out)
+    return grad_x, grad_W, grad_Wg, grad_b, grad_bg
+
+
 def has_backward(str op_name):
     """Check if an op has a native backward kernel."""
     return op_name in _UNARY_BACKWARD_INPUT_OPS or \
            op_name in _UNARY_BACKWARD_OUTPUT_OPS or \
            op_name in ('add', 'mul', 'sub', 'maximum', 'minimum', 'div_safe',
-                       'matmul', 'softmax', 'layernorm', 'rmsnorm')
+                       'matmul', 'softmax', 'layernorm', 'rmsnorm',
+                       'embedding_lookup', 'gated_linear')

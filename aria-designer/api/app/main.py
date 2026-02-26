@@ -84,6 +84,9 @@ try:
 except ImportError:
     HAS_IMPORTER = False
 
+# Research notebook path for fetching original graphs
+_RESEARCH_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "research"
+
 try:
     from runtime.constraints import check_compatibility, compute_palette_constraints
     HAS_CONSTRAINTS = True
@@ -672,17 +675,20 @@ def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
             src_port = next((p for p in src_comp.get("outputs", []) if p["name"] == edge.source_port), None)
             tgt_port = next((p for p in tgt_comp.get("inputs", []) if p["name"] == edge.target_port), None)
             if src_port and tgt_port and src_port["dtype"] != tgt_port["dtype"]:
-                issues.append(ValidationIssue(
-                    severity="error",
-                    code="unsupported_edge_dtype_pairing",
-                    message=(
-                        f"Unsupported edge dtype pairing on edge {edge.id}: "
-                        f"{edge.source}.{edge.source_port} ({src_port['dtype']}) -> "
-                        f"{edge.target}.{edge.target_port} ({tgt_port['dtype']}). "
-                        "Supported pairings currently require matching source/target dtypes."
-                    ),
-                    edge_id=edge.id,
-                ))
+                pair = (src_port["dtype"], tgt_port["dtype"])
+                # Allow implicit complex_tensor <-> tensor conversion
+                if pair not in (("complex_tensor", "tensor"), ("tensor", "complex_tensor")):
+                    issues.append(ValidationIssue(
+                        severity="error",
+                        code="unsupported_edge_dtype_pairing",
+                        message=(
+                            f"Unsupported edge dtype pairing on edge {edge.id}: "
+                            f"{edge.source}.{edge.source_port} ({src_port['dtype']}) -> "
+                            f"{edge.target}.{edge.target_port} ({tgt_port['dtype']}). "
+                            "Supported pairings currently require matching source/target dtypes."
+                        ),
+                        edge_id=edge.id,
+                    ))
 
     # Cycle detection and graph structure using native C validator if available
     if KernelDispatcher:
@@ -992,16 +998,40 @@ def get_suggestions(req: SuggestComponentsRequest) -> List[Dict[str, Any]]:
 
 def _infer_component_from_prompt(prompt: str, fallback_suggestions: List[Dict[str, Any]]) -> Optional[str]:
     lower = prompt.lower()
+
+    # Try to match component names directly against the approved component DB
+    # This handles "add layernorm", "insert softmax_attention", etc.
+    approved = db.list_components(status="approved")
+    # Build lookup: component_id (leaf) → category/id
+    comp_lookup = {}
+    for c in approved:
+        cid = str(c.get("id", "")).lower()
+        cat = str(c.get("category", "")).lower()
+        comp_lookup[cid] = f"{cat}/{c['id']}" if cat else c["id"]
+        # Also index by name (space→underscore)
+        name = str(c.get("name", "")).lower().replace(" ", "_")
+        if name and name != cid:
+            comp_lookup[name] = f"{cat}/{c['id']}" if cat else c["id"]
+
+    # Words that are action verbs / noise, not component names
+    _skip_keys = {"add", "sub", "exp", "log", "set", "cos", "sin", "abs", "neg", "sign",
+                  "sort", "mul", "div", "split", "join", "loop", "none", "filter",
+                  "input", "output", "first", "last", "all"}
+
+    # Check for exact component name mentions in prompt (longest match first)
+    for key in sorted(comp_lookup.keys(), key=len, reverse=True):
+        if key in _skip_keys:
+            continue
+        if key in lower and len(key) > 2:
+            return comp_lookup[key]
+
+    # Fallback heuristics for common terms
     if "output" in lower:
         return "io/output_head"
-    if "relu" in lower:
-        return "math/relu"
-    if "rmsnorm" in lower or "norm" in lower:
-        return "normalization/rmsnorm"
-    if "tropical attention" in lower:
-        return "math_space/tropical_attention"
-    if "tropical gate" in lower or "gate" in lower:
-        return "math_space/tropical_gate"
+    if "attention" in lower:
+        return "mixing/softmax_attention"
+    if "ffn" in lower or "feed forward" in lower or "mlp" in lower:
+        return "channel_mixing/swiglu_mlp"
     if fallback_suggestions:
         comp = fallback_suggestions[0].get("component", {})
         cid = comp.get("id")
@@ -1051,6 +1081,18 @@ def _resolve_node_token(token: str, nodes: List[Dict[str, Any]]) -> Optional[str
 @app.post("/api/v1/aria/generate-patch")
 def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
     """Generate and store a deterministic patch proposal from prompt + workflow."""
+    import traceback as _tb
+    try:
+        return _generate_patch_impl(req)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("generate-patch error: %s", _tb.format_exc())
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def _generate_patch_impl(req: AskAriaPromptRequest) -> Dict[str, Any]:
     workflow = req.workflow.model_dump()
     prompt = req.prompt.strip()
     if not prompt:
@@ -1068,8 +1110,15 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
     ops: List[Dict[str, Any]] = []
     lower = prompt.lower()
 
+    # Build edge lookup for insertion operations
+    incoming_edges = {}  # target_id → edge
+    outgoing_edges = {}  # source_id → [edges]
+    for e in edges:
+        incoming_edges[e.get("target")] = e
+        outgoing_edges.setdefault(e.get("source"), []).append(e)
+
     # Replace operation: "replace X with Y"
-    for src_raw, dst_raw in re.findall(r"replace\\s+([-a-zA-Z0-9_/]+)\\s+with\\s+([-a-zA-Z0-9_/ ]+)", lower):
+    for src_raw, dst_raw in re.findall(r"replace\s+([-\w/]+)\s+with\s+([-\w/ ]+)", lower):
         node_id = _resolve_node_token(src_raw, nodes)
         dst_type = _normalize_component_type(dst_raw, approved) or _infer_component_from_prompt(dst_raw, suggestions)
         if node_id and dst_type:
@@ -1080,13 +1129,109 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
             })
 
     # Remove operation: "remove/delete X"
-    for rem_raw in re.findall(r"(?:remove|delete)\\s+(?:node\\s+)?([-a-zA-Z0-9_/]+)", lower):
+    for rem_raw in re.findall(r"(?:remove|delete)\s+(?:node\s+)?([-\w/]+)", lower):
         node_id = _resolve_node_token(rem_raw, nodes)
         if node_id:
             ops.append({"op": "remove_node", "node_id": node_id, "payload": {}})
 
+    # Insert at beginning/first: "add X as the first component", "add X at the beginning"
+    m_first = re.search(
+        r"(?:add|insert)\s+([-\w/ ]+?)\s+(?:as\s+(?:the\s+)?first|at\s+(?:the\s+)?(?:beginning|start)|(?:to|at)\s+(?:the\s+)?front)",
+        lower,
+    )
+    if m_first:
+        comp_text = m_first.group(1).strip()
+        component_type = _normalize_component_type(comp_text, approved) or \
+                         _infer_component_from_prompt(comp_text, suggestions)
+        if component_type:
+            # Find the first non-input node
+            input_node = next((n for n in nodes if "input" in str(n.get("component_type", ""))), None)
+            if input_node:
+                first_targets = outgoing_edges.get(input_node["id"], [])
+                if first_targets:
+                    first_edge = first_targets[0]
+                    new_node_id = f"aria_{uuid4().hex[:8]}"
+                    add_payload_first: Dict[str, Any] = {
+                        "id": new_node_id,
+                        "component_type": component_type,
+                        "params": {},
+                        "ui_meta": {"position": {"x": 160, "y": 220}},
+                        "edges": [
+                            {"source": input_node["id"], "source_port": "out",
+                             "target": new_node_id, "target_port": "in"},
+                            {"source": new_node_id, "source_port": "out",
+                             "target": first_edge.get("target", ""),
+                             "target_port": first_edge.get("target_port", "in")},
+                        ],
+                    }
+                    ops.append({
+                        "op": "rewire",
+                        "payload": {"action": "remove", "source": input_node["id"],
+                                    "target": first_edge["target"]},
+                    })
+                    ops.append({"op": "add_node", "payload": add_payload_first})
+
+    # Insert operation: "add/insert X before/after Y"
+    for add_raw, pos_raw, tgt_raw in re.findall(
+        r"(?:add|insert)\s+([-\w/ ]+?)\s+(before|after)\s+([-\w/]+)", lower
+    ):
+        component_type = _normalize_component_type(add_raw.strip(), approved) or \
+                         _infer_component_from_prompt(add_raw.strip(), suggestions)
+        target_node_id = _resolve_node_token(tgt_raw, nodes)
+        if component_type and target_node_id:
+            new_node_id = f"aria_{uuid4().hex[:8]}"
+            add_payload: Dict[str, Any] = {
+                "id": new_node_id,
+                "component_type": component_type,
+                "params": {},
+                "ui_meta": {"position": {"x": 360, "y": 220}},
+                "edges": [],
+            }
+            if pos_raw == "before":
+                # Wire: predecessor → new_node → target_node
+                inc = incoming_edges.get(target_node_id)
+                if inc:
+                    add_payload["edges"].append({
+                        "source": inc.get("source", ""),
+                        "source_port": inc.get("source_port", "out"),
+                        "target": new_node_id,
+                        "target_port": "in",
+                    })
+                add_payload["edges"].append({
+                    "source": new_node_id,
+                    "source_port": "out",
+                    "target": target_node_id,
+                    "target_port": inc.get("target_port", "in") if inc else "in",
+                })
+                # Remove old edge (predecessor → target)
+                if inc:
+                    ops.append({
+                        "op": "rewire",
+                        "payload": {"action": "remove", "source": inc["source"], "target": target_node_id},
+                    })
+            else:  # after
+                out_edges = outgoing_edges.get(target_node_id, [])
+                add_payload["edges"].append({
+                    "source": target_node_id,
+                    "source_port": "out",
+                    "target": new_node_id,
+                    "target_port": "in",
+                })
+                for oe in out_edges:
+                    add_payload["edges"].append({
+                        "source": new_node_id,
+                        "source_port": "out",
+                        "target": oe.get("target", ""),
+                        "target_port": oe.get("target_port", "in"),
+                    })
+                    ops.append({
+                        "op": "rewire",
+                        "payload": {"action": "remove", "source": target_node_id, "target": oe["target"]},
+                    })
+            ops.append({"op": "add_node", "payload": add_payload})
+
     # Connect operation: "connect X to Y"
-    for src_raw, tgt_raw in re.findall(r"connect\\s+([-a-zA-Z0-9_/]+)\\s+to\\s+([-a-zA-Z0-9_/]+)", lower):
+    for src_raw, tgt_raw in re.findall(r"connect\s+([-\w/]+)\s+to\s+([-\w/]+)", lower):
         source = _resolve_node_token(src_raw, nodes)
         target = _resolve_node_token(tgt_raw, nodes)
         if source and target:
@@ -1095,15 +1240,15 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
                 "payload": {
                     "action": "add",
                     "source": source,
-                    "source_port": "y",
+                    "source_port": "out",
                     "target": target,
-                    "target_port": "x",
+                    "target_port": "in",
                 },
             })
 
     # Param mutation: "set PARAM of NODE to VALUE"
     for key_raw, node_raw, val_raw in re.findall(
-        r"set\\s+([a-zA-Z0-9_]+)\\s+of\\s+([-a-zA-Z0-9_/]+)\\s+to\\s+([-a-zA-Z0-9_.]+)", lower
+        r"set\s+([\w]+)\s+of\s+([-\w/]+)\s+to\s+([-\w.]+)", lower
     ):
         node_id = _resolve_node_token(node_raw, nodes)
         if not node_id:
@@ -1127,14 +1272,13 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
 
     # Data/control optimization: "optimize data/control", "fix schema", etc.
     if "optimize" in lower and ("data" in lower or "control" in lower or "workflow" in lower):
-        # Heuristic: ensure join/filter have reasonable defaults or explicit keys.
         for node in nodes:
             ctype = str(node.get("component_type", ""))
             if "join" in ctype:
                 ops.append({
                     "op": "mutate_param",
                     "node_id": node["id"],
-                    "payload": {"join_type": "inner"}, # Safer default for optimization
+                    "payload": {"join_type": "inner"},
                 })
             if "filter" in ctype:
                 ops.append({
@@ -1143,28 +1287,97 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
                     "payload": {"filter_scope": "dataset_row"},
                 })
 
-    # Add-node fallback: if no explicit edit pattern was found.
+    # Smart fallback: analyze graph and suggest useful improvements when no
+    # explicit edit pattern was matched (e.g. "beat benchmarks", "improve novelty").
     if not ops:
-        component_type = _infer_component_from_prompt(prompt, suggestions)
-        if not component_type and not has_output:
-            component_type = "io/output_head"
-        component_type = component_type or _normalize_component_type("relu", approved) or "math/relu"
-        new_node_id = f"aria_{uuid4().hex[:8]}"
-        payload = {
-            "id": new_node_id,
-            "component_type": component_type,
-            "params": {},
-            "ui_meta": {"position": {"x": 520, "y": 220}},
-            "edges": [],
-        }
-        if last_node is not None:
-            payload["edges"].append({
-                "source": last_node.get("id", ""),
-                "source_port": "y",
-                "target": new_node_id,
-                "target_port": "x",
-            })
-        ops.append({"op": "add_node", "payload": payload})
+        # For benchmark/quality prompts, prefer graph analysis over prompt inference
+        is_benchmark_prompt = any(kw in lower for kw in ("benchmark", "speed", "flop", "novelty", "quality", "stability"))
+        component_type = None if is_benchmark_prompt else _infer_component_from_prompt(prompt, suggestions)
+
+        # If we still can't infer, analyze the graph to propose useful changes
+        if not component_type:
+            existing_types = {str(n.get("component_type", "")).split("/")[-1] for n in nodes}
+
+            # Check what the graph is missing
+            has_norm = any(t in existing_types for t in ("layernorm", "layernorm_pre", "rmsnorm", "rmsnorm_pre"))
+            has_attention = any(t in existing_types for t in ("softmax_attention", "linear_attention", "graph_attention"))
+            has_activation = any(t in existing_types for t in ("gelu", "relu", "silu", "swiglu_mlp"))
+            has_residual = "add" in existing_types
+            is_benchmark = any(kw in lower for kw in ("benchmark", "speed", "flop", "novelty", "quality", "stability"))
+            is_novelty = "novelty" in lower
+
+            if is_benchmark or is_novelty:
+                # Strategy: add components that reference architectures use
+                if not has_norm:
+                    component_type = "normalization/layernorm"
+                elif not has_attention and len(nodes) > 3:
+                    component_type = "mixing/softmax_attention"
+                elif not has_residual and len(nodes) > 3:
+                    # Suggest adding a residual connection as a rewire
+                    # Find first and last non-IO nodes
+                    non_io = [n for n in nodes if "input" not in str(n.get("component_type", "")) and "output" not in str(n.get("component_type", ""))]
+                    if len(non_io) >= 2:
+                        ops.append({
+                            "op": "rewire",
+                            "payload": {
+                                "action": "add",
+                                "source": non_io[0]["id"],
+                                "source_port": "out",
+                                "target": non_io[-1]["id"],
+                                "target_port": "in",
+                            },
+                        })
+                else:
+                    # Graph already has basics; add a novel op for novelty
+                    novel_ops = ["selective_scan", "fourier_mixing", "low_rank_proj",
+                                 "tropical_gate", "poincare_add", "clifford_attention"]
+                    for nop in novel_ops:
+                        if nop not in existing_types:
+                            component_type = _normalize_component_type(nop, approved) or nop
+                            break
+
+            if not component_type and not has_output:
+                component_type = "io/output_head"
+            if not component_type:
+                component_type = _normalize_component_type("relu", approved) or "math/relu"
+
+        if not ops:
+            new_node_id = f"aria_{uuid4().hex[:8]}"
+            payload = {
+                "id": new_node_id,
+                "component_type": component_type,
+                "params": {},
+                "ui_meta": {"position": {"x": 520, "y": 220}},
+                "edges": [],
+            }
+            # Insert before output if there is one, otherwise append to last
+            output_node = next((n for n in nodes if "output" in str(n.get("component_type", ""))), None)
+            if output_node and output_node["id"] in incoming_edges:
+                inc = incoming_edges[output_node["id"]]
+                payload["edges"].append({
+                    "source": inc.get("source", ""),
+                    "source_port": inc.get("source_port", "out"),
+                    "target": new_node_id,
+                    "target_port": "in",
+                })
+                payload["edges"].append({
+                    "source": new_node_id,
+                    "source_port": "out",
+                    "target": output_node["id"],
+                    "target_port": inc.get("target_port", "in"),
+                })
+                ops.append({
+                    "op": "rewire",
+                    "payload": {"action": "remove", "source": inc["source"], "target": output_node["id"]},
+                })
+            elif last_node is not None:
+                payload["edges"].append({
+                    "source": last_node.get("id", ""),
+                    "source_port": "out",
+                    "target": new_node_id,
+                    "target_port": "in",
+                })
+            ops.append({"op": "add_node", "payload": payload})
 
     patch = AriaPatchProposalModel(
         workflow_id=req.workflow.workflow_id,
@@ -1177,6 +1390,21 @@ def generate_patch_from_prompt(req: AskAriaPromptRequest) -> Dict[str, Any]:
 
     proposal_id = f"patch_{uuid4().hex[:10]}"
     now = _utc_now()
+
+    # Ensure workflow exists in DB (FK constraint on aria_proposals)
+    conn = db._get_conn()
+    existing = conn.execute(
+        "SELECT 1 FROM workflows WHERE id = ?", (patch.workflow_id,)
+    ).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO workflows (id, name, graph_json, version, author, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (patch.workflow_id, workflow.get("name", patch.workflow_id),
+             json.dumps(workflow), req.base_version, "aria", now, now),
+        )
+        conn.commit()
+
     db.save_proposal(
         proposal_id=proposal_id,
         workflow_id=patch.workflow_id,
@@ -1378,6 +1606,69 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
     return result_dict
 
 
+def _try_fetch_original_graph(metadata: dict, model_dim: int):
+    """Try to fetch the original ComputationGraph from research notebook.
+
+    When a workflow was imported from research (has result_id in metadata),
+    deserialize the original graph_json directly, bypassing the lossy
+    workflow_to_graph() round-trip.
+
+    Returns (graph, cg_to_aria_map) on success, None on failure.
+    """
+    result_id = metadata.get("result_id")
+    if not result_id:
+        return None
+
+    db_path = _RESEARCH_ROOT / "lab_notebook.db"
+    if not db_path.exists():
+        return None
+
+    try:
+        from research.scientist.notebook import LabNotebook
+        from research.synthesis.serializer import graph_from_json
+
+        nb = LabNotebook(str(db_path))
+        detail = nb.get_program_detail(str(result_id))
+        if detail is None:
+            return None
+
+        graph_json_str = detail.get("graph_json")
+        if not graph_json_str:
+            return None
+
+        graph = graph_from_json(graph_json_str)
+
+        # Override model_dim to match the eval budget
+        graph.model_dim = model_dim
+
+        # Validate fingerprint if available
+        expected_fp = metadata.get("graph_fingerprint")
+        if expected_fp and graph.fingerprint() != expected_fp:
+            logger.warning(
+                "Original graph fingerprint mismatch for result_id=%s "
+                "(expected %s, got %s) — using original anyway",
+                result_id, expected_fp, graph.fingerprint(),
+            )
+
+        # Build cg_to_aria map by parsing workflow node IDs.
+        # The importer creates IDs like "op_{cg_id}_{op_name}" and "input_{cg_id}".
+        # We don't have the workflow nodes here, so build the canonical mapping
+        # from the graph's topo order using the same convention as graph_to_workflow().
+        cg_to_aria = {}
+        for cg_id in graph.topological_order():
+            node = graph.nodes[cg_id]
+            if node.is_input:
+                cg_to_aria[cg_id] = f"input_{cg_id}"
+            else:
+                cg_to_aria[cg_id] = f"op_{cg_id}_{node.op_name}"
+
+        return (graph, cg_to_aria)
+
+    except Exception:
+        logger.debug("Failed to fetch original graph for result_id=%s", result_id, exc_info=True)
+        return None
+
+
 @app.post("/api/v1/workflows/evaluate/stream")
 async def evaluate_workflow_stream(req: RunWorkflowRequest):
     """Stream evaluation results via SSE as each pipeline stage completes.
@@ -1482,16 +1773,26 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         yield f"event: stage\ndata: {_json({'stage': 'conversion', 'status': 'running'})}\n\n"
         t0 = _time.monotonic()
         try:
-            from runtime.bridge import workflow_to_graph as _w2g
-            graph, id_map = await asyncio.to_thread(_w2g, wf, model_dim, return_id_map=True)
-            # Invert id_map: cg_id -> aria_id
-            cg_to_aria = {v: k for k, v in id_map.items()}
+            metadata = wf.get("metadata", {})
+            original = await asyncio.to_thread(_try_fetch_original_graph, metadata, model_dim)
+
+            if original is not None:
+                graph, cg_to_aria = original
+                used_original = True
+            else:
+                from runtime.bridge import workflow_to_graph as _w2g
+                graph, id_map = await asyncio.to_thread(_w2g, wf, model_dim, return_id_map=True)
+                # Invert id_map: cg_id -> aria_id
+                cg_to_aria = {v: k for k, v in id_map.items()}
+                used_original = False
+
             metrics = {
                 "n_ops": graph.n_ops(),
                 "depth": graph.depth(),
                 "params_estimate": int(graph.n_params_estimate()),
                 "has_gradient_path": bool(graph.has_gradient_path()),
                 "graph_fingerprint": graph.fingerprint(),
+                "used_original_graph": used_original,
             }
             accumulated["conversion"] = metrics
             _persist_stage("conversion", {"status": "done", "metrics": metrics})

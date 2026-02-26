@@ -74,6 +74,9 @@ export const apiService = {
   getLeaderboard: (params = '') => 
     fetch(`${API_BASE}/api/leaderboard${params}`).then(handleResponse),
 
+  getReferences: () =>
+    fetch(`${API_BASE}/api/references`).then(handleResponse),
+
   getRegressionVsBaseline: (limit = 200) =>
     fetch(`${API_BASE}/api/analytics/regression-vs-baseline?limit=${limit}`).then(handleResponse),
 

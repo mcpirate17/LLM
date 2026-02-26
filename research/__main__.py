@@ -21,7 +21,7 @@ import gc
 def main():
     parser = argparse.ArgumentParser(description="HYDRA Architecture Explorer")
     parser.add_argument("--mode", default="explore",
-                        choices=["explore", "synthesize", "continuous", "dashboard", "evolve", "routing-benchmark"],
+                        choices=["explore", "synthesize", "continuous", "dashboard", "evolve", "routing-benchmark", "register-references"],
                         help="Operation mode")
     parser.add_argument("--n", type=int, default=10, help="Number of programs/architectures")
     parser.add_argument("--dim", type=int, default=256, help="Model dimension")
@@ -42,6 +42,11 @@ def main():
     parser.add_argument("--describe", type=str, default=None)
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume an interrupted experiment by ID")
+    parser.add_argument("--arch", type=str, default="all",
+                        choices=["gpt2", "mamba", "rag", "rwkv", "all"],
+                        help="Reference architecture selector for register-references mode")
+    parser.add_argument("--skip-pipeline", action="store_true",
+                        help="In register-references mode, skip investigation/validation")
 
     args = parser.parse_args()
 
@@ -69,6 +74,9 @@ def main():
 
     elif args.mode == "routing-benchmark":
         _run_routing_benchmark(args)
+
+    elif args.mode == "register-references":
+        _run_register_references(args)
 
 
 def _run_synthesis(args):
@@ -167,6 +175,24 @@ def _run_routing_benchmark(args):
         print(
             f"- {mode}: val_loss={vloss_str} tokens/s={tps_str} "
             f"effective_compute={etc_str} stability={stab_str}"
+        )
+
+
+def _run_register_references(args):
+    """Register and pin reference architectures in the leaderboard."""
+    from research.tools.register_references import register_references
+
+    result = register_references(
+        db_path=args.db,
+        arch=args.arch,
+        device=args.device,
+        include_pipeline=not args.skip_pipeline,
+    )
+    print("Registered references:")
+    for key, item in result.items():
+        print(
+            f"- {key}: result={item.get('result_id')} "
+            f"tier={item.get('tier')} loss_ratio={item.get('loss_ratio')}"
         )
 
 

@@ -34,6 +34,27 @@ const COMPRESSION_FACTORS = {
   compressed_attention: 0.7,
 };
 
+function toRetentionPercent(value) {
+  if (value == null) return null;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return num <= 1.0 ? num * 100 : num;
+}
+
+function toPercentOfReference(entryLoss, refLoss) {
+  const e = Number(entryLoss);
+  const r = Number(refLoss);
+  if (!Number.isFinite(e) || !Number.isFinite(r) || r <= 0) return null;
+  return (e / r) * 100;
+}
+
+function bestLoss(entry) {
+  if (entry?.validation_loss_ratio != null) return Number(entry.validation_loss_ratio);
+  if (entry?.investigation_loss_ratio != null) return Number(entry.investigation_loss_ratio);
+  if (entry?.screening_loss_ratio != null) return Number(entry.screening_loss_ratio);
+  return null;
+}
+
 
 function parseArchSpec(value) {
   if (!value || typeof value !== 'string') return null;
@@ -347,6 +368,7 @@ const COLUMNS = [
   { key: 'model_source', label: 'Source' },
   { key: 'architecture_family', label: 'Family' },
   { key: 'architecture_desc', label: 'Description' },
+  { key: '_vs_reference', label: 'vs Ref Loss' },
   { key: 'composite_score', label: 'Composite' },
   { key: 'screening_loss_ratio', label: 'S.Loss' },
   { key: 'screening_novelty', label: 'Novelty' },
@@ -354,6 +376,11 @@ const COLUMNS = [
   { key: 'investigation_robustness', label: 'Robust' },
   { key: 'validation_loss_ratio', label: 'V.Loss' },
   { key: 'validation_baseline_ratio', label: 'V.Base' },
+  { key: 'robustness_noise_score', label: 'Noise' },
+  { key: 'quant_int8_retention', label: 'INT8 Ret' },
+  { key: 'robustness_long_ctx_score', label: 'LongCtx' },
+  { key: 'init_sensitivity_std', label: 'InitStd' },
+  { key: 'jacobian_spectral_norm', label: 'Spectral' },
   { key: '_compression_ratio', label: 'Compression' },
   { key: '_metric_quality', label: 'Metric Quality' },
   { key: '_actions', label: 'Actions' },
@@ -400,7 +427,19 @@ function Leaderboard({
   const [searchQuery, setSearchQuery] = useState(() => {
     return typeof leaderboardPrefs?.searchQuery === 'string' ? leaderboardPrefs.searchQuery : '';
   });
+  const [showReferences, setShowReferences] = useState(() => {
+    return typeof leaderboardPrefs?.showReferences === 'boolean' ? leaderboardPrefs.showReferences : true;
+  });
+  const [onlyRobust, setOnlyRobust] = useState(() => {
+    return typeof leaderboardPrefs?.onlyRobust === 'boolean' ? leaderboardPrefs.onlyRobust : false;
+  });
+  const [visibleColumns, setVisibleColumns] = useState(() => {
+    return Array.isArray(leaderboardPrefs?.visibleColumns) 
+      ? leaderboardPrefs.visibleColumns 
+      : ['_score', 'tier', 'architecture_family', 'composite_score', 'screening_loss_ratio', 'screening_novelty', 'investigation_loss_ratio', 'validation_baseline_ratio', '_actions'];
+  });
   const [highlightId, setHighlightId] = useState(null);
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
 
   useEffect(() => {
@@ -411,11 +450,14 @@ function Leaderboard({
         sortKey,
         sortDesc,
         searchQuery,
+        showReferences,
+        onlyRobust,
+        visibleColumns,
       }));
     } catch {
       // Ignore localStorage failures.
     }
-  }, [activeTier, sortKey, sortDesc, searchQuery]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showReferences, onlyRobust, visibleColumns]);
 
   // Accept external highlight request
   useEffect(() => {
@@ -464,7 +506,12 @@ function Leaderboard({
 
   const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
 
-  const fmt = (v, d = 4) => v != null ? Number(v).toFixed(d) : '--';
+  const fmt = (v, d = 4) => {
+    if (v == null) return '--';
+    const num = Number(v);
+    if (num !== 0 && Math.abs(num) < 0.0001) return num.toExponential(2);
+    return num.toFixed(d);
+  };
 
   const handleInvestigate = (resultIds) => {
     if (onInvestigate) {
@@ -507,6 +554,20 @@ function Leaderboard({
   const rawEntries = data?.entries || [];
   const stabilitySummary = data?.cross_run_stability_summary || {};
   const stabilityWindow = data?.cross_run_stability_window || 0;
+  const referenceEntries = useMemo(
+    () => rawEntries.filter(entry => Boolean(entry?.is_reference)),
+    [rawEntries],
+  );
+  const referenceByFamily = useMemo(() => {
+    const mapping = {};
+    for (const ref of referenceEntries) {
+      const family = String(ref?.architecture_family || '').trim();
+      if (!family || mapping[family]) continue;
+      mapping[family] = ref;
+    }
+    return mapping;
+  }, [referenceEntries]);
+  const primaryReference = referenceEntries[0] || null;
 
   // Count by tier for tab badges (from raw unfiltered data)
   const tierCounts = {};
@@ -519,14 +580,24 @@ function Leaderboard({
   const sorted = useMemo(() => {
     const augmented = rawEntries.map(e => {
       const compression = compressionSummary(e);
+      const matchedRef = referenceByFamily[e?.architecture_family] || primaryReference;
+      const vsReferencePct = e?.is_reference
+        ? null
+        : toPercentOfReference(bestLoss(e), bestLoss(matchedRef));
       return {
         ...e,
         _score: candidateScore(e, TIER_ORDER),
         _compression_ratio: compression.ratio,
         _compression_summary: compression,
+        _vs_reference: vsReferencePct,
+        _matched_reference: matchedRef?.reference_name || matchedRef?.architecture_desc || null,
+        _quant_retention_pct: toRetentionPercent(e?.quant_int8_retention),
       };
     });
     augmented.sort((a, b) => {
+      const aRef = Number(Boolean(a?.is_reference));
+      const bRef = Number(Boolean(b?.is_reference));
+      if (aRef !== bRef) return bRef - aRef;
       let va, vb;
       if (sortKey === 'tier') {
         va = TIER_ORDER[a.tier] || 0;
@@ -539,6 +610,9 @@ function Leaderboard({
         va = a[sortKey] || '';
         vb = b[sortKey] || '';
         return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
+      } else if (sortKey === 'quant_int8_retention') {
+        va = a._quant_retention_pct;
+        vb = b._quant_retention_pct;
       } else {
         va = a[sortKey];
         vb = b[sortKey];
@@ -549,19 +623,37 @@ function Leaderboard({
       return sortDesc ? vb - va : va - vb;
     });
     return augmented;
-  }, [rawEntries, sortKey, sortDesc]);
+  }, [rawEntries, sortKey, sortDesc, referenceByFamily, primaryReference]);
+
+  const visibilityFiltered = useMemo(() => {
+    let entries = sorted;
+    if (!showReferences) {
+      entries = entries.filter(entry => !entry?.is_reference);
+    }
+    if (onlyRobust) {
+      entries = entries.filter(entry => {
+        const noise = Number(entry?.robustness_noise_score);
+        const retention = Number(entry?._quant_retention_pct);
+        return Number.isFinite(noise)
+          && Number.isFinite(retention)
+          && noise < 0.3
+          && retention > 80;
+      });
+    }
+    return entries;
+  }, [sorted, showReferences, onlyRobust]);
 
   // Apply search filter
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return sorted;
+    if (!searchQuery.trim()) return visibilityFiltered;
     const q = searchQuery.trim().toLowerCase();
-    return sorted.filter(e =>
+    return visibilityFiltered.filter(e =>
       (e.result_id && e.result_id.toLowerCase().includes(q)) ||
       (e.graph_fingerprint && e.graph_fingerprint.toLowerCase().includes(q)) ||
       (e.architecture_desc && e.architecture_desc.toLowerCase().includes(q)) ||
       (e.architecture_family && e.architecture_family.toLowerCase().includes(q))
     );
-  }, [sorted, searchQuery]);
+  }, [visibilityFiltered, searchQuery]);
 
   // Scroll to highlighted row
   const highlightRef = useRef(null);
@@ -633,6 +725,57 @@ function Leaderboard({
           </button>
         ))}
         <button
+          onClick={() => setShowReferences(v => !v)}
+          aria-label={showReferences ? 'Hide reference entries' : 'Show reference entries'}
+          style={{
+            fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+            border: `1px solid ${showReferences ? 'var(--accent-purple)' : 'var(--border)'}`,
+            borderRadius: 4, background: showReferences ? 'rgba(188, 140, 255, 0.12)' : 'transparent',
+            color: showReferences ? 'var(--accent-purple)' : 'var(--text-secondary)',
+          }}
+        >
+          {showReferences ? 'Hide references' : 'Show references'}
+        </button>
+        <button
+          onClick={() => setOnlyRobust(v => !v)}
+          aria-label={onlyRobust ? 'Disable robust-only filter' : 'Enable robust-only filter'}
+          style={{
+            fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+            border: `1px solid ${onlyRobust ? 'var(--accent-green)' : 'var(--border)'}`,
+            borderRadius: 4, background: onlyRobust ? 'rgba(63, 185, 80, 0.12)' : 'transparent',
+            color: onlyRobust ? 'var(--accent-green)' : 'var(--text-secondary)',
+          }}
+          title="Only show robust (noise < 0.3 and INT8 retention > 80%)"
+        >
+          {onlyRobust ? 'Robust only: ON' : 'Robust only'}
+        </button>
+        <label style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          Sort
+          <select
+            value={sortKey}
+            onChange={(e) => {
+              setSortKey(e.target.value);
+              setSortDesc(true);
+            }}
+            style={{
+              fontSize: 11,
+              padding: '3px 6px',
+              borderRadius: 4,
+              border: '1px solid var(--border)',
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            <option value="_score">Utility score</option>
+            <option value="composite_score">Composite</option>
+            <option value="robustness_noise_score">Noise score</option>
+            <option value="quant_int8_retention">INT8 retention</option>
+            <option value="robustness_long_ctx_score">Long-context score</option>
+            <option value="init_sensitivity_std">Init sensitivity</option>
+            <option value="jacobian_spectral_norm">Jacobian spectral norm</option>
+          </select>
+        </label>
+        <button
           onClick={fetchLeaderboard}
           aria-label="Refresh leaderboard"
           style={{
@@ -643,7 +786,44 @@ function Leaderboard({
         >
           Refresh
         </button>
+        <button
+          onClick={() => setShowColumnPicker(!showColumnPicker)}
+          style={{
+            fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+            border: `1px solid ${showColumnPicker ? 'var(--accent-blue)' : 'var(--border)'}`, 
+            borderRadius: 4,
+            background: showColumnPicker ? 'rgba(88, 166, 255, 0.12)' : 'transparent', 
+            color: showColumnPicker ? 'var(--accent-blue)' : 'var(--text-secondary)',
+          }}
+        >
+          Columns
+        </button>
       </div>
+
+      {showColumnPicker && (
+        <div style={{
+          marginBottom: 12, padding: 12, background: 'var(--bg-secondary)', 
+          border: '1px solid var(--border)', borderRadius: 6,
+          display: 'flex', gap: 12, flexWrap: 'wrap'
+        }}>
+          {COLUMNS.map(col => (
+            <label key={col.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-primary)', cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={visibleColumns.includes(col.key)}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setVisibleColumns([...visibleColumns, col.key]);
+                  } else {
+                    setVisibleColumns(visibleColumns.filter(k => k !== col.key));
+                  }
+                }}
+              />
+              {col.label}
+            </label>
+          ))}
+        </div>
+      )}
 
       {/* Search filter */}
       <div style={{ marginBottom: 12 }}>
@@ -712,7 +892,7 @@ function Leaderboard({
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
                 <th style={thStyle}>#</th>
-                {COLUMNS.map(col => (
+                {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => (
                   <th
                     key={col.key}
                     onClick={() => handleSort(col.key)}
@@ -773,290 +953,368 @@ function Leaderboard({
                   onClick={() => onSelectProgram && onSelectProgram(entry.result_id)}
                 >
                   <td style={tdStyle}>{i + 1}</td>
-                  <td style={tdStyle}><ScoreBreakdown entry={entry} /></td>
-                  <td style={tdStyle}><TierBadge tier={entry.tier} entry={entry} /></td>
-                  <td style={tdStyle}>
-                    {(() => {
-                      const s = entry.cross_run_stability || {};
-                      const trend = s.trend || 'unknown';
-                      const color = trend === 'up'
-                        ? 'var(--accent-green)'
-                        : trend === 'down'
-                          ? 'var(--accent-red)'
-                          : trend === 'stable'
-                            ? 'var(--accent-yellow)'
-                            : 'var(--text-muted)';
-                      return (
-                        <span
-                          title={`Trend ${trend}; seen runs ${s.seen_runs ?? 0}; latest rank ${s.latest_rank ?? '--'}; previous rank ${s.previous_rank ?? '--'}`}
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 600,
-                            textTransform: 'uppercase',
-                            padding: '2px 6px',
-                            borderRadius: 4,
-                            color,
-                            background: `${color}22`,
-                            border: `1px solid ${color}55`,
-                          }}
-                        >
-                          {trend}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                  <td style={tdStyle}>
-                    <span style={{
-                      fontSize: 10,
-                      color: entry.model_source === 'morphological_box'
-                        ? 'var(--accent-purple)' : 'var(--accent-blue)',
-                    }}>
-                      {entry.model_source === 'morphological_box' ? 'MORPH' : 'GRAPH'}
-                    </span>
-                  </td>
-                  <td style={tdStyle}>{entry.architecture_family || '--'}</td>
-                  <td
-                    style={{ ...tdStyle, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                    title={entry.architecture_desc || entry.result_id || 'not available'}
-                  >
-                    {entry.architecture_desc || entry.result_id?.slice(0, 12)}
-                  </td>
-                  <td style={{ ...tdStyle, color: 'var(--accent-green)' }}>
-                    {fmt(entry.composite_score, 3)}
-                  </td>
-                  <td style={tdStyle}>{fmt(entry.screening_loss_ratio)}</td>
-                  <td style={tdStyle}>{fmt(entry.screening_novelty, 3)}</td>
-                  <td style={tdStyle}>{fmt(entry.investigation_loss_ratio)}</td>
-                  <td style={tdStyle}>
-                    {entry.investigation_robustness != null
-                      ? <span style={{
-                          color: entry.investigation_robustness >= 0.5
-                            ? 'var(--accent-green)' : 'var(--accent-red)',
-                        }}>
-                          {fmt(entry.investigation_robustness, 2)}
-                        </span>
-                      : '--'}
-                  </td>
-                  <td style={tdStyle}>{fmt(entry.validation_loss_ratio)}</td>
-                  <td style={tdStyle}>
-                    {entry.validation_baseline_ratio != null
-                      ? <span style={{
-                          color: entry.validation_baseline_ratio < 1
-                            ? 'var(--accent-green)' : 'var(--accent-red)',
-                        }}>
-                          {fmt(entry.validation_baseline_ratio)}
-                        </span>
-                      : '--'}
-                  </td>
-                  <td style={tdStyle}>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                      {compression.ratio != null ? `${(compression.ratio * 100).toFixed(0)}%` : '--'}
-                    </div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                      {compression.memoryMb != null ? `${compression.memoryMb.toFixed(2)} MB` : 'n/a'} · {compression.label}
-                    </div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                      retention {compression.qualityRetention != null ? `${(compression.qualityRetention * 100).toFixed(0)}%` : 'n/a'}
-                    </div>
-                  </td>
-                  <td style={tdStyle}>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                      Quality: {promotion.label} · Repro: {reproPacket.label}
-                    </div>
-                    {isExpanded && (
-                      <>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
-                          {chips.map(chip => (
-                            <span
-                              key={`${rowId}-${chip.label}`}
-                              title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
-                              style={{
-                                fontSize: 10,
-                                padding: '1px 5px',
-                                borderRadius: 4,
-                                border: `1px solid ${reliabilityColor(chip.reliability)}55`,
-                                color: reliabilityColor(chip.reliability),
-                                background: `${reliabilityColor(chip.reliability)}22`,
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {chip.label}: {chip.source}
-                            </span>
-                          ))}
-                        </div>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
-                          {flags.map(flag => (
-                            <span
-                              key={`${rowId}-${flag.label}`}
-                              title={flag.detail ? `${flag.label} — ${flag.detail}` : `Quality flag: ${flag.label}`}
-                              style={{
-                                fontSize: 10,
-                                padding: '1px 5px',
-                                borderRadius: 4,
-                                border: `1px solid ${reliabilityColor(flag.tone)}55`,
-                                color: reliabilityColor(flag.tone),
-                                background: `${reliabilityColor(flag.tone)}15`,
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {flag.label}
-                            </span>
-                          ))}
-                        </div>
-                        <div
-                          style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: promotion.color }}
-                          title={`Evidence checks ${promotion.evidenceCount}/${promotion.totalChecks}; missing: ${promotion.missing.length ? promotion.missing.join(', ') : 'none'}`}
-                        >
-                          Promotion confidence: {promotion.label} ({promotion.score}%)
-                        </div>
-                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                          Uncertainty {promotion.uncertaintyLabel}; runs {promotion.seenRuns}; std {promotion.std != null ? promotion.std.toFixed(3) : 'n/a'}
-                        </div>
-                        <div
-                          style={{ marginTop: 2, fontSize: 10, color: reproPacket.color }}
-                          title={reproPacket.missing.length ? `Missing packet fields: ${reproPacket.missing.join(', ')}` : 'Reproducibility packet has all required fields'}
-                        >
-                          Repro packet: {reproPacket.label} ({reproPacket.readyCount}/{reproPacket.totalChecks})
-                        </div>
-                      </>
-                    )}
-                  </td>
-                  <td style={tdStyle} onClick={e => e.stopPropagation()}>
-                    {eligibility.investigationEligible && (
-                      <button
-                        onClick={() => handleInvestigate([entry.result_id])}
-                        style={{ ...actionBtnStyle, background: 'rgba(63, 185, 80, 0.12)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
-                        title="Deep study with multiple training programs"
-                      >
-                        Investigate
-                      </button>
-                    )}
-                    {!eligibility.investigationEligible && entry.tier === 'screening' && (
-                      <span style={{
-                        fontSize: 10, padding: '2px 6px', borderRadius: 4,
-                        background: 'rgba(210,153,34,0.12)', color: 'var(--accent-yellow)',
-                        whiteSpace: 'nowrap',
-                      }} title="Candidate already has investigation evidence; wait for changed conditions before re-investigating">
-                        Already investigated
-                      </span>
-                    )}
-                    {eligibility.validationEligible && (
-                      <button
-                        onClick={() => handleValidate([entry.result_id])}
-                        style={{ ...actionBtnStyle, background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
-                        title="Publication-grade multi-seed validation"
-                      >
-                        Validate
-                      </button>
-                    )}
-                    {entry.tier === 'investigation' && !entry.investigation_passed && (
-                      <span style={{
-                        fontSize: 10, padding: '2px 6px', borderRadius: 4,
-                        background: 'rgba(248,81,73,0.12)', color: 'var(--accent-red, #e74c3c)',
-                        whiteSpace: 'nowrap',
-                      }} title="Investigation did not pass — search for new candidates or review failure details">
-                        Investigation failed
-                      </span>
-                    )}
-                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                      <button
-                        onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
-                        style={{
-                          ...actionBtnStyle,
-                          borderColor: 'var(--accent-blue)',
-                          color: 'var(--accent-blue)',
-                          background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
-                        }}
-                      >
-                        {isExpanded ? 'Hide details' : 'Details'}
-                      </button>
-                      {onOpenInDesigner && (
-                        <button
-                          onClick={() => onOpenInDesigner(entry.result_id)}
-                          style={{ ...actionBtnStyle, background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
-                          title="Open architecture in visual designer"
-                        >
-                          Designer
-                        </button>
-                      )}
-                    </div>
-                    {isExpanded && (
-                      <div style={{ marginTop: 6 }}>
-                        <div style={{ marginBottom: 4 }}>
-                          <span
-                            style={{
+                  {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => {
+                    switch (col.key) {
+                      case '_score':
+                        return <td key={col.key} style={tdStyle}><ScoreBreakdown entry={entry} /></td>;
+                      case 'tier':
+                        return <td key={col.key} style={tdStyle}><TierBadge tier={entry.tier} entry={entry} /></td>;
+                      case '_stability':
+                        return (
+                          <td key={col.key} style={tdStyle}>
+                            {(() => {
+                              const s = entry.cross_run_stability || {};
+                              const trend = s.trend || 'unknown';
+                              const color = trend === 'up'
+                                ? 'var(--accent-green)'
+                                : trend === 'down'
+                                  ? 'var(--accent-red)'
+                                  : trend === 'stable'
+                                    ? 'var(--accent-yellow)'
+                                    : 'var(--text-muted)';
+                              return (
+                                <span
+                                  title={`Trend ${trend}; seen runs ${s.seen_runs ?? 0}; latest rank ${s.latest_rank ?? '--'}; previous rank ${s.previous_rank ?? '--'}`}
+                                  style={{
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    textTransform: 'uppercase',
+                                    padding: '2px 6px',
+                                    borderRadius: 4,
+                                    color,
+                                    background: `${color}22`,
+                                    border: `1px solid ${color}55`,
+                                  }}
+                                >
+                                  {trend}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                        );
+                      case 'model_source':
+                        return (
+                          <td key={col.key} style={tdStyle}>
+                            {entry.is_reference ? (
+                              <span
+                                title={entry.reference_name ? `Reference baseline: ${entry.reference_name}` : 'Reference baseline'}
+                                style={{
+                                  fontSize: 10,
+                                  color: 'var(--accent-purple)',
+                                  border: '1px solid var(--accent-purple)',
+                                  borderRadius: 4,
+                                  padding: '1px 6px',
+                                  marginRight: 6,
+                                }}
+                              >
+                                📌 {entry.reference_name || 'Reference'}
+                              </span>
+                            ) : null}
+                            <span style={{
                               fontSize: 10,
-                              fontWeight: 600,
-                              textTransform: 'uppercase',
-                              padding: '2px 6px',
-                              borderRadius: 4,
-                              color: gate.color,
-                              background: `${gate.color}22`,
-                              border: `1px solid ${gate.color}55`,
-                            }}
-                            title={gate.decisionReady
-                              ? 'All evidence checks passed.'
-                              : `Missing checks: ${gate.missing.join(', ')}`}
+                              color: entry.model_source === 'morphological_box'
+                                ? 'var(--accent-purple)' : 'var(--accent-blue)',
+                            }}>
+                              {entry.model_source === 'reference'
+                                ? 'REF'
+                                : entry.model_source === 'morphological_box' ? 'MORPH' : 'GRAPH'}
+                            </span>
+                          </td>
+                        );
+                      case 'architecture_family':
+                        return <td key={col.key} style={tdStyle}>{entry.architecture_family || '--'}</td>;
+                      case 'architecture_desc':
+                        return (
+                          <td
+                            key={col.key}
+                            style={{ ...tdStyle, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            title={entry.architecture_desc || entry.result_id || 'not available'}
                           >
-                            {gate.label}
-                          </span>
-                        </div>
-                        {entry.result_id && (onQueueAdd || onQueueRemove) && (
-                          <button
-                            onClick={() => {
-                              if (isQueued) {
-                                onQueueRemove && onQueueRemove(entry.result_id);
-                                return;
-                              }
-                              if (!eligibility.queueEligible) {
-                                return;
-                              }
-                              onQueueAdd && onQueueAdd({
-                                resultId: entry.result_id,
-                                fingerprint: entry.graph_fingerprint,
-                                source: 'leaderboard',
-                                architectureFamily: entry.architecture_family,
-                                intent: queueIntent,
-                                queueEligible: eligibility.queueEligible,
-                                investigationEligible: eligibility.investigationEligible,
-                                validationEligible: eligibility.validationEligible,
-                                queueReason: eligibility.queueReason,
-                              });
-                            }}
-                            disabled={!isQueued && !eligibility.queueEligible}
-                            style={{
-                              ...actionBtnStyle,
-                              marginTop: 4,
-                              borderColor: !isQueued && !eligibility.queueEligible
-                                ? 'var(--border)'
-                                : isQueued
-                                  ? 'var(--accent-yellow)'
-                                  : 'var(--accent-blue)',
-                              color: !isQueued && !eligibility.queueEligible
-                                ? 'var(--text-muted)'
-                                : isQueued
-                                  ? 'var(--accent-yellow)'
-                                  : 'var(--accent-blue)',
-                              opacity: !isQueued && !eligibility.queueEligible ? 0.6 : 1,
-                            }}
-                            title={isQueued
-                              ? 'Remove from investigation queue'
-                              : !eligibility.queueEligible
-                                ? (entry.tier === 'validation' || entry.tier === 'breakthrough' 
-                                    ? 'Architecture is fully validated.' 
-                                    : 'Not eligible for investigation/validation queue actions')
-                                : queueAddTitle}
-                          >
-                            {isQueued 
-                              ? 'Queued' 
-                              : !eligibility.queueEligible 
-                                ? (entry.tier === 'validation' || entry.tier === 'breakthrough' ? 'Validated' : 'Ineligible') 
-                                : queueAddLabel}
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </td>
+                            {entry.reference_name || entry.architecture_desc || entry.result_id?.slice(0, 12)}
+                          </td>
+                        );
+                      case '_vs_reference':
+                        return (
+                          <td key={col.key} style={tdStyle}>
+                            {entry._vs_reference != null
+                              ? <span title={entry._matched_reference ? `Compared to ${entry._matched_reference}` : 'Compared to reference baseline'}>
+                                  {entry._vs_reference.toFixed(0)}%
+                                </span>
+                              : '--'}
+                          </td>
+                        );
+                      case 'composite_score':
+                        return (
+                          <td key={col.key} style={{ ...tdStyle, color: 'var(--accent-green)' }}>
+                            {fmt(entry.composite_score, 3)}
+                          </td>
+                        );
+                      case 'screening_loss_ratio':
+                        return <td key={col.key} style={tdStyle}>{fmt(entry.screening_loss_ratio)}</td>;
+                      case 'screening_novelty':
+                        return <td key={col.key} style={tdStyle}>{fmt(entry.screening_novelty, 3)}</td>;
+                      case 'investigation_loss_ratio':
+                        return <td key={col.key} style={tdStyle}>{fmt(entry.investigation_loss_ratio)}</td>;
+                      case 'investigation_robustness':
+                        return (
+                          <td key={col.key} style={tdStyle}>
+                            {entry.investigation_robustness != null
+                              ? <span style={{
+                                  color: entry.investigation_robustness >= 0.5
+                                    ? 'var(--accent-green)' : 'var(--accent-red)',
+                                }}>
+                                  {fmt(entry.investigation_robustness, 2)}
+                                </span>
+                              : '--'}
+                          </td>
+                        );
+                      case 'validation_loss_ratio':
+                        return <td key={col.key} style={tdStyle}>{fmt(entry.validation_loss_ratio)}</td>;
+                      case 'validation_baseline_ratio':
+                        return (
+                          <td key={col.key} style={tdStyle}>
+                            {entry.validation_baseline_ratio != null
+                              ? <span style={{
+                                  color: entry.validation_baseline_ratio < 1
+                                    ? 'var(--accent-green)' : 'var(--accent-red)',
+                                }}>
+                                  {fmt(entry.validation_baseline_ratio)}
+                                </span>
+                              : '--'}
+                          </td>
+                        );
+                      case 'robustness_noise_score':
+                        return <td key={col.key} style={tdStyle}>{entry.robustness_noise_score != null ? fmt(entry.robustness_noise_score, 3) : '--'}</td>;
+                      case 'quant_int8_retention':
+                        return <td key={col.key} style={tdStyle}>{entry._quant_retention_pct != null ? `${entry._quant_retention_pct.toFixed(1)}%` : '--'}</td>;
+                      case 'robustness_long_ctx_score':
+                        return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_score != null ? fmt(entry.robustness_long_ctx_score, 3) : '--'}</td>;
+                      case 'init_sensitivity_std':
+                        return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? fmt(entry.init_sensitivity_std, 4) : '--'}</td>;
+                      case 'jacobian_spectral_norm':
+                        return <td key={col.key} style={tdStyle}>{entry.jacobian_spectral_norm != null ? fmt(entry.jacobian_spectral_norm, 4) : '--'}</td>;
+                      case '_compression_ratio':
+                        return (
+                          <td key={col.key} style={tdStyle}>
+                            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                              {compression.ratio != null ? `${(compression.ratio * 100).toFixed(0)}%` : '--'}
+                            </div>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                              {compression.memoryMb != null ? `${compression.memoryMb.toFixed(2)} MB` : 'n/a'} · {compression.label}
+                            </div>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                              retention {compression.qualityRetention != null ? `${(compression.qualityRetention * 100).toFixed(0)}%` : 'n/a'}
+                            </div>
+                          </td>
+                        );
+                      case '_metric_quality':
+                        return (
+                          <td key={col.key} style={tdStyle}>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                              Quality: {promotion.label} · Repro: {reproPacket.label}
+                            </div>
+                            {isExpanded && (
+                              <>
+                                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
+                                  {chips.map(chip => (
+                                    <span
+                                      key={`${rowId}-${chip.label}`}
+                                      title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
+                                      style={{
+                                        fontSize: 10,
+                                        padding: '1px 5px',
+                                        borderRadius: 4,
+                                        border: `1px solid ${reliabilityColor(chip.reliability)}55`,
+                                        color: reliabilityColor(chip.reliability),
+                                        background: `${reliabilityColor(chip.reliability)}22`,
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                    >
+                                      {chip.label}: {chip.source}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220, marginTop: 4 }}>
+                                  {flags.map(flag => (
+                                    <span
+                                      key={`${rowId}-${flag.label}`}
+                                      title={flag.detail ? `${flag.label} — ${flag.detail}` : `Quality flag: ${flag.label}`}
+                                      style={{
+                                        fontSize: 10,
+                                        padding: '1px 5px',
+                                        borderRadius: 4,
+                                        border: `1px solid ${reliabilityColor(flag.tone)}55`,
+                                        color: reliabilityColor(flag.tone),
+                                        background: `${reliabilityColor(flag.tone)}15`,
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                    >
+                                      {flag.label}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div
+                                  style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: promotion.color }}
+                                  title={`Evidence checks ${promotion.evidenceCount}/${promotion.totalChecks}; missing: ${promotion.missing.length ? promotion.missing.join(', ') : 'none'}`}
+                                >
+                                  Promotion confidence: {promotion.label} ({promotion.score}%)
+                                </div>
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                  Uncertainty {promotion.uncertaintyLabel}; runs {promotion.seenRuns}; std {promotion.std != null ? promotion.std.toFixed(3) : 'n/a'}
+                                </div>
+                                <div
+                                  style={{ marginTop: 2, fontSize: 10, color: reproPacket.color }}
+                                  title={reproPacket.missing.length ? `Missing packet fields: ${reproPacket.missing.join(', ')}` : 'Reproducibility packet has all required fields'}
+                                >
+                                  Repro packet: {reproPacket.label} ({reproPacket.readyCount}/{reproPacket.totalChecks})
+                                </div>
+                              </>
+                            )}
+                          </td>
+                        );
+                      case '_actions':
+                        return (
+                          <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                            {eligibility.investigationEligible && (
+                              <button
+                                onClick={() => handleInvestigate([entry.result_id])}
+                                style={{ ...actionBtnStyle, background: 'rgba(63, 185, 80, 0.12)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
+                                title="Deep study with multiple training programs"
+                              >
+                                Investigate
+                              </button>
+                            )}
+                            {!eligibility.investigationEligible && entry.tier === 'screening' && (
+                              <span style={{
+                                fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                                background: 'rgba(210,153,34,0.12)', color: 'var(--accent-yellow)',
+                                whiteSpace: 'nowrap',
+                              }} title="Candidate already has investigation evidence; wait for changed conditions before re-investigating">
+                                Already investigated
+                              </span>
+                            )}
+                            {eligibility.validationEligible && (
+                              <button
+                                onClick={() => handleValidate([entry.result_id])}
+                                style={{ ...actionBtnStyle, background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
+                                title="Publication-grade multi-seed validation"
+                              >
+                                Validate
+                              </button>
+                            )}
+                            {entry.tier === 'investigation' && !entry.investigation_passed && (
+                              <span style={{
+                                fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                                background: 'rgba(248,81,73,0.12)', color: 'var(--accent-red, #e74c3c)',
+                                whiteSpace: 'nowrap',
+                              }} title="Investigation did not pass — search for new candidates or review failure details">
+                                Investigation failed
+                              </span>
+                            )}
+                            <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                              <button
+                                onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
+                                style={{
+                                  ...actionBtnStyle,
+                                  borderColor: 'var(--accent-blue)',
+                                  color: 'var(--accent-blue)',
+                                  background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
+                                }}
+                              >
+                                {isExpanded ? 'Hide details' : 'Details'}
+                              </button>
+                              {onOpenInDesigner && (
+                                <button
+                                  onClick={() => onOpenInDesigner(entry.result_id)}
+                                  style={{ ...actionBtnStyle, background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
+                                  title="Open architecture in visual designer"
+                                >
+                                  Designer
+                                </button>
+                              )}
+                            </div>
+                            {isExpanded && (
+                              <div style={{ marginTop: 6 }}>
+                                <div style={{ marginBottom: 4 }}>
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      textTransform: 'uppercase',
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      color: gate.color,
+                                      background: `${gate.color}22`,
+                                      border: `1px solid ${gate.color}55`,
+                                    }}
+                                    title={gate.decisionReady
+                                      ? 'All evidence checks passed.'
+                                      : `Missing checks: ${gate.missing.join(', ')}`}
+                                  >
+                                    {gate.label}
+                                  </span>
+                                </div>
+                                {entry.result_id && (onQueueAdd || onQueueRemove) && (
+                                  <button
+                                    onClick={() => {
+                                      if (isQueued) {
+                                        onQueueRemove && onQueueRemove(entry.result_id);
+                                        return;
+                                      }
+                                      if (!eligibility.queueEligible) {
+                                        return;
+                                      }
+                                      onQueueAdd && onQueueAdd({
+                                        resultId: entry.result_id,
+                                        fingerprint: entry.graph_fingerprint,
+                                        source: 'leaderboard',
+                                        architectureFamily: entry.architecture_family,
+                                        intent: queueIntent,
+                                        queueEligible: eligibility.queueEligible,
+                                        investigationEligible: eligibility.investigationEligible,
+                                        validationEligible: eligibility.validationEligible,
+                                        queueReason: eligibility.queueReason,
+                                      });
+                                    }}
+                                    disabled={!isQueued && !eligibility.queueEligible}
+                                    style={{
+                                      ...actionBtnStyle,
+                                      marginTop: 4,
+                                      borderColor: !isQueued && !eligibility.queueEligible
+                                        ? 'var(--border)'
+                                        : isQueued
+                                          ? 'var(--accent-yellow)'
+                                          : 'var(--accent-blue)',
+                                      color: !isQueued && !eligibility.queueEligible
+                                        ? 'var(--text-muted)'
+                                        : isQueued
+                                          ? 'var(--accent-yellow)'
+                                          : 'var(--accent-blue)',
+                                      opacity: !isQueued && !eligibility.queueEligible ? 0.6 : 1,
+                                    }}
+                                    title={isQueued
+                                      ? 'Remove from investigation queue'
+                                      : !eligibility.queueEligible
+                                        ? (entry.tier === 'validation' || entry.tier === 'breakthrough' 
+                                            ? 'Architecture is fully validated.' 
+                                            : 'Not eligible for investigation/validation queue actions')
+                                        : queueAddTitle}
+                                  >
+                                    {isQueued 
+                                      ? 'Queued' 
+                                      : !eligibility.queueEligible 
+                                        ? (entry.tier === 'validation' || entry.tier === 'breakthrough' ? 'Validated' : 'Ineligible') 
+                                        : queueAddLabel}
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        );
+                      default:
+                        return null;
+                    }
+                  })}
                 </tr>
                 );
               })}

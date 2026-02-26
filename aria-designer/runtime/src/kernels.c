@@ -2370,6 +2370,59 @@ void aria_swiglu_f32(const float *x,
     aria_linear_f32(tmp_gate, W_down, bias_down, y, batch, hidden_dim, dim);
 }
 
+void aria_rwkv_channel_f32(const float *x,
+                            const float *mix_k, const float *mix_r,
+                            const float *W_k, const float *W_r, const float *W_v,
+                            float *y, float *tmp_xk, float *tmp_xr, float *tmp_k,
+                            int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim) {
+    /* RWKV Channel Mixing:
+     * shifted_x = pad(x[:-1], top=1)
+     * xk = x * mix_k + shifted_x * (1 - mix_k)
+     * xr = x * mix_r + shifted_x * (1 - mix_r)
+     * k = square(relu(xk @ W_k^T))
+     * y = sigmoid(xr @ W_r^T) * (k @ W_v^T)
+     */
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            const float *curr_x = x + (b * seq + s) * dim;
+            const float *prev_x = (s > 0) ? x + (b * seq + s - 1) * dim : NULL;
+            float *xk = tmp_xk + (b * seq + s) * dim;
+            float *xr = tmp_xr + (b * seq + s) * dim;
+
+            for (int64_t d = 0; d < dim; d++) {
+                float px = prev_x ? prev_x[d] : 0.0f;
+                float mk = mix_k[d];
+                float mr = mix_r[d];
+                xk[d] = curr_x[d] * mk + px * (1.0f - mk);
+                xr[d] = curr_x[d] * mr + px * (1.0f - mr);
+            }
+        }
+    }
+
+    /* k = relu(xk @ W_k^T) */
+    aria_linear_f32(tmp_xk, W_k, NULL, tmp_k, batch * seq, dim, hidden_dim);
+    int64_t k_total = batch * seq * hidden_dim;
+    for (int64_t i = 0; i < k_total; i++) {
+        float val = tmp_k[i];
+        val = val > 0.0f ? val : 0.0f; /* relu */
+        tmp_k[i] = val * val;         /* square */
+    }
+
+    /* receptance = sigmoid(xr @ W_r^T) */
+    /* Reuse tmp_xr for receptance result */
+    aria_linear_f32(tmp_xr, W_r, NULL, tmp_xk, batch * seq, dim, dim);
+    int64_t r_total = batch * seq * dim;
+    for (int64_t i = 0; i < r_total; i++) {
+        tmp_xk[i] = 1.0f / (1.0f + expf(-tmp_xk[i]));
+    }
+
+    /* y = receptance * (k @ W_v^T) */
+    aria_linear_f32(tmp_k, W_v, NULL, y, batch * seq, hidden_dim, dim);
+    for (int64_t i = 0; i < r_total; i++) {
+        y[i] *= tmp_xk[i];
+    }
+}
+
 void aria_token_pool_restore_f32(const float *x, float *y,
                                    int64_t batch, int64_t seq, int64_t dim) {
     /* Pool adjacent pairs via mean, then restore via repeat */
@@ -2917,4 +2970,348 @@ void aria_stdp_attention_f32(const float *x, float *y,
             free(scores);
         }
     }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TIER 2: Reference Architecture Ops
+ * ══════════════════════════════════════════════════════════════════════ */
+
+void aria_embedding_lookup_f32(const float *table, const int32_t *indices,
+                                const float *pos_embed,
+                                float *y, int64_t batch, int64_t dim,
+                                int64_t vocab_size) {
+    /* y[b, :] = table[indices[b], :] + pos_embed[b, :] (if pos_embed != NULL) */
+    for (int64_t b = 0; b < batch; b++) {
+        int32_t idx = indices[b];
+        /* Clamp index to valid range */
+        if (idx < 0) idx = 0;
+        if (idx >= (int32_t)vocab_size) idx = (int32_t)(vocab_size - 1);
+        const float *row = table + (int64_t)idx * dim;
+        float *yb = y + b * dim;
+        if (pos_embed) {
+            const float *pb = pos_embed + b * dim;
+            for (int64_t d = 0; d < dim; d++) {
+                yb[d] = row[d] + pb[d];
+            }
+        } else {
+            memcpy(yb, row, dim * sizeof(float));
+        }
+    }
+}
+
+void aria_rope_rotate_f32(const float *x, float *y,
+                           int64_t batch, int64_t seq, int64_t dim,
+                           float theta_base) {
+    /* Rotary Position Embedding: for each pair (x[2i], x[2i+1]),
+     * freq = 1.0 / (theta_base ^ (2i / dim))
+     * angle = pos * freq
+     * y[2i]   = x[2i] * cos(angle) - x[2i+1] * sin(angle)
+     * y[2i+1] = x[2i] * sin(angle) + x[2i+1] * cos(angle) */
+    int64_t half_dim = dim / 2;
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            const float *xbs = x + (b * seq + s) * dim;
+            float *ybs = y + (b * seq + s) * dim;
+            float pos = (float)s;
+            for (int64_t i = 0; i < half_dim; i++) {
+                float freq = 1.0f / powf(theta_base, (2.0f * (float)i) / (float)dim);
+                float angle = pos * freq;
+                float cos_a = cosf(angle);
+                float sin_a = sinf(angle);
+                float x0 = xbs[2 * i];
+                float x1 = xbs[2 * i + 1];
+                ybs[2 * i]     = x0 * cos_a - x1 * sin_a;
+                ybs[2 * i + 1] = x0 * sin_a + x1 * cos_a;
+            }
+        }
+    }
+}
+
+void aria_gated_linear_f32(const float *x,
+                            const float *W, const float *b,
+                            const float *W_gate, const float *b_gate,
+                            float *y, float *tmp_gate,
+                            int64_t batch, int64_t dim_in, int64_t dim_out) {
+    /* y = linear(x, W, b) * sigmoid(linear(x, W_gate, b_gate))
+     * Reuse aria_linear_f32 and aria_sigmoid_f32 internally. */
+
+    /* Compute y = x @ W^T + b  (linear projection) */
+    aria_linear_f32(x, W, b, y, batch, dim_in, dim_out);
+
+    /* Compute tmp_gate = x @ W_gate^T + b_gate */
+    aria_linear_f32(x, W_gate, b_gate, tmp_gate, batch, dim_in, dim_out);
+
+    /* tmp_gate = sigmoid(tmp_gate) */
+    int64_t total = batch * dim_out;
+    aria_sigmoid_f32(tmp_gate, tmp_gate, total);
+
+    /* y = y * tmp_gate (elementwise) */
+    for (int64_t i = 0; i < total; i++) {
+        y[i] *= tmp_gate[i];
+    }
+}
+
+void aria_cosine_similarity_f32(const float *a, const float *b, float *out,
+                                  int64_t batch, int64_t seq, int64_t dim) {
+    /* out[b, s] = dot(a[b,s,:], b[b,s,:]) / (norm(a) * norm(b) + eps) */
+    const float eps = 1e-8f;
+    for (int64_t bs = 0; bs < batch * seq; bs++) {
+        const float *av = a + bs * dim;
+        const float *bv = b + bs * dim;
+        float dot = 0.0f;
+        float norm_a = 0.0f;
+        float norm_b = 0.0f;
+        for (int64_t d = 0; d < dim; d++) {
+            dot    += av[d] * bv[d];
+            norm_a += av[d] * av[d];
+            norm_b += bv[d] * bv[d];
+        }
+        out[bs] = dot / (sqrtf(norm_a) * sqrtf(norm_b) + eps);
+    }
+}
+
+void aria_gather_topk_f32(const float *scores, const float *values,
+                            float *out, int32_t *out_indices,
+                            int64_t batch, int64_t n_items, int64_t dim,
+                            int64_t k) {
+    /* For each batch element, find top-k indices by score,
+     * then copy corresponding value vectors to out. */
+    if (k > n_items) k = n_items;
+
+    /* Temporary index array for partial sort */
+    int32_t *idx = (int32_t *)malloc(n_items * sizeof(int32_t));
+    if (!idx) return;
+
+    for (int64_t b = 0; b < batch; b++) {
+        const float *sc = scores + b * n_items;
+        const float *vals = values + b * n_items * dim;
+        float *ob = out + b * k * dim;
+        int32_t *oi = out_indices + b * k;
+
+        /* Initialize index array */
+        for (int64_t i = 0; i < n_items; i++) idx[i] = (int32_t)i;
+
+        /* Partial selection sort: find top-k by descending score */
+        for (int64_t t = 0; t < k; t++) {
+            int64_t best = t;
+            float best_score = sc[idx[t]];
+            for (int64_t j = t + 1; j < n_items; j++) {
+                if (sc[idx[j]] > best_score) {
+                    best = j;
+                    best_score = sc[idx[j]];
+                }
+            }
+            /* Swap into position t */
+            if (best != t) {
+                int32_t tmp = idx[t];
+                idx[t] = idx[best];
+                idx[best] = tmp;
+            }
+            /* Copy result */
+            oi[t] = idx[t];
+            memcpy(ob + t * dim, vals + (int64_t)idx[t] * dim, dim * sizeof(float));
+        }
+    }
+    free(idx);
+}
+
+void aria_rwkv_time_mixing_f32(const float *x,
+                                 const float *w_decay, const float *u_bonus,
+                                 const float *W_k, const float *W_v, const float *W_r,
+                                 float *y,
+                                 int64_t batch, int64_t seq, int64_t dim) {
+    /* RWKV WKV kernel:
+     *   k = x @ W_k^T, v = x @ W_v^T, r = sigmoid(x @ W_r^T)
+     *   For each channel d, sequential scan:
+     *     a_t = exp(-w[d]) * a_{t-1} + exp(u[d] + k_t[d]) * v_t[d]
+     *     b_t = exp(-w[d]) * b_{t-1} + exp(u[d] + k_t[d])
+     *     y_t[d] = r_t[d] * a_t / b_t
+     */
+    int64_t total = batch * seq;
+
+    /* Allocate projections: k, v, r each [batch*seq, dim] */
+    float *k_proj = (float *)malloc(total * dim * sizeof(float));
+    float *v_proj = (float *)malloc(total * dim * sizeof(float));
+    float *r_proj = (float *)malloc(total * dim * sizeof(float));
+    if (!k_proj || !v_proj || !r_proj) {
+        /* Fallback: zero output on allocation failure */
+        memset(y, 0, total * dim * sizeof(float));
+        free(k_proj); free(v_proj); free(r_proj);
+        return;
+    }
+
+    /* k = x @ W_k^T, v = x @ W_v^T, r = x @ W_r^T */
+    aria_linear_f32(x, W_k, NULL, k_proj, total, dim, dim);
+    aria_linear_f32(x, W_v, NULL, v_proj, total, dim, dim);
+    aria_linear_f32(x, W_r, NULL, r_proj, total, dim, dim);
+
+    /* r = sigmoid(r) */
+    aria_sigmoid_f32(r_proj, r_proj, total * dim);
+
+    /* Sequential WKV scan per batch, per channel */
+    const float eps = 1e-8f;
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t d = 0; d < dim; d++) {
+            float a = 0.0f;  /* numerator state */
+            float bstate = 0.0f;  /* denominator state */
+            float decay = expf(-w_decay[d]);
+            float bonus = u_bonus[d];
+
+            for (int64_t s = 0; s < seq; s++) {
+                int64_t off = (b * seq + s) * dim + d;
+                float kt = k_proj[off];
+                float vt = v_proj[off];
+                float rt = r_proj[off];
+                float ek = expf(bonus + kt);
+
+                a = decay * a + ek * vt;
+                bstate = decay * bstate + ek;
+                y[off] = rt * a / (bstate + eps);
+            }
+        }
+    }
+
+    free(k_proj);
+    free(v_proj);
+    free(r_proj);
+}
+
+void aria_embedding_lookup_backward_f32(const float *grad_out, const int32_t *indices,
+                                          float *grad_table, float *grad_pos_embed,
+                                          int64_t batch, int64_t dim,
+                                          int64_t vocab_size) {
+    /* Scatter-add: grad_table[indices[b], :] += grad_out[b, :]
+     * grad_pos_embed[b, :] += grad_out[b, :] (if not NULL) */
+    (void)vocab_size;
+    for (int64_t b = 0; b < batch; b++) {
+        int32_t idx = indices[b];
+        const float *gb = grad_out + b * dim;
+        float *gt = grad_table + (int64_t)idx * dim;
+        for (int64_t d = 0; d < dim; d++) {
+            gt[d] += gb[d];
+        }
+        if (grad_pos_embed) {
+            float *gp = grad_pos_embed + b * dim;
+            for (int64_t d = 0; d < dim; d++) {
+                gp[d] += gb[d];
+            }
+        }
+    }
+}
+
+void aria_gated_linear_backward_f32(const float *grad_out,
+                                      const float *x, const float *W, const float *W_gate,
+                                      const float *gate_sigmoid,
+                                      float *grad_x, float *grad_W, float *grad_W_gate,
+                                      float *grad_b, float *grad_b_gate,
+                                      int64_t batch, int64_t dim_in, int64_t dim_out) {
+    /* Forward was: linear = x @ W^T + b, gate = sigmoid(x @ W_gate^T + b_gate), y = linear * gate
+     *
+     * grad_linear = grad_out * gate
+     * grad_gate_pre_sigmoid = grad_out * linear * gate * (1 - gate)
+     *
+     * For the linear path (y = x @ W^T + b):
+     *   grad_W += grad_linear^T @ x
+     *   grad_b += sum(grad_linear, axis=0)
+     *   grad_x += grad_linear @ W
+     *
+     * For the gate path (gate_pre = x @ W_gate^T + b_gate):
+     *   grad_W_gate += grad_gate_pre^T @ x
+     *   grad_b_gate += sum(grad_gate_pre, axis=0)
+     *   grad_x += grad_gate_pre @ W_gate
+     */
+
+    /* Reconstruct linear = x @ W^T (no bias needed for backward, just the linear output) */
+    float *linear_out = (float *)malloc(batch * dim_out * sizeof(float));
+    float *grad_linear = (float *)malloc(batch * dim_out * sizeof(float));
+    float *grad_gate_pre = (float *)malloc(batch * dim_out * sizeof(float));
+    if (!linear_out || !grad_linear || !grad_gate_pre) {
+        free(linear_out); free(grad_linear); free(grad_gate_pre);
+        return;
+    }
+
+    /* Recompute linear = x @ W^T (we need the value for gate backward) */
+    aria_linear_f32(x, W, NULL, linear_out, batch, dim_in, dim_out);
+
+    int64_t total = batch * dim_out;
+
+    /* grad_linear = grad_out * gate_sigmoid */
+    for (int64_t i = 0; i < total; i++) {
+        grad_linear[i] = grad_out[i] * gate_sigmoid[i];
+    }
+
+    /* grad_gate_pre = grad_out * linear * gate * (1 - gate) */
+    for (int64_t i = 0; i < total; i++) {
+        float g = gate_sigmoid[i];
+        grad_gate_pre[i] = grad_out[i] * linear_out[i] * g * (1.0f - g);
+    }
+
+    /* grad_x = grad_linear @ W + grad_gate_pre @ W_gate */
+    if (grad_x) {
+        memset(grad_x, 0, batch * dim_in * sizeof(float));
+        for (int64_t b = 0; b < batch; b++) {
+            const float *gl = grad_linear + b * dim_out;
+            const float *gg = grad_gate_pre + b * dim_out;
+            float *gx = grad_x + b * dim_in;
+            for (int64_t o = 0; o < dim_out; o++) {
+                const float *Wo = W + o * dim_in;
+                const float *Wgo = W_gate + o * dim_in;
+                for (int64_t i = 0; i < dim_in; i++) {
+                    gx[i] += gl[o] * Wo[i] + gg[o] * Wgo[i];
+                }
+            }
+        }
+    }
+
+    /* grad_W += grad_linear^T @ x : grad_W[o, i] += sum_b grad_linear[b, o] * x[b, i] */
+    if (grad_W) {
+        for (int64_t b = 0; b < batch; b++) {
+            const float *gl = grad_linear + b * dim_out;
+            const float *xb = x + b * dim_in;
+            for (int64_t o = 0; o < dim_out; o++) {
+                float *gWo = grad_W + o * dim_in;
+                for (int64_t i = 0; i < dim_in; i++) {
+                    gWo[i] += gl[o] * xb[i];
+                }
+            }
+        }
+    }
+
+    /* grad_W_gate += grad_gate_pre^T @ x */
+    if (grad_W_gate) {
+        for (int64_t b = 0; b < batch; b++) {
+            const float *gg = grad_gate_pre + b * dim_out;
+            const float *xb = x + b * dim_in;
+            for (int64_t o = 0; o < dim_out; o++) {
+                float *gWgo = grad_W_gate + o * dim_in;
+                for (int64_t i = 0; i < dim_in; i++) {
+                    gWgo[i] += gg[o] * xb[i];
+                }
+            }
+        }
+    }
+
+    /* grad_b += sum(grad_linear, axis=0) */
+    if (grad_b) {
+        for (int64_t b = 0; b < batch; b++) {
+            const float *gl = grad_linear + b * dim_out;
+            for (int64_t o = 0; o < dim_out; o++) {
+                grad_b[o] += gl[o];
+            }
+        }
+    }
+
+    /* grad_b_gate += sum(grad_gate_pre, axis=0) */
+    if (grad_b_gate) {
+        for (int64_t b = 0; b < batch; b++) {
+            const float *gg = grad_gate_pre + b * dim_out;
+            for (int64_t o = 0; o < dim_out; o++) {
+                grad_b_gate[o] += gg[o];
+            }
+        }
+    }
+
+    free(linear_out);
+    free(grad_linear);
+    free(grad_gate_pre);
 }

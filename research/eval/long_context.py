@@ -1,0 +1,135 @@
+"""Long-context scaling sweep for robustness evaluation.
+
+Tests how well a model handles increasing sequence lengths
+compared to its base performance at the default length.
+"""
+
+from __future__ import annotations
+
+import gc
+import logging
+from typing import Callable, Dict, Sequence, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
+
+
+def run_long_context_sweep(
+    make_model_fn: Callable[[], nn.Module],
+    vocab_size: int,
+    device: torch.device,
+    base_loss: float,
+    seq_lens: Sequence[int] = (512, 1024),
+    n_steps: int = 200,
+    batch_size: int = 2,
+    lr: float = 3e-4,
+) -> Dict:
+    """Train at increasing sequence lengths and measure loss scaling.
+
+    Args:
+        make_model_fn: Callable that returns a fresh model instance.
+        vocab_size: Vocabulary size for random data generation.
+        device: Training device.
+        base_loss: Reference loss at the model's default sequence length.
+        seq_lens: Sequence lengths to test (sorted ascending recommended).
+        n_steps: Training steps per sequence length.
+        batch_size: Batch size per training run.
+        lr: Learning rate.
+
+    Returns:
+        Dict with scaling_results, max_viable_len, and long_context_score.
+    """
+    scaling_results = {}
+    max_viable_len = 0
+
+    for seq_len in sorted(seq_lens):
+        try:
+            model = make_model_fn().to(device)
+            model.train()
+            optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+
+            final_loss = float("inf")
+            for step in range(n_steps):
+                torch.manual_seed(42 + step)
+                input_ids = torch.randint(
+                    0, vocab_size, (batch_size, seq_len), device=device,
+                )
+                try:
+                    with torch.amp.autocast(
+                        device_type=device.type, dtype=torch.bfloat16,
+                        enabled=(device.type == "cuda"),
+                    ):
+                        logits = model(input_ids)
+                        loss = F.cross_entropy(
+                            logits[:, :-1].reshape(-1, vocab_size),
+                            input_ids[:, 1:].reshape(-1),
+                        )
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        logger.info("OOM at seq_len=%d, stopping sweep", seq_len)
+                        break
+                    raise
+
+                if torch.isnan(loss) or torch.isinf(loss):
+                    break
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                final_loss = loss.item()
+
+            loss_ratio = final_loss / max(base_loss, 1e-8) if base_loss > 0 else float("inf")
+            scaling_results[seq_len] = {
+                "final_loss": round(final_loss, 6),
+                "loss_ratio": round(loss_ratio, 4),
+                "viable": loss_ratio < 2.0,
+            }
+            if loss_ratio < 2.0:
+                max_viable_len = seq_len
+
+            del model, optimizer
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            gc.collect()
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                scaling_results[seq_len] = {
+                    "final_loss": None,
+                    "loss_ratio": None,
+                    "viable": False,
+                    "error": "OOM",
+                }
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                gc.collect()
+                break
+            raise
+        except Exception as e:
+            scaling_results[seq_len] = {
+                "final_loss": None,
+                "loss_ratio": None,
+                "viable": False,
+                "error": str(e)[:100],
+            }
+
+    # Score: fraction of tested lengths where loss_ratio < 1.5
+    viable_count = sum(
+        1 for r in scaling_results.values()
+        if r.get("loss_ratio") is not None and r["loss_ratio"] < 1.5
+    )
+    total_tested = sum(
+        1 for r in scaling_results.values()
+        if r.get("loss_ratio") is not None
+    )
+    long_context_score = viable_count / max(total_tested, 1)
+
+    return {
+        "scaling_results": scaling_results,
+        "max_viable_len": max_viable_len,
+        "long_context_score": round(long_context_score, 4),
+    }

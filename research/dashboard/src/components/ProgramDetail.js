@@ -183,6 +183,202 @@ function MetricRow({ label, value }) {
   );
 }
 
+function RobustnessProfile({ program, leaderboardEntry }) {
+  const source = leaderboardEntry || program || {};
+  const noise = source?.robustness_noise_score;
+  const longCtx = source?.robustness_long_ctx_score;
+  const initStd = source?.init_sensitivity_std;
+  const quantRetentionRaw = source?.quant_int8_retention;
+  const quantRetention = quantRetentionRaw == null
+    ? null
+    : (Number(quantRetentionRaw) <= 1 ? Number(quantRetentionRaw) * 100 : Number(quantRetentionRaw));
+  const qualityPerByte = source?.quant_quality_per_byte;
+  const spectralNorm = source?.jacobian_spectral_norm ?? source?.fp_jacobian_spectral_norm ?? source?.fp_spectral_norm ?? source?.spectral_norm ?? null;
+
+  const hasAny = [noise, longCtx, initStd, quantRetention, qualityPerByte, spectralNorm]
+    .some(v => v != null && Number.isFinite(Number(v)));
+  if (!hasAny) return null;
+
+  const gauge = (value, invert = false) => {
+    if (value == null) return null;
+    const v = Math.max(0, Math.min(1, Number(value)));
+    const pct = (invert ? (1 - v) : v) * 100;
+    return `${pct.toFixed(0)}%`;
+  };
+
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: 10,
+      background: 'var(--bg-tertiary)',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+    }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 8 }}>
+        Robustness Profile
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
+        <MetricRow label="Noise sensitivity" value={noise != null ? `${Number(noise).toFixed(3)} (${gauge(noise, true)})` : null} />
+        <MetricRow label="Long-context score" value={longCtx != null ? `${Number(longCtx).toFixed(3)} (${gauge(longCtx, false)})` : null} />
+        <MetricRow label="Init sensitivity std" value={initStd != null ? Number(initStd).toFixed(4) : null} />
+        <MetricRow label="INT8 retention" value={quantRetention != null ? `${quantRetention.toFixed(1)}%` : null} />
+        <MetricRow label="Quality per byte" value={qualityPerByte != null ? Number(qualityPerByte).toFixed(4) : null} />
+        <MetricRow label="Spectral norm" value={spectralNorm != null ? Number(spectralNorm).toFixed(4) : null} />
+      </div>
+    </div>
+  );
+}
+
+function AriaAdvice({ analysis }) {
+  const advice = analysis?.brittleness_advice;
+  if (!advice) return null;
+
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: 12,
+      background: 'rgba(188, 140, 255, 0.05)',
+      borderRadius: 8,
+      border: '1px solid rgba(188, 140, 255, 0.3)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 16 }}>🧬</span>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent-purple)', textTransform: 'uppercase' }}>
+          Aria's Advice: Stabilisation
+        </div>
+      </div>
+      
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6, color: 'var(--text-primary)' }}>
+        {advice.summary}
+      </div>
+      
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10, lineHeight: 1.4 }}>
+        {advice.diagnosis}
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}>
+          Recommended Improvements
+        </div>
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+          {advice.remedies.map((r, i) => (
+            <li key={i} style={{ marginBottom: 2 }}>{r}</li>
+          ))}
+        </ul>
+      </div>
+
+      <div style={{ 
+        padding: '8px 10px', 
+        background: 'rgba(188, 140, 255, 0.1)', 
+        borderRadius: 6,
+        fontSize: 11,
+        fontStyle: 'italic',
+        color: 'var(--text-secondary)',
+        lineHeight: 1.4,
+        borderLeft: '2px solid var(--accent-purple)'
+      }}>
+        " {advice.aria_insight} "
+      </div>
+    </div>
+  );
+}
+
+function ReferenceComparison({ program, leaderboardEntry }) {
+  const [references, setReferences] = useState([]);
+  const [selectedRefId, setSelectedRefId] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    apiService.getReferences()
+      .then(d => {
+        setReferences(d.entries || []);
+        // Auto-select a reference from same family if possible
+        const sameFamily = (d.entries || []).find(r => r.architecture_family === (leaderboardEntry?.architecture_family || program?.architecture_family));
+        if (sameFamily) setSelectedRefId(sameFamily.result_id);
+        else if (d.entries?.length > 0) setSelectedRefId(d.entries[0].result_id);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [program.result_id]);
+
+  const selectedRef = references.find(r => r.result_id === selectedRefId);
+  if (references.length === 0 && !loading) return null;
+
+  const metrics = [
+    { key: 'validation_loss_ratio', label: 'Loss Ratio', higherIsBetter: false },
+    { key: 'param_efficiency', label: 'Param Efficiency', higherIsBetter: true },
+    { key: 'quant_int8_retention', label: 'Quant Retention', higherIsBetter: true },
+    { key: 'robustness_long_ctx_score', label: 'Long-Context', higherIsBetter: true },
+    { key: 'robustness_noise_score', label: 'Noise Score', higherIsBetter: false },
+  ];
+
+  const getValue = (obj, key) => {
+    let val = obj?.[key];
+    if (val === undefined || val === null) return null;
+    return Number(val);
+  };
+
+  return (
+    <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-tertiary)', borderRadius: 8, border: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+          Compare to Reference
+        </div>
+        <select
+          value={selectedRefId}
+          onChange={e => setSelectedRefId(e.target.value)}
+          style={{ fontSize: 11, padding: '2px 4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 4 }}
+        >
+          {references.map(r => (
+            <option key={r.result_id} value={r.result_id}>{r.reference_name || r.display_name}</option>
+          ))}
+        </select>
+      </div>
+
+      {selectedRef ? (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', borderBottom: '1px solid var(--border)', pb: 4 }}>
+            <span>Metric</span>
+            <span style={{ textAlign: 'right' }}>Candidate</span>
+            <span style={{ textAlign: 'right' }}>{selectedRef.reference_name || 'Ref'}</span>
+          </div>
+          {metrics.map(m => {
+            const vCan = getValue(leaderboardEntry || program, m.key);
+            const vRef = getValue(selectedRef, m.key);
+            if (vCan === null && vRef === null) return null;
+            
+            const diff = (vCan !== null && vRef !== null) ? (m.higherIsBetter ? vCan - vRef : vRef - vCan) : null;
+            const diffPct = (diff !== null && vRef !== 0) ? (diff / Math.abs(vRef)) * 100 : null;
+            const isBetter = diff !== null && diff > 0;
+
+            return (
+              <div key={m.key} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, fontSize: 12, alignItems: 'center' }}>
+                <span style={{ color: 'var(--text-secondary)' }}>{m.label}</span>
+                <span style={{ textAlign: 'right', fontWeight: 600, color: isBetter ? 'var(--accent-green)' : 'var(--text-primary)' }}>
+                  {vCan !== null ? vCan.toFixed(3) : '--'}
+                  {diffPct !== null && (
+                    <div style={{ fontSize: 9, opacity: 0.8 }}>
+                      {isBetter ? '+' : ''}{diffPct.toFixed(1)}%
+                    </div>
+                  )}
+                </span>
+                <span style={{ textAlign: 'right', color: 'var(--text-muted)' }}>
+                  {vRef !== null ? vRef.toFixed(3) : '--'}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', py: 8 }}>
+          {loading ? 'Loading references...' : 'No reference architectures pinned yet.'}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TIER_COLORS = {
   screening: 'var(--accent-blue)',
   investigation: 'var(--accent-yellow)',
@@ -1669,7 +1865,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                         )}
                         {leaderboardEntry.tier === 'investigation' && !leaderboardEntry.investigation_passed && (
                           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                            investigation in progress
+                            investigation completed (below threshold)
                           </span>
                         )}
                         {leaderboardEntry.tier === 'investigation' && leaderboardEntry.investigation_passed && (
@@ -1987,6 +2183,9 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 </div>
 
                 <BenchmarkEvidenceSnapshot program={program} leaderboardEntry={leaderboardEntry} />
+                <RobustnessProfile program={program} leaderboardEntry={leaderboardEntry} />
+                <AriaAdvice analysis={refineAnalysis} />
+                <ReferenceComparison program={program} leaderboardEntry={leaderboardEntry} />
                 <ExternalBenchmarkCard program={program} />
 
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8, marginTop: 12 }}>

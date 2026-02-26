@@ -382,27 +382,54 @@ class ComputationGraph:
             raise ValueError(f"Unknown shape rule: {rule}")
 
     def topological_order(self) -> List[int]:
-        """Return node IDs in topological order (inputs first). Cached."""
+        """Return node IDs in a canonical topological order (inputs first). Cached.
+        
+        Uses a stable sort (Kahn's algorithm) with tie-breakers to ensure that 
+        structurally identical graphs always produce the same order regardless 
+        of original node ID assignments.
+        """
         if "topo" in self._cache:
             return self._cache["topo"]
 
-        visited = set()
+        # 1. Compute in-degrees
+        in_degree = {nid: len(node.input_ids) for nid, node in self.nodes.items()}
+        
+        # 2. Track adjacency (children)
+        children = {nid: [] for nid in self.nodes}
+        for nid, node in self.nodes.items():
+            for iid in node.input_ids:
+                children[iid].append(nid)
+        
+        # 3. Initialize queue with nodes having 0 in-degree
+        # Sort by op_name + original ID as initial stable baseline
+        ready = [nid for nid, deg in in_degree.items() if deg == 0]
+        
         order = []
+        canonical_id_map = {} # nid -> position in canonical order
 
-        def visit(node_id: int):
-            if node_id in visited:
-                return
-            visited.add(node_id)
-            node = self.nodes[node_id]
-            for inp_id in node.input_ids:
-                visit(inp_id)
-            order.append(node_id)
+        while ready:
+            # TIE-BREAKER: Sort ready nodes by (op_name, sorted_input_canonical_ids)
+            # For the very first nodes (inputs), sorted_input_canonical_ids is empty.
+            def sort_key(nid):
+                node = self.nodes[nid]
+                input_keys = sorted([canonical_id_map[iid] for iid in node.input_ids])
+                return (node.op_name, input_keys, nid)
+            
+            ready.sort(key=sort_key)
+            
+            u = ready.pop(0)
+            canonical_id_map[u] = len(order)
+            order.append(u)
+            
+            for v in children[u]:
+                in_degree[v] -= 1
+                if in_degree[v] == 0:
+                    ready.append(v)
 
-        if self._output_node_id is not None:
-            visit(self._output_node_id)
-        else:
-            for nid in self.nodes:
-                visit(nid)
+        if len(order) < len(self.nodes):
+            # This should not happen in a valid DAG, but if it does, 
+            # fall back to a simple visit to avoid breaking completely.
+            return sorted(self.nodes.keys())
 
         self._cache["topo"] = order
         return order
@@ -454,13 +481,27 @@ class ComputationGraph:
         return result
 
     def fingerprint(self) -> str:
-        """Structural fingerprint (hash of the graph topology + ops). Cached."""
+        """Structural fingerprint (hash of the graph topology + ops). Cached.
+        
+        Canonical representation: abstracts away specific node IDs to ensure 
+        identical architectures always produce the same hash regardless of 
+        generation order or ID assignment.
+        """
         if "fingerprint" in self._cache:
             return self._cache["fingerprint"]
+        
+        # Use a stable topological order (Kahn's or similar)
+        # and replace node IDs with their rank in that order.
+        order = self.topological_order()
+        id_to_rank = {nid: i for i, nid in enumerate(order)}
+        
         desc = []
-        for nid in self.topological_order():
+        for nid in order:
             node = self.nodes[nid]
-            desc.append(f"{node.op_name}({','.join(map(str, node.input_ids))})")
+            # Map input IDs to their canonical ranks
+            ranks = sorted([id_to_rank[iid] for iid in node.input_ids])
+            desc.append(f"{node.op_name}({','.join(map(str, ranks))})")
+        
         key = "|".join(desc)
         result = hashlib.sha256(key.encode()).hexdigest()[:16]
         self._cache["fingerprint"] = result

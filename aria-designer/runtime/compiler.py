@@ -112,6 +112,17 @@ class WorkflowModule(nn.Module):
         return all_nodes - sources
 
     def _invoke_node(self, node_id, module, node_inputs, params):
+        # Prefer handler.forward() if available — it knows the port names
+        handler = self.node_handlers.get(node_id)
+        if handler and hasattr(handler, 'forward'):
+            try:
+                result = handler.forward(node_inputs, params)
+                if isinstance(result, dict):
+                    return result.get('y', result.get('out', next(iter(result.values()))))
+                return result
+            except Exception:
+                pass  # Fall through to module invocation
+
         if len(node_inputs) == 1:
             key, val = next(iter(node_inputs.items()))
             attempts = (
@@ -130,6 +141,7 @@ class WorkflowModule(nn.Module):
             except TypeError:
                 continue
 
+        # Last resort: use handler forward or raise
         out = self._invoke_handler(node_id, self.nodes_config[node_id]['component_type'], node_inputs, params)
         if out is not None:
             return out

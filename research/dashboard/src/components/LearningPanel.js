@@ -225,35 +225,47 @@ function TargetBalanceCards({ summary }) {
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-green)', textTransform: 'uppercase', marginBottom: 6 }}>
             Routing (MoE)
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Token retention: <strong>{fmtPct(routing.retention, 1)}</strong>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Utilization entropy: <strong>{fmtNumber(routing.entropy, 3)}</strong>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Confidence: <strong>{fmtNumber(routing.confidence, 3)}</strong>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-            Best mode: {routing.bestMode || '—'} · Samples: {routing.sampleCount}
-          </div>
+          {routing.sampleCount > 0 ? (<>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Token retention: <strong>{fmtPct(routing.retention, 1)}</strong>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Utilization entropy: <strong>{fmtNumber(routing.entropy, 3)}</strong>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Confidence: <strong>{fmtNumber(routing.confidence, 3)}</strong>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              Best mode: {routing.bestMode || '—'} · Samples: {routing.sampleCount}
+            </div>
+          </>) : (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 4 }}>
+              N/A — no routing architectures evaluated yet
+            </div>
+          )}
         </div>
         <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#c77dff', textTransform: 'uppercase', marginBottom: 6 }}>
             Adaptive Compute
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Depth savings: <strong>{fmtPct(adaptive.depthSavings, 1)}</strong>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Effective depth: <strong>{fmtPct(adaptive.effectiveDepth, 1)}</strong>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Recursion savings: <strong>{fmtPct(adaptive.recursionSavings, 1)}</strong>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-            Samples with telemetry: {adaptive.sampleCount}
-          </div>
+          {adaptive.sampleCount > 0 ? (<>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Depth savings: <strong>{fmtPct(adaptive.depthSavings, 1)}</strong>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Effective depth: <strong>{fmtPct(adaptive.effectiveDepth, 1)}</strong>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Recursion savings: <strong>{fmtPct(adaptive.recursionSavings, 1)}</strong>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              Samples with telemetry: {adaptive.sampleCount}
+            </div>
+          </>) : (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 4 }}>
+              N/A — no adaptive compute architectures evaluated yet
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -2032,7 +2044,7 @@ function ControlComparison({ data, onStartExperiment }) {
     );
   }
 
-  const { control, learned, s1_rate_difference, z_score, significant_at_p05, learned_is_better, interpretation } = data;
+  const { control, learned, s1_rate_difference, z_score, significant_at_p05, learned_is_better, interpretation, caveat, matched_pairs } = data;
 
   const verdictColor = significant_at_p05
     ? (learned_is_better ? 'var(--accent-green)' : 'var(--accent-red, #e74c3c)')
@@ -2058,7 +2070,13 @@ function ControlComparison({ data, onStartExperiment }) {
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
           z-score: {z_score} {significant_at_p05 ? '(p < 0.05)' : '(not significant)'}
+          {matched_pairs ? ` · ${matched_pairs} time-matched pairs` : ''}
         </div>
+        {caveat && (
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, fontStyle: 'italic' }}>
+            {caveat}
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>

@@ -31,7 +31,7 @@ class GrammarConfig:
     max_depth: int = 10
     max_width: int = 4          # max parallel paths
     max_ops: int = 16           # max total operations
-    max_params_ratio: float = 4.0  # max params relative to D^2
+    max_params_ratio: float = 8.0  # max params relative to D^2
     residual_prob: float = 0.7  # probability of residual connection
     split_prob: float = 0.3     # probability of branching into parallel paths
     stability_check: bool = True  # validate architectures before compilation

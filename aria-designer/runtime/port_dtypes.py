@@ -53,15 +53,21 @@ def find_unsupported_edge_dtype_pairings(
         if src_dtype == tgt_dtype:
             continue
 
+        # Implicitly compatible pairings (warning, not error)
+        _IMPLICIT_COMPAT = {
+            ("complex_tensor", "tensor"),   # runtime takes .real
+            ("tensor", "complex_tensor"),   # runtime zero-fills imaginary
+        }
+        if (src_dtype, tgt_dtype) in _IMPLICIT_COMPAT:
+            continue
+
         # P3.13: Add explicit errors for unsupported edge type pairings.
         specific_error = None
         if src_dtype == "dataset" and tgt_dtype == "tensor":
             specific_error = "Dataset cannot be connected directly to a tensor port; use a data_transform component first."
         elif src_dtype == "list" and tgt_dtype == "scalar":
             specific_error = "List cannot be connected to a scalar port; use a reduction or indexing op."
-        elif src_dtype == "complex_tensor" and tgt_dtype == "tensor":
-            specific_error = "Complex tensor requires explicit conversion (e.g. irfft) before connecting to a real tensor port."
-        
+
         message = (
             f"Unsupported edge dtype pairing on edge {edge.get('id', '')}: "
             f"{source_id}.{source_port_name} ({src_dtype}) -> "

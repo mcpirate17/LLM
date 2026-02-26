@@ -1,0 +1,52 @@
+id: rwkv_time_mixing
+version: 1.0.0
+name: RWKV Time Mixing
+category: mixing
+tags:
+- parameterized
+- attention
+- rnn
+status: approved
+description: RWKV linear attention with learned decay
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: aria_rwkv_time_mixing_f32
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: true
+  param_formula: D * D * 3
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  RWKV WKV linear attention kernel with learned decay.
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  A highly efficient sequence mixer that captures long-term dependencies.
+
+  '

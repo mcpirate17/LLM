@@ -25,6 +25,7 @@ import RunResultsPanel from './components/RunResultsPanel'
 import ErrorBoundary from './components/ErrorBoundary'
 import { isValidConnection as validateConnection } from './utils/validation'
 import { buildWorkflowJson } from './utils/workflow'
+import { findClosestEdge } from './utils/geometry'
 import { starterEdges, starterNodes } from './mockData'
 
 const API_BASE = 'http://127.0.0.1:8091'
@@ -79,6 +80,8 @@ function DesignerApp() {
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [helpRequest, setHelpRequest] = useState(null)
+  
+  const [snapToGridEnabled, setSnapToGridEnabled] = useState(true)
   
   // Use a ref to store initial URL params to avoid re-runs
   const initialParams = useMemo(() => new URLSearchParams(window.location.search), [])
@@ -370,6 +373,39 @@ function DesignerApp() {
     [setEdges]
   )
 
+  const onNodeDragStop = useCallback(
+    (_, node) => {
+      // Auto-injection for existing nodes
+      const position = node.position
+      const { edge, distance } = findClosestEdge(position, edges, nodes)
+      
+      // Ensure we don't try to inject into an edge that is already connected to this node
+      if (edge && distance < 25 && edge.source !== node.id && edge.target !== node.id) {
+        setEdges((eds) => {
+          const filtered = eds.filter((e) => e.id !== edge.id)
+          return [
+            ...filtered,
+            {
+              id: `e_inject_1_${Date.now()}`,
+              source: edge.source,
+              sourceHandle: edge.sourceHandle,
+              target: node.id,
+              targetHandle: node.data.inputs[0]?.name || 'x',
+            },
+            {
+              id: `e_inject_2_${Date.now()}`,
+              source: node.id,
+              sourceHandle: node.data.outputs[0]?.name || 'y',
+              target: edge.target,
+              targetHandle: edge.targetHandle,
+            },
+          ]
+        })
+      }
+    },
+    [edges, nodes, setEdges]
+  )
+
   // Drag-and-drop from palette onto canvas
   const onDragOver = useCallback((e) => {
     e.preventDefault()
@@ -408,8 +444,33 @@ function DesignerApp() {
       }
       setNodes((prev) => [...prev, newNode])
       setSelectedNodeId(newId)
+
+      // Auto-injection logic: check if dropped on/near an edge
+      const { edge, distance } = findClosestEdge(position, edges, nodes)
+      if (edge && distance < 25) {
+        setEdges((eds) => {
+          const filtered = eds.filter((e) => e.id !== edge.id)
+          return [
+            ...filtered,
+            {
+              id: `e_inject_1_${Date.now()}`,
+              source: edge.source,
+              sourceHandle: edge.sourceHandle,
+              target: newId,
+              targetHandle: newNode.data.inputs[0]?.name || 'x',
+            },
+            {
+              id: `e_inject_2_${Date.now()}`,
+              source: newId,
+              sourceHandle: newNode.data.outputs[0]?.name || 'y',
+              target: edge.target,
+              targetHandle: edge.targetHandle,
+            },
+          ]
+        })
+      }
     },
-    [screenToFlowPosition, setNodes]
+    [screenToFlowPosition, setNodes, edges, nodes, setEdges]
   )
 
   const onAddFromPalette = useCallback(
@@ -579,6 +640,7 @@ function DesignerApp() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(workflow),
         })
+        if (!res.ok) throw new Error(`designer validate ${res.status}`)
         data = await res.json()
       } catch {
         const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/validate`, {
@@ -589,12 +651,14 @@ function DesignerApp() {
         data = await res.json()
       }
 
-      if (data.success === true || data.valid === true) {
+      // Treat response with no errors as valid even if valid field is missing
+      const hasErrors = (data.issues || []).some((i) => i.severity === 'error')
+      if (data.success === true || data.valid === true || (data.issues && !hasErrors)) {
         setStepStatus((s) => ({ ...s, validate: 'pass' }))
         setValidateUi({ inProgress: false, last: 'pass', issues: 0 })
         setStatusMsg('Validation passed: no issues found')
         setRunStatus({ phase: 'success', message: 'Validation passed', metrics: { issues: 0 } })
-        return
+        return true
       }
 
       const errorMap = {}
@@ -630,6 +694,14 @@ function DesignerApp() {
   }, [nodes, edges, clearNodeHighlights, highlightNodeErrors])
 
   const handleCompile = useCallback(async () => {
+    // Auto-validate first if not already passed
+    if (stepStatus.validate !== 'pass') {
+      const passed = await handleValidate()
+      if (!passed) {
+        setStatusMsg('Compile skipped: fix validation errors first')
+        return false
+      }
+    }
     const workflow = buildWorkflowJson(nodes, edges)
     setWorkflowStage('compile')
     setStepStatus((s) => ({ ...s, compile: 'running' }))
@@ -645,6 +717,7 @@ function DesignerApp() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(workflow),
         })
+        if (!res.ok) throw new Error(`designer compile ${res.status}`)
         data = await res.json()
       } catch {
         usedDesignerApi = false
@@ -680,6 +753,7 @@ function DesignerApp() {
             },
           })
         }
+        return true
       } else {
         setStepStatus((s) => ({ ...s, compile: 'fail' }))
         const err = data.error || 'Compilation failed'
@@ -689,13 +763,15 @@ function DesignerApp() {
         }
         setStatusMsg(`Compilation failed: ${err}`)
         setRunStatus({ phase: 'failed', message: `Compile failed: ${err}`, metrics: null })
+        return false
       }
     } catch {
       setStepStatus((s) => ({ ...s, compile: 'fail' }))
       setStatusMsg('Compilation failed (API offline)')
       setRunStatus({ phase: 'failed', message: 'Compile failed (API offline)', metrics: null })
+      return false
     }
-  }, [nodes, edges, clearNodeHighlights, highlightNodeErrors])
+  }, [nodes, edges, stepStatus, handleValidate, clearNodeHighlights, highlightNodeErrors])
 
   const handleSave = useCallback(async () => {
     const workflow = buildWorkflowJson(nodes, edges)
@@ -726,6 +802,14 @@ function DesignerApp() {
   }, [nodes, edges])
 
   const handlePreview = useCallback(async () => {
+    // Auto-validate + compile first
+    if (stepStatus.compile !== 'pass') {
+      const compiled = await handleCompile()
+      if (!compiled) {
+        setStatusMsg('Test skipped: fix compile errors first')
+        return false
+      }
+    }
     const workflow = buildWorkflowJson(nodes, edges)
     try {
       setWorkflowStage('run')
@@ -741,6 +825,7 @@ function DesignerApp() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(workflow),
         })
+        if (!res.ok) throw new Error(`designer run ${res.status}`)
         data = await res.json()
       } catch {
         usedDesignerApi = false
@@ -802,7 +887,7 @@ function DesignerApp() {
       setStatusMsg('Preview failed (API offline)')
       setRunStatus({ phase: 'failed', message: 'Run failed (API offline)', metrics: null })
     }
-  }, [nodes, edges, setNodes, clearNodeHighlights, highlightNodeErrors])
+  }, [nodes, edges, stepStatus, handleCompile, setNodes, clearNodeHighlights, highlightNodeErrors])
 
   // Helper: set evalStatus on all nodes
   const setAllNodeEvalStatus = useCallback((status, error) => {
@@ -815,6 +900,14 @@ function DesignerApp() {
   }, [setNodes])
 
   const handleDeepRun = useCallback(async () => {
+    // Auto-validate + compile first
+    if (stepStatus.compile !== 'pass') {
+      const compiled = await handleCompile()
+      if (!compiled) {
+        setStatusMsg('Deep Run skipped: fix validation/compile errors first')
+        return
+      }
+    }
     // Abort any in-flight deep run
     if (deepRunAbortRef.current) deepRunAbortRef.current.abort()
     const controller = new AbortController()
@@ -976,7 +1069,7 @@ function DesignerApp() {
         setAllNodeEvalStatus('fail', err.message)
       }
     }
-  }, [nodes, edges, setNodes, setAllNodeEvalStatus])
+  }, [nodes, edges, stepStatus, handleCompile, setNodes, setAllNodeEvalStatus])
 
   const handleExportJson = useCallback(() => {
     const workflow = buildWorkflowJson(nodes, edges)
@@ -1492,6 +1585,13 @@ function DesignerApp() {
                 ))}
               </select>
               <button onClick={handleReloadComponents} title="Reload component library from disk">Reload</button>
+              <button 
+                onClick={() => setSnapToGridEnabled(!snapToGridEnabled)} 
+                className={snapToGridEnabled ? 'active' : ''}
+                title="Align components to grid during drag"
+              >
+                Snap: {snapToGridEnabled ? 'ON' : 'OFF'}
+              </button>
               <button onClick={handleClearCanvas} style={{color: '#ff5050'}} title="Clear all nodes and edges from the canvas">Clear</button>
             </div>
             {workflowStage !== 'idle' && runStatus.phase !== 'idle' && (
@@ -1522,13 +1622,14 @@ function DesignerApp() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onNodeDragStop={onNodeDragStop}
             isValidConnection={isValidConnection}
             onNodeClick={(_, node) => setSelectedNodeId(node.id)}
             onPaneClick={() => setSelectedNodeId(null)}
             onDragOver={onDragOver}
             onDrop={onDrop}
             fitView
-            snapToGrid
+            snapToGrid={snapToGridEnabled}
             snapGrid={[15, 15]}
           >
             <MiniMap

@@ -21,11 +21,33 @@ const TIER_LABELS = {
 };
 
 const STATUS_LABELS = {
-  screening: 'Screening',
-  investigation: 'Investigating',
+  screening: 'Screened',
+  investigation: 'Investigation',
   validation: 'Validated',
   breakthrough: 'Breakthrough',
 };
+
+const STATUS_OPTIONS = [
+  { value: 'screening', label: 'Screened' },
+  { value: 'investigation', label: 'Investigating' },
+  { value: 'validation', label: 'Validated' },
+  { value: 'breakthrough', label: 'Breakthrough' },
+];
+
+function bestLoss(entry) {
+  if (entry?.validation_loss_ratio != null) return Number(entry.validation_loss_ratio);
+  if (entry?.investigation_loss_ratio != null) return Number(entry.investigation_loss_ratio);
+  if (entry?.screening_loss_ratio != null) return Number(entry.screening_loss_ratio);
+  if (entry?.loss_ratio != null) return Number(entry.loss_ratio);
+  return null;
+}
+
+function percentOfReference(entryLoss, refLoss) {
+  const e = Number(entryLoss);
+  const r = Number(refLoss);
+  if (!Number.isFinite(e) || !Number.isFinite(r) || r <= 0) return null;
+  return (e / r) * 100;
+}
 
 // ── Summary Bar ────────────────────────────────────────────────────
 
@@ -42,8 +64,8 @@ function SummaryBar({ tierCounts }) {
       border: '1px solid var(--border)', fontSize: 13,
     }}>
       <Stat value={total} label="unique architectures" />
-      <Stat value={tierCounts?.screening || 0} label="screening" color="var(--accent-blue)" />
-      <Stat value={tierCounts?.investigation || 0} label="investigating" color="var(--accent-yellow)" />
+      <Stat value={tierCounts?.screening || 0} label="screened" color="var(--accent-blue)" />
+      <Stat value={tierCounts?.investigation || 0} label="investigation" color="var(--accent-yellow)" />
       <Stat value={validated} label="validated" color="var(--accent-purple)" />
       <Stat value={breakthroughs} label="breakthroughs" color="var(--accent-green)" />
     </div>
@@ -63,16 +85,55 @@ function Stat({ value, label, color }) {
 
 // ── Status Badge ───────────────────────────────────────────────────
 
-function StatusBadge({ tier }) {
+function StatusBadge({ entry }) {
+  const tier = entry.tier;
   const color = TIER_COLORS[tier] || 'var(--text-muted)';
+  
+  let label = STATUS_LABELS[tier] || tier || 'Unknown';
+  
+  // Refine label if phase is completed but failed
+  if (tier === 'investigation' && entry.investigation_robustness != null && !entry.investigation_passed) {
+    label = 'Brittle';
+  } else if (tier === 'validation' && entry.validation_baseline_ratio != null && !entry.validation_passed) {
+    label = 'Mediocre';
+  }
+
   return (
     <span style={{
       padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
       color, background: `${color}22`, border: `1px solid ${color}`,
       textTransform: 'uppercase',
     }}>
-      {STATUS_LABELS[tier] || tier || 'Unknown'}
+      {label}
     </span>
+  );
+}
+
+function StatusEditor({
+  entry,
+  currentValue,
+  onChange,
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <select
+        value={currentValue || entry.tier || 'screening'}
+        onChange={(e) => onChange(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          fontSize: 11,
+          padding: '2px 6px',
+          borderRadius: 4,
+          border: '1px solid var(--border)',
+          background: 'var(--bg-tertiary)',
+          color: 'var(--text-primary)',
+        }}
+      >
+        {STATUS_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </div>
   );
 }
 
@@ -97,6 +158,8 @@ function ScoreCell({ entry }) {
     efficiencyBonus: { label: 'Efficiency', color: '#58a6ff' },
     routingBonus: { label: 'Routing', color: '#3fb950' },
     adaptiveBonus: { label: 'Adaptive Compute', color: '#c77dff' },
+    robustnessBonus: { label: 'Robustness', color: 'var(--accent-yellow)' },
+    referenceDeltaBonus: { label: 'Baseline Delta', color: 'var(--accent-orange)' },
   };
 
   const components = Object.entries(breakdown)
@@ -145,9 +208,26 @@ function ScoreCell({ entry }) {
 
 // ── Expanded Row Detail ────────────────────────────────────────────
 
-function ExpandedDetail({ entry, onInvestigate, onValidate, onQueueAdd, onQueueRemove, isQueued, eligibility }) {
+function ExpandedDetail({
+  entry,
+  onInvestigate,
+  onValidate,
+  onQueueAdd,
+  onQueueRemove,
+  isQueued,
+  eligibility,
+  statusDraft,
+  onStatusDraftChange,
+  onSaveStatus,
+  savingStatus,
+}) {
   const promotion = promotionEvidence(entry);
-  const fmt = (v, d = 4) => v != null ? Number(v).toFixed(d) : '--';
+  const fmt = (v, d = 4) => {
+    if (v == null) return '--';
+    const num = Number(v);
+    if (num !== 0 && Math.abs(num) < 0.0001) return num.toExponential(2);
+    return num.toFixed(d);
+  };
 
   return (
     <tr>
@@ -198,6 +278,37 @@ function ExpandedDetail({ entry, onInvestigate, onValidate, onQueueAdd, onQueueR
                 FP: {entry.graph_fingerprint}
               </div>
             )}
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                Edit Status
+              </div>
+              <StatusEditor
+                entry={entry}
+                currentValue={statusDraft || entry.tier}
+                onChange={(tier) => onStatusDraftChange?.(tier)}
+              />
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSaveStatus?.();
+                }}
+                disabled={savingStatus || (statusDraft || entry.tier) === entry.tier}
+                style={{
+                  ...actionBtnStyle,
+                  padding: '3px 9px',
+                  fontSize: 10,
+                  borderColor: 'var(--accent-green)',
+                  color: 'var(--accent-green)',
+                  opacity: (savingStatus || (statusDraft || entry.tier) === entry.tier) ? 0.6 : 1,
+                  cursor: (savingStatus || (statusDraft || entry.tier) === entry.tier) ? 'not-allowed' : 'pointer',
+                }}
+                title="Save status change"
+              >
+                {savingStatus ? 'Saving…' : 'Save Status'}
+              </button>
+            </div>
             {entry.result_id && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                 ID: {entry.result_id}
@@ -315,7 +426,10 @@ function FingerprintLeaderboardChart({ entries }) {
           const barH = (score / maxScore) * (H - 2 * PAD_Y);
           const x = PAD_X + i * (barW + 8);
           const y = H - PAD_Y - barH;
-          const color = scoreColor(score);
+          const isPinnedReference = Boolean(e?.is_reference)
+            || String(e?.model_source || '').toLowerCase() === 'reference'
+            || Boolean(e?.reference_name);
+          const color = isPinnedReference ? 'var(--accent-purple)' : scoreColor(score);
           
           return (
             <g key={e.result_id || i}>
@@ -340,8 +454,12 @@ const COLUMNS = [
   { key: 'display_name', label: 'Architecture' },
   { key: 'architecture_family', label: 'Family' },
   { key: '_best_loss', label: 'Loss' },
+  { key: '_vs_ref', label: 'vs Ref' },
   { key: '_novelty', label: 'Novelty' },
-  { key: 'tier', label: 'Status' },
+  { key: 'investigation_robustness', label: 'Robustness' },
+  { key: 'jacobian_spectral_norm', label: 'Spectral' },
+  { key: 'init_sensitivity_std', label: 'InitStd' },
+  { key: 'tier', label: 'Status', width: 96 },
   { key: '_actions', label: '' },
 ];
 
@@ -357,6 +475,12 @@ function Discoveries({
   eligibilityByResultId,
   onOpenInDesigner,
 }) {
+  const isPinnedReferenceRow = useCallback((entry) => (
+    Boolean(entry?.is_reference)
+    || String(entry?.model_source || '').toLowerCase() === 'reference'
+    || Boolean(entry?.reference_name)
+  ), []);
+
   const prefs = (() => {
     try {
       if (typeof window === 'undefined') return {};
@@ -377,7 +501,17 @@ function Discoveries({
   const [expandedRowId, setExpandedRowId] = useState(null);
   const [highlightId, setHighlightId] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [statusDrafts, setStatusDrafts] = useState({});
+  const [savingStatusRowId, setSavingStatusRowId] = useState(null);
+  const [statusError, setStatusError] = useState(null);
   const [showChart, setShowChart] = useState(true);
+  const [showReferences, setShowReferences] = useState(() =>
+    typeof prefs?.showReferences === 'boolean' ? prefs.showReferences : true
+  );
+  const [visibleColumns, setVisibleColumns] = useState(() =>
+    Array.isArray(prefs?.visibleColumns) ? prefs.visibleColumns : COLUMNS.map(c => c.key)
+  );
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
   const highlightRef = useRef(null);
 
@@ -386,10 +520,10 @@ function Discoveries({
     try {
       if (typeof window === 'undefined') return;
       window.localStorage.setItem(DISCOVERIES_PREFS_KEY, JSON.stringify({
-        activeTier, sortKey, sortDesc, searchQuery, showChart,
+        activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, visibleColumns,
       }));
     } catch {}
-  }, [activeTier, sortKey, sortDesc, searchQuery, showChart]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, visibleColumns]);
 
   // Handle external highlight
   useEffect(() => {
@@ -438,16 +572,96 @@ function Discoveries({
     else { setSortKey(key); setSortDesc(true); }
   };
 
+  const handleStatusDraftChange = useCallback((rowId, tier) => {
+    setStatusDrafts(prev => ({ ...prev, [rowId]: tier }));
+  }, []);
+
+  const handleSaveStatus = useCallback(async (entry) => {
+    const rowId = entry.entry_id || entry.result_id;
+    if (!rowId) return;
+    const nextTier = statusDrafts[rowId] || entry.tier;
+    if (!nextTier || nextTier === entry.tier) return;
+
+    setSavingStatusRowId(rowId);
+    setStatusError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/leaderboard/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entry_id: entry.entry_id,
+          result_id: entry.result_id,
+          tier: nextTier,
+        }),
+      });
+      if (!res.ok) {
+        let payload = null;
+        try { payload = await res.json(); } catch {}
+        throw new Error(payload?.error || `HTTP ${res.status}`);
+      }
+
+      setData(prev => {
+        if (!prev?.entries) return prev;
+        return {
+          ...prev,
+          entries: prev.entries.map(item => (
+            (item.entry_id && item.entry_id === entry.entry_id)
+              || (item.result_id && item.result_id === entry.result_id)
+              ? { ...item, tier: nextTier }
+              : item
+          )),
+        };
+      });
+    } catch (e) {
+      setStatusError(`Failed to save status: ${e.message}`);
+    } finally {
+      setSavingStatusRowId(null);
+    }
+  }, [statusDrafts]);
+
   // Sort & augment entries
   const sorted = useMemo(() => {
     const entries = data?.entries || [];
-    const augmented = entries.map(e => ({
-      ...e,
-      _score: candidateScore(e, TIER_ORDER),
-      _best_loss: e.screening_loss_ratio ?? e.investigation_loss_ratio ?? e.validation_loss_ratio ?? e.loss_ratio ?? null,
-      _novelty: e.screening_novelty ?? e.novelty_score ?? null,
-    }));
+    const refs = entries.filter(e => e.is_reference);
+    
+    const augmented = entries.map(e => {
+      const entryBestLoss = bestLoss(e);
+      
+      // Find best reference in same family or paradigm for comparison
+      let vsRef = null;
+      if (entryBestLoss != null && !e.is_reference) {
+        // 1. Try same family
+        let bestRefLoss = null;
+        const familyRefs = refs.filter(r => r.architecture_family === e.architecture_family && bestLoss(r) != null);
+        if (familyRefs.length > 0) {
+          bestRefLoss = Math.min(...familyRefs.map(r => bestLoss(r)));
+        } else {
+          // 2. Fallback to GPT-2 Small as the "universal" baseline
+          const gpt2 = refs.find(r => r.reference_name === 'GPT-2 Small' || r.reference_name === 'GPT-2');
+          bestRefLoss = bestLoss(gpt2);
+        }
+        
+        if (bestRefLoss != null) {
+          vsRef = percentOfReference(entryBestLoss, bestRefLoss);
+        }
+      }
+
+      return {
+        ...e,
+        _score: candidateScore(e, TIER_ORDER),
+        _best_loss: entryBestLoss,
+        _vs_ref: vsRef,
+        _novelty: e.screening_novelty ?? e.novelty_score ?? null,
+      };
+    });
     augmented.sort((a, b) => {
+      // ONLY prioritize references at the top if we are sorting by score (the default)
+      if (sortKey === '_score') {
+        const aRef = Number(Boolean(a?.is_reference));
+        const bRef = Number(Boolean(b?.is_reference));
+        if (aRef !== bRef) return bRef - aRef;
+      }
+
       let va, vb;
       if (sortKey === 'tier') {
         va = TIER_ORDER[a.tier] || 0;
@@ -467,18 +681,23 @@ function Discoveries({
     return augmented;
   }, [data?.entries, sortKey, sortDesc]);
 
+  const visibilityFiltered = useMemo(() => {
+    if (showReferences) return sorted;
+    return sorted.filter(e => !e?.is_reference);
+  }, [sorted, showReferences]);
+
   // Search filter
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return sorted;
+    if (!searchQuery.trim()) return visibilityFiltered;
     const q = searchQuery.trim().toLowerCase();
-    return sorted.filter(e =>
+    return visibilityFiltered.filter(e =>
       (e.display_name && e.display_name.toLowerCase().includes(q)) ||
       (e.architecture_family && e.architecture_family.toLowerCase().includes(q)) ||
       (e.graph_fingerprint && e.graph_fingerprint.toLowerCase().includes(q)) ||
       (e.result_id && e.result_id.toLowerCase().includes(q)) ||
       (e.architecture_desc && e.architecture_desc.toLowerCase().includes(q))
     );
-  }, [sorted, searchQuery]);
+  }, [visibilityFiltered, searchQuery]);
 
   const tierCounts = data?.tier_counts || {};
   const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
@@ -543,6 +762,30 @@ function Discoveries({
           );
         })}
         <button
+          onClick={() => setShowReferences(v => !v)}
+          aria-label={showReferences ? 'Hide references' : 'Show references'}
+          style={{
+            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
+            background: showReferences ? 'rgba(188, 140, 255, 0.12)' : 'transparent',
+            border: `1px solid ${showReferences ? 'var(--accent-purple)' : 'var(--border)'}`,
+            borderRadius: 4, color: showReferences ? 'var(--accent-purple)' : 'var(--text-secondary)',
+          }}
+        >
+          {showReferences ? 'Hide references' : 'Show references'}
+        </button>
+        <button
+          onClick={() => setShowColumnPicker(!showColumnPicker)}
+          style={{
+            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
+            border: `1px solid ${showColumnPicker ? 'var(--accent-blue)' : 'var(--border)'}`, 
+            borderRadius: 4,
+            background: showColumnPicker ? 'rgba(88, 166, 255, 0.12)' : 'transparent', 
+            color: showColumnPicker ? 'var(--accent-blue)' : 'var(--text-secondary)',
+          }}
+        >
+          Columns
+        </button>
+        <button
           onClick={fetchData}
           aria-label="Refresh discoveries"
           style={{ marginLeft: 'auto', fontSize: 11, padding: '5px 12px', cursor: 'pointer', background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)' }}
@@ -550,6 +793,31 @@ function Discoveries({
           Refresh
         </button>
       </div>
+
+      {showColumnPicker && (
+        <div style={{
+          marginBottom: 12, padding: 12, background: 'var(--bg-secondary)', 
+          border: '1px solid var(--border)', borderRadius: 6,
+          display: 'flex', gap: 12, flexWrap: 'wrap'
+        }}>
+          {COLUMNS.map(col => (
+            <label key={col.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-primary)', cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={visibleColumns.includes(col.key)}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setVisibleColumns([...visibleColumns, col.key]);
+                  } else {
+                    setVisibleColumns(visibleColumns.filter(k => k !== col.key));
+                  }
+                }}
+              />
+              {col.label}
+            </label>
+          ))}
+        </div>
+      )}
 
       {/* Search */}
       <div style={{ marginBottom: 12 }}>
@@ -573,6 +841,7 @@ function Discoveries({
       </div>
 
       {error && <p style={{ color: 'var(--accent-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>}
+      {statusError && <p style={{ color: 'var(--accent-red)', fontSize: 12, marginBottom: 8 }}>{statusError}</p>}
 
       {loading ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading discoveries...</p>
@@ -591,13 +860,15 @@ function Discoveries({
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                <th style={{ ...thStyle, width: 26 }} aria-label="Pinned marker" />
                 <th style={thStyle}>#</th>
-                {COLUMNS.map(col => (
+                {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => (
                   <th
                     key={col.key}
                     onClick={() => handleSort(col.key)}
                     style={{
                       ...thStyle,
+                      width: col.width ? `${col.width}px` : undefined,
                       cursor: col.key === '_actions' ? 'default' : 'pointer',
                       userSelect: 'none',
                     }}
@@ -618,6 +889,7 @@ function Discoveries({
                 const isExpanded = expandedRowId === rowId;
                 const isHighlighted = highlightId && entry.result_id === highlightId;
                 const isQueued = !!entry.result_id && queuedSet.has(entry.result_id);
+                const isPinnedReference = isPinnedReferenceRow(entry);
                 const eligibility = eligibilityByResultId?.[entry.result_id] || null;
                 const displayName = entry.display_name || entry.architecture_desc || entry.graph_fingerprint?.slice(0, 10) || '--';
 
@@ -630,69 +902,130 @@ function Discoveries({
                         cursor: 'pointer',
                         background: isHighlighted
                           ? 'rgba(88, 166, 255, 0.2)'
-                          : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
+                          : isPinnedReference
+                            ? 'rgba(188, 140, 255, 0.14)'
+                            : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
                         animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
                       }}
                       onClick={() => onSelectProgram?.(entry.result_id)}
                     >
+                      <td style={{ ...tdStyle, width: 26, textAlign: 'center', paddingLeft: 4, paddingRight: 4 }}>
+                        {isPinnedReference ? (
+                          <span title="Pinned reference" style={{ color: 'var(--accent-purple)', fontSize: 12, fontWeight: 700 }}>
+                            ★
+                          </span>
+                        ) : null}
+                      </td>
                       <td style={tdStyle}>{i + 1}</td>
-                      <td style={tdStyle}><ScoreCell entry={entry} /></td>
-                      <td style={{ ...tdStyle, maxWidth: 200 }}>
-                        <div style={{ fontWeight: 500 }}>{displayName}</div>
-                        {entry.graph_fingerprint && (
-                          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                            {entry.graph_fingerprint.slice(0, 12)}
-                          </div>
-                        )}
-                      </td>
-                      <td style={tdStyle}>
-                        <span style={{
-                          fontSize: 11, padding: '1px 6px', borderRadius: 3,
-                          background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
-                        }}>
-                          {entry.architecture_family || '--'}
-                        </span>
-                      </td>
-                      <td style={{ ...tdStyle, color: lossColor(entry._best_loss), fontFamily: 'monospace' }}>
-                        {entry._best_loss != null ? Number(entry._best_loss).toFixed(4) : '--'}
-                      </td>
-                      <td style={{ ...tdStyle, color: noveltyColor(entry._novelty), fontFamily: 'monospace' }}>
-                        {entry._novelty != null ? Number(entry._novelty).toFixed(3) : '--'}
-                      </td>
-                      <td style={tdStyle}><StatusBadge tier={entry.tier} /></td>
-                      <td style={tdStyle} onClick={e => e.stopPropagation()}>
-                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                          <button
-                            onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
-                            style={{
-                              ...actionBtnStyle,
-                              borderColor: 'var(--accent-blue)',
-                              color: 'var(--accent-blue)',
-                              background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
-                            }}
-                          >
-                            {isExpanded ? 'Collapse' : 'Details'}
-                          </button>
-                          {onOpenInDesigner && (
-                            <button
-                              onClick={() => {
-                                if (entry.result_id) onOpenInDesigner(entry.result_id)
-                              }}
-                              disabled={!entry.result_id}
-                              style={{
-                                ...actionBtnStyle,
-                                borderColor: 'var(--accent-purple)',
-                                color: 'var(--accent-purple)',
-                                opacity: entry.result_id ? 1 : 0.5,
-                                cursor: entry.result_id ? 'pointer' : 'not-allowed',
-                              }}
-                              title={entry.result_id ? 'Open architecture in visual designer' : 'Designer unavailable: missing result ID'}
-                            >
-                              Designer
-                            </button>
-                          )}
-                        </div>
-                      </td>
+                      {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => {
+                        switch (col.key) {
+                          case '_score':
+                            return <td key={col.key} style={tdStyle}><ScoreCell entry={entry} /></td>;
+                          case 'display_name':
+                            return (
+                              <td key={col.key} style={{ ...tdStyle, maxWidth: 200 }}>
+                                <div style={{ fontWeight: 500 }}>{displayName}</div>
+                                {entry.graph_fingerprint && (
+                                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                                    {entry.graph_fingerprint.slice(0, 12)}
+                                  </div>
+                                )}
+                              </td>
+                            );
+                          case 'architecture_family':
+                            return (
+                              <td key={col.key} style={tdStyle}>
+                                <span style={{
+                                  fontSize: 11, padding: '1px 6px', borderRadius: 3,
+                                  background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
+                                }}>
+                                  {entry.architecture_family || '--'}
+                                </span>
+                              </td>
+                            );
+                          case '_best_loss':
+                            return (
+                              <td key={col.key} style={{ ...tdStyle, color: lossColor(entry._best_loss), fontFamily: 'monospace' }}>
+                                {entry._best_loss != null ? (Number(entry._best_loss) !== 0 && Math.abs(Number(entry._best_loss)) < 0.0001 ? Number(entry._best_loss).toExponential(2) : Number(entry._best_loss).toFixed(4)) : '--'}
+                              </td>
+                            );
+                          case '_vs_ref':
+                            return (
+                              <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry._vs_ref != null ? (entry._vs_ref <= 100 ? 'var(--accent-green)' : 'var(--accent-red)') : 'var(--text-muted)' }}>
+                                {entry._vs_ref != null ? `${entry._vs_ref.toFixed(1)}%` : '--'}
+                              </td>
+                            );
+                          case '_novelty':
+                            return (
+                              <td key={col.key} style={{ ...tdStyle, color: noveltyColor(entry._novelty), fontFamily: 'monospace' }}>
+                                {entry._novelty != null ? Number(entry._novelty).toFixed(3) : '--'}
+                              </td>
+                            );
+                          case 'investigation_robustness':
+                            return (
+                              <td key={col.key} style={tdStyle}>
+                                {entry.investigation_robustness != null
+                                  ? <span style={{
+                                      color: entry.investigation_robustness >= 0.5
+                                        ? 'var(--accent-green)' : 'var(--accent-red)',
+                                    }}>
+                                      {Number(entry.investigation_robustness).toFixed(2)}
+                                    </span>
+                                  : '--'}
+                              </td>
+                            );
+                          case 'jacobian_spectral_norm':
+                            return <td key={col.key} style={tdStyle}>{entry.jacobian_spectral_norm != null ? Number(entry.jacobian_spectral_norm).toFixed(4) : '--'}</td>;
+                          case 'init_sensitivity_std':
+                            return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
+                          case 'tier':
+                            return (
+                              <td key={col.key} style={tdStyle}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                  <StatusBadge entry={entry} />
+                                </div>
+                              </td>
+                            );
+                          case '_actions':
+                            return (
+                              <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                                  <button
+                                    onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
+                                    style={{
+                                      ...actionBtnStyle,
+                                      borderColor: 'var(--accent-blue)',
+                                      color: 'var(--accent-blue)',
+                                      background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
+                                    }}
+                                  >
+                                    {isExpanded ? 'Collapse' : 'Details'}
+                                  </button>
+                                  {onOpenInDesigner && (
+                                    <button
+                                      onClick={() => {
+                                        if (entry.result_id) onOpenInDesigner(entry.result_id)
+                                      }}
+                                      disabled={!entry.result_id}
+                                      style={{
+                                        ...actionBtnStyle,
+                                        borderColor: 'var(--accent-purple)',
+                                        color: 'var(--accent-purple)',
+                                        opacity: entry.result_id ? 1 : 0.5,
+                                        cursor: entry.result_id ? 'pointer' : 'not-allowed',
+                                      }}
+                                      title={entry.result_id ? 'Open architecture in visual designer' : 'Designer unavailable: missing result ID'}
+                                    >
+                                      Designer
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            );
+                          default:
+                            return null;
+                        }
+                      })}
                     </tr>
                     {isExpanded && (
                       <ExpandedDetail
@@ -703,6 +1036,10 @@ function Discoveries({
                         onQueueRemove={onQueueRemove}
                         isQueued={isQueued}
                         eligibility={eligibility}
+                        statusDraft={statusDrafts[rowId] || entry.tier}
+                        onStatusDraftChange={(tier) => handleStatusDraftChange(rowId, tier)}
+                        onSaveStatus={() => handleSaveStatus(entry)}
+                        savingStatus={savingStatusRowId === rowId}
                       />
                     )}
                   </React.Fragment>

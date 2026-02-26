@@ -46,6 +46,7 @@ self.onmessage = function(e) {
       'knowledge_updated', 'knowledge_extracted', 'campaign_updated',
       'campaign_created', 'campaign_completed', 'learning_event',
       'continuous_limit_reached', 'aria_cycle_completed',
+      'training_step',
       'auto_scale_up_queued', 'auto_investigate_queued',
       'auto_validate_queued', 'auto_report_generated',
       'aria_recommendation', 'breakthrough_detected',

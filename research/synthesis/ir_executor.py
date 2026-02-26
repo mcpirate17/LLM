@@ -43,27 +43,58 @@ class IRExecutor(nn.Module):
         self.idx_to_op_idx = {}
         
         from .compiler import CompiledOp, ShapeInfo
-        
-        # Build op modules
+
+        # Track output dim per node for shape-aware param init
+        node_dims = {}
+        for i in range(len(self.op_codes)):
+            if self.op_codes[i] == 0:  # input
+                node_dims[i] = self.model_dim
+                continue
+            op_name = REVERSE_OPCODE_MAP.get(self.op_codes[i])
+            config = self.configs[i]
+            in1 = self.input_indices[i, 0]
+            in_dim = node_dims.get(in1, self.model_dim) if in1 != -1 else self.model_dim
+            # Determine output dim based on op type and config
+            if op_name in ("linear_proj", "linear_proj_down", "linear_proj_up",
+                           "fused_linear_gelu", "gated_linear", "nm_sparse_linear",
+                           "block_sparse_linear", "semi_structured_2_4_linear"):
+                node_dims[i] = config.get("out_dim", in_dim)
+            elif op_name == "split2":
+                node_dims[i] = in_dim // 2
+            elif op_name == "split3":
+                node_dims[i] = in_dim // 3
+            elif op_name == "concat":
+                in2 = self.input_indices[i, 1]
+                d2 = node_dims.get(in2, self.model_dim) if in2 != -1 else self.model_dim
+                node_dims[i] = in_dim + d2
+            elif op_name in ("cosine_similarity", "sum_last", "mean_last",
+                             "max_last", "norm_last"):
+                node_dims[i] = 1
+            else:
+                node_dims[i] = in_dim
+
+        # Build op modules with correct shapes
         for i in range(len(self.op_codes)):
             opcode = self.op_codes[i]
-            if opcode == 0: # input
+            if opcode == 0:  # input
                 continue
-                
+
             op_name = REVERSE_OPCODE_MAP.get(opcode)
             if not op_name:
                 continue
-                
-            # Note: IRExecutor currently assumes standard shapes for simplicity
-            # but CompiledOp handles internal shape logic.
-            # We'll need to improve shape tracking in IRExecutor for multi-scale ops.
-            shape = ShapeInfo(batch="B", seq="S", dim=self.model_dim)
-            
+
+            in1 = self.input_indices[i, 0]
+            in_dim = node_dims.get(in1, self.model_dim) if in1 != -1 else self.model_dim
+            out_dim = node_dims.get(i, self.model_dim)
+
+            input_shape = ShapeInfo(batch="B", seq="S", dim=in_dim)
+            output_shape = ShapeInfo(batch="B", seq="S", dim=out_dim)
+
             op_mod = CompiledOp(
                 op_name=op_name,
                 config=self.configs[i],
-                input_shape=shape,
-                output_shape=shape,
+                input_shape=input_shape,
+                output_shape=output_shape,
                 model_dim=self.model_dim
             )
             

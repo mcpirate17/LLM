@@ -1,0 +1,57 @@
+id: cosine_similarity
+version: 1.0.0
+name: Cosine Similarity
+category: math
+tags:
+- functional
+- similarity
+status: approved
+description: Normalized dot product
+inputs:
+- name: a
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: b
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - 1
+params: {}
+implementation:
+  native: aria_cosine_similarity_f32
+  rust: null
+  cython: null
+  python: null
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: true
+help_md: '### Technical
+
+  Normalized dot product between two tensors along last dimension.
+
+
+  Inputs: a:tensor[B, S, D], b:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, 1].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Measures similarity between two sets of vectors.
+
+  '
