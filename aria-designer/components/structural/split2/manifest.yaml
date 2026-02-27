@@ -15,11 +15,7 @@ inputs:
   - S
   - D
 outputs:
-- name: y0
-  dtype: tensor
-  shape:
-  - '*'
-- name: y1
+- name: y
   dtype: tensor
   shape:
   - '*'

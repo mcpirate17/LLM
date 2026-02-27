@@ -1,3 +1,4 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useMemo } from 'react';
 import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
@@ -6,7 +7,6 @@ import { lossColor, noveltyColor } from '../utils/colors';
 import { candidateScore } from '../utils/scoringEngine';
 import { filterRowsByQuery } from '../utils/tableFiltering';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 /**
  * ExperimentDetail — Full experiment breakdown with hypothesis, funnel,
@@ -260,11 +260,11 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
     setLoading(true);
     setError(null);
     Promise.all([
-      fetch(`${API_BASE}/api/experiments/${experimentId}`).then(r => {
+      apiCall(`/api/experiments/${experimentId}`).then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       }),
-      fetch(`${API_BASE}/api/experiments/${experimentId}/analysis`).then(r => r.json()).catch(() => null),
+      apiCall(`/api/experiments/${experimentId}/analysis`).then(r => r.json()).catch(() => null),
     ]).then(([expData, analysisData]) => {
       setData(expData);
       setAnalysis(analysisData);
@@ -298,7 +298,7 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
     }
     setIsRerunning(true);
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/rerun`, { method: 'POST' });
+      const res = await apiCall(`/api/experiments/${experimentId}/rerun`, { method: 'POST' });
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || 'Failed to rerun');
       // On success, go back to command view which shows the active run

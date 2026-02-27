@@ -1,10 +1,10 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { parseDesignerBridgeMessage } from '../utils/designerBridge';
 
 // Use same-origin proxy to avoid cross-origin iframe restrictions in Brave.
 // Falls back to direct URL if REACT_APP_DESIGNER_URL is explicitly set.
 const DESIGNER_BASE = process.env.REACT_APP_DESIGNER_URL || '/designer-proxy';
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const INTENTS = [
   { key: 'balanced', label: 'Balanced', color: 'var(--text-secondary)' },
@@ -32,7 +32,7 @@ function MorphPanel({ resultId, onSelectCandidate }) {
     setError(null);
     setCandidates(null);
     try {
-      const res = await fetch(`${API_BASE}/api/programs/${resultId}/morph`, {
+      const res = await apiCall(`/api/programs/${resultId}/morph`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intent, n_candidates: 6, use_analysis: true }),
@@ -188,7 +188,7 @@ function LineagePanel({ resultId }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/designer/lineage?limit=20`);
+      const res = await apiCall(`/api/designer/lineage?limit=20`);
       const data = await res.json().catch(() => []);
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       setRows(Array.isArray(data) ? data : []);
@@ -272,7 +272,7 @@ function LineagePanel({ resultId }) {
  *   readOnly  — if true, loads designer in readonly mode (default: true)
  *   onGraphLoaded — callback when graph finishes loading in designer
  */
-function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded }) {
+function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded, onActionComplete }) {
   const [loading, setLoading] = useState(true);
   const [booting, setBooting] = useState(true);
   const [designerReady, setDesignerReady] = useState(false);
@@ -285,7 +285,32 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
   const [bridgeStep, setBridgeStep] = useState('booting');
   const [designerBase, setDesignerBase] = useState(DESIGNER_BASE);
   const [fallbackTried, setFallbackTried] = useState(false);
+  const [committing, setCommitting] = useState(false);
   const iframeRef = useRef(null);
+
+  const handleCommit = useCallback(async (workflow) => {
+    if (!workflow) return;
+    setCommitting(true);
+    setNotice(null);
+    try {
+      const res = await apiCall(`/api/designer/commit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workflow }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setNotice(`Successfully committed as new fingerprint: ${data.result_id.slice(0, 12)}`);
+        if (onActionComplete) onActionComplete();
+      } else {
+        setError(`Commit failed: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      setError(`Commit failed: ${err.message}`);
+    } finally {
+      setCommitting(false);
+    }
+  }, [onActionComplete]);
 
   const iframeSrc = resultId
     ? `${designerBase}?embedded=1${readOnly ? '&readonly=1' : ''}&import_result_id=${encodeURIComponent(resultId)}`
@@ -306,7 +331,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/designer/ensure-running`, {
+        const res = await apiCall(`/api/designer/ensure-running`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ force_restart: false }),
@@ -355,7 +380,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
 
     const touch = async () => {
       try {
-        await fetch(`${API_BASE}/api/designer/touch`, {
+        await apiCall(`/api/designer/touch`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason: 'architecture-drawer-open' }),
@@ -412,7 +437,10 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
           } : null);
           break;
         case 'graph-data':
-          // Future: handle graph data responses
+          console.log('[ArchDrawer] received graph-data for commit');
+          if (parsed.payload?.workflow) {
+            handleCommit(parsed.payload.workflow);
+          }
           break;
         default:
           break;
@@ -420,7 +448,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [onGraphLoaded]);
+  }, [onGraphLoaded, handleCommit]);
 
   // Send command to iframe
   const sendToDesigner = useCallback((type, payload = {}) => {
@@ -484,7 +512,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
 
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/designer/ensure-running`, {
+        const res = await apiCall(`/api/designer/ensure-running`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ force_restart: true }),
@@ -595,6 +623,24 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded 
               }}
             >
               Morph
+            </button>
+            <button
+              onClick={handleGetGraph}
+              disabled={committing}
+              title="Commit this modified architecture as a new fingerprint in the research pipeline."
+              style={{
+                background: 'var(--accent-green)',
+                border: '1px solid var(--accent-green)',
+                color: '#000',
+                fontSize: 11,
+                padding: '3px 12px',
+                borderRadius: 4,
+                cursor: committing ? 'wait' : 'pointer',
+                fontWeight: 600,
+                opacity: committing ? 0.7 : 1,
+              }}
+            >
+              {committing ? 'Committing\u2026' : 'Commit Changes'}
             </button>
             <button
               onClick={handleGetGraph}

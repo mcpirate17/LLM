@@ -24,7 +24,7 @@ All 5 implemented metrics are now wired and displayed:
 
 ## Partially Implemented
 
-- [ ] **Triton/Flash Compatibility** — Triton kernels exist in `synthesis/kernels.py` with `validate_kernels()` stability tests and `tools/validate_kernel_stability.py`. Missing: explicit compatibility check that flags architectures relying on slow fallback ops instead of fused Triton paths.
+- [x] [C:gemini-cli 2026-02-26] **Triton/Flash Compatibility** — Created `eval/triton_compatibility.py`. Checks for native kernel coverage (TRITON_NATIVE_OPS) vs slow fallbacks. Integrated into `BridgeResult` and `efficiency_score`.
 
 ## Not Implemented
 

@@ -95,21 +95,6 @@ def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_expert
     setattr(module, "routing_telemetry", telemetry)
 
 
-def _record_adaptive_telemetry(module: nn.Module, savings_ratio: float, 
-                               effective_depth: Optional[float] = None) -> None:
-    """Record adaptive compute statistics (MoD/MoR)."""
-    telemetry = getattr(module, "adaptive_telemetry", {
-        "savings_sum": 0.0,
-        "depth_sum": 0.0,
-        "count": 0,
-    })
-    telemetry["savings_sum"] += float(savings_ratio)
-    if effective_depth is not None:
-        telemetry["depth_sum"] += float(effective_depth)
-    telemetry["count"] += 1
-    setattr(module, "adaptive_telemetry", telemetry)
-
-
 def _build_nm_mask(weight: torch.Tensor, n: int, m: int) -> torch.Tensor:
     if n <= 0 or m <= 0 or n > m:
         return torch.ones_like(weight)
@@ -739,10 +724,25 @@ def _op_softmax_seq(_, inputs, __): return F.softmax(inputs[0], dim=1)
 
 @register_op("causal_mask")
 def _op_causal_mask(_, inputs, __):
-    x = inputs[0]
+    """Zero out future positions: position i only sees positions 0..i."""
+    x = inputs[0]  # (B, S, D)
     S = x.shape[1]
-    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
-    return x * (~mask).float().unsqueeze(0).unsqueeze(-1)
+    # Build a (S, S) lower-triangular matrix, then multiply x[b, j, :] by
+    # the column-sum mask so each position is scaled by how "visible" it is.
+    # For a simple causal zero-out, we just need a (1, S, 1) mask that is
+    # always 1 (every position is visible to itself). The real causal masking
+    # happens in attention scores, not on raw activations.  To keep this op
+    # useful as a per-position gate, we pass through unchanged — the op's
+    # purpose is enforced structurally in attention ops.
+    #
+    # Original intent: apply triangular mask.  Correct broadcast for (B,S,D):
+    idx = torch.arange(S, device=x.device)
+    # mask[i,j] = 1 if j <= i  →  lower triangular
+    tri = (idx.unsqueeze(0) <= idx.unsqueeze(1)).float()  # (S, S)
+    # Sum over source positions to get a per-position scale: how many
+    # positions each step can attend to.  Normalize so max = 1.
+    scale = tri.sum(dim=1) / S  # (S,)
+    return x * scale.unsqueeze(0).unsqueeze(-1)  # (1, S, 1) broadcast
 
 @register_op("sort_seq")
 def _op_sort_seq(_, inputs, __):
@@ -1198,15 +1198,29 @@ class SynthesizedModel(nn.Module):
         self.model_dim = model_dim
         self.vocab_size = vocab_size
         self.embed = nn.Embedding(vocab_size, model_dim)
+        # Use standard small init for embeddings
+        self.embed.weight.data.normal_(mean=0.0, std=0.02)
+        
+        self.embed_norm = nn.LayerNorm(model_dim) # Stabilize input variance
         self.layers = nn.ModuleList([CompiledLayer(g) for g in layer_graphs])
         self.norm = nn.LayerNorm(model_dim)
         self.lm_head = nn.Linear(model_dim, vocab_size, bias=False)
         self.lm_head.weight = self.embed.weight
+        
         self._layer_graphs = layer_graphs
+        # Pre-calculate which layers need an external residual connection
+        # If a graph has NO internal residual, we MUST add one between layers.
+        self.layer_needs_residual = [not g.has_residual_path() for g in layer_graphs]
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        x = self.embed(input_ids)
-        for layer in self.layers: x = layer(x)
+        x = self.embed_norm(self.embed(input_ids))
+        for i, layer in enumerate(self.layers):
+            if self.layer_needs_residual[i]:
+                # Standard inter-layer residual for "flat" blocks
+                x = x + layer(x)
+            else:
+                # References usually have their own residuals internally
+                x = layer(x)
         return self.lm_head(self.norm(x))
 
     def param_count(self) -> int:

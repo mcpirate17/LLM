@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from scipy.spatial.distance import cdist
 
+from ..eval.utils import safe_json_load, safe_parse_float
 from ..synthesis.grammar import GrammarConfig
 from ..synthesis.primitives import get_primitive
 from .notebook import LabNotebook
@@ -82,15 +83,7 @@ class ExperimentAnalytics:
 
     @staticmethod
     def _as_float(value) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return None
-        if math.isnan(parsed) or math.isinf(parsed):
-            return None
-        return parsed
+        return safe_parse_float(value)
 
     @classmethod
     def _extract_ops_fast(cls, graph_json: str) -> Optional[List[str]]:
@@ -2965,8 +2958,23 @@ class ExperimentAnalytics:
         try:
             blocklist = self.nb.get_failure_signature_blocklist()
             for sig, penalty in sorted(blocklist.items(), key=lambda x: x[1]):
+                op1, op2 = sig.split("->") if "->" in sig else (sig, "unknown")
+                cat1, cat2 = "unknown", "unknown"
+                try:
+                    cat1 = get_primitive(op1).category.value
+                except Exception:
+                    pass
+                try:
+                    cat2 = get_primitive(op2).category.value
+                except Exception:
+                    pass
+
                 result["toxic_bigrams"].append({
                     "pattern": sig,
+                    "op1": op1,
+                    "op2": op2,
+                    "cat1": cat1,
+                    "cat2": cat2,
                     "penalty": penalty,
                 })
         except Exception:

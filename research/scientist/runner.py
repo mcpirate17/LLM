@@ -7842,17 +7842,6 @@ class ExperimentRunner:
         except Exception as e:
             logger.debug("Failed to record program result: %s", e)
 
-    def _classify_stage_at_death(self, s0_passed: bool, s05_passed: bool,
-                                  s1_passed: bool) -> str:
-        """Classify which stage a program died at."""
-        if not s0_passed:
-            return "stage0"
-        if not s05_passed:
-            return "stage0.5"
-        if not s1_passed:
-            return "stage1"
-        return "survived"
-
     def _process_orchestrator_results(self, orchestrator, nb, exp_id, results, config):
         """Collect and record all available results from the orchestrator."""
         job_results = orchestrator.get_results()

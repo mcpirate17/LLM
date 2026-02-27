@@ -1,3 +1,4 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
 import { promotionEvidence } from '../utils/scoringEngine';
@@ -17,7 +18,6 @@ import RoutingModeComparison from './report/RoutingModeComparison';
 import CompressionTechniqueCoverage from './report/CompressionTechniqueCoverage';
 import NegativeResultsSummary from './report/NegativeResultsSummary';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 export default function ReportDetail({
   scope,
@@ -65,7 +65,7 @@ export default function ReportDetail({
         include_heavy: fast ? '0' : '1',
         include_narrative: '0',
       });
-      const res = await fetch(`${API_BASE}/api/report?${qs.toString()}`);
+      const res = await apiCall(`/api/report?${qs.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
       setData(payload);
@@ -94,7 +94,7 @@ export default function ReportDetail({
       });
       if (effectiveStartDate) qs.set('start_date', effectiveStartDate);
       if (effectiveEndDate) qs.set('end_date', effectiveEndDate);
-      const res = await fetch(`${API_BASE}/api/report/query?${qs.toString()}`);
+      const res = await apiCall(`/api/report/query?${qs.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
       setData(payload);

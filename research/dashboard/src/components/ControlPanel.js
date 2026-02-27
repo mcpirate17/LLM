@@ -1,3 +1,4 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
 import {
@@ -8,7 +9,6 @@ import {
   applyTelemetryPresetSettings,
 } from './controlPanelTelemetryPresets';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 const CANARY_PREFS_STORAGE_KEY = 'aria.controlpanel.canaryPrefs.v1';
 
 const readCanaryPrefs = () => {
@@ -386,11 +386,11 @@ function ControlPanel({
 
   // Fetch system status and LLM config on mount
   useEffect(() => {
-    fetch(`${API_BASE}/api/system/status`)
+    apiCall(`/api/system/status`)
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data) setSystemStatus(data); })
       .catch(() => {});
-    fetch(`${API_BASE}/api/llm/config`)
+    apiCall(`/api/llm/config`)
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data) setLlmConfig(data); })
       .catch(() => {});
@@ -490,7 +490,7 @@ function ControlPanel({
     if (mode === 'investigation') {
       if (investUseTop) {
         try {
-          const r = await fetch(`${API_BASE}/api/programs?n=${investTopN}&sort=loss_ratio`);
+          const r = await apiCall(`/api/programs?n=${investTopN}&sort=loss_ratio`);
           const programs = await r.json();
           const ids = programs
             .filter(p => p.stage1_passed)
@@ -517,7 +517,7 @@ function ControlPanel({
     if (mode === 'validation') {
       if (investUseTop) {
         try {
-          const r = await fetch(`${API_BASE}/api/leaderboard?tier=investigation&sort=composite_score&limit=${investTopN}`);
+          const r = await apiCall(`/api/leaderboard?tier=investigation&sort=composite_score&limit=${investTopN}`);
           const data = await r.json();
           const ids = (data.entries || [])
             .filter(e => e.investigation_passed)
@@ -550,7 +550,7 @@ function ControlPanel({
       };
       if (scaleUpUseTop) {
         try {
-          const r = await fetch(`${API_BASE}/api/programs?n=${scaleUpTopN}&sort=loss_ratio`);
+          const r = await apiCall(`/api/programs?n=${scaleUpTopN}&sort=loss_ratio`);
           const programs = await r.json();
           const ids = programs
             .filter(p => p.stage1_passed)
@@ -586,7 +586,7 @@ function ControlPanel({
     setValidating(true);
     setValidationResult(null);
     try {
-      const res = await fetch(`${API_BASE}/api/validate`, {
+      const res = await apiCall(`/api/validate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ n: 5 }),
@@ -604,7 +604,7 @@ function ControlPanel({
     setLoadingRec(true);
     setRecommendation(null);
     try {
-      const res = await fetch(`${API_BASE}/api/aria/recommendation`);
+      const res = await apiCall(`/api/aria/recommendation`);
       if (res.ok) {
         setRecommendation(await res.json());
       }
@@ -641,7 +641,7 @@ function ControlPanel({
     setLlmSaving(true);
     setLlmMessage('');
     try {
-      const res = await fetch(`${API_BASE}/api/llm/config`, {
+      const res = await apiCall(`/api/llm/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(llmForm),
@@ -658,7 +658,7 @@ function ControlPanel({
         // Notify other components (e.g. StrategyAdvisor) that LLM is now available
         window.dispatchEvent(new CustomEvent('llm-configured'));
         // Refresh system status
-        fetch(`${API_BASE}/api/system/status`)
+        apiCall(`/api/system/status`)
           .then(r => r.ok ? r.json() : null)
           .then(d => { if (d) setSystemStatus(d); })
           .catch(() => {});
@@ -676,7 +676,7 @@ function ControlPanel({
     setActionError('');
     setCanaryRefreshing(true);
     try {
-      const res = await fetch(`${API_BASE}/api/native-runner/canary/refresh`, { method: 'POST' });
+      const res = await apiCall(`/api/native-runner/canary/refresh`, { method: 'POST' });
       const data = await (res.ok ? res.json() : null);
       if (data?.native_runner_canary) {
         setSystemStatus((prev) => ({

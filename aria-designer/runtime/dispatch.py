@@ -1,14 +1,53 @@
+"""Kernel dispatcher — routes calls to aria_core (preferred) or legacy CFFI.
+
+Phase 4 integration (DRY_HIGH_PERF_TODO.md): replaces the fragmented CFFI-based
+dispatch with the unified aria_core pybind11 library. Falls back to the legacy
+CFFI bindings (bindings.py → libaria_runtime.so) when aria_core is unavailable.
+"""
 import numpy as np
 import torch
-from pathlib import Path
-from .bindings import aria_lib, ffi
+
+# Try aria_core first (unified pybind11 backend)
+try:
+    import aria_core
+    _HAS_ARIA_CORE = True
+except ImportError:
+    _HAS_ARIA_CORE = False
+
+# Legacy CFFI fallback
+if not _HAS_ARIA_CORE:
+    try:
+        from .bindings import aria_lib, ffi
+        _HAS_CFFI = True
+    except Exception:
+        aria_lib = None
+        ffi = None
+        _HAS_CFFI = False
+else:
+    aria_lib = None
+    ffi = None
+    _HAS_CFFI = False
+
+
+def _np_to_torch(x):
+    """Convert numpy array to contiguous float32 torch tensor."""
+    return torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32))
+
+
+def _torch_to_np(t):
+    """Convert torch tensor to numpy."""
+    return t.numpy()
+
 
 class KernelDispatcher:
     """Dispatches calls to the best available implementation for each component."""
 
     def __init__(self, use_native=True):
-        self.lib = aria_lib
         self.use_native = use_native
+        # Legacy fields for backward compat
+        self.lib = aria_lib
+
+    # ── Graph validation ──────────────────────────────────────────────
 
     def validate_graph(self, nodes, edges):
         """
@@ -16,19 +55,28 @@ class KernelDispatcher:
         nodes: list of node IDs (indices used internally)
         edges: list of (src_node_idx, tgt_node_idx, src_port, tgt_port)
         """
+        if _HAS_ARIA_CORE:
+            edge_list = [[int(s), int(t), int(sp), int(tp)] for s, t, sp, tp in edges]
+            return aria_core.validate_graph(len(nodes), edge_list)
+
+        if _HAS_CFFI:
+            return self._validate_graph_cffi(nodes, edges)
+
+        # Pure Python fallback
+        return self._validate_graph_python(nodes, edges)
+
+    def _validate_graph_cffi(self, nodes, edges):
+        """Legacy CFFI graph validation."""
         graph = ffi.new("AriaGraph *")
         graph.n_nodes = len(nodes)
         graph.n_edges = len(edges)
-
         for i, (s, t, sp, tp) in enumerate(edges):
             graph.edges[i].source = s
             graph.edges[i].target = t
             graph.edges[i].src_port = sp
             graph.edges[i].tgt_port = tp
-
         result = ffi.new("AriaValidationResult *")
         rc = self.lib.aria_validate_graph(graph, result)
-
         if rc == 0:
             return {
                 "valid": True,
@@ -43,14 +91,61 @@ class KernelDispatcher:
                 "code": rc
             }
 
+    def _validate_graph_python(self, nodes, edges):
+        """Pure Python fallback for graph validation (Kahn's algorithm)."""
+        n = len(nodes)
+        in_deg = [0] * n
+        out_deg = [0] * n
+        adj = [[] for _ in range(n)]
+        for s, t, _, _ in edges:
+            adj[s].append(t)
+            in_deg[t] += 1
+            out_deg[s] += 1
+        queue = [i for i in range(n) if in_deg[i] == 0]
+        topo = []
+        while queue:
+            node = queue.pop(0)
+            topo.append(node)
+            for nb in adj[node]:
+                in_deg[nb] -= 1
+                if in_deg[nb] == 0:
+                    queue.append(nb)
+        if len(topo) != n:
+            return {"valid": False, "error": "Cycle detected", "code": -3}
+        return {"valid": True, "topo_order": topo, "in_degrees": [0]*n, "out_degrees": out_deg}
+
+    # ── Shape inference ───────────────────────────────────────────────
+
     def infer_shapes(self, topo_order, edges, node_rules):
         """
         Propagate shapes through the graph.
         node_rules: list of {rule: ShapeRule, n_inputs, n_outputs, input_shapes: [...], ...}
         """
+        if _HAS_ARIA_CORE:
+            edge_list = [[int(e[0]), int(e[1]), int(e[2]), int(e[3])] for e in edges]
+            rules_dicts = []
+            for rd in node_rules:
+                d = {"rule": int(rd["rule"]),
+                     "n_inputs": rd.get("n_inputs", 1),
+                     "n_outputs": rd.get("n_outputs", 1),
+                     "split_n": rd.get("split_n", 0),
+                     "out_dim": rd.get("out_dim", -1),
+                     "orig_seq_len": rd.get("orig_seq_len", 0)}
+                if "input_shapes" in rd:
+                    d["input_shapes"] = rd["input_shapes"]
+                rules_dicts.append(d)
+            return aria_core.propagate_shapes(
+                [int(x) for x in topo_order], edge_list, rules_dicts)
+
+        if _HAS_CFFI:
+            return self._infer_shapes_cffi(topo_order, edges, node_rules)
+
+        return {"valid": False, "error": "No shape inference backend available"}
+
+    def _infer_shapes_cffi(self, topo_order, edges, node_rules):
+        """Legacy CFFI shape inference."""
         res = ffi.new("ShapeInferenceResult *")
         res.n_nodes = len(node_rules)
-
         for i, rule_data in enumerate(node_rules):
             node = res.nodes[i]
             node.rule = rule_data['rule']
@@ -59,8 +154,6 @@ class KernelDispatcher:
             node.split_n = rule_data.get('split_n', 0)
             node.out_dim = rule_data.get('out_dim', -1)
             node.orig_seq_len = rule_data.get('orig_seq_len', 0)
-
-            # Set initial input shapes (for source nodes)
             if 'input_shapes' in rule_data:
                 for p_idx, shape in enumerate(rule_data['input_shapes']):
                     if shape:
@@ -68,19 +161,12 @@ class KernelDispatcher:
                         for d_idx, dim in enumerate(shape):
                             node.input_shapes[p_idx].shape.dims[d_idx] = dim
                         node.input_shapes[p_idx].shape.valid = 1
-
-        # Prepare edges for C call: int32_t edges[][4]
         c_edges = ffi.new("int32_t[][4]", len(edges))
         for i, e in enumerate(edges):
-            c_edges[i][0] = e[0] # src
-            c_edges[i][1] = e[1] # tgt
-            c_edges[i][2] = e[2] # src_port
-            c_edges[i][3] = e[3] # tgt_port
-
+            c_edges[i][0] = e[0]; c_edges[i][1] = e[1]
+            c_edges[i][2] = e[2]; c_edges[i][3] = e[3]
         c_topo = ffi.new("int32_t[]", topo_order)
-
         rc = self.lib.aria_propagate_shapes(res, c_topo, len(topo_order), c_edges, len(edges))
-
         if rc == 0:
             output_shapes = []
             for i in range(res.n_nodes):
@@ -96,73 +182,55 @@ class KernelDispatcher:
         else:
             return {"valid": False, "error": ffi.string(res.error).decode("utf-8")}
 
+    # ── Kernel dispatch methods ───────────────────────────────────────
+    # Each method tries: aria_core → legacy CFFI → Python fallback
+
     def relu(self, x: np.ndarray) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_relu_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.relu_f32(_np_to_torch(x)))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_relu_f32"):
             x = np.ascontiguousarray(x, dtype=np.float32)
             y = np.empty_like(x)
-            self.lib.aria_relu_f32(
-                ffi.from_buffer("float *", x),
-                ffi.from_buffer("float *", y),
-                x.size
-            )
+            self.lib.aria_relu_f32(ffi.from_buffer("float *", x), ffi.from_buffer("float *", y), x.size)
             return y
-        else:
-            # Python fallback
-            return torch.relu(torch.from_numpy(x)).numpy()
+        return torch.relu(torch.from_numpy(x)).numpy()
 
     def matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_matmul_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.matmul_f32(_np_to_torch(a), _np_to_torch(b)))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_matmul_f32"):
             a = np.ascontiguousarray(a, dtype=np.float32)
             b = np.ascontiguousarray(b, dtype=np.float32)
-            assert a.ndim == 2 and b.ndim == 2
-            assert a.shape[1] == b.shape[0]
-            m, k = a.shape
-            _, n = b.shape
+            assert a.ndim == 2 and b.ndim == 2 and a.shape[1] == b.shape[0]
+            m, k = a.shape; _, n = b.shape
             c = np.empty((m, n), dtype=np.float32)
-            self.lib.aria_matmul_f32(
-                ffi.from_buffer("float *", a),
-                ffi.from_buffer("float *", b),
-                ffi.from_buffer("float *", c),
-                m, k, n
-            )
+            self.lib.aria_matmul_f32(ffi.from_buffer("float *", a), ffi.from_buffer("float *", b), ffi.from_buffer("float *", c), m, k, n)
             return c
-        else:
-            # Python fallback
-            return (torch.from_numpy(a) @ torch.from_numpy(b)).numpy()
+        return (torch.from_numpy(a) @ torch.from_numpy(b)).numpy()
 
     def tropical_add(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_tropical_add_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.tropical_add_f32(_np_to_torch(a), _np_to_torch(b)))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_tropical_add_f32"):
             a = np.ascontiguousarray(a, dtype=np.float32)
             b = np.ascontiguousarray(b, dtype=np.float32)
             y = np.empty_like(a)
-            self.lib.aria_tropical_add_f32(
-                ffi.from_buffer("float *", a),
-                ffi.from_buffer("float *", b),
-                ffi.from_buffer("float *", y),
-                a.size
-            )
+            self.lib.aria_tropical_add_f32(ffi.from_buffer("float *", a), ffi.from_buffer("float *", b), ffi.from_buffer("float *", y), a.size)
             return y
         return np.minimum(a, b)
 
     def tropical_matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_tropical_matmul_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.tropical_matmul_f32(_np_to_torch(a), _np_to_torch(b)))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_tropical_matmul_f32"):
             a = np.ascontiguousarray(a, dtype=np.float32)
             b = np.ascontiguousarray(b, dtype=np.float32)
-            assert a.ndim == 2 and b.ndim == 2
-            assert a.shape[1] == b.shape[0]
-            m, k = a.shape
-            _, n = b.shape
+            assert a.ndim == 2 and b.ndim == 2 and a.shape[1] == b.shape[0]
+            m, k = a.shape; _, n = b.shape
             c = np.empty((m, n), dtype=np.float32)
-            self.lib.aria_tropical_matmul_f32(
-                ffi.from_buffer("float *", a),
-                ffi.from_buffer("float *", b),
-                ffi.from_buffer("float *", c),
-                m, k, n
-            )
+            self.lib.aria_tropical_matmul_f32(ffi.from_buffer("float *", a), ffi.from_buffer("float *", b), ffi.from_buffer("float *", c), m, k, n)
             return c
-        # Python fallback: min-plus matmul
-        m, k = a.shape
-        _, n = b.shape
+        m, k = a.shape; _, n = b.shape
         out = np.empty((m, n), dtype=np.float32)
         for i in range(m):
             for j in range(n):
@@ -170,48 +238,38 @@ class KernelDispatcher:
         return out
 
     def tropical_center(self, x: np.ndarray) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_tropical_center_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.tropical_center_f32(_np_to_torch(x)))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_tropical_center_f32"):
             x = np.ascontiguousarray(x, dtype=np.float32)
             assert x.ndim == 3
             b, s, d = x.shape
             y = np.empty_like(x)
-            self.lib.aria_tropical_center_f32(
-                ffi.from_buffer("float *", x),
-                ffi.from_buffer("float *", y),
-                b, s, d
-            )
+            self.lib.aria_tropical_center_f32(ffi.from_buffer("float *", x), ffi.from_buffer("float *", y), b, s, d)
             return y
         baseline = np.min(x, axis=1, keepdims=True)
         return x - baseline
 
     def hyp_distance(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_hyp_distance_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.hyp_distance_f32(_np_to_torch(x), _np_to_torch(y)))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_hyp_distance_f32"):
             x = np.ascontiguousarray(x, dtype=np.float32)
             y = np.ascontiguousarray(y, dtype=np.float32)
-            assert x.ndim == 3 and y.ndim == 3
-            assert x.shape == y.shape
+            assert x.ndim == 3 and y.ndim == 3 and x.shape == y.shape
             b, s, d = x.shape
             out = np.empty((b, s), dtype=np.float32)
-            self.lib.aria_hyp_distance_f32(
-                ffi.from_buffer("float *", x),
-                ffi.from_buffer("float *", y),
-                ffi.from_buffer("float *", out),
-                b, s, d
-            )
+            self.lib.aria_hyp_distance_f32(ffi.from_buffer("float *", x), ffi.from_buffer("float *", y), ffi.from_buffer("float *", out), b, s, d)
             return out
-        # Python fallback: simple Euclidean norm
         return np.linalg.norm(x - y, axis=-1)
 
     def padic_gate(self, x: np.ndarray, p: float = 2.0) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_padic_gate_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.padic_gate_f32(_np_to_torch(x), p))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_padic_gate_f32"):
             x = np.ascontiguousarray(x, dtype=np.float32)
             y = np.empty_like(x)
-            self.lib.aria_padic_gate_f32(
-                ffi.from_buffer("float *", x),
-                ffi.from_buffer("float *", y),
-                x.size,
-                float(p)
-            )
+            self.lib.aria_padic_gate_f32(ffi.from_buffer("float *", x), ffi.from_buffer("float *", y), x.size, float(p))
             return y
         abs_x = np.maximum(np.abs(x), 1e-10)
         valuation = -(np.log(abs_x) / np.log(p))
@@ -220,19 +278,15 @@ class KernelDispatcher:
         return x * gate
 
     def tropical_attention(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_tropical_attention_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.tropical_attention_f32(_np_to_torch(x), temperature))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_tropical_attention_f32"):
             x = np.ascontiguousarray(x, dtype=np.float32)
             assert x.ndim == 3
             b, s, d = x.shape
             y = np.empty_like(x)
-            self.lib.aria_tropical_attention_f32(
-                ffi.from_buffer("float *", x),
-                ffi.from_buffer("float *", y),
-                b, s, d,
-                float(temperature)
-            )
+            self.lib.aria_tropical_attention_f32(ffi.from_buffer("float *", x), ffi.from_buffer("float *", y), b, s, d, float(temperature))
             return y
-        # Python fallback: tropical attention using softmin distances
         b, s, d = x.shape
         out = np.empty_like(x, dtype=np.float32)
         for i in range(b):
@@ -246,17 +300,14 @@ class KernelDispatcher:
         return out
 
     def tropical_gate(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_tropical_gate_f32"):
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.tropical_gate_f32(_np_to_torch(x), temperature))
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_tropical_gate_f32"):
             x = np.ascontiguousarray(x, dtype=np.float32)
             assert x.ndim == 3
             b, s, d = x.shape
             y = np.empty_like(x)
-            self.lib.aria_tropical_gate_f32(
-                ffi.from_buffer("float *", x),
-                ffi.from_buffer("float *", y),
-                b, s, d,
-                float(temperature)
-            )
+            self.lib.aria_tropical_gate_f32(ffi.from_buffer("float *", x), ffi.from_buffer("float *", y), b, s, d, float(temperature))
             return y
         b, s, d = x.shape
         out = np.empty_like(x, dtype=np.float32)
@@ -273,20 +324,15 @@ class KernelDispatcher:
 
     def file_loader_csv(self, file_path: str, max_rows: int = 4096, max_cols: int = 1024,
                         delimiter: str = ",", has_header: bool = True) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_file_loader_csv_f32"):
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_file_loader_csv_f32"):
             out = np.zeros((max_rows, max_cols), dtype=np.float32)
             rows = self.lib.aria_file_loader_csv_f32(
-                file_path.encode("utf-8"),
-                ffi.from_buffer("float *", out),
-                int(max_rows),
-                int(max_cols),
-                (delimiter or ",")[0].encode("utf-8"),
-                1 if has_header else 0,
-            )
+                file_path.encode("utf-8"), ffi.from_buffer("float *", out),
+                int(max_rows), int(max_cols),
+                (delimiter or ",")[0].encode("utf-8"), 1 if has_header else 0)
             if rows < 0:
                 raise ValueError(f"Native file_loader_csv failed: {rows}")
             return out[:rows, :]
-
         rows = []
         with open(file_path, "r", encoding="utf-8") as f:
             for i, line in enumerate(f):
@@ -300,18 +346,15 @@ class KernelDispatcher:
 
     def binary_file_reader(self, file_path: str, max_elems: int = 1_000_000,
                            offset_bytes: int = 0) -> np.ndarray:
-        if self.use_native and hasattr(self.lib, "aria_binary_file_reader_f32"):
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_binary_file_reader_f32"):
             out = np.zeros((max_elems,), dtype=np.float32)
             n = self.lib.aria_binary_file_reader_f32(
-                file_path.encode("utf-8"),
-                ffi.from_buffer("float *", out),
-                int(max_elems),
-                int(offset_bytes),
-            )
+                file_path.encode("utf-8"), ffi.from_buffer("float *", out),
+                int(max_elems), int(offset_bytes))
             if n < 0:
                 raise ValueError(f"Native binary_file_reader failed: {n}")
             return out[:n]
-
+        from pathlib import Path
         with open(file_path, "rb") as f:
             if offset_bytes > 0:
                 f.seek(offset_bytes)
@@ -320,17 +363,14 @@ class KernelDispatcher:
 
     def file_writer_txt(self, file_path: str, data: np.ndarray, overwrite: bool = False) -> int:
         data = np.ascontiguousarray(data, dtype=np.float32).reshape(-1)
-        if self.use_native and hasattr(self.lib, "aria_file_writer_txt_f32"):
+        if _HAS_CFFI and self.use_native and hasattr(self.lib, "aria_file_writer_txt_f32"):
             rc = self.lib.aria_file_writer_txt_f32(
-                file_path.encode("utf-8"),
-                ffi.from_buffer("float *", data),
-                int(data.size),
-                1 if overwrite else 0,
-            )
+                file_path.encode("utf-8"), ffi.from_buffer("float *", data),
+                int(data.size), 1 if overwrite else 0)
             if rc < 0:
                 raise ValueError(f"Native file_writer_txt failed: {rc}")
             return int(rc)
-
+        from pathlib import Path
         path = Path(file_path)
         if path.exists() and not overwrite:
             raise FileExistsError(f"Output path exists: {file_path}")

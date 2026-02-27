@@ -1,5 +1,6 @@
 import random
 import json
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Dict, Any, List
 from .models import AriaPatchProposalModel, PatchOpModel
@@ -88,7 +89,5 @@ def refine_winner(workflow_id: str, num_variations: int = 3) -> List[str]:
             created_at=datetime.now(timezone.utc).isoformat()
         )
         proposal_ids.append(proposal_id)
-        
-    return proposal_ids
 
-from datetime import datetime, timezone
+    return proposal_ids

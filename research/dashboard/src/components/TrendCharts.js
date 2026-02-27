@@ -7,7 +7,6 @@ import apiService from '../services/apiService';
 import { filterRowsByQuery } from '../utils/tableFiltering';
 import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 /**
  * TrendCharts — Cross-experiment line charts using inline SVG

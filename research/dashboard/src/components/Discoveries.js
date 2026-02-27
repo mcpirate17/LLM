@@ -1,9 +1,9 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
 import { candidateScore, candidateScoreBreakdown, promotionEvidence, TIER_ORDER } from '../utils/scoringEngine';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
 
 const TIER_COLORS = {
@@ -450,17 +450,17 @@ function FingerprintLeaderboardChart({ entries }) {
 // ── Main Component ─────────────────────────────────────────────────
 
 const COLUMNS = [
-  { key: '_score', label: 'Discovery Score' },
-  { key: 'display_name', label: 'Architecture' },
-  { key: 'architecture_family', label: 'Family' },
-  { key: '_best_loss', label: 'Loss' },
-  { key: '_vs_ref', label: 'vs Ref' },
-  { key: '_novelty', label: 'Novelty' },
-  { key: 'investigation_robustness', label: 'Robustness' },
-  { key: 'jacobian_spectral_norm', label: 'Spectral' },
-  { key: 'init_sensitivity_std', label: 'InitStd' },
-  { key: 'tier', label: 'Status', width: 96 },
-  { key: '_actions', label: '' },
+  { key: '_score', label: 'Discovery Score', title: 'Internal ranking score based on novelty and performance.' },
+  { key: 'display_name', label: 'Architecture', title: 'Human-readable name or fingerprint of the model topology.' },
+  { key: 'architecture_family', label: 'Family', title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
+  { key: '_best_loss', label: 'Loss', title: 'The lowest loss ratio achieved by this architecture across all tests.' },
+  { key: '_vs_ref', label: 'vs Ref', title: 'How this model compares to the GPT-2 baseline (lower % is better).' },
+  { key: '_novelty', label: 'Novelty', title: 'Measures how unique this model is compared to existing designs.' },
+  { key: 'investigation_robustness', label: 'Robustness', title: 'Consistency across different training recipes (higher is more stable).' },
+  { key: 'jacobian_spectral_norm', label: 'Spectral', title: 'Jacobian Spectral Norm: stability of gradient propagation (lower is better).' },
+  { key: 'init_sensitivity_std', label: 'InitStd', title: 'Sensitivity to weight initialization (lower means more predictable).' },
+  { key: 'tier', label: 'Status', width: 96, title: 'Current research phase of this architecture.' },
+  { key: '_actions', label: '', title: 'Actions' },
 ];
 
 function Discoveries({
@@ -545,10 +545,13 @@ function Discoveries({
   }, [highlightId]);
 
   const fetchData = useCallback(async () => {
+    console.log('[Discoveries] Refreshing data...');
+    setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams({ sort: 'composite_score', limit: '200', view: 'ranked' });
       if (activeTier !== 'all') params.set('tier', activeTier);
-      const res = await fetch(`${API_BASE}/api/discoveries?${params}`);
+      const res = await apiCall(`/api/discoveries?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);
@@ -585,7 +588,7 @@ function Discoveries({
     setSavingStatusRowId(rowId);
     setStatusError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/leaderboard/status`, {
+      const res = await apiCall(`/api/leaderboard/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -787,10 +790,11 @@ function Discoveries({
         </button>
         <button
           onClick={fetchData}
+          disabled={loading}
           aria-label="Refresh discoveries"
-          style={{ marginLeft: 'auto', fontSize: 11, padding: '5px 12px', cursor: 'pointer', background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)' }}
+          style={{ marginLeft: 'auto', fontSize: 11, padding: '5px 12px', cursor: loading ? 'not-allowed' : 'pointer', background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)', opacity: loading ? 0.6 : 1 }}
         >
-          Refresh
+          {loading ? 'Refreshing...' : 'Refresh'}
         </button>
       </div>
 
@@ -866,6 +870,7 @@ function Discoveries({
                   <th
                     key={col.key}
                     onClick={() => handleSort(col.key)}
+                    title={col.title}
                     style={{
                       ...thStyle,
                       width: col.width ? `${col.width}px` : undefined,
@@ -975,7 +980,8 @@ function Discoveries({
                               </td>
                             );
                           case 'jacobian_spectral_norm':
-                            return <td key={col.key} style={tdStyle}>{entry.jacobian_spectral_norm != null ? Number(entry.jacobian_spectral_norm).toFixed(4) : '--'}</td>;
+                            const specVal = entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm;
+                            return <td key={col.key} style={tdStyle}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
                           case 'init_sensitivity_std':
                             return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
                           case 'tier':

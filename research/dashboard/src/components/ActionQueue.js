@@ -1,9 +1,8 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
 import { computeStrategy } from './StrategyAdvisor';
 import { useAriaData } from '../hooks/useAriaData';
-
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const BORDER_COLORS = {
   breakthrough: 'var(--accent-green)',
@@ -49,7 +48,7 @@ function TrustLevelSelector({ config, onUpdate }) {
   const handleChange = async (newLevel) => {
     setUpdating(true);
     try {
-      const res = await fetch(`${API_BASE}/api/aria/autonomy`, {
+      const res = await apiCall(`/api/aria/autonomy`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ trust_level: newLevel }),
@@ -138,7 +137,7 @@ function ActionQueue({
   const fetchActions = useCallback(async () => {
     const id = ++fetchRef.current;
     try {
-      const res = await fetch(`${API_BASE}/api/actions`);
+      const res = await apiCall(`/api/actions`);
       if (!res.ok) throw new Error(res.statusText);
       const data = await res.json();
       if (id === fetchRef.current) {
@@ -169,7 +168,7 @@ function ActionQueue({
   // Fetch autonomy config
   const fetchAutonomyConfig = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/aria/autonomy`);
+      const res = await apiCall(`/api/aria/autonomy`);
       if (res.ok) {
         const config = await res.json();
         setAutonomyConfig(config);
@@ -180,7 +179,7 @@ function ActionQueue({
   // Fetch autonomous activity
   const fetchActivity = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/aria/activity?limit=10`);
+      const res = await apiCall(`/api/aria/activity?limit=10`);
       if (res.ok) {
         const data = await res.json();
         setAutonomousActions(Array.isArray(data) ? data : []);
@@ -221,7 +220,7 @@ function ActionQueue({
   const handleDismiss = useCallback(async (actionId) => {
     setDismissing(actionId);
     try {
-      await fetch(`${API_BASE}/api/actions/${actionId}/dismiss`, { method: 'POST' });
+      await apiCall(`/api/actions/${actionId}/dismiss`, { method: 'POST' });
       setActions(prev => prev.filter(a => a.id !== actionId));
     } catch { /* ignore */ }
     setDismissing(null);
@@ -230,7 +229,7 @@ function ActionQueue({
   const handleApprove = useCallback(async (actionId) => {
     setApproving(actionId);
     try {
-      const res = await fetch(`${API_BASE}/api/actions/${actionId}/approve`, { method: 'POST' });
+      const res = await apiCall(`/api/actions/${actionId}/approve`, { method: 'POST' });
       if (res.ok) {
         fetchActions();
         fetchActivity();
@@ -241,7 +240,7 @@ function ActionQueue({
 
   const handleUndo = useCallback(async (actionId) => {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/${actionId}/undo`, { method: 'POST' });
+      const res = await apiCall(`/api/actions/${actionId}/undo`, { method: 'POST' });
       if (res.ok) {
         fetchActions();
         fetchActivity();

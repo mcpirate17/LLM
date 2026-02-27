@@ -1,3 +1,4 @@
+import { apiCall } from "./services/apiService";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addEdge,
@@ -27,20 +28,6 @@ import { isValidConnection as validateConnection } from './utils/validation'
 import { buildWorkflowJson } from './utils/workflow'
 import { findClosestEdge } from './utils/geometry'
 import { starterEdges, starterNodes } from './mockData'
-
-const API_BASE = 'http://127.0.0.1:8091'
-const getResearchApiBase = () => {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:5000';
-  const url = new URL(window.location.href);
-  // If we are on 5174 (dev) or 8091 (designer), assume research is on 5000
-  if (url.port === '5174' || url.port === '8091') {
-    return `${url.protocol}//${url.hostname}:5000`;
-  }
-  // If we are embedded in the dashboard, the dashboard itself is the researcher API host
-  return url.origin;
-};
-const RESEARCH_API_BASE = getResearchApiBase();
-const DESIGNER_API_BASE = import.meta.env.VITE_DESIGNER_API_BASE || 'http://127.0.0.1:8091'
 
 const defaultEdgeOptions = {
   type: 'smoothstep',
@@ -72,6 +59,7 @@ function DesignerApp() {
     metrics: null,
   })
   const [showAskAriaModal, setShowAskAriaModal] = useState(false)
+  const [workflowMeta, setWorkflowMeta] = useState({ workflow_id: null, name: null, metadata: {} })
   const [ariaSuggestions, setAriaSuggestions] = useState([])
   const [ariaLoading, setAriaLoading] = useState(false)
 
@@ -111,14 +99,11 @@ function DesignerApp() {
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 15000)
-      const resp = await fetch(`${RESEARCH_API_BASE}/api/v1/import/survivors/${encodeURIComponent(rid)}`, {
+      const resp = await apiCall(`/api/v1/import/survivors/${encodeURIComponent(rid)}`, {
         method: 'POST',
         signal: controller.signal,
       })
       clearTimeout(timeout)
-      if (!resp.ok) {
-        throw new Error(`Import failed: ${resp.status}`)
-      }
       const data = await resp.json()
       const wf = data.workflow || data
       if (!wf || (wf.schema_version !== 'workflow_graph.v1' && !Array.isArray(wf.nodes))) {
@@ -180,7 +165,7 @@ function DesignerApp() {
 
   // Fetch components from API
   useEffect(() => {
-    fetch(`${RESEARCH_API_BASE}/api/v1/components?status=approved`)
+    apiCall(`/api/v1/components?status=approved`)
       .then((r) => r.json())
       .then((data) => {
         setComponents(data)
@@ -203,7 +188,7 @@ function DesignerApp() {
   useEffect(() => {
     const fetchProposals = async () => {
       try {
-        const r = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/proposals?status=pending`)
+        const r = await apiCall(`/api/v1/aria/proposals?status=pending`)
         const data = await r.json()
         setProposals(data)
       } catch (err) {
@@ -219,8 +204,8 @@ function DesignerApp() {
   useEffect(() => {
     const fetchConstraints = async () => {
       try {
-        const workflow = buildWorkflowJson(nodes, edges)
-        const res = await fetch(`${DESIGNER_API_BASE}/api/v1/constraints/palette`, {
+        const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
+        const res = await apiCall(`/api/v1/constraints/palette`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow, selected_node_id: selectedNodeId }),
@@ -235,7 +220,7 @@ function DesignerApp() {
     }
     const timer = setTimeout(fetchConstraints, 300)
     return () => clearTimeout(timer)
-  }, [nodes, edges, selectedNodeId])
+  }, [nodes, edges, workflowMeta, selectedNodeId])
 
   // PostMessage bridge — notify parent window of state changes in embedded mode.
   const postToParent = useCallback((type, payload = {}) => {
@@ -257,9 +242,9 @@ function DesignerApp() {
       postToParent('graph-changed', { nodeCount: nodes.length, edgeCount: edges.length })
       return
     }
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     localStorage.setItem('aria-workflow-autosave', JSON.stringify(workflow))
-  }, [nodes, edges, embeddedMode, postToParent])
+  }, [nodes, edges, workflowMeta, embeddedMode, postToParent])
 
   // Keep refs for nodes/edges so the message handler can access current
   // values without causing the effect to re-run on every graph change.
@@ -290,7 +275,7 @@ function DesignerApp() {
     const handler = (e) => {
       if (e.data?.target !== 'aria-designer') return
       if (e.data.type === 'get-graph') {
-        const workflow = buildWorkflowJson(nodesRef.current, edgesRef.current)
+        const workflow = buildWorkflowJson(nodesRef.current, edgesRef.current, workflowMeta)
         postToParent('graph-data', { workflow })
       }
       if (e.data.type === 'load-result' && e.data.resultId) {
@@ -508,7 +493,7 @@ function DesignerApp() {
     }
     validateTimersRef.current[timerKey] = setTimeout(async () => {
       try {
-        const res = await fetch(`${DESIGNER_API_BASE}/api/v1/components/${componentId}/validate-config`, {
+        const res = await apiCall(`/api/v1/components/${componentId}/validate-config`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ config }),
@@ -561,7 +546,7 @@ function DesignerApp() {
   // Real-time connection validation (prevents cycles, duplicates, port conflicts)
   const isValidConnection = useCallback((connection) => {
     return validateConnection(connection, nodes, edges)
-  }, [nodes, edges])
+  }, [nodes, edges, workflowMeta])
 
   // Live graph validation effect
   useEffect(() => {
@@ -625,7 +610,7 @@ function DesignerApp() {
 
   // Actions
   const handleValidate = useCallback(async () => {
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     setWorkflowStage('validate')
     setStepStatus((s) => ({ ...s, validate: 'running' }))
     setValidateUi({ inProgress: true, last: 'idle', issues: 0 })
@@ -635,15 +620,15 @@ function DesignerApp() {
     try {
       let data
       try {
-        const res = await fetch(`${DESIGNER_API_BASE}/api/designer/validate`, {
+        const res = await apiCall(`/api/v1/workflows/validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workflow),
+          body: JSON.stringify({ workflow }),
         })
-        if (!res.ok) throw new Error(`designer validate ${res.status}`)
+        if (!res.ok) throw new Error(`validate ${res.status}`)
         data = await res.json()
       } catch {
-        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/validate`, {
+        const res = await apiCall(`/api/v1/workflows/validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow }),
@@ -702,7 +687,7 @@ function DesignerApp() {
         return false
       }
     }
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     setWorkflowStage('compile')
     setStepStatus((s) => ({ ...s, compile: 'running' }))
     clearNodeHighlights()
@@ -712,16 +697,16 @@ function DesignerApp() {
       let data
       let usedDesignerApi = true
       try {
-        const res = await fetch(`${DESIGNER_API_BASE}/api/designer/compile`, {
+        const res = await apiCall(`/api/v1/workflows/compile`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workflow),
+          body: JSON.stringify({ workflow, target: 'cpu' }),
         })
-        if (!res.ok) throw new Error(`designer compile ${res.status}`)
+        if (!res.ok) throw new Error(`compile ${res.status}`)
         data = await res.json()
       } catch {
         usedDesignerApi = false
-        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/compile`, {
+        const res = await apiCall(`/api/v1/workflows/compile`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow, target: 'cpu' }),
@@ -771,35 +756,35 @@ function DesignerApp() {
       setRunStatus({ phase: 'failed', message: 'Compile failed (API offline)', metrics: null })
       return false
     }
-  }, [nodes, edges, stepStatus, handleValidate, clearNodeHighlights, highlightNodeErrors])
+  }, [nodes, edges, workflowMeta, stepStatus, handleValidate, clearNodeHighlights, highlightNodeErrors])
 
   const handleSave = useCallback(async () => {
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     setStatusMsg('Saving workflow...')
     try {
-      try {
-        const res = await fetch(`${DESIGNER_API_BASE}/api/designer/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workflow),
-        })
-        const data = await res.json()
-        if (!data.success) throw new Error(data.error || 'Save failed')
-        setStatusMsg('Workflow saved')
-      } catch {
-        await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/${workflow.workflow_id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workflow),
-        })
-        setStatusMsg('Workflow saved')
+      const res = await apiCall(`/api/v1/workflows/${workflow.workflow_id || 'default'}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(workflow),
+      })
+      if (!res.ok) throw new Error(`save ${res.status}`)
+      const data = await res.json()
+      const fp = data.fingerprint ? ` (fingerprint: ${data.fingerprint.slice(0, 8)}...)` : ''
+      // Update metadata with fingerprint from server
+      if (data.fingerprint) {
+        setWorkflowMeta((prev) => ({
+          ...prev,
+          workflow_id: data.workflow_id || prev.workflow_id,
+          metadata: { ...prev.metadata, graph_fingerprint: data.fingerprint },
+        }))
       }
+      setStatusMsg(`Workflow saved v${data.version}${fp}`)
     } catch {
       // Save to localStorage as fallback
       localStorage.setItem('aria-workflow', JSON.stringify(workflow))
       setStatusMsg('Saved to browser (API offline)')
     }
-  }, [nodes, edges])
+  }, [nodes, edges, workflowMeta])
 
   const handlePreview = useCallback(async () => {
     // Auto-validate + compile first
@@ -810,7 +795,7 @@ function DesignerApp() {
         return false
       }
     }
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     try {
       setWorkflowStage('run')
       setStepStatus((s) => ({ ...s, test: 'running' }))
@@ -820,16 +805,16 @@ function DesignerApp() {
       let data
       let usedDesignerApi = true
       try {
-        const res = await fetch(`${DESIGNER_API_BASE}/api/designer/run`, {
+        const res = await apiCall(`/api/v1/workflows/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workflow),
+          body: JSON.stringify({ workflow }),
         })
-        if (!res.ok) throw new Error(`designer run ${res.status}`)
+        if (!res.ok) throw new Error(`preview ${res.status}`)
         data = await res.json()
       } catch {
         usedDesignerApi = false
-        const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/preview`, {
+        const res = await apiCall(`/api/v1/workflows/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workflow }),
@@ -887,7 +872,7 @@ function DesignerApp() {
       setStatusMsg('Preview failed (API offline)')
       setRunStatus({ phase: 'failed', message: 'Run failed (API offline)', metrics: null })
     }
-  }, [nodes, edges, stepStatus, handleCompile, setNodes, clearNodeHighlights, highlightNodeErrors])
+  }, [nodes, edges, workflowMeta, stepStatus, handleCompile, setNodes, clearNodeHighlights, highlightNodeErrors])
 
   // Helper: set evalStatus on all nodes
   const setAllNodeEvalStatus = useCallback((status, error) => {
@@ -915,7 +900,7 @@ function DesignerApp() {
     setWorkflowStage('deep-run')
     setStepStatus((s) => ({ ...s, run: 'running' }))
 
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     setEvalState({ stages: [], status: 'running', totalTimeMs: null, error: null, benchmarking: null })
     setRightPanelTab('results')
     setStatusMsg('Deep Run: starting...')
@@ -925,7 +910,7 @@ function DesignerApp() {
     setAllNodeEvalStatus('running', null)
 
     try {
-      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/workflows/evaluate/stream`, {
+      const res = await apiCall(`/api/v1/workflows/evaluate/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflow, budget: { run_fingerprint: true, run_novelty: true } }),
@@ -1069,10 +1054,10 @@ function DesignerApp() {
         setAllNodeEvalStatus('fail', err.message)
       }
     }
-  }, [nodes, edges, stepStatus, handleCompile, setNodes, setAllNodeEvalStatus])
+  }, [nodes, edges, workflowMeta, stepStatus, handleCompile, setNodes, setAllNodeEvalStatus])
 
   const handleExportJson = useCallback(() => {
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     const blob = new Blob([JSON.stringify(workflow, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -1081,13 +1066,13 @@ function DesignerApp() {
     a.click()
     URL.revokeObjectURL(url)
     setStatusMsg('Exported JSON')
-  }, [nodes, edges])
+  }, [nodes, edges, workflowMeta])
 
   const handleExportPython = useCallback(async () => {
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     setStatusMsg('Exporting Python...')
     try {
-      const res = await fetch(`${DESIGNER_API_BASE}/api/designer/export/python`, {
+      const res = await apiCall(`/api/v1/export/onnx`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(workflow),
@@ -1108,7 +1093,7 @@ function DesignerApp() {
     } catch {
       setStatusMsg('Export Python failed')
     }
-  }, [nodes, edges])
+  }, [nodes, edges, workflowMeta])
 
   const loadWorkflowJson = useCallback((workflow) => {
     if (!workflow || workflow.schema_version !== 'workflow_graph.v1') {
@@ -1181,6 +1166,13 @@ function DesignerApp() {
     }, nodeIdCounter)
     nodeIdCounter = Math.max(nodeIdCounter, maxId)
 
+    // Preserve workflow identity (id, name, metadata) so save works correctly.
+    setWorkflowMeta({
+      workflow_id: workflow.workflow_id || null,
+      name: workflow.name || null,
+      metadata: workflow.metadata || {},
+    })
+
     // Set nodes first, then defer edges so React Flow has time to
     // measure node dimensions and register handle positions.
     setNodes(nextNodes)
@@ -1220,7 +1212,7 @@ function DesignerApp() {
   const handleLoadExample = useCallback(async (path) => {
     if (!path) return
     try {
-      const res = await fetch(path)
+      const res = await apiCall(path)
       const data = await res.json()
       loadWorkflowJson(data)
     } catch {
@@ -1231,9 +1223,9 @@ function DesignerApp() {
   const handleReloadComponents = useCallback(async () => {
     setStatusMsg('Reloading components...')
     try {
-      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/components/reload`, { method: 'POST' })
+      const res = await apiCall(`/api/v1/components/reload`, { method: 'POST' })
       const data = await res.json()
-      const list = await fetch(`${RESEARCH_API_BASE}/api/v1/components?status=approved`)
+      const list = await apiCall(`/api/v1/components?status=approved`)
       const comps = await list.json()
       setComponents(comps)
       setStatusMsg(`Reloaded components: ${data.reloaded || comps.length}`)
@@ -1254,12 +1246,12 @@ function DesignerApp() {
   }, [setNodes, setEdges])
 
   const handleAskAriaSuggest = useCallback(async (promptText = '') => {
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     const prompt = String(promptText || '').trim()
     setAriaLoading(true)
     setStatusMsg('Fetching Aria suggestions...')
     try {
-      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/suggest-components`, {
+      const res = await apiCall(`/api/v1/aria/suggest-components`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflow, prompt: prompt || undefined }),
@@ -1273,12 +1265,12 @@ function DesignerApp() {
     } finally {
       setAriaLoading(false)
     }
-  }, [nodes, edges])
+  }, [nodes, edges, workflowMeta])
 
   const handleAskAriaSubmit = useCallback(async (promptText) => {
     const prompt = String(promptText || '').trim()
     if (!prompt) return
-    const workflow = buildWorkflowJson(nodes, edges)
+    const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
     const benchmarkSummary = evalState?.benchmarking?.summary || null
     const offTarget = Array.isArray(evalState?.benchmarking?.targets)
       ? evalState.benchmarking.targets.filter((t) => t.status === 'off_target').slice(0, 4)
@@ -1295,7 +1287,7 @@ function DesignerApp() {
 
     // Preferred path: backend-generated deterministic patch proposal.
     try {
-      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/generate-patch`, {
+      const res = await apiCall(`/api/v1/aria/generate-patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflow, prompt: effectivePrompt, base_version: 1 }),
@@ -1305,7 +1297,7 @@ function DesignerApp() {
         setStatusMsg(`Aria proposal created: ${data.proposal_id}`)
         setRightPanelTab('proposals')
         setShowAskAriaModal(false)
-        const pRes = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/proposals?status=pending`)
+        const pRes = await apiCall(`/api/v1/aria/proposals?status=pending`)
         const pData = await pRes.json()
         setProposals(Array.isArray(pData) ? pData : [])
         setAriaLoading(false)
@@ -1363,7 +1355,7 @@ function DesignerApp() {
         expected_impact: { summary: 'User-directed change proposal' },
         ops,
       }
-      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/propose-patch`, {
+      const res = await apiCall(`/api/v1/aria/propose-patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -1375,7 +1367,7 @@ function DesignerApp() {
       setStatusMsg(`Aria proposal created: ${data.proposal_id}`)
       setRightPanelTab('proposals')
       setShowAskAriaModal(false)
-      const pRes = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/proposals?status=pending`)
+      const pRes = await apiCall(`/api/v1/aria/proposals?status=pending`)
       const pData = await pRes.json()
       setProposals(Array.isArray(pData) ? pData : [])
     } catch (err) {
@@ -1383,26 +1375,29 @@ function DesignerApp() {
     } finally {
       setAriaLoading(false)
     }
-  }, [nodes, edges, ariaSuggestions, evalState])
+  }, [nodes, edges, workflowMeta, ariaSuggestions, evalState])
 
   // Patch Application
   const handleApplyPatch = useCallback(async (proposalId) => {
     setStatusMsg('Applying patch...')
     try {
-      const res = await fetch(`${RESEARCH_API_BASE}/api/v1/aria/apply-patch`, {
+      const res = await apiCall(`/api/v1/aria/apply-patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ proposal_id: proposalId, approved_by: 'user' }),
       })
       const data = await res.json()
       if (data.applied) {
-        setStatusMsg(`Patch applied: ${data.ops_applied} operations.`)
-        // Clear proposal and refetch
+        const fp = data.new_fingerprint
+          ? ` (fingerprint: ${data.new_fingerprint.slice(0, 8)}…)`
+          : ''
+        setStatusMsg(`Patch applied: ${data.ops_applied} operations, saved as v${data.new_version}${fp}`)
         setProposals((prev) => prev.filter(p => p.id !== proposalId))
-        
-        // In a real system, we would apply the patch transformation locally 
-        // OR refetch the whole workflow. For now, we refetch proposals.
-        // The mock backend doesn't actually mutate the graph state in DB yet.
+
+        // Reload the patched workflow onto the canvas
+        if (data.patched_workflow) {
+          loadWorkflowJsonRef.current?.(data.patched_workflow)
+        }
       }
     } catch {
       setStatusMsg('Failed to apply patch')

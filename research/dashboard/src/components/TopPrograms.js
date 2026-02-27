@@ -70,24 +70,26 @@ function programQualityFlags(program) {
 }
 
 const COLUMNS_FULL = [
-  { key: 'score', label: 'Utility Score' },
-  { key: 'rating', label: 'Rating' },
-  { key: 'graph_fingerprint', label: 'Program Fingerprint ID' },
-  { key: 'novelty_score', label: 'Novelty' },
-  { key: 'structural_novelty', label: 'Structural' },
-  { key: 'behavioral_novelty', label: 'Behavioral' },
-  { key: 'loss_ratio', label: 'Loss Ratio' },
-  { key: 'param_count', label: 'Params' },
-  { key: 'most_similar_to', label: 'Similar To' },
-  { key: 'throughput_tok_s', label: 'Throughput' },
+  { key: 'score', label: 'Utility Score', title: 'Internal discovery score (0-100) based on performance, novelty, and stability.' },
+  { key: 'rating', label: 'Rating', title: 'Aria\'s qualitative assessment of this candidate\'s potential.' },
+  { key: 'graph_fingerprint', label: 'Program Fingerprint ID', title: 'The unique architectural identity for this candidate.' },
+  { key: 'novelty_score', label: 'Novelty', title: 'How different this architecture is from known frontier models (0-1).' },
+  { key: 'structural_novelty', label: 'Structural', title: 'Measures topological differences in the compute graph.' },
+  { key: 'behavioral_novelty', label: 'Behavioral', title: 'Measures differences in how the model processes information (via CKA).' },
+  { key: 'loss_ratio', label: 'Loss Ratio', title: 'How much the loss decreased during micro-training (lower is better).' },
+  { key: 'jacobian_spectral_norm', label: 'Spectral', title: 'Jacobian Spectral Norm: gradient stability indicator (lower is better).' },
+  { key: 'init_sensitivity_std', label: 'InitStd', title: 'Sensitivity to weight initialization (lower is better).' },
+  { key: 'param_count', label: 'Params', title: 'Total trainable parameter count.' },
+  { key: 'most_similar_to', label: 'Similar To', title: 'The known architecture most closely resembling this candidate.' },
+  { key: 'throughput_tok_s', label: 'Throughput', title: 'Processing speed in tokens per second.' },
 ];
 
 const COLUMNS_COMPACT = [
-  { key: 'score', label: 'Utility Score' },
-  { key: 'rating', label: 'Rating' },
-  { key: 'graph_fingerprint', label: 'Program Fingerprint ID' },
-  { key: 'novelty_score', label: 'Novelty' },
-  { key: 'loss_ratio', label: 'Loss Ratio' },
+  { key: 'score', label: 'Utility Score', title: 'Internal discovery score (0-100).' },
+  { key: 'rating', label: 'Rating', title: 'Aria\'s qualitative assessment.' },
+  { key: 'graph_fingerprint', label: 'Program Fingerprint ID', title: 'Architectural identity.' },
+  { key: 'novelty_score', label: 'Novelty', title: 'Architectural uniqueness.' },
+  { key: 'loss_ratio', label: 'Loss Ratio', title: 'Training performance.' },
 ];
 
 const PROGRAM_FINGERPRINT_HEADER_TOOLTIP = 'Architecture identity for each program row; the same fingerprint can appear multiple times when rerun.';
@@ -322,7 +324,7 @@ function TopPrograms({
               <th
                 key={col.key}
                 onClick={() => handleSort(col.key)}
-                title={col.key === 'graph_fingerprint' ? PROGRAM_FINGERPRINT_HEADER_TOOLTIP : undefined}
+                title={col.title || (col.key === 'graph_fingerprint' ? PROGRAM_FINGERPRINT_HEADER_TOOLTIP : undefined)}
                 style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
               >
                 {col.label}
@@ -517,6 +519,12 @@ function TopPrograms({
                     </div>
                   )}
                 </td>
+                {columns.some(c => c.key === 'jacobian_spectral_norm') && (
+                  <td>{metricText(p.jacobian_spectral_norm ?? p.fp_jacobian_spectral_norm, '--', (v) => v.toFixed(4))}</td>
+                )}
+                {columns.some(c => c.key === 'init_sensitivity_std') && (
+                  <td>{metricText(p.init_sensitivity_std, '--', (v) => v.toFixed(4))}</td>
+                )}
                 {showParamCount && (
                   <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : 'not available'}</td>
                 )}

@@ -1,8 +1,8 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useMemo } from 'react';
 import { confidenceColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const CATEGORY_COLORS = {
   principle: 'var(--accent-blue)',
@@ -70,7 +70,7 @@ function KnowledgeBase({ onSelectExperiment }) {
 
   useEffect(() => {
     setError(null);
-    fetch(`${API_BASE}/api/knowledge`)
+    apiCall(`/api/knowledge`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -110,7 +110,7 @@ function KnowledgeBase({ onSelectExperiment }) {
     setSearchLoading(true);
     setError(null);
     try {
-      const r = await fetch(`${API_BASE}/api/knowledge/search?q=${encodeURIComponent(search)}`);
+      const r = await apiCall(`/api/knowledge/search?q=${encodeURIComponent(search)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       setAllEntries(Array.isArray(d) ? d : []);

@@ -1,10 +1,10 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
 import { reliabilityColor } from '../utils/colors';
 import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
 import { candidateScore, candidateScoreBreakdown, promotionEvidence } from '../utils/scoringEngine';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 const LEADERBOARD_PREFS_KEY = 'aria_leaderboard_prefs_v1';
 
 const TIER_COLORS = {
@@ -361,29 +361,29 @@ const COLUMNS = [
   {
     key: '_score',
     label: 'Utility Score',
-    title: 'Internal 0-100 composite for relative ranking only; not a claim of GPT-level replacement or external benchmark parity.',
+    title: 'Internal 0-100 composite for relative ranking based on quality, efficiency, and novelty.',
   },
-  { key: 'tier', label: 'Tier' },
-  { key: '_stability', label: 'Stability' },
-  { key: 'model_source', label: 'Source' },
-  { key: 'architecture_family', label: 'Family' },
-  { key: 'architecture_desc', label: 'Description' },
-  { key: '_vs_reference', label: 'vs Ref Loss' },
-  { key: 'composite_score', label: 'Composite' },
-  { key: 'screening_loss_ratio', label: 'S.Loss' },
-  { key: 'screening_novelty', label: 'Novelty' },
-  { key: 'investigation_loss_ratio', label: 'I.Loss' },
-  { key: 'investigation_robustness', label: 'Robust' },
-  { key: 'validation_loss_ratio', label: 'V.Loss' },
-  { key: 'validation_baseline_ratio', label: 'V.Base' },
-  { key: 'robustness_noise_score', label: 'Noise' },
-  { key: 'quant_int8_retention', label: 'INT8 Ret' },
-  { key: 'robustness_long_ctx_score', label: 'LongCtx' },
-  { key: 'init_sensitivity_std', label: 'InitStd' },
-  { key: 'jacobian_spectral_norm', label: 'Spectral' },
-  { key: '_compression_ratio', label: 'Compression' },
-  { key: '_metric_quality', label: 'Metric Quality' },
-  { key: '_actions', label: 'Actions' },
+  { key: 'tier', label: 'Tier', title: 'The model\'s current research phase: Screening, Investigation, Validation, or Breakthrough.' },
+  { key: '_stability', label: 'Stability', title: 'Tracks how the model\'s rank has changed over recent experiments.' },
+  { key: 'model_source', label: 'Source', title: 'The method used to generate this model (e.g., Graph Synthesis or Morphological Box).' },
+  { key: 'architecture_family', label: 'Family', title: 'Architectural category like Attention, SSM, or Hybrid.' },
+  { key: 'architecture_desc', label: 'Description', title: 'Human-readable summary of the model topology.' },
+  { key: '_vs_reference', label: 'vs Ref Loss', title: 'Percentage of the loss achieved by the nearest frontier baseline (lower is better).' },
+  { key: 'composite_score', label: 'Composite', title: 'Internal technical score used by the scientist for optimization.' },
+  { key: 'screening_loss_ratio', label: 'S.Loss', title: 'Loss ratio from the initial screening phase.' },
+  { key: 'screening_novelty', label: 'Novelty', title: 'How different this architecture is from known patterns (0-1).' },
+  { key: 'investigation_loss_ratio', label: 'I.Loss', title: 'Loss ratio from the deeper investigation phase.' },
+  { key: 'investigation_robustness', label: 'Robust', title: 'Fraction of training recipes that succeed (higher is more stable).' },
+  { key: 'validation_loss_ratio', label: 'V.Loss', title: 'Final multi-seed validation loss ratio.' },
+  { key: 'validation_baseline_ratio', label: 'V.Base', title: 'Final loss compared to a fixed baseline; < 1.0 means it beats the baseline.' },
+  { key: 'robustness_noise_score', label: 'Noise', title: 'Sensitivity to input noise (lower is more robust).' },
+  { key: 'quant_int8_retention', label: 'INT8 Ret', title: 'Performance preserved after INT8 quantization (higher is better).' },
+  { key: 'robustness_long_ctx_score', label: 'LongCtx', title: 'Scaling performance on longer sequences (higher is better).' },
+  { key: 'init_sensitivity_std', label: 'InitStd', title: 'Sensitivity to weight initialization variance (lower is better).' },
+  { key: 'jacobian_spectral_norm', label: 'Spectral', title: 'Jacobian Spectral Norm: measures gradient explosion risk (lower is more stable).' },
+  { key: '_compression_ratio', label: 'Compression', title: 'Effective parameter reduction compared to a dense baseline.' },
+  { key: '_metric_quality', label: 'Metric Quality', title: 'Reliability of recorded metrics based on evidence depth.' },
+  { key: '_actions', label: 'Actions', title: 'Available research operations for this candidate.' },
 ];
 
 function Leaderboard({
@@ -473,10 +473,13 @@ function Leaderboard({
   }, [highlightResultId, onHighlightClear]);
 
   const fetchLeaderboard = useCallback(async () => {
+    console.log('[Leaderboard] Refreshing data...');
+    setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams({ sort: 'composite_score', limit: '100' });
       if (activeTier !== 'all') params.set('tier', activeTier);
-      const res = await fetch(`${API_BASE}/api/leaderboard?${params}`);
+      const res = await apiCall(`/api/leaderboard?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);
@@ -518,7 +521,7 @@ function Leaderboard({
       setActionError(null);
       onInvestigate(resultIds);
     } else {
-      fetch(`${API_BASE}/api/experiments/start`, {
+      apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'investigation', result_ids: resultIds }),
@@ -537,7 +540,7 @@ function Leaderboard({
       setActionError(null);
       onValidate(resultIds);
     } else {
-      fetch(`${API_BASE}/api/experiments/start`, {
+      apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'validation', result_ids: resultIds }),
@@ -777,14 +780,15 @@ function Leaderboard({
         </label>
         <button
           onClick={fetchLeaderboard}
+          disabled={loading}
           aria-label="Refresh leaderboard"
           style={{
-            marginLeft: 'auto', fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+            marginLeft: 'auto', fontSize: 11, padding: '4px 10px', cursor: loading ? 'not-allowed' : 'pointer',
             border: '1px solid var(--border)', borderRadius: 4,
-            background: 'transparent', color: 'var(--text-secondary)',
+            background: 'transparent', color: 'var(--text-secondary)', opacity: loading ? 0.6 : 1
           }}
         >
-          Refresh
+          {loading ? 'Refreshing...' : 'Refresh'}
         </button>
         <button
           onClick={() => setShowColumnPicker(!showColumnPicker)}
@@ -1092,7 +1096,8 @@ function Leaderboard({
                       case 'init_sensitivity_std':
                         return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? fmt(entry.init_sensitivity_std, 4) : '--'}</td>;
                       case 'jacobian_spectral_norm':
-                        return <td key={col.key} style={tdStyle}>{entry.jacobian_spectral_norm != null ? fmt(entry.jacobian_spectral_norm, 4) : '--'}</td>;
+                        const specValLB = entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm;
+                        return <td key={col.key} style={tdStyle}>{specValLB != null ? fmt(specValLB, 4) : '--'}</td>;
                       case '_compression_ratio':
                         return (
                           <td key={col.key} style={tdStyle}>

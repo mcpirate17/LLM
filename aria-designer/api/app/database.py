@@ -6,11 +6,14 @@ workflows, workflow_runs, aria_proposals.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 _DB_PATH = Path(__file__).resolve().parent.parent / "aria_designer.db"
 _local = threading.local()
@@ -81,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_proposals_status ON aria_proposals(status);
 def _get_conn() -> sqlite3.Connection:
     """Get thread-local database connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
-        print(f"DEBUG: Opening new connection to {_DB_PATH}")
+        logger.debug("Opening new connection to %s", _DB_PATH)
         conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -96,17 +99,17 @@ def init_db(db_path: Optional[Path] = None) -> None:
     if db_path is not None:
         _DB_PATH = db_path
     
-    print(f"DEBUG: Initializing DB at {_DB_PATH}")
+    logger.debug("Initializing DB at %s", _DB_PATH)
     # Clear thread-local connection if it exists to ensure we use the new path
     if hasattr(_local, "conn") and _local.conn:
-        print("DEBUG: Closing existing thread-local connection")
+        logger.debug("Closing existing thread-local connection")
         _local.conn.close()
         _local.conn = None
         
     conn = _get_conn()
     conn.executescript(SCHEMA_SQL)
     conn.commit()
-    print("DEBUG: DB initialization complete")
+    logger.debug("DB initialization complete")
 
 
 # ── Component CRUD ────────────────────────────────────────────────────

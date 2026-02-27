@@ -21,6 +21,12 @@ import math
 import torch
 import torch.nn as nn
 
+try:
+    import aria_core
+    _HAS_ARIA_CORE = True
+except ImportError:
+    _HAS_ARIA_CORE = False
+
 
 DEFAULT_P = 2
 
@@ -124,6 +130,10 @@ def execute_ultrametric_attn(module: nn.Module, x: torch.Tensor) -> torch.Tensor
 
 def execute_padic_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Gate activations using smooth p-adic valuation signal."""
+    if _HAS_ARIA_CORE and x.is_contiguous():
+        y = torch.empty_like(x)
+        aria_core.padic_gate_f32(x, y, float(DEFAULT_P))
+        return y
     valuation = padic_valuation(x).clamp(min=-10.0, max=10.0)
     gate = torch.sigmoid(valuation)
     return x * gate

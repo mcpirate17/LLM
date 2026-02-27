@@ -1,30 +1,13 @@
 import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import {
-  ArrowUpDown,
-  Sigma,
-  Grid3X3,
-  Puzzle,
-  Waves,
-  Activity,
-  FunctionSquare,
-  Shuffle,
-  Layers,
-  GitFork,
-  Scale,
-  Ruler,
-  Hexagon,
-  Box,
-  Compass,
-  Database,
-  Filter,
-  Repeat,
-  Orbit,
   HelpCircle,
   CheckCircle2,
   Loader,
   XCircle,
+  Box,
 } from 'lucide-react'
+import { CATEGORY_ICONS } from '../utils/categoryConfig'
 
 function formatFlops(n) {
   if (n == null) return ''
@@ -40,28 +23,6 @@ const DTYPE_COLORS = {
   index: '#a060ff',
   mask: '#ff6060',
   complex_tensor: '#20d0a0',
-}
-
-const CATEGORY_ICONS = {
-  io: ArrowUpDown,
-  data_io: Database,
-  data_transform: Filter,
-  control_flow: Repeat,
-  math: Sigma,
-  linear_algebra: Grid3X3,
-  mixing: Shuffle,
-  channel_mixing: Layers,
-  sequence: Waves,
-  frequency: Activity,
-  normalization: Scale,
-  positional: Ruler,
-  structural: Puzzle,
-  representation: Hexagon,
-  routing: GitFork,
-  topology: Compass,
-  blocks: Box,
-  functional: FunctionSquare,
-  math_space: Orbit,
 }
 
 function DesignerNode({ data, selected, onHelp }) {

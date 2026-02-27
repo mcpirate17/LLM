@@ -9,6 +9,20 @@ import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScale
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
+const CATEGORY_DESCRIPTIONS = {
+  elementwise_unary: "Simple one-to-one transformations like activations (ReLU, GELU), exp, and log.",
+  elementwise_binary: "Basic interactions between two tensors like add, multiply, and divide.",
+  reduction: "Consolidating information along a dimension (mean, sum, max, norm).",
+  linear_algebra: "Core matrix operations like matmuls, outer products, and transposes.",
+  structural: "Graph routing and shape manipulation (split, concat, roll, gather).",
+  parameterized: "Operations with learned weights: linear layers, normalization, and convolutions.",
+  mixing: "Specialized information exchange mechanisms like state-spaces or local attention.",
+  sequence: "Operations that process token order: causal masking, sorting, and windowed mixing.",
+  frequency: "Fourier domain transformations (FFT) for global sequence mixing in O(N log N).",
+  math_space: "Advanced operators from non-Euclidean spaces (hyperbolic, p-adic, tropical).",
+  functional: "Higher-order components like basis expansions or fixed-point iterations.",
+};
+
 function fmtNumber(value, digits = 0) {
   if (!Number.isFinite(value)) return '—';
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
@@ -287,11 +301,26 @@ function GrammarWeightsChart({ defaultWeights, learnedWeights, explanation, onSt
   return (
     <div className="card">
       <div className="card-title">Grammar Weights (Default vs Learned)</div>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        How likely each type of operation is to appear in a newly generated architecture.
-        The system adjusts these weights based on which operation categories produced architectures
-        that actually learned. Green = increased (working well), Red = decreased (underperforming).
-      </p>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        <p style={{ margin: '0 0 8px' }}>
+          This chart shows the probability of each operation category being selected during architecture synthesis.
+          The system <strong>learns from experience</strong>: categories that consistently appear in "Stage 1 Survivors" (models that learned successfully) have their weights increased.
+        </p>
+        <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 12, height: 12, background: 'rgba(88, 166, 255, 0.3)', border: '1px solid var(--accent-blue)', borderRadius: 2 }} />
+            <span>Default Weight</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 12, height: 12, background: 'rgba(63, 185, 80, 0.3)', border: '1px solid var(--accent-green)', borderRadius: 2 }} />
+            <span>Boosted (Success)</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 12, height: 12, background: 'rgba(248, 81, 73, 0.3)', border: '1px solid var(--accent-red)', borderRadius: 2 }} />
+            <span>Penalized (Failure)</span>
+          </div>
+        </div>
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {categories.map(cat => {
           const def = defaultWeights[cat] || 0;
@@ -300,42 +329,73 @@ function GrammarWeightsChart({ defaultWeights, learnedWeights, explanation, onSt
           return (
             <div key={cat} style={{ fontSize: 13 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                <span style={{ color: 'var(--text-secondary)' }}>
-                  {cat.replace(/_/g, ' ')}
-                </span>
-                <span>
-                  <span style={{ color: 'var(--text-muted)' }}>{def.toFixed(1)}</span>
+                <Tooltip content={CATEGORY_DESCRIPTIONS[cat] || "A grouping of related primitive operations."}>
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: 500, cursor: 'help', borderBottom: '1px dotted var(--text-muted)' }}>
+                    {cat.replace(/_/g, ' ')}
+                  </span>
+                </Tooltip>
+                <span style={{ fontSize: 11 }}>
                   {hasLearned && (
                     <span style={{
                       color: learned > def ? 'var(--accent-green)' : learned < def ? 'var(--accent-red)' : 'var(--text-muted)',
-                      marginLeft: 8,
+                      marginRight: 8,
+                      fontWeight: 600
                     }}>
-                      {learned > def ? '+' : ''}{(learned - def).toFixed(1)} = {learned.toFixed(1)}
+                      {learned > def ? '+' : ''}{(((learned - def) / (def || 1)) * 100).toFixed(0)}%
                     </span>
                   )}
+                  <span style={{ color: 'var(--text-muted)' }}>{def.toFixed(1)} &rarr; </span>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{hasLearned ? learned.toFixed(1) : def.toFixed(1)}</span>
                 </span>
               </div>
-              <div style={{ position: 'relative', height: 16, background: 'var(--bg-tertiary)', borderRadius: 4 }}>
-                <div style={{
-                  position: 'absolute', height: '100%', borderRadius: 4,
-                  width: `${(def / maxWeight) * 100}%`,
-                  background: 'rgba(88, 166, 255, 0.3)',
-                  border: '1px solid var(--accent-blue)',
-                }} />
-                {hasLearned && (
-                  <div style={{
-                    position: 'absolute', height: '100%', borderRadius: 4,
-                    width: `${(learned / maxWeight) * 100}%`,
-                    background: learned > def
-                      ? 'rgba(63, 185, 80, 0.3)'
-                      : 'rgba(248, 81, 73, 0.3)',
-                    border: `1px solid ${learned > def ? 'var(--accent-green)' : 'var(--accent-red)'}`,
-                  }} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, background: 'var(--bg-tertiary)', padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                {/* Default weight bar (reference) */}
+                <Tooltip content={<div><strong>Default Weight: {def.toFixed(2)}</strong><br/>Baseline frequency for this category.<br/><br/>{CATEGORY_DESCRIPTIONS[cat]}</div>}>
+                  <div style={{ height: 6, background: 'var(--bg-primary)', borderRadius: 3, position: 'relative', overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%',
+                      width: `${(def / maxWeight) * 100}%`,
+                      background: 'var(--accent-blue)',
+                      opacity: 0.4,
+                    }} />
+                  </div>
+                </Tooltip>
+                
+                {/* Learned weight bar (actual) */}
+                {hasLearned ? (
+                  <Tooltip content={<div><strong>Learned Weight: {learned.toFixed(2)}</strong><br/>Current frequency after learning.<br/><br/>{learned > def ? 'Boosted due to success correlation.' : 'Penalized due to lack of survivors.'}</div>}>
+                    <div style={{ height: 10, background: 'var(--bg-primary)', borderRadius: 5, position: 'relative', overflow: 'hidden' }}>
+                      <div style={{
+                        height: '100%',
+                        width: `${(learned / maxWeight) * 100}%`,
+                        background: learned > def ? 'var(--accent-green)' : 'var(--accent-red)',
+                        opacity: 0.8,
+                      }} />
+                      {/* Vertical line showing where the default was */}
+                      <div style={{
+                        position: 'absolute',
+                        left: `${(def / maxWeight) * 100}%`,
+                        top: 0,
+                        bottom: 0,
+                        width: 2,
+                        background: 'var(--text-primary)',
+                        opacity: 0.5,
+                        zIndex: 1
+                      }} />
+                    </div>
+                  </Tooltip>
+                ) : (
+                  <div style={{ height: 10, fontSize: 10, color: 'var(--text-muted)', fontStyle: 'italic', display: 'flex', alignItems: 'center' }}>
+                    Pending sufficient data...
+                  </div>
                 )}
               </div>
             </div>
           );
         })}
+      </div>
+      <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
+        See <strong>Op Success Rates</strong> below for a detailed per-operation breakdown.
       </div>
       {!learnedWeights && (
         <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 6, background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}>

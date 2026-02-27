@@ -1,9 +1,6 @@
 from typing import List, Dict, Any
 import requests
 
-# Mock marketplace registry
-MARKETPLACE_URL = "https://marketplace.aria-designer.io/api/v1"
-
 def search_marketplace(query: str = "") -> List[Dict[str, Any]]:
     """
     Search for components in the global community marketplace.

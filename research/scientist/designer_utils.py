@@ -21,6 +21,9 @@ for p in [_PROJECT_ROOT, _DESIGNER_ROOT]:
 from research.synthesis.graph import ComputationGraph, ShapeInfo
 from research.synthesis.compiler import compile_graph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
+from research.synthesis.workflow_converter import workflow_to_computation_graph as _w2cg, graph_to_workflow as _g2w
+
+logger = logging.getLogger(__name__)
 
 try:
     from runtime.profiler import profile_workflow
@@ -31,235 +34,39 @@ except Exception as e:
     logger.error(f"Unexpected error importing profiler: {e}")
     HAS_PROFILER = False
 
-logger = logging.getLogger(__name__)
-
-def fe_type_to_op_name(fe_type: str) -> str:
-    """Map frontend component type to backend op name."""
-    if not fe_type:
-        return "identity"
-    # "io/input" -> "input"
-    # "math/relu" -> "relu"
-    return fe_type.split("/")[-1]
-
+# Keep original function names for compatibility but delegate to shared implementation
 def workflow_to_computation_graph(workflow_json: Dict[str, Any], default_model_dim: int = 256) -> ComputationGraph:
-    """
-    Convert frontend workflow JSON to a ComputationGraph.
-    
-    Expected format:
-    {
-        "nodes": [{"id": "n1", "component_type": "io/input", "params": {}}, ...],
-        "edges": [{"source": "n1", "target": "n2", ...}, ...]
-    }
-    """
-    nodes = workflow_json.get("nodes", [])
-    edges = workflow_json.get("edges", [])
-    metadata = workflow_json.get("metadata", {})
-    
-    model_dim = metadata.get("model_dim", default_model_dim)
-    graph = ComputationGraph(model_dim)
-    
-    # Map frontend string IDs to backend integer IDs
-    fe_to_be: Dict[str, int] = {}
-    
-    # 1. Identify input nodes
-    fe_inputs = [n for n in nodes if fe_type_to_op_name(n["component_type"]) == "input"]
-    if not fe_inputs:
-        # If no explicit input node, look for nodes with no incoming edges
-        target_ids = {e["target"] for e in edges}
-        fe_inputs = [n for n in nodes if n["id"] not in target_ids]
-        
-    if not fe_inputs:
-        raise ValueError("Graph has no detectable input nodes.")
-        
-    # For now, we only support a single input node in ComputationGraph
-    main_input = fe_inputs[0]
-    be_input_id = graph.add_input()
-    fe_to_be[main_input["id"]] = be_input_id
-    
-    # 2. Add other nodes in topological order
-    # We use a simple iterative approach to add nodes whose inputs are already resolved
-    pending = [n for n in nodes if n["id"] not in fe_to_be]
-    
-    # Also handle the case where "io/output" is used as a sink
-    fe_outputs = [n for n in nodes if fe_type_to_op_name(n["component_type"]) == "output"]
-    output_fe_id: Optional[str] = None
-    if fe_outputs:
-        output_fe_id = fe_outputs[0]["id"]
+    return _w2cg(workflow_json, default_model_dim)
 
-    added_any = True
-    while pending and added_any:
-        added_any = False
-        next_pending = []
-        for node in pending:
-            op_name = fe_type_to_op_name(node["component_type"])
-            
-            # Skip the explicit output node for now, we'll use its input as the graph output
-            if op_name == "output":
-                next_pending.append(node)
-                continue
-                
-            # Find incoming edges
-            incoming = [e for e in edges if e["target"] == node["id"]]
-            source_fe_ids = [e["source"] for e in incoming]
-            
-            if all(sid in fe_to_be for sid in source_fe_ids):
-                # All inputs resolved, add this op
-                be_input_ids = [fe_to_be[sid] for sid in source_fe_ids]
-                
-                # Validation: if no inputs and not an input node, it's a disconnected op (unless it's a constant, but we don't have those yet)
-                if not be_input_ids and op_name != "input":
-                    # Treat as identity if it has no inputs but is expected? 
-                    # Actually, Synthesis usually starts with input.
-                    # For now, just skip or raise error.
-                    logger.warning(f"Node {node['id']} ({op_name}) has no inputs, skipping.")
-                    continue
 
-                try:
-                    be_id = graph.add_op(op_name, be_input_ids, node.get("params", {}))
-                    fe_to_be[node["id"]] = be_id
-                    added_any = True
-                except Exception as e:
-                    raise ValueError(f"Failed to add node {node['id']} ({op_name}): {e}")
-            else:
-                next_pending.append(node)
-        pending = next_pending
-        
-    if pending:
-        # Check if only the output node remains
-        remaining_non_output = [n for n in pending if fe_type_to_op_name(n["component_type"]) != "output"]
-        if remaining_non_output:
-            raise ValueError(f"Graph has cycles or disconnected components. Remaining nodes: {[n['id'] for n in remaining_non_output]}")
-
-    # 3. Set output node
-    if output_fe_id:
-        # Find what's connected to the output node
-        incoming_to_output = [e for e in edges if e["target"] == output_fe_id]
-        if incoming_to_output:
-            last_source_fe_id = incoming_to_output[0]["source"]
-            if last_source_fe_id in fe_to_be:
-                graph.set_output(fe_to_be[last_source_fe_id])
-            else:
-                raise ValueError(f"Output node connected to unresolved node {last_source_fe_id}")
-        else:
-            # If output node exists but nothing connected to it, find a sink
-            _set_fallback_output(graph, fe_to_be, nodes, edges)
-    else:
-        _set_fallback_output(graph, fe_to_be, nodes, edges)
-        
-    return graph
-
-def _set_fallback_output(graph: ComputationGraph, fe_to_be: Dict[str, int], nodes: List[Dict], edges: List[Dict]):
-    """Find a suitable sink node to use as graph output."""
-    source_fe_ids = {e["source"] for e in edges}
-    # Sinks are nodes that are NOT sources for any edge
-    fe_sinks = [n for n in nodes if n["id"] not in source_fe_ids and n["id"] in fe_to_be]
-    if fe_sinks:
-        # Prefer standard sequence output if possible (dim == model_dim)
-        for sink in reversed(fe_sinks):
-            try:
-                graph.set_output(fe_to_be[sink["id"]])
-                return
-            except Exception:
-                continue
-        # If no standard output found, try the last added node
-        try:
-            graph.set_output(fe_to_be[fe_sinks[-1]["id"]])
-        except Exception as e:
-            raise ValueError(f"Could not find a valid output node: {e}")
-    else:
-        # Fallback to the last node added to the graph
-        topo = graph.topological_order()
-        if topo:
-            graph.set_output(topo[-1])
-        else:
-            raise ValueError("Empty graph, cannot set output.")
-
-def validate_designer_graph(workflow_json: Dict[str, Any], default_model_dim: int = 256) -> Dict[str, Any]:
-    """
-    Validate a workflow graph and return per-node status.
-    """
-    nodes = workflow_json.get("nodes", [])
-    edges = workflow_json.get("edges", [])
-    metadata = workflow_json.get("metadata", {})
-    model_dim = metadata.get("model_dim", default_model_dim)
-    
-    node_statuses: Dict[str, Dict[str, Any]] = {n["id"]: {"valid": True, "errors": []} for n in nodes}
-    global_errors = []
-    
+def validate_designer_graph(workflow_json: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate a workflow graph and return structural diagnostics."""
     try:
-        # 1. Check for input node
-        fe_inputs = [n for n in nodes if fe_type_to_op_name(n["component_type"]) == "input"]
-        if not fe_inputs:
-            target_ids = {e["target"] for e in edges}
-            fe_inputs = [n for n in nodes if n["id"] not in target_ids]
-        
-        if not fe_inputs:
-            global_errors.append("Graph has no detectable input nodes.")
-        
-        # 2. Check each node for required inputs
-        for node in nodes:
-            op_name = fe_type_to_op_name(node["component_type"])
-            if op_name == "input":
-                continue
-                
-            prim = PRIMITIVE_REGISTRY.get(op_name)
-                
-            incoming = [e for e in edges if e["target"] == node["id"]]
-            if prim:
-                if len(incoming) < prim.n_inputs:
-                    msg = f"Node {node['id']} ({op_name}) requires {prim.n_inputs} inputs, but only has {len(incoming)}."
-                    node_statuses[node["id"]]["valid"] = False
-                    node_statuses[node["id"]]["errors"].append(msg)
-            elif op_name != "output":
-                node_statuses[node["id"]]["valid"] = False
-                node_statuses[node["id"]]["errors"].append(f"Unknown component type: {node['component_type']}")
-
-        # 3. Check for cycles and disconnected components
-        # We can reuse the topological sort logic but track which nodes fail
-        fe_to_be = {}
-        if fe_inputs:
-            fe_to_be[fe_inputs[0]["id"]] = 0 # Dummy ID
-            
-        pending = [n for n in nodes if n["id"] not in fe_to_be]
-        added_any = True
-        while pending and added_any:
-            added_any = False
-            next_pending = []
-            for node in pending:
-                op_name = fe_type_to_op_name(node["component_type"])
-                if op_name == "output":
-                    next_pending.append(node)
-                    continue
-                incoming = [e for e in edges if e["target"] == node["id"]]
-                if all(e["source"] in fe_to_be for e in incoming):
-                    fe_to_be[node["id"]] = len(fe_to_be)
-                    added_any = True
-                else:
-                    next_pending.append(node)
-            pending = next_pending
-            
-        if pending:
-            remaining_non_output = [n for n in pending if fe_type_to_op_name(n["component_type"]) != "output"]
-            for node in remaining_non_output:
-                node_statuses[node["id"]]["valid"] = False
-                node_statuses[node["id"]]["errors"].append("Cycle detected or node is disconnected from input.")
-
-        # 4. Shape compatibility (optional/best-effort without full graph build)
-        # For a full check, we need to build the ComputationGraph
-        if not global_errors and all(s["valid"] for s in node_statuses.values()):
-            try:
-                workflow_to_computation_graph(workflow_json, model_dim)
-            except Exception as e:
-                global_errors.append(f"Graph construction failed: {e}")
-
+        graph = workflow_to_computation_graph(workflow_json)
+        return {
+            "success": True,
+            "valid": True,
+            "workflow_id": workflow_json.get("workflow_id"),
+            "n_ops": graph.n_ops(),
+            "depth": graph.depth(),
+            "fingerprint": graph.fingerprint(),
+        }
     except Exception as e:
-        global_errors.append(f"Validation failed with internal error: {e}")
+        return {
+            "success": True,
+            "valid": False,
+            "workflow_id": workflow_json.get("workflow_id"),
+            "error": str(e),
+        }
 
-    return {
-        "success": len(global_errors) == 0 and all(s["valid"] for s in node_statuses.values()),
-        "node_statuses": node_statuses,
-        "global_errors": global_errors
-    }
+
+def import_research_program(graph_json_str: str) -> Dict[str, Any]:
+    """
+    Convert a backend ComputationGraph JSON to designer workflow JSON.
+    """
+    from research.synthesis.serializer import graph_from_json as _gfj
+    graph = _gfj(graph_json_str)
+    return _g2w(graph)
 
 def compile_designer_graph(workflow_json: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -537,101 +344,109 @@ def import_research_program(graph_json_str: str) -> Dict[str, Any]:
     """
     Convert a backend ComputationGraph JSON to designer workflow JSON.
     """
-    import json
-    data = json.loads(graph_json_str)
-    
-    # ComputationGraph format usually has:
-    # nodes: { "0": {"id": 0, "op_name": "input", "input_ids": [], ...}, ... }
-    
-    nodes = []
-    edges = []
-    
-    be_nodes = data.get("nodes", {})
-    model_dim = data.get("model_dim", 256)
-
-    # Calculate depth-based layout
-    depths = {}
-    def get_depth(nid):
-        if nid in depths: return depths[nid]
-        node = be_nodes.get(str(nid))
-        if not node or not node.get("input_ids"):
-            depths[nid] = 0
-            return 0
-        d = 1 + max(get_depth(iid) for iid in node["input_ids"])
-        depths[nid] = d
-        return d
-
-    for nid_str in be_nodes:
-        get_depth(int(nid_str))
-
-    # Group by depth for horizontal spreading
-    by_depth = {}
-    for nid, d in depths.items():
-        by_depth.setdefault(d, []).append(nid)
-
-    for nid_str, be_node in be_nodes.items():
-        nid = int(nid_str)
-        op_name = be_node["op_name"]
+    try:
+        from aria_designer.runtime.importer import graph_to_workflow as _g2w
+        from research.synthesis.serializer import graph_from_json as _gfj
         
-        # Map op_name back to component_type
-        category = "other"
-        from research.synthesis.primitives import PRIMITIVE_REGISTRY
-        if op_name in PRIMITIVE_REGISTRY:
-            category = PRIMITIVE_REGISTRY[op_name].category.value
-            if "unary" in category or "binary" in category: category = "math"
-            elif "param" in category: category = "linear_algebra"
+        graph = _gfj(graph_json_str)
+        return _g2w(graph)
+    except ImportError:
+        # Minimal fallback if designer not in path
+        import json
+        data = json.loads(graph_json_str)
         
-        fe_id = f"node_{nid}"
-        comp_type = f"{category}/{op_name}"
-        if op_name == "input": comp_type = "io/input"
+        # ComputationGraph format usually has:
+        # nodes: { "0": {"id": 0, "op_name": "input", "input_ids": [], ...}, ... }
+        
+        nodes = []
+        edges = []
+        
+        be_nodes = data.get("nodes", {})
+        model_dim = data.get("model_dim", 256)
 
-        # Calculate position based on depth
-        depth = depths.get(nid, 0)
-        nodes_at_depth = by_depth.get(depth, [])
-        idx_at_depth = nodes_at_depth.index(nid) if nid in nodes_at_depth else 0
-        
-        pos_x = 50 + depth * 250
-        pos_y = 50 + idx_at_depth * 120
+        # Calculate depth-based layout
+        depths = {}
+        def get_depth(nid):
+            if nid in depths: return depths[nid]
+            node = be_nodes.get(str(nid))
+            if not node or not node.get("input_ids"):
+                depths[nid] = 0
+                return 0
+            d = 1 + max(get_depth(iid) for iid in node["input_ids"])
+            depths[nid] = d
+            return d
 
-        nodes.append({
-            "id": fe_id,
-            "component_type": comp_type,
-            "params": be_node.get("config", {}),
-            "ui_meta": {"position": {"x": pos_x, "y": pos_y}}
-        })
-        
-        # Add edges from input_ids
-        for iid in be_node.get("input_ids", []):
-            edges.append({
-                "id": f"edge_{iid}_{nid}",
-                "source": f"node_{iid}",
-                "source_port": "y",
-                "target": fe_id,
-                "target_port": "x" if len(be_node["input_ids"]) == 1 else ("a" if iid == be_node["input_ids"][0] else "b")
+        for nid_str in be_nodes:
+            get_depth(int(nid_str))
+
+        # Group by depth for horizontal spreading
+        by_depth = {}
+        for nid, d in depths.items():
+            by_depth.setdefault(d, []).append(nid)
+
+        for nid_str, be_node in be_nodes.items():
+            nid = int(nid_str)
+            op_name = be_node["op_name"]
+            
+            # Map op_name back to component_type
+            category = "other"
+            from research.synthesis.primitives import PRIMITIVE_REGISTRY
+            if op_name in PRIMITIVE_REGISTRY:
+                category = PRIMITIVE_REGISTRY[op_name].category.value
+                if "unary" in category or "binary" in category: category = "math"
+                elif "param" in category: category = "linear_algebra"
+            
+            fe_id = f"node_{nid}"
+            comp_type = f"{category}/{op_name}"
+            if op_name == "input": comp_type = "io/input"
+
+            # Calculate position based on depth
+            depth = depths.get(nid, 0)
+            nodes_at_depth = by_depth.get(depth, [])
+            idx_at_depth = nodes_at_depth.index(nid) if nid in nodes_at_depth else 0
+            
+            pos_x = 50 + depth * 250
+            pos_y = 50 + idx_at_depth * 120
+
+            nodes.append({
+                "id": fe_id,
+                "component_type": comp_type,
+                "params": be_node.get("config", {}),
+                "ui_meta": {"position": {"x": pos_x, "y": pos_y}}
             })
             
-    # Add explicit output node connected to the graph's output
-    output_be_id = data.get("output_node_id")
-    if output_be_id is not None:
-        max_depth = max(depths.values()) if depths else 0
-        nodes.append({
-            "id": "node_out",
-            "component_type": "io/output",
-            "params": {},
-            "ui_meta": {"position": {"x": 50 + (max_depth + 1) * 250, "y": 50}}
-        })
-        edges.append({
-            "id": "edge_to_out",
-            "source": f"node_{output_be_id}",
-            "source_port": "y",
-            "target": "node_out",
-            "target_port": "x"
-        })
+            # Add edges from input_ids
+            for iid in be_node.get("input_ids", []):
+                edges.append({
+                    "id": f"edge_{iid}_{nid}",
+                    "source": f"node_{iid}",
+                    "source_port": "y",
+                    "target": fe_id,
+                    "target_port": "x" if len(be_node["input_ids"]) == 1 else ("a" if iid == be_node["input_ids"][0] else "b")
+                })
+                
+        # Add explicit output node connected to the graph's output
+        output_be_id = data.get("output_node_id")
+        if output_be_id is not None:
+            max_depth = max(depths.values()) if depths else 0
+            nodes.append({
+                "id": "node_out",
+                "component_type": "io/output",
+                "params": {},
+                "ui_meta": {"position": {"x": 50 + (max_depth + 1) * 250, "y": 50}}
+            })
+            edges.append({
+                "id": f"edge_to_out",
+                "source": f"node_{output_be_id}",
+                "source_port": "y",
+                "target": "node_out",
+                "target_port": "x"
+            })
 
-    return {
-        "workflow_id": f"imported_{hash(graph_json_str) % 10000}",
-        "name": f"Imported Architecture",
-        "nodes": nodes,
-        "edges": edges,
-        "metadata": {"model_dim": model_dim}
-    }
+        return {
+            "workflow_id": f"imported_{hash(graph_json_str) % 10000}",
+            "name": f"Imported Architecture",
+            "nodes": nodes,
+            "edges": edges,
+            "metadata": {"model_dim": model_dim}
+        }

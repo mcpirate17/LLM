@@ -129,13 +129,6 @@ def _build_subgraph(
     # Safety guard: hard cap at depth 15 regardless of config to prevent
     # Python stack overflow from unbounded grammar parameter growth.
     _HARD_DEPTH_LIMIT = 15
-    
-    def _validate_depth(self, current_depth: int) -> None:
-        """Validate recursion depth and raise if exceeded."""
-        if current_depth >= self._HARD_DEPTH_LIMIT:
-            raise RecursionError(
-                f"Grammar depth {current_depth} exceeds safety limit {self._HARD_DEPTH_LIMIT}"
-            )
 
     # Base case: stop if we've hit limits
     if (current_depth >= config.max_depth

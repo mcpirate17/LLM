@@ -358,7 +358,7 @@ function computeRobustnessBonus(entry) {
   const longCtx = entry?.robustness_long_ctx_score;
   const quant = entry?.quant_int8_retention;
   const initStd = entry?.init_sensitivity_std;
-  const spectralNorm = entry?.jacobian_spectral_norm;
+  const spectralNorm = entry?.jacobian_spectral_norm ?? entry?.fp_jacobian_spectral_norm;
 
   const scores = [];
   if (noise != null) scores.push(clamp01(1 - Number(noise)));

@@ -37,7 +37,7 @@ from .persona import get_aria
 from .runner import ExperimentRunner, RunConfig
 from .native_runner import native_runner_capability_report
 from .llm.context import build_program_context
-from .designer_utils import compile_designer_graph, validate_designer_graph, run_designer_graph, get_designer_components, generate_python_module, import_research_program
+from .designer_utils import compile_designer_graph, validate_designer_graph, run_designer_graph, get_designer_components, generate_python_module
 
 import requests as _requests
 
@@ -371,7 +371,7 @@ def _designer_proxy(method: str, path: str, *, json_body=None, params=None,
 
 
 def _proxy_or_error(resp: _requests.Response | None):
-    """Convert a proxy response to a Flask (body, status) tuple, or return None
+    """Convert a proxy response to a Flask Response object, or return None
     if no proxy response is available (caller falls back to legacy)."""
     if resp is None:
         return None
@@ -379,7 +379,9 @@ def _proxy_or_error(resp: _requests.Response | None):
         body = resp.json()
     except Exception:
         body = {"error": resp.text or "Proxy returned non-JSON response"}
-    return jsonify(body), resp.status_code
+    
+    from flask import make_response
+    return make_response(jsonify(body), resp.status_code)
 
 
 def _proxy_stream(method: str, path: str, *, json_body=None, params=None):
@@ -1029,27 +1031,6 @@ def _chat_requests_self_fix_now(question: str) -> bool:
         "diagnose yourself", "diagnose and fix", "diagnose & fix",
     )
     return any(trigger in lowered for trigger in triggers)
-
-
-def _chat_question_is_actionable(question: str) -> bool:
-    """Detect if the user's question implies they want something DONE, not just explained."""
-    lowered = (question or "").lower()
-    # Non-actionable: greetings, pure questions about concepts, status checks
-    non_actionable = (
-        "what is", "what are", "hello", "hi aria", "thanks", "thank you",
-        "how are you", "who are you", "what do you think", "status",
-    )
-    if any(lowered.startswith(na) for na in non_actionable):
-        return False
-    # Actionable: anything involving problems, improvements, changes, or exploration
-    actionable = (
-        "fix", "improve", "why is", "why are", "wrong", "broken", "failing",
-        "stagnant", "stuck", "bad", "slow", "issue", "problem", "help",
-        "optimize", "increase", "decrease", "change", "adjust", "try",
-        "run", "start", "stop", "investigate", "look into", "what should",
-        "what next", "next step", "recommend", "suggest", "do something",
-    )
-    return any(trigger in lowered for trigger in actionable)
 
 
 def _chat_requests_detailed_response(question: str) -> bool:
@@ -9036,6 +9017,86 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/designer/commit", methods=["POST"])
+    def api_designer_commit():
+        """Commit a designer architecture as a new program result in the research pipeline."""
+        body = request.get_json(silent=True) or {}
+        workflow = body.get("workflow")
+        if not workflow:
+            return jsonify({"success": False, "error": "Missing workflow data"}), 400
+
+        nb = LabNotebook(notebook_path)
+        try:
+            from .designer_utils import workflow_to_computation_graph
+            from research.synthesis.serializer import graph_to_json
+            
+            # 1. Convert to research graph
+            try:
+                graph = workflow_to_computation_graph(workflow)
+            except Exception as e:
+                return jsonify({"success": False, "error": f"Graph conversion failed: {e}"}), 400
+                
+            graph_json = graph_to_json(graph)
+            fingerprint = graph.fingerprint()
+            
+            # 2. Record as program result
+            # We use a unique experiment_id for designer manual edits
+            exp_id = "designer_edits"
+            
+            # Ensure the pseudo-experiment exists
+            existing_exp = nb.conn.execute("SELECT 1 FROM experiments WHERE experiment_id = ?", (exp_id,)).fetchone()
+            if not existing_exp:
+                nb.conn.execute(
+                    "INSERT INTO experiments (experiment_id, timestamp, experiment_type, status, config_json) "
+                    "VALUES (?, ?, 'designer', 'completed', '{}')",
+                    (exp_id, time.time())
+                )
+                nb.conn.commit()
+
+            result_id = nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=fingerprint,
+                graph_json=graph_json,
+                model_source="designer_edit",
+                # Initial metadata: hasn't learned yet, but we want it on the board
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=False, 
+            )
+            
+            # 3. Also upsert to leaderboard immediately so user sees it
+            nb.upsert_leaderboard(
+                result_id=result_id,
+                model_source="designer_edit",
+                architecture_desc=f"Manual edit: {workflow.get('name', fingerprint[:8])}",
+                tier="screening",
+                screening_passed=True
+            )
+            
+            return jsonify({
+                "success": True,
+                "result_id": result_id,
+                "fingerprint": fingerprint,
+                "message": f"Architecture committed as {result_id}. Run 'Investigate' to evaluate performance."
+            })
+        except Exception as e:
+            logger.error(f"Commit failed: {e}\n{traceback.format_exc()}")
+            return jsonify({"success": False, "error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
+    def designer_v1_proxy(path):
+        """Catch-all proxy for designer API v1 routes when embedded."""
+        result = _proxy_or_error(
+            _designer_proxy(request.method, f"/api/v1/{path}",
+                            json_body=request.get_json(silent=True) if request.method in ("POST", "PUT") else None,
+                            params=request.args)
+        )
+        if result is not None:
+            return result
+        return jsonify({"error": "Designer API proxy failed"}), 502
+
     @app.route("/api/designer/load/<workflow_id>")
     def api_designer_load(workflow_id):
         """Load a specific workflow definition."""
@@ -9171,14 +9232,25 @@ def create_app(
         # Legacy fallback
         nb = LabNotebook(notebook_path)
         try:
-            row = nb.get_program_detail(result_id)
-            if row is None:
-                return jsonify({"success": False, "error": "Program not found"}), 404
-
-            graph_json_str = row["graph_json"]
-            workflow = import_research_program(graph_json_str)
+            try:
+                import sys as _sys
+                _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+                if _designer_root not in _sys.path:
+                    _sys.path.insert(0, _designer_root)
+                from runtime.importer import import_single as _import_single
+                workflow = _import_single(result_id)
+            except ImportError:
+                # Local utility fallback if designer not available
+                row = nb.get_program_detail(result_id)
+                if row is None:
+                    return jsonify({"success": False, "error": "Program not found"}), 404
+                graph_json_str = row["graph_json"]
+                workflow = import_research_program(graph_json_str)
+            
             workflow.setdefault("schema_version", "workflow_graph.v1")
             return jsonify({"success": True, "workflow": workflow})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
         finally:
             nb.close()
 
@@ -9631,42 +9703,89 @@ def create_app(
     # When embedded via /designer-proxy/, RESEARCH_API_BASE resolves to the
     # dashboard origin, so these requests land here instead of on port 8091.
 
-    @app.route("/api/v1/import/survivors/<result_id>", methods=["POST"])
-    def api_v1_import_survivor(result_id):
-        """Import a research program into workflow format (v1 alias)."""
-        nb = LabNotebook(notebook_path)
-        try:
-            row = nb.get_program_detail(result_id)
-            if row is None:
-                return jsonify({"error": "Program not found"}), 404
-            graph_json_str = row["graph_json"]
-            workflow = import_research_program(graph_json_str)
-            workflow.setdefault("schema_version", "workflow_graph.v1")
-            return jsonify({"success": True, "workflow": workflow})
-        except Exception as e:
-            logger.error(f"Error in /api/v1/import/survivors/{result_id}: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
-
-    @app.route("/api/v1/import/survivors", methods=["GET"])
-    def api_v1_list_survivors():
-        """List importable survivors (v1 alias)."""
-        n = request.args.get("n", 20, type=int)
-        nb = LabNotebook(notebook_path)
-        try:
-            survivors = nb.get_top_programs(n, sort_by="loss_ratio")
-            return jsonify(survivors)
-        except Exception as e:
-            logger.error(f"Error in /api/v1/import/survivors: {e}")
-            return jsonify([]), 500
-        finally:
-            nb.close()
+    # Import survivor routes removed — the catch-all proxy below forwards
+    # these to the aria-designer backend which has the canonical importer
+    # (runtime/importer.py:import_single). This ensures both embedded and
+    # full-view modes produce identical workflows with the same node IDs,
+    # metadata (result_id, fingerprint), and component type mappings.
 
     @app.route("/api/v1/components", methods=["GET"])
     def api_v1_components():
-        """Return designer components (v1 alias)."""
+        """Return designer components — proxy to designer API or fallback to local DB."""
+        proxied = _proxy_or_error(
+            _designer_proxy("GET", "/api/v1/components", params=dict(request.args))
+        )
+        if proxied is not None:
+            return proxied
+        # Fallback: read directly from the designer component database
+        try:
+            import sys as _sys
+            _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+            if _designer_root not in _sys.path:
+                _sys.path.insert(0, _designer_root)
+            from api.app import database as _designer_db
+            comps = _designer_db.list_components(
+                category=request.args.get("category"),
+                status=request.args.get("status"),
+            )
+            if comps:
+                return jsonify(comps)
+        except Exception:
+            logger.debug("Could not load components from designer DB, falling back to primitives")
         return jsonify(get_designer_components())
+
+    @app.route("/api/v1/import/survivors", methods=["GET"])
+    def api_v1_import_survivors():
+        """List importable survivors — proxy to designer or local fallback."""
+        n = request.args.get("n", 20, type=int)
+        sort_by = request.args.get("sort_by", "loss_ratio")
+        min_novelty = request.args.get("min_novelty", 0.0, type=float)
+
+        proxied = _proxy_or_error(
+            _designer_proxy("GET", "/api/v1/import/survivors",
+                            params={"n": n, "sort_by": sort_by, "min_novelty": min_novelty})
+        )
+        if proxied is not None:
+            return proxied
+
+        # Local fallback: use importer directly
+        try:
+            import sys as _sys
+            _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+            if _designer_root not in _sys.path:
+                _sys.path.insert(0, _designer_root)
+            from runtime.importer import import_survivors as _import_survivors
+            return jsonify(_import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty))
+        except ImportError:
+            nb = LabNotebook(notebook_path)
+            try:
+                survivors = nb.get_top_programs(n, sort_by=sort_by)
+                return jsonify(survivors)
+            finally:
+                nb.close()
+
+    @app.route("/api/v1/import/survivors/<result_id>", methods=["POST"])
+    def api_v1_import_single(result_id):
+        """Import a single survivor — proxy to designer or local fallback."""
+        proxied = _proxy_or_error(
+            _designer_proxy("POST", f"/api/v1/import/survivors/{result_id}")
+        )
+        if proxied is not None:
+            return proxied
+
+        # Local fallback: use importer directly
+        try:
+            import sys as _sys
+            _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+            if _designer_root not in _sys.path:
+                _sys.path.insert(0, _designer_root)
+            from runtime.importer import import_single as _import_single
+            wf = _import_single(result_id)
+            return jsonify(wf)
+        except ImportError:
+            return jsonify({"error": "Importer not available"}), 501
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
 
     # ── Catch-all proxy for remaining /api/v1/ designer routes ──
     # The embedded designer iframe makes requests to /api/v1/... which hit

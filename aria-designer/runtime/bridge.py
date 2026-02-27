@@ -26,9 +26,11 @@ _RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "
 if _RESEARCH_ROOT not in sys.path:
     sys.path.insert(0, os.path.dirname(_RESEARCH_ROOT))
 
-from research.synthesis.graph import ComputationGraph, ShapeInfo
+from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY, get_primitive
 from research.mathspaces.registry import register_all_mathspaces
+from research.synthesis.component_registry import registry, fe_type_to_op_name
+from research.synthesis.workflow_converter import workflow_to_computation_graph as _w2cg
 
 # Ensure mathspace primitives are available for resolution.
 register_all_mathspaces()
@@ -36,213 +38,34 @@ register_all_mathspaces()
 
 # ── Component ID → Primitive Name mapping ────────────────────────────
 
-# aria-designer component_type can be "relu", "math/relu", etc.
-# We strip the category prefix and map to PRIMITIVE_REGISTRY keys.
-# Most IDs match 1:1; a few need aliasing.
-
-_DEFAULT_COMPONENT_ALIASES = {
-    # aria-designer ID → research primitive name
-    "relu_op": "relu",
-    "gelu_op": "gelu",
-    "silu_op": "silu",
-    "linear": "linear_proj",
-    "linear_down": "linear_proj_down",
-    "linear_up": "linear_proj_up",
-    # SSM / normalization components used in examples
-    "state_space": "selective_scan",
-    "rmsnorm_pre": "rmsnorm",
-    "layernorm_pre": "layernorm",
-    # Transformer components
-    "softmax_attention": "softmax_attention",
-    "swiglu_mlp": "swiglu_mlp",
-}
-
-# IO components that don't map to primitives
-_IO_COMPONENTS = {"graph_input", "graph_output", "input", "output", "output_head"}
-
-_MAPPING_FILE = Path(__file__).resolve().parent / "component_mapping.yaml"
-_MAPPING_CONFIG: Dict[str, Any] = {}
-
-if _MAPPING_FILE.exists():
-    try:
-        _MAPPING_CONFIG = yaml.safe_load(_MAPPING_FILE.read_text(encoding="utf-8")) or {}
-    except Exception:
-        _MAPPING_CONFIG = {}
-
-_COMPONENT_ALIASES = {
-    **_DEFAULT_COMPONENT_ALIASES,
-    **(_MAPPING_CONFIG.get("aliases") or {}),
-}
-_CATEGORY_EXECUTION_CLASS = _MAPPING_CONFIG.get("category_execution_class") or {}
-_COMPONENT_EXECUTION_CLASS = _MAPPING_CONFIG.get("component_execution_class") or {}
-_PASSTHROUGH_COMPONENTS = set(_MAPPING_CONFIG.get("passthrough_components") or [])
-_CONTROL_PASSTHROUGH_COMPONENTS = {"loop"}
-_SOURCE_COMPONENTS = set(_MAPPING_CONFIG.get("source_components") or [])
-_TEMPLATE_LOWERED_COMPONENTS = set(_MAPPING_CONFIG.get("template_lowered_components") or [])
-_APPROXIMATE_ALIAS_NOTES = _MAPPING_CONFIG.get("approximate_alias_notes") or {}
-
-_DATA_SOURCE_COMPONENTS = {
-    "csv_reader",
-    "file_loader",
-    "binary_file_reader",
-    "hf_dataset_loader",
-    "random_data_source",
-    "synthetic_data_source",
-}
-
-_DATA_TRANSFORM_COMPONENTS = {
-    "filter",
-    "dataset_filter",
-    "dataset_map",
-    "select_columns",
-    "split_train_val_test",
-}
-
-_DATA_SINK_COMPONENTS = {
-    "file_writer",
-}
-
-
 def _execution_class(component_leaf: str, category: Optional[str]) -> str:
-    if component_leaf in _COMPONENT_EXECUTION_CLASS:
-        return str(_COMPONENT_EXECUTION_CLASS[component_leaf])
-    if category and category in _CATEGORY_EXECUTION_CLASS:
-        return str(_CATEGORY_EXECUTION_CLASS[category])
+    if component_leaf in registry.component_execution_class:
+        return str(registry.component_execution_class[component_leaf])
+    if category and category in registry.category_execution_class:
+        return str(registry.category_execution_class[category])
     return "primitive"
 
 
 def _is_passthrough_component(component_leaf: str) -> bool:
-    return component_leaf in _PASSTHROUGH_COMPONENTS or component_leaf in _CONTROL_PASSTHROUGH_COMPONENTS
+    return component_leaf in registry.passthrough_components
 
 
 def _is_source_component(component_leaf: str) -> bool:
-    return component_leaf in _SOURCE_COMPONENTS
-
-
-def _is_data_source_component(component_leaf: str) -> bool:
-    return component_leaf in _DATA_SOURCE_COMPONENTS
-
-
-def _is_data_transform_component(component_leaf: str) -> bool:
-    return component_leaf in _DATA_TRANSFORM_COMPONENTS
-
-
-def _is_data_sink_component(component_leaf: str) -> bool:
-    return component_leaf in _DATA_SINK_COMPONENTS
+    return component_leaf in registry.source_components
 
 
 def _is_template_lowered_component(component_leaf: str) -> bool:
-    return component_leaf in _TEMPLATE_LOWERED_COMPONENTS
+    return component_leaf in registry.template_lowered_components
 
 
 def _alias_semantic_info(component_leaf: str, primitive_name: str) -> Dict[str, Any]:
     """Return semantic fidelity metadata for alias mappings."""
     if component_leaf == primitive_name:
         return {"semantic_fidelity": "exact", "warnings": []}
-    note = _APPROXIMATE_ALIAS_NOTES.get(component_leaf)
+    note = registry.approximate_alias_notes.get(component_leaf)
     if note:
         return {"semantic_fidelity": "approximate", "warnings": [str(note)]}
     return {"semantic_fidelity": "exact", "warnings": []}
-
-
-def _lower_template_component(
-    graph: ComputationGraph,
-    component_leaf: str,
-    input_cg_ids: List[int],
-    model_dim: int,
-) -> int:
-    """Lower high-level block node IDs into explicit primitive subgraphs."""
-    if not input_cg_ids:
-        raise ValueError(f"Template-lowered component '{component_leaf}' requires at least one input")
-    x = input_cg_ids[0]
-    d = int(model_dim)
-
-    if component_leaf in {"u_net", "hourglass"}:
-        down = graph.add_op("linear_proj_down", [x], {"out_dim": d})
-        mid = graph.add_op("gelu", [down], {})
-        up = graph.add_op("linear_proj_up", [mid], {"out_dim": d})
-        return up
-
-    if component_leaf == "dense_net":
-        proj = graph.add_op("linear_proj", [x], {"out_dim": d})
-        act = graph.add_op("relu", [proj], {})
-        return graph.add_op("add", [x, act], {})
-
-    if component_leaf == "fractal":
-        a = graph.add_op("relu", [x], {})
-        b = graph.add_op("gelu", [x], {})
-        return graph.add_op("add", [a, b], {})
-
-    if component_leaf == "parallel_streams":
-        a = graph.add_op("relu", [x], {})
-        b = graph.add_op("silu", [x], {})
-        return graph.add_op("add", [a, b], {})
-
-    if component_leaf == "feedback_loop":
-        proj = graph.add_op("linear_proj", [x], {"out_dim": d})
-        gate = graph.add_op("tanh", [proj], {})
-        return graph.add_op("add", [x, gate], {})
-
-    if component_leaf == "mixture_of_paths":
-        p1 = graph.add_op("relu", [x], {})
-        p2 = graph.add_op("gelu", [x], {})
-        mix = graph.add_op("add", [p1, p2], {})
-        return graph.add_op("linear_proj", [mix], {"out_dim": d})
-
-    raise ValueError(f"No template-lowering implementation for '{component_leaf}'")
-
-
-def _resolve_primitive(component_type: str) -> Optional[str]:
-    """Resolve an aria-designer component_type to a research primitive name.
-
-    Returns None for IO nodes (input/output).
-    Raises ValueError for unknown components.
-    """
-    # Strip category prefix: "math/relu" → "relu"
-    parts = component_type.split("/")
-    cid = parts[-1]
-    category = parts[0] if len(parts) > 1 else None
-
-    if cid in _IO_COMPONENTS:
-        return None
-
-    # Direct match
-    if cid in PRIMITIVE_REGISTRY:
-        return cid
-
-    # Alias lookup
-    if cid in _COMPONENT_ALIASES:
-        return _COMPONENT_ALIASES[cid]
-
-    if _is_source_component(cid):
-        raise ValueError(
-            f"Component '{component_type}' is configured as source-lowered "
-            "and should be handled before primitive resolution."
-        )
-
-    if _is_passthrough_component(cid):
-        raise ValueError(
-            f"Component '{component_type}' is configured as passthrough-lowered "
-            "and should be handled before primitive resolution."
-        )
-
-    if _is_template_lowered_component(cid):
-        raise ValueError(
-            f"Component '{component_type}' is configured as template-lowered "
-            "and should be handled before primitive resolution."
-        )
-
-    exec_class = _execution_class(cid, category)
-    if exec_class != "primitive":
-        raise ValueError(
-            f"Unsupported component '{component_type}' for research primitive bridge: "
-            f"execution_class={exec_class}. Add lowering/expansion path before evaluation."
-        )
-
-    raise ValueError(
-        f"Unknown component '{component_type}': not in PRIMITIVE_REGISTRY "
-        f"and no alias defined. Available primitives: {sorted(PRIMITIVE_REGISTRY.keys())[:10]}..."
-    )
 
 
 def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
@@ -264,7 +87,7 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
             "reason": "IO passthrough node.",
         }
 
-    if _is_data_source_component(cid):
+    if _is_source_component(cid):
         return {
             "component_type": component_type,
             "component_leaf": cid,
@@ -277,7 +100,7 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
             "reason": "Supported via data-source lowering in bridge (deterministic eval fallback).",
         }
 
-    if _is_data_transform_component(cid):
+    if _is_passthrough_component(cid):
         return {
             "component_type": component_type,
             "component_leaf": cid,
@@ -286,21 +109,8 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
             "semantic_fidelity": "approximate",
             "bridge_supported": True,
             "primitive_name": None,
-            "warnings": ["Data-transform is currently shape-safe passthrough in bridge mode."],
-            "reason": "Supported via shape-safe data-transform lowering in bridge.",
-        }
-
-    if _is_data_sink_component(cid):
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": "passthrough",
-            "execution_class": _execution_class(cid, category),
-            "semantic_fidelity": "approximate",
-            "bridge_supported": True,
-            "primitive_name": None,
-            "warnings": ["Data sink is non-materialized passthrough during bridge evaluation."],
-            "reason": "Supported as terminal/observability sink with passthrough gradient path.",
+            "warnings": ["Component is currently wire-through passthrough in bridge mode."],
+            "reason": "Supported via passthrough lowering (wire-through).",
         }
 
     if _is_template_lowered_component(cid):
@@ -329,8 +139,8 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
             "reason": "Direct primitive mapping.",
         }
 
-    if cid in _COMPONENT_ALIASES:
-        alias_target = _COMPONENT_ALIASES[cid]
+    if cid in registry.aliases:
+        alias_target = registry.aliases[cid]
         semantic = _alias_semantic_info(cid, alias_target)
         return {
             "component_type": component_type,
@@ -342,37 +152,6 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
             "primitive_name": alias_target,
             "warnings": semantic["warnings"],
             "reason": "Mapped via component alias.",
-        }
-
-    if _is_source_component(cid):
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": "source",
-            "execution_class": _execution_class(cid, category),
-            "semantic_fidelity": "approximate",
-            "bridge_supported": True,
-            "primitive_name": None,
-            "warnings": ["Source component lowered to graph input in bridge mode."],
-            "reason": "Supported via source lowering (graph input seed).",
-        }
-
-    if _is_passthrough_component(cid):
-        reason = (
-            "Supported via control-flow passthrough lowering in bridge."
-            if cid in _CONTROL_PASSTHROUGH_COMPONENTS
-            else "Supported via passthrough lowering (wire-through)."
-        )
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": "passthrough",
-            "execution_class": _execution_class(cid, category),
-            "semantic_fidelity": "approximate",
-            "bridge_supported": True,
-            "primitive_name": None,
-            "warnings": ["Component is currently wire-through passthrough in bridge mode."],
-            "reason": reason,
         }
 
     exec_class = _execution_class(cid, category)
@@ -399,226 +178,9 @@ def workflow_to_graph(
     workflow_json: Dict[str, Any],
     model_dim: int = 256,
     return_id_map: bool = False,
-) -> ComputationGraph:
-    """Convert an aria-designer workflow JSON to a research ComputationGraph.
-
-    The workflow_json should follow the workflow_graph.v1 schema:
-    {
-        "nodes": [{"id": "n1", "component_type": "relu", "params": {...}}, ...],
-        "edges": [{"source": "n1", "target": "n2", "source_port": "out", "target_port": "in"}, ...],
-        ...
-    }
-
-    Returns a ComputationGraph ready for compilation and evaluation.
-    """
-    graph = ComputationGraph(model_dim=model_dim)
-
-    nodes = workflow_json.get("nodes", [])
-    edges = workflow_json.get("edges", [])
-
-    if not nodes:
-        raise ValueError("Workflow has no nodes")
-
-    # Build adjacency info
-    node_by_id: Dict[str, Dict] = {n["id"]: n for n in nodes}
-
-    # Find nodes with incoming edges (targets)
-    targets_set = {e["target"] for e in edges}
-    sources_set = {e["source"] for e in edges}
-
-    # Identify input nodes: either explicitly typed as input/graph_input,
-    # or nodes with no incoming edges
-    input_node_ids = []
-    output_node_ids = []
-    for n in nodes:
-        cid = n["component_type"].split("/")[-1]
-        if cid in ("graph_input", "input"):
-            input_node_ids.append(n["id"])
-        elif cid in ("graph_output", "output", "output_head"):
-            output_node_ids.append(n["id"])
-
-    # If no explicit input nodes, infer from topology (nodes with no incoming edges)
-    if not input_node_ids:
-        input_node_ids = [n["id"] for n in nodes if n["id"] not in targets_set]
-
-    # If no explicit output nodes, infer (nodes with no outgoing edges)
-    if not output_node_ids:
-        output_node_ids = [n["id"] for n in nodes if n["id"] not in sources_set]
-
-    if not input_node_ids:
-        raise ValueError("Workflow has no input nodes (no source nodes found)")
-    if not output_node_ids:
-        raise ValueError("Workflow has no output nodes (no sink nodes found)")
-
-    # Build edge map: target_id → [(source_id, source_port, target_port)]
-    incoming: Dict[str, List[Tuple[str, str, str]]] = {n["id"]: [] for n in nodes}
-    for e in edges:
-        incoming[e["target"]].append((e["source"], e.get("source_port", "out"), e.get("target_port", "in")))
-
-    # Topological sort via Kahn's algorithm
-    in_degree = {n["id"]: 0 for n in nodes}
-    for e in edges:
-        in_degree[e["target"]] += 1
-
-    queue = [nid for nid, deg in in_degree.items() if deg == 0]
-    topo_order = []
-    while queue:
-        nid = queue.pop(0)
-        topo_order.append(nid)
-        for e in edges:
-            if e["source"] == nid:
-                in_degree[e["target"]] -= 1
-                if in_degree[e["target"]] == 0:
-                    queue.append(e["target"])
-
-    if len(topo_order) != len(nodes):
-        raise ValueError("Workflow contains a cycle")
-
-    # Map aria node IDs → ComputationGraph node IDs
-    aria_to_cg: Dict[str, int] = {}
-
-    for aria_id in topo_order:
-        node_cfg = node_by_id[aria_id]
-        cid = node_cfg["component_type"].split("/")[-1]
-        params = node_cfg.get("params", {})
-
-        if cid in ("graph_input", "input") or (aria_id in input_node_ids and cid in _IO_COMPONENTS):
-            # Add as graph input
-            cg_id = graph.add_input()
-            aria_to_cg[aria_id] = cg_id
-            continue
-
-        if _is_source_component(cid):
-            # Data-source nodes become explicit graph inputs in eval bridge mode.
-            cg_id = graph.add_input()
-            aria_to_cg[aria_id] = cg_id
-            continue
-
-        if cid in ("graph_output", "output", "output_head"):
-            # Output node: just wire through from its input
-            inc = incoming.get(aria_id, [])
-            if inc:
-                src_aria_id = inc[0][0]
-                if src_aria_id in aria_to_cg:
-                    aria_to_cg[aria_id] = aria_to_cg[src_aria_id]
-            continue
-
-        if _is_data_source_component(cid):
-            cg_id = graph.add_input()
-            aria_to_cg[aria_id] = cg_id
-            continue
-
-        # Gather input node IDs from edges
-        inc = incoming.get(aria_id, [])
-        if _is_template_lowered_component(cid):
-            input_cg_ids = [aria_to_cg[src] for src, _sp, _tp in inc if src in aria_to_cg]
-            if not input_cg_ids and input_node_ids and input_node_ids[0] in aria_to_cg:
-                input_cg_ids = [aria_to_cg[input_node_ids[0]]]
-            try:
-                aria_to_cg[aria_id] = _lower_template_component(
-                    graph, cid, input_cg_ids, model_dim
-                )
-            except ValueError as e:
-                raise ValueError(
-                    f"Template lowering error at node '{aria_id}' ({cid}): {e}"
-                ) from e
-            continue
-
-        if _is_data_transform_component(cid) or _is_data_sink_component(cid):
-            if inc:
-                src_aria_id = inc[0][0]
-                if src_aria_id not in aria_to_cg:
-                    raise ValueError(
-                        f"Data-plane lowered component '{node_cfg['component_type']}' "
-                        f"references unresolved source node '{src_aria_id}'."
-                    )
-                aria_to_cg[aria_id] = aria_to_cg[src_aria_id]
-            else:
-                if input_node_ids and input_node_ids[0] in aria_to_cg:
-                    aria_to_cg[aria_id] = aria_to_cg[input_node_ids[0]]
-                else:
-                    cg_id = graph.add_input()
-                    aria_to_cg[aria_id] = cg_id
-            continue
-
-        if _is_passthrough_component(cid):
-            if not inc:
-                raise ValueError(
-                    f"Passthrough-lowered component '{node_cfg['component_type']}' "
-                    "requires an incoming edge."
-                )
-            src_aria_id = inc[0][0]
-            if src_aria_id not in aria_to_cg:
-                raise ValueError(
-                    f"Passthrough-lowered component '{node_cfg['component_type']}' "
-                    f"references unresolved source node '{src_aria_id}'."
-                )
-            aria_to_cg[aria_id] = aria_to_cg[src_aria_id]
-            continue
-
-        prim_name = _resolve_primitive(node_cfg["component_type"])
-        if prim_name is None:
-            continue
-
-        prim = get_primitive(prim_name)
-
-        input_cg_ids = []
-        for src_aria_id, _sp, _tp in inc:
-            if src_aria_id in aria_to_cg:
-                input_cg_ids.append(aria_to_cg[src_aria_id])
-
-        # If node has no connected inputs but needs them, use last input node
-        if not input_cg_ids and prim.n_inputs >= 1:
-            if input_node_ids and input_node_ids[0] in aria_to_cg:
-                input_cg_ids = [aria_to_cg[input_node_ids[0]]]
-
-        # For binary ops that only have one input connected, duplicate it
-        if prim.n_inputs == 2 and len(input_cg_ids) == 1:
-            input_cg_ids = [input_cg_ids[0], input_cg_ids[0]]
-
-        # Build config from params
-        config = {}
-        for key in prim.config_keys:
-            if key in params:
-                config[key] = params[key]
-
-        # Auto-set out_dim for linear ops if not specified
-        if "out_dim" in prim.config_keys and "out_dim" not in config:
-            config["out_dim"] = model_dim
-
-        try:
-            cg_id = graph.add_op(prim_name, input_cg_ids, config)
-            aria_to_cg[aria_id] = cg_id
-        except ValueError as e:
-            raise ValueError(
-                f"Shape error at node '{aria_id}' ({prim_name}): {e}"
-            ) from e
-
-    # Set output
-    for out_id in output_node_ids:
-        if out_id in aria_to_cg:
-            try:
-                graph.set_output(aria_to_cg[out_id])
-                break
-            except ValueError:
-                continue
-    else:
-        # Try last node in topo order
-        for aria_id in reversed(topo_order):
-            if aria_id in aria_to_cg:
-                try:
-                    graph.set_output(aria_to_cg[aria_id])
-                    break
-                except ValueError:
-                    continue
-        else:
-            raise ValueError(
-                "Could not set graph output: no node produces (B, S, model_dim) output"
-            )
-
-    if return_id_map:
-        return graph, aria_to_cg
-    return graph
+) -> ComputationGraph | Tuple[ComputationGraph, Dict[str, int]]:
+    """Convert an aria-designer workflow JSON to a research ComputationGraph."""
+    return _w2cg(workflow_json, model_dim, return_id_map)
 
 
 # ── Compression / Efficiency Analysis ─────────────────────────────────
@@ -657,6 +219,7 @@ class CompressionResult:
 
     # Composite scores
     memory_efficiency_score: float = 0.0  # 0-1, smaller → higher
+    triton_compatibility_score: float = 0.0
     efficiency_score: float = 0.0         # composite 0-1
 
     def to_dict(self) -> Dict[str, Any]:
@@ -771,75 +334,26 @@ def analyze_compression(
         log_p = math.log10(max(dense_params, 1))
         result.memory_efficiency_score = max(0.0, min(1.0, (8.0 - log_p) / 2.0))
 
+    try:
+        from research.eval.triton_compatibility import check_triton_compatibility
+        triton_res = check_triton_compatibility(graph)
+        result.triton_compatibility_score = triton_res.coverage_score
+    except Exception:
+        result.triton_compatibility_score = 0.0
+
     # --- 5. Composite efficiency score ---
     result.efficiency_score = (
-        0.35 * result.pruning_tolerance
-        + 0.25 * min(result.compression_ratio / 4.0, 1.0)
-        + 0.20 * result.sparse_op_coverage
-        + 0.20 * result.memory_efficiency_score
+        0.25 * result.pruning_tolerance
+        + 0.20 * min(result.compression_ratio / 4.0, 1.0)
+        + 0.15 * result.sparse_op_coverage
+        + 0.20 * result.triton_compatibility_score
+        + 0.20 * getattr(result, "memory_efficiency_score", 0.5)
     )
 
     return result
 
 
-# ── Evaluation results ───────────────────────────────────────────────
-
-@dataclass
-class BridgeResult:
-    """Complete evaluation result from the research pipeline."""
-    status: str  # "success", "error", "failed_sandbox"
-    error: Optional[str] = None
-    error_stage: Optional[str] = None
-
-    # Graph info
-    graph_fingerprint: Optional[str] = None
-    n_ops: int = 0
-    depth: int = 0
-    n_params_estimate: int = 0
-    has_gradient_path: bool = False
-
-    # Sandbox results (Stage 0 / 0.5)
-    sandbox_passed: bool = False
-    compile_time_ms: float = 0.0
-    forward_time_ms: float = 0.0
-    backward_time_ms: float = 0.0
-    param_count: int = 0
-    peak_memory_mb: float = 0.0
-    grad_norm: float = 0.0
-    stability_score: float = 0.0
-
-    # Fingerprint (Stage 1)
-    cka_vs_transformer: float = 0.0
-    cka_vs_ssm: float = 0.0
-    cka_vs_conv: float = 0.0
-    interaction_locality: float = 0.0
-    interaction_sparsity: float = 0.0
-    intrinsic_dim: float = 0.0
-    isotropy: float = 0.0
-
-    # Novelty
-    structural_novelty: float = 0.0
-    behavioral_novelty: float = 0.0
-    overall_novelty: float = 0.0
-    most_similar_to: str = ""
-
-    # Compression / Efficiency
-    compression_ratio: float = 1.0
-    pruning_tolerance: float = 0.0
-    sparse_op_coverage: float = 0.0
-    efficiency_score: float = 0.0
-
-    # Timing
-    total_time_ms: float = 0.0
-
-    def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        # Convert numpy bools/ints to native Python types for JSON serialization
-        for k, v in d.items():
-            if hasattr(v, "item"):
-                d[k] = v.item()
-        return d
-
+from research.synthesis.result_schemas import BridgeResult, SandboxResult, FingerprintResult
 
 # ── Main evaluation pipeline ─────────────────────────────────────────
 
@@ -887,6 +401,10 @@ def evaluate_workflow(
     result.n_params_estimate = graph.n_params_estimate()
     result.has_gradient_path = bool(graph.has_gradient_path())
 
+    from research.eval.triton_compatibility import check_triton_compatibility
+    triton_res = check_triton_compatibility(graph)
+    result.triton_compatibility_score = triton_res.coverage_score
+
     if not result.has_gradient_path:
         result.status = "error"
         result.error = "No differentiable path from input to output"
@@ -908,26 +426,19 @@ def evaluate_workflow(
     # Step 4: Sandbox evaluation (Stage 0 / 0.5)
     try:
         from research.eval.sandbox import safe_eval
-        sandbox = safe_eval(
+        sandbox_res = safe_eval(
             model,
             batch_size=batch_size,
             seq_len=seq_len,
             vocab_size=vocab_size,
             device=device,
         )
-        result.sandbox_passed = sandbox.passed
-        result.compile_time_ms = sandbox.compile_time_ms
-        result.forward_time_ms = sandbox.forward_time_ms
-        result.backward_time_ms = sandbox.backward_time_ms
-        result.param_count = sandbox.param_count
-        result.peak_memory_mb = sandbox.peak_memory_mb
-        result.grad_norm = sandbox.grad_norm
-        result.stability_score = getattr(sandbox, "stability_score", 0.0)
+        result.sandbox = sandbox_res
 
-        if not sandbox.passed:
+        if not sandbox_res.passed:
             result.status = "failed_sandbox"
-            result.error = sandbox.error
-            result.error_stage = sandbox.stage
+            result.error = sandbox_res.error
+            result.error_stage = sandbox_res.stage
             result.total_time_ms = (time.monotonic() - t0) * 1000
             return result
     except Exception as e:
@@ -941,20 +452,20 @@ def evaluate_workflow(
     if run_fingerprint:
         try:
             from research.eval.fingerprint import compute_fingerprint
-            fp = compute_fingerprint(
+            fp_res = compute_fingerprint(
                 model,
                 seq_len=min(seq_len, 64),
                 model_dim=model_dim,
                 vocab_size=vocab_size,
                 device=device,
             )
-            result.cka_vs_transformer = getattr(fp, "cka_vs_transformer", 0.0)
-            result.cka_vs_ssm = getattr(fp, "cka_vs_ssm", 0.0)
-            result.cka_vs_conv = getattr(fp, "cka_vs_conv", 0.0)
-            result.interaction_locality = getattr(fp, "interaction_locality", 0.0)
-            result.interaction_sparsity = getattr(fp, "interaction_sparsity", 0.0)
-            result.intrinsic_dim = getattr(fp, "intrinsic_dim", 0.0)
-            result.isotropy = getattr(fp, "isotropy", 0.0)
+            result.fingerprint.cka_vs_transformer = getattr(fp_res, "cka_vs_transformer", 0.0)
+            result.fingerprint.cka_vs_ssm = getattr(fp_res, "cka_vs_ssm", 0.0)
+            result.fingerprint.cka_vs_conv = getattr(fp_res, "cka_vs_conv", 0.0)
+            result.fingerprint.interaction_locality = getattr(fp_res, "interaction_locality", 0.0)
+            result.fingerprint.interaction_sparsity = getattr(fp_res, "interaction_sparsity", 0.0)
+            result.fingerprint.intrinsic_dim = getattr(fp_res, "intrinsic_dim", 0.0)
+            result.fingerprint.isotropy = getattr(fp_res, "isotropy", 0.0)
         except Exception:
             pass  # Fingerprint is optional; don't fail the whole eval
 
@@ -974,10 +485,10 @@ def evaluate_workflow(
                 except Exception:
                     pass
             metrics = novelty_score(graph, fingerprint=fp_obj)
-            result.structural_novelty = metrics.structural_novelty
-            result.behavioral_novelty = metrics.behavioral_novelty
-            result.overall_novelty = metrics.overall_novelty
-            result.most_similar_to = getattr(metrics, "most_similar_to", "")
+            result.fingerprint.structural_novelty = metrics.structural_novelty
+            result.fingerprint.behavioral_novelty = metrics.behavioral_novelty
+            result.fingerprint.overall_novelty = metrics.overall_novelty
+            result.fingerprint.most_similar_to = getattr(metrics, "most_similar_to", "")
         except Exception:
             pass  # Novelty is optional
 

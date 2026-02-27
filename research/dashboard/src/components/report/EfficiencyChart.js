@@ -8,15 +8,15 @@ export default function EfficiencyChart({ frontier, showLabels = false, labelCou
   const pad = { l: 60, r: 20, t: 20, b: 35 };
 
   const losses = frontierRows.map(p => p.final_loss || p.loss_ratio || 0).filter(l => isFinite(l));
-  const flops = frontierRows.map(p => p.flops_forward || p.param_count || 0).filter(f => f > 0);
+  const flops = frontierRows.map(p => Math.log10(Math.max(p.flops_forward || p.param_count || 1, 1)));
 
   const lossDefaults = CHART_DEFAULTS.loss_ratio;
-  const flopsDefaults = CHART_DEFAULTS.efficiency_flops;
+  const flopsDefaults = CHART_DEFAULTS.efficiency_log_flops;
   const lossScale = getFixedScale('efficiency.loss_ratio', losses, {
     defaultMin: lossDefaults.min,
     defaultMax: lossDefaults.max,
   });
-  const flopsScale = getFixedScale('efficiency.flops', flops, {
+  const flopsScale = getFixedScale('efficiency.log_flops', flops, {
     defaultMin: flopsDefaults.min,
     defaultMax: flopsDefaults.max,
   });
@@ -26,7 +26,7 @@ export default function EfficiencyChart({ frontier, showLabels = false, labelCou
   const maxF = flopsScale.max;
   const rangeL = maxL - minL || 1, rangeF = maxF - minF || 1;
 
-  const xScale = v => pad.l + ((clampToScale(v, flopsScale) - minF) / rangeF) * (W - pad.l - pad.r);
+  const xScale = v => pad.l + ((clampToScale(Math.log10(Math.max(v, 1)), flopsScale) - minF) / rangeF) * (W - pad.l - pad.r);
   const yScale = v => H - pad.b - ((clampToScale(v, lossScale) - minL) / rangeL) * (H - pad.t - pad.b);
 
   const labelCandidates = useMemo(() => {
@@ -44,7 +44,7 @@ export default function EfficiencyChart({ frontier, showLabels = false, labelCou
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
       <line x1={pad.l} y1={H - pad.b} x2={W - pad.r} y2={H - pad.b} stroke="var(--border)" />
       <line x1={pad.l} y1={pad.t} x2={pad.l} y2={H - pad.b} stroke="var(--border)" />
-      <text x={W / 2} y={H - 5} textAnchor="middle" fill="var(--text-muted)" fontSize={10}>FLOPs / Params</text>
+      <text x={W / 2} y={H - 5} textAnchor="middle" fill="var(--text-muted)" fontSize={10}>log10(FLOPs / Params)</text>
       <text x={12} y={H / 2} textAnchor="middle" fill="var(--text-muted)" fontSize={10} transform={`rotate(-90, 12, ${H / 2})`}>Loss</text>
       {frontierRows.map((p, i) => {
         const x = xScale(p.flops_forward || p.param_count || 0);

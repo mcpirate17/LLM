@@ -1,3 +1,4 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import { confidenceColor } from '../utils/colors';
@@ -5,7 +6,6 @@ import { insightScore } from '../utils/scoringEngine';
 import useRenderPerf from '../hooks/useRenderPerf';
 import { filterRowsByQuery } from '../utils/tableFiltering';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const CATEGORY_COLORS = {
   pattern: 'var(--accent-blue)',
@@ -44,7 +44,7 @@ function NegativeResultsSection() {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`${API_BASE}/api/analytics/negative-results`)
+    apiCall(`/api/analytics/negative-results`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -59,6 +59,23 @@ function NegativeResultsSection() {
 
   const hasContent = (data.failed_ops?.length > 0) || (data.dominant_errors?.length > 0) ||
     (data.anti_patterns?.length > 0) || (data.toxic_bigrams?.length > 0) || (data.refuted_hypotheses?.length > 0);
+
+  const groupedToxicBigrams = useMemo(() => {
+    if (!data?.toxic_bigrams) return {};
+    const groups = {};
+    data.toxic_bigrams.forEach(tb => {
+      const cat = tb.cat1 || 'Other';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(tb);
+    });
+    return groups;
+  }, [data?.toxic_bigrams]);
+
+  const [expandedToxicCats, setExpandedToxicCats] = useState({});
+  const toggleToxicCat = (cat) => {
+    setExpandedToxicCats(prev => ({ ...prev, [cat]: !prev[cat] }));
+  };
+
   if (!hasContent) return null;
 
   return (
@@ -151,17 +168,52 @@ function NegativeResultsSection() {
               <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>
                 Toxic Patterns ({data.toxic_bigrams.length})
               </div>
-              {data.toxic_bigrams.map(tb => (
-                <div key={tb.pattern} style={{
-                  display: 'flex', justifyContent: 'space-between', padding: '4px 0',
-                  borderBottom: '1px solid var(--border)', alignItems: 'center',
-                }}>
-                  <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--accent-red)' }}>{tb.pattern}</span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    penalty {tb.penalty.toFixed(2)}
-                  </span>
-                </div>
-              ))}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {Object.entries(groupedToxicBigrams).sort((a, b) => b[1].length - a[1].length).map(([cat, tbs]) => {
+                  const isExpanded = expandedToxicCats[cat];
+                  return (
+                    <div key={cat} style={{ marginBottom: 4 }}>
+                      <div 
+                        onClick={() => toggleToxicCat(cat)}
+                        style={{ 
+                          fontSize: 11, padding: '4px 8px', background: 'var(--bg-tertiary)', 
+                          borderRadius: 4, cursor: 'pointer', display: 'flex', 
+                          justifyContent: 'space-between', alignItems: 'center' 
+                        }}
+                      >
+                        <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>
+                          {cat.replace(/_/g, ' ')} ({tbs.length})
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                          {isExpanded ? '▾' : '▸'}
+                        </span>
+                      </div>
+                      {isExpanded && (
+                        <div style={{ paddingLeft: 8, marginTop: 4 }}>
+                          {tbs.slice(0, 50).map(tb => (
+                            <div key={tb.pattern} style={{
+                              display: 'flex', justifyContent: 'space-between', padding: '3px 0',
+                              borderBottom: '1px solid var(--border)', alignItems: 'center',
+                            }}>
+                              <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--accent-red)' }}>
+                                {tb.op1} <span style={{ color: 'var(--text-muted)' }}>&rarr;</span> {tb.op2}
+                              </span>
+                              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                penalty {tb.penalty.toFixed(2)}
+                              </span>
+                            </div>
+                          ))}
+                          {tbs.length > 50 && (
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center', padding: '4px 0' }}>
+                              + {tbs.length - 50} more...
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -242,7 +294,7 @@ function InsightsPanel({ insights, compact }) {
     setBoostError(null);
     setBoostingId(insightId);
     try {
-      const res = await fetch(`${API_BASE}/api/insights/boost`, {
+      const res = await apiCall(`/api/insights/boost`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,3 +1,4 @@
+import { apiCall } from "../services/apiService";
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
 import useRenderPerf from '../hooks/useRenderPerf';
@@ -283,7 +284,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
 
   // Persist a system message to DB (fire-and-forget)
   const persistSystemMessage = useCallback((text, label) => {
-    fetch(`${API_BASE}/api/aria/chat/message`, {
+    apiCall(`/api/aria/chat/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -306,7 +307,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
   // Load chat history from DB
   const loadHistory = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/aria/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=50`);
+      const res = await apiCall(`/api/aria/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=50`);
       if (res.ok) {
         const data = await res.json();
         const dbMessages = (data.messages || []).map(dbMessageToLocal);
@@ -332,7 +333,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
     if (totalTokens > TOKEN_BUDGET) {
       compactingRef.current = true;
       try {
-        const res = await fetch(`${API_BASE}/api/aria/chat/compact`, {
+        const res = await apiCall(`/api/aria/chat/compact`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: sessionId }),
@@ -376,7 +377,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
 
       await Promise.all(pendingTaskIds.map(async (taskId) => {
         try {
-          const res = await fetch(`${API_BASE}/api/aria/agent/status/${encodeURIComponent(taskId)}/summary`);
+          const res = await apiCall(`/api/aria/agent/status/${encodeURIComponent(taskId)}/summary`);
           const data = await res.json();
           if (!res.ok || !data?.task) return;
           const task = data.task;
@@ -435,7 +436,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
     try {
       let evidenceKey = '';
       try {
-        const progressRes = await fetch(`${API_BASE}/api/progress`);
+        const progressRes = await apiCall(`/api/progress`);
         if (progressRes.ok) {
           const progressPayload = await progressRes.json();
           const p = progressPayload?.progress || {};
@@ -464,7 +465,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         return;
       }
 
-      const briefingRes = await fetch(`${API_BASE}/api/strategy/briefing`);
+      const briefingRes = await apiCall(`/api/strategy/briefing`);
 
       const newMessages = [];
 
@@ -504,7 +505,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         });
         // Persist analysis messages to DB
         for (const msg of messagesToPersist) {
-          fetch(`${API_BASE}/api/aria/chat/message`, {
+          apiCall(`/api/aria/chat/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -531,7 +532,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
 
   const refreshToolingStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/aria/tools`);
+      const res = await apiCall(`/api/aria/tools`);
       if (!res.ok) return;
       const data = await res.json();
       const helper = data?.local_ollama_helper;
@@ -569,7 +570,7 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
     setError('');
 
     try {
-      const res = await fetch(`${API_BASE}/api/aria/chat`, {
+      const res = await apiCall(`/api/aria/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

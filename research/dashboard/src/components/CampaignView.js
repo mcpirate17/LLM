@@ -1,7 +1,7 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect } from 'react';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const STATUS_COLORS = {
   active: 'var(--accent-green)',
@@ -97,7 +97,7 @@ function CampaignList({ onSelectCampaign }) {
   const [lastUpdated, setLastUpdated] = useState(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/campaigns`)
+    apiCall(`/api/campaigns`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -597,7 +597,7 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
   const [reportGeneratedAt, setReportGeneratedAt] = useState(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/campaigns/${campaignId}`)
+    apiCall(`/api/campaigns/${campaignId}`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -614,7 +614,7 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
     setGenerating(true);
     setReportError(null);
     try {
-      const r = await fetch(`${API_BASE}/api/campaigns/${campaignId}/report`);
+      const r = await apiCall(`/api/campaigns/${campaignId}/report`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       setReport(d);

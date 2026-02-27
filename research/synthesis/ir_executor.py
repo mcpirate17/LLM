@@ -160,7 +160,4 @@ class IRExecutor(nn.Module):
         if res is None:
             return x # Fallback
             
-        # Optional: Final cleanup if needed
-        # node_outputs = [None] * len(node_outputs)
-        
         return res

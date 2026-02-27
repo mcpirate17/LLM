@@ -11,11 +11,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from . import database as db
+from .config import settings
 from .loader import scan_and_load
 from .patcher import apply_patch_ops, PatchError
 from .suggestions import suggest_components
@@ -44,68 +45,55 @@ from .models import (
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from runtime.dispatch import KernelDispatcher
-    from runtime.compiler import compile_workflow as runtime_compile
-    from runtime.port_dtypes import find_unsupported_edge_dtype_pairings
-except ImportError:
-    KernelDispatcher = None
-    runtime_compile = None
-    find_unsupported_edge_dtype_pairings = None
 
-try:
-    from runtime.export import export_onnx
-except ImportError:
-    export_onnx = None
 
-try:
-    from runtime.bridge import (
-        evaluate_workflow as bridge_evaluate,
-        validate_workflow_graph as bridge_validate,
-        estimate_performance as bridge_estimate,
-        list_available_primitives as bridge_list_primitives,
-        analyze_compression as bridge_analyze_compression,
-        get_component_execution_capability as bridge_component_capability,
-    )
-    HAS_BRIDGE = True
-except ImportError:
-    HAS_BRIDGE = False
-    bridge_component_capability = None
+def _optional_import(module: str, names: list[str], *, aliases: dict[str, str] | None = None):
+    """Import names from a module, returning None for each on ImportError."""
+    aliases = aliases or {}
+    try:
+        mod = __import__(module, fromlist=names)
+        return tuple(getattr(mod, n) for n in names)
+    except ImportError:
+        return tuple(None for _ in names)
 
-try:
-    from runtime.profiler import profile_workflow as bridge_profile
-    HAS_PROFILER = True
-except ImportError:
-    HAS_PROFILER = False
 
-try:
-    from runtime.importer import import_survivors, import_single, graph_to_workflow
-    HAS_IMPORTER = True
-except ImportError:
-    HAS_IMPORTER = False
+(KernelDispatcher, runtime_compile,
+ find_unsupported_edge_dtype_pairings) = _optional_import(
+    "runtime.dispatch", ["KernelDispatcher"]) + _optional_import(
+    "runtime.compiler", ["compile_workflow"]) + _optional_import(
+    "runtime.port_dtypes", ["find_unsupported_edge_dtype_pairings"])
+
+(export_onnx,) = _optional_import("runtime.export", ["export_onnx"])
+
+(bridge_evaluate, bridge_validate, bridge_estimate, bridge_list_primitives,
+ bridge_analyze_compression, bridge_component_capability) = _optional_import(
+    "runtime.bridge", [
+        "evaluate_workflow", "validate_workflow_graph", "estimate_performance",
+        "list_available_primitives", "analyze_compression",
+        "get_component_execution_capability",
+    ])
+HAS_BRIDGE = bridge_evaluate is not None
+
+(bridge_profile,) = _optional_import("runtime.profiler", ["profile_workflow"])
+HAS_PROFILER = bridge_profile is not None
+
+(import_survivors, import_single, graph_to_workflow) = _optional_import(
+    "runtime.importer", ["import_survivors", "import_single", "graph_to_workflow"])
+HAS_IMPORTER = import_survivors is not None
 
 # Research notebook path for fetching original graphs
 _RESEARCH_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "research"
 
-try:
-    from runtime.constraints import check_compatibility, compute_palette_constraints
-    HAS_CONSTRAINTS = True
-except ImportError:
-    HAS_CONSTRAINTS = False
+(check_compatibility, compute_palette_constraints) = _optional_import(
+    "runtime.constraints", ["check_compatibility", "compute_palette_constraints"])
+HAS_CONSTRAINTS = check_compatibility is not None
 
-try:
-    from runtime.subgraph import (
-        extract_block,
-        expand_block,
-        list_builtin_blocks,
-        BUILTIN_BLOCKS,
-    )
-    HAS_SUBGRAPH = True
-except ImportError:
-    HAS_SUBGRAPH = False
+(extract_block, expand_block, list_builtin_blocks, BUILTIN_BLOCKS) = _optional_import(
+    "runtime.subgraph", ["extract_block", "expand_block", "list_builtin_blocks", "BUILTIN_BLOCKS"])
+HAS_SUBGRAPH = extract_block is not None
 
 logger = logging.getLogger(__name__)
-COMPONENTS_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "components")))
+from .loader import COMPONENTS_ROOT  # noqa: E402 – single source of truth
 
 
 # ── Eval Run Store ────────────────────────────────────────────────────
@@ -122,9 +110,7 @@ _EVAL_RUNS_MAX = 200          # max runs kept in memory
 _EVAL_RUNS_TTL_S = 3600       # evict runs older than 1 hour
 
 # Optional lineage sync to research notebook service.
-_LINEAGE_SYNC_ENABLED = os.environ.get("ARIA_LINEAGE_SYNC_ENABLED", "0") != "0"
-_LINEAGE_SYNC_BASE = os.environ.get("ARIA_RESEARCH_API_BASE", "http://127.0.0.1:5000")
-_LINEAGE_SYNC_TIMEOUT = float(os.environ.get("ARIA_LINEAGE_SYNC_TIMEOUT", "3"))
+from app.config import settings
 
 
 def _evict_old_runs():
@@ -179,17 +165,46 @@ def _list_runs() -> List[Dict[str, Any]]:
         return out
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from .models import utc_now_iso as _utc_now  # noqa: E402 – single source of truth
+
+
+# ── Lookup helpers (DRY: eliminates repeated get→None→404 pattern) ───
+
+def _require_component(component_id: str):
+    comp = db.get_component(component_id)
+    if comp is None:
+        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
+    return comp
+
+
+def _require_proposal(proposal_id: str):
+    proposal = db.get_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return proposal
+
+
+def _require_workflow(workflow_id: str):
+    wf = db.get_workflow(workflow_id)
+    if wf is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+    return wf
+
+
+def _require_run(run_id: str):
+    run = _get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Evaluation run {run_id} not found")
+    return run
 
 
 def _sync_lineage_to_research(payload: Dict[str, Any]) -> bool:
     """Best-effort sync of designer run lineage into research notebook API."""
-    if not _LINEAGE_SYNC_ENABLED:
+    if not settings.LINEAGE_SYNC_ENABLED:
         return False
-    url = f"{_LINEAGE_SYNC_BASE.rstrip('/')}/api/designer/lineage/sync"
+    url = f"{settings.LINEAGE_SYNC_BASE.rstrip('/')}/api/designer/lineage/sync"
     try:
-        resp = requests.post(url, json=payload, timeout=_LINEAGE_SYNC_TIMEOUT)
+        resp = requests.post(url, json=payload, timeout=settings.LINEAGE_SYNC_TIMEOUT)
         if resp.status_code >= 400:
             logger.warning("Lineage sync failed (%s): %s", resp.status_code, resp.text[:200])
             return False
@@ -218,8 +233,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 # ...
 
@@ -262,18 +275,14 @@ def list_components(
 @app.get("/api/v1/components/{component_id}")
 def get_component(component_id: str) -> Dict[str, Any]:
     """Get a single component by ID."""
-    comp = db.get_component(component_id)
-    if comp is None:
-        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
+    comp = _require_component(component_id)
     return comp
 
 
 @app.get("/api/v1/components/{component_id}/properties")
 def get_component_properties(component_id: str) -> Dict[str, Any]:
     """Return normalized property schema/defaults for one component."""
-    comp = db.get_component(component_id)
-    if comp is None:
-        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
+    comp = _require_component(component_id)
 
     params = comp.get("params") or {}
     properties = []
@@ -304,9 +313,7 @@ def get_component_properties(component_id: str) -> Dict[str, Any]:
 @app.get("/api/v1/components/{component_id}/execution-capability")
 def get_component_execution_capability(component_id: str) -> Dict[str, Any]:
     """Return execution capability across native/runtime bridge paths."""
-    comp = db.get_component(component_id)
-    if comp is None:
-        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
+    comp = _require_component(component_id)
 
     category = comp.get("category", "")
     manifest_id = comp.get("id", component_id)
@@ -443,9 +450,7 @@ def get_bridge_gap_report() -> Dict[str, Any]:
 @app.post("/api/v1/components/{component_id}/validate-config")
 def validate_component_config(component_id: str, req: ComponentConfigValidateRequest) -> Dict[str, Any]:
     """Validate a component config payload against manifest param schema/defaults."""
-    comp = db.get_component(component_id)
-    if comp is None:
-        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
+    comp = _require_component(component_id)
 
     params = comp.get("params") or {}
     raw_config = req.config or {}
@@ -600,21 +605,6 @@ def reload_components() -> Dict[str, Any]:
     """Re-scan components/ directory and reload into DB."""
     count = scan_and_load()
     return {"reloaded": count, "totals": db.count_components()}
-
-
-# ── Legacy endpoints (backward compat) ───────────────────────────────
-
-@app.get("/components", response_model=List[ComponentModel])
-def get_components_legacy() -> List[Dict[str, Any]]:
-    return db.list_components(status="approved")
-
-
-@app.post("/components", response_model=ComponentModel)
-def create_component_legacy(component: ComponentModel) -> Dict[str, Any]:
-    manifest = component.model_dump()
-    now = _utc_now()
-    db.upsert_component(manifest, created_at=now, updated_at=now)
-    return manifest
 
 
 # ── Workflows ─────────────────────────────────────────────────────────
@@ -848,22 +838,62 @@ def run_workflow(req: RunWorkflowRequest) -> Dict[str, Any]:
 def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, Any]:
     """Save or update a workflow."""
     now = _utc_now()
+    wf_dict = workflow.model_dump()
+    
+    # Calculate fingerprint if bridge is available
+    fingerprint = None
+    if HAS_BRIDGE:
+        try:
+            from runtime.bridge import workflow_to_graph as _w2g
+            model_dim = wf_dict.get("metadata", {}).get("model_dim", 256)
+            graph, _ = _w2g(wf_dict, model_dim, return_id_map=True)
+            fingerprint = graph.fingerprint()
+            wf_dict.setdefault("metadata", {})["graph_fingerprint"] = fingerprint
+        except Exception as e:
+            logger.warning("Could not calculate fingerprint for saved workflow: %s", e)
+
     version = db.save_workflow(
         workflow_id=workflow_id,
         name=workflow.name,
-        graph_json=json.dumps(workflow.model_dump()),
+        graph_json=json.dumps(wf_dict),
         author="user",
         created_at=now,
         updated_at=now,
     )
-    return {"workflow_id": workflow_id, "version": version, "saved_at": now}
+
+    # Sync to research notebook if enabled
+    if settings.LINEAGE_SYNC_ENABLED:
+        try:
+            # First sync the run lineage
+            lineage_payload = {
+                "run_id": f"save_{uuid4().hex[:10]}",
+                "workflow_id": workflow_id,
+                "workflow_version": version,
+                "graph_fingerprint": fingerprint,
+                "status": "saved",
+                "source": "aria-designer",
+                "total_time_ms": 0,
+                "metrics": {
+                    "node_count": len(wf_dict.get("nodes", [])),
+                    "edge_count": len(wf_dict.get("edges", [])),
+                },
+                "payload": wf_dict,
+                "created_at": _time_mod.time(),
+            }
+            _sync_lineage_to_research(lineage_payload)
+            
+            # Also record as a program result to get a result_id if it's a new fingerprint
+            # but usually save_workflow is called often, so we might want a specific 'commit' action.
+            # For now, let's just make sure the fingerprint is known.
+        except Exception as e:
+            logger.warning("Failed to sync saved workflow to research: %s", e)
+
+    return {"workflow_id": workflow_id, "version": version, "saved_at": now, "fingerprint": fingerprint}
 
 
 @app.get("/api/v1/workflows/{workflow_id}")
 def get_workflow(workflow_id: str) -> Dict[str, Any]:
-    wf = db.get_workflow(workflow_id)
-    if wf is None:
-        raise HTTPException(status_code=404, detail="Workflow not found")
+    wf = _require_workflow(workflow_id)
     wf["graph"] = json.loads(wf.pop("graph_json"))
     return wf
 
@@ -871,23 +901,6 @@ def get_workflow(workflow_id: str) -> Dict[str, Any]:
 @app.get("/api/v1/workflows")
 def list_workflows() -> List[Dict[str, Any]]:
     return db.list_workflows()
-
-
-# ── Legacy workflow endpoints ─────────────────────────────────────────
-
-@app.post("/workflows/validate", response_model=ValidateWorkflowResponse)
-def validate_workflow_legacy(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
-    return validate_workflow(req)
-
-
-@app.post("/workflows/compile")
-def compile_workflow_legacy(req: CompileWorkflowRequest):
-    return compile_workflow(req)
-
-
-@app.post("/workflows/run")
-def run_workflow_legacy(req: RunWorkflowRequest):
-    return run_workflow(req)
 
 
 @app.post("/api/v1/workflows/diff")
@@ -913,9 +926,7 @@ def propose_patch(patch: AriaPatchProposalModel) -> Dict[str, Any]:
 
 @app.post("/api/v1/aria/apply-patch")
 def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
-    proposal = db.get_proposal(req.proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="Proposal not found")
+    proposal = _require_proposal(req.proposal_id)
 
     if proposal.get("status") == "applied":
         raise HTTPException(status_code=409, detail="Proposal already applied")
@@ -925,9 +936,7 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
     ops = patch_data.get("ops", [])
 
     # Load the current workflow
-    wf_row = db.get_workflow(workflow_id)
-    if wf_row is None:
-        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+    wf_row = _require_workflow(workflow_id)
 
     workflow = json.loads(wf_row["graph_json"])
 
@@ -939,14 +948,29 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
 
     # Validate patched workflow with bridge if available
     validation_info = None
+    new_fingerprint = None
+    model_dim = patched_workflow.get("metadata", {}).get("model_dim", 256)
     if HAS_BRIDGE:
-        model_dim = patched_workflow.get("metadata", {}).get("model_dim", 256)
         validation_info = bridge_validate(patched_workflow, model_dim=model_dim)
         if not validation_info.get("valid", False):
             raise HTTPException(
                 status_code=422,
                 detail=f"Patched workflow invalid: {validation_info.get('error', 'unknown error')}",
             )
+
+    # Recompute fingerprint for the patched graph to track lineage
+    old_fingerprint = workflow.get("metadata", {}).get("graph_fingerprint")
+    try:
+        from runtime.bridge import workflow_to_graph as _w2g
+        patched_graph, _ = _w2g(patched_workflow, model_dim, return_id_map=True)
+        new_fingerprint = patched_graph.fingerprint()
+        # Update metadata with new fingerprint and lineage
+        meta = patched_workflow.setdefault("metadata", {})
+        meta["graph_fingerprint"] = new_fingerprint
+        if old_fingerprint and old_fingerprint != new_fingerprint:
+            meta["parent_fingerprint"] = old_fingerprint
+    except Exception:
+        logger.debug("Could not recompute fingerprint after patch", exc_info=True)
 
     # Save the patched workflow as a new version
     now = _utc_now()
@@ -955,6 +979,7 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
         name=workflow.get("name", ""),
         graph_json=json.dumps(patched_workflow),
         author=f"aria (approved by {req.approved_by})",
+        parent_id=f"{workflow_id}@v{wf_row.get('version', 0)}",
         created_at=now,
         updated_at=now,
     )
@@ -970,15 +995,16 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
         "new_version": new_version,
         "ops_applied": len(ops),
         "validation": validation_info,
+        "old_fingerprint": old_fingerprint,
+        "new_fingerprint": new_fingerprint,
+        "patched_workflow": patched_workflow,
     }
 
 
 @app.post("/api/v1/aria/reject-patch")
 def reject_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
     """Reject a pending patch proposal."""
-    proposal = db.get_proposal(req.proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="Proposal not found")
+    proposal = _require_proposal(req.proposal_id)
     if proposal.get("status") != "pending":
         raise HTTPException(status_code=409, detail=f"Proposal is already {proposal['status']}")
     now = _utc_now()
@@ -1287,6 +1313,56 @@ def _generate_patch_impl(req: AskAriaPromptRequest) -> Dict[str, Any]:
                     "payload": {"filter_scope": "dataset_row"},
                 })
 
+    # Stability/brittleness fix: "fix brittle", "fix gradients", "stabilize"
+    is_stability_fix = any(kw in lower for kw in (
+        "brittle", "gradient", "unstable", "nan", "explod", "stabil", "zero grad",
+    ))
+    if is_stability_fix and not ops:
+        existing_types = {str(n.get("component_type", "")).split("/")[-1] for n in nodes}
+        has_norm = any(t in existing_types for t in ("layernorm", "layernorm_pre", "rmsnorm", "rmsnorm_pre"))
+
+        if not has_norm:
+            # Insert normalization before the output node to prevent logit explosion
+            output_node = next((n for n in nodes if "output" in str(n.get("component_type", ""))), None)
+            norm_type = _normalize_component_type("rmsnorm", approved) or "normalization/rmsnorm"
+            new_node_id = f"aria_{uuid4().hex[:8]}"
+
+            if output_node and output_node["id"] in incoming_edges:
+                inc = incoming_edges[output_node["id"]]
+                ops.append({
+                    "op": "rewire",
+                    "payload": {"action": "remove", "source": inc["source"], "target": output_node["id"]},
+                })
+                ops.append({
+                    "op": "add_node",
+                    "payload": {
+                        "id": new_node_id,
+                        "component_type": norm_type,
+                        "params": {},
+                        "ui_meta": {"position": {"x": 440, "y": 220}},
+                        "edges": [
+                            {"source": inc.get("source", ""), "source_port": inc.get("source_port", "out"),
+                             "target": new_node_id, "target_port": "in"},
+                            {"source": new_node_id, "source_port": "out",
+                             "target": output_node["id"], "target_port": inc.get("target_port", "in")},
+                        ],
+                    },
+                })
+            elif last_node:
+                ops.append({
+                    "op": "add_node",
+                    "payload": {
+                        "id": new_node_id,
+                        "component_type": norm_type,
+                        "params": {},
+                        "ui_meta": {"position": {"x": 440, "y": 220}},
+                        "edges": [
+                            {"source": last_node["id"], "source_port": "out",
+                             "target": new_node_id, "target_port": "in"},
+                        ],
+                    },
+                })
+
     # Smart fallback: analyze graph and suggest useful improvements when no
     # explicit edit pattern was matched (e.g. "beat benchmarks", "improve novelty").
     if not ops:
@@ -1439,9 +1515,7 @@ def list_proposals(status: Optional[str] = Query(None)) -> List[Dict[str, Any]]:
 @app.get("/api/v1/aria/proposals/{proposal_id}")
 def get_proposal(proposal_id: str) -> Dict[str, Any]:
     """Get a single proposal by ID."""
-    proposal = db.get_proposal(proposal_id)
-    if proposal is None:
-        raise HTTPException(status_code=404, detail="Proposal not found")
+    proposal = _require_proposal(proposal_id)
     proposal["patch"] = json.loads(proposal.pop("patch_json", "{}"))
     return proposal
 
@@ -1522,18 +1596,6 @@ def export_workflow_onnx(req: CompileWorkflowRequest) -> Any:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ── Legacy aria endpoints ─────────────────────────────────────────────
-
-@app.post("/aria/propose-patch")
-def propose_patch_legacy(patch: AriaPatchProposalModel):
-    return propose_patch(patch)
-
-
-@app.post("/aria/apply-patch")
-def apply_patch_legacy(req: ApplyPatchRequest):
-    return apply_patch(req)
-
-
 # ── Research Bridge ───────────────────────────────────────────────────
 
 @app.post("/api/v1/workflows/evaluate")
@@ -1600,8 +1662,8 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
         "created_at": _time_mod.time(),
     }
     result_dict["lineage_sync"] = {
-        "attempted": _LINEAGE_SYNC_ENABLED,
-        "synced": _sync_lineage_to_research(lineage_payload) if _LINEAGE_SYNC_ENABLED else False,
+        "attempted": settings.LINEAGE_SYNC_ENABLED,
+        "synced": _sync_lineage_to_research(lineage_payload) if settings.LINEAGE_SYNC_ENABLED else False,
     }
     return result_dict
 
@@ -1644,11 +1706,12 @@ def _try_fetch_original_graph(metadata: dict, model_dim: int):
         # Validate fingerprint if available
         expected_fp = metadata.get("graph_fingerprint")
         if expected_fp and graph.fingerprint() != expected_fp:
-            logger.warning(
-                "Original graph fingerprint mismatch for result_id=%s "
-                "(expected %s, got %s) — using original anyway",
-                result_id, expected_fp, graph.fingerprint(),
+            logger.info(
+                "Workflow has been modified (fingerprint changed from %s to %s). "
+                "Bypassing original graph load.",
+                graph.fingerprint(), expected_fp,
             )
+            return None
 
         # Build cg_to_aria map by parsing workflow node IDs.
         # The importer creates IDs like "op_{cg_id}_{op_name}" and "input_{cg_id}".
@@ -1681,7 +1744,6 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         raise HTTPException(status_code=501, detail="Research bridge not available")
 
     import asyncio
-    import time as _time
 
     wf = req.workflow.model_dump()
     semantic_warnings = _collect_workflow_semantic_warnings(wf)
@@ -1700,7 +1762,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         return json.dumps(obj, default=lambda x: x.item() if hasattr(x, "item") else str(x))
 
     async def event_stream():
-        total_t0 = _time.monotonic()
+        total_t0 = _time_mod.monotonic()
         accumulated = {}
         lineage_synced = False
 
@@ -1733,7 +1795,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "result": accumulated,
                 "completed_at": _utc_now(),
             })
-            if not lineage_synced and _LINEAGE_SYNC_ENABLED:
+            if not lineage_synced and settings.LINEAGE_SYNC_ENABLED:
                 lineage_payload = {
                     "run_id": run_id,
                     "workflow_id": wf.get("workflow_id"),
@@ -1771,7 +1833,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
         # --- Stage 1: conversion ---
         yield f"event: stage\ndata: {_json({'stage': 'conversion', 'status': 'running'})}\n\n"
-        t0 = _time.monotonic()
+        t0 = _time_mod.monotonic()
         try:
             metadata = wf.get("metadata", {})
             original = await asyncio.to_thread(_try_fetch_original_graph, metadata, model_dim)
@@ -1796,12 +1858,12 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             }
             accumulated["conversion"] = metrics
             _persist_stage("conversion", {"status": "done", "metrics": metrics})
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'conversion', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'conversion', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
-            total_ms = (_time.monotonic() - total_t0) * 1000
+            total_ms = (_time_mod.monotonic() - total_t0) * 1000
             _attach_benchmarking()
             _persist_done("error", error=str(e), error_stage="conversion", total_ms=round(total_ms, 1))
             yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'conversion', 'total_time_ms': round(total_ms, 1), 'benchmarking': accumulated.get('benchmarking')})}\n\n"
@@ -1809,7 +1871,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
         # --- Stage 2: profiling ---
         yield f"event: stage\ndata: {_json({'stage': 'profiling', 'status': 'running'})}\n\n"
-        t0 = _time.monotonic()
+        t0 = _time_mod.monotonic()
         op_profiles_for_nodes = []
         try:
             if HAS_PROFILER:
@@ -1838,27 +1900,27 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 metrics = {"skipped": True, "reason": "profiler not available"}
             accumulated["profiling"] = metrics
             _persist_stage("profiling", {"status": "done", "metrics": metrics})
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'profiling', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'profiling', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
 
         # --- Stage 3: compilation ---
         yield f"event: stage\ndata: {_json({'stage': 'compilation', 'status': 'running'})}\n\n"
-        t0 = _time.monotonic()
+        t0 = _time_mod.monotonic()
         try:
             from research.synthesis.compiler import compile_model
             model = await asyncio.to_thread(compile_model, [graph], vocab_size=vocab_size)
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             metrics = {"compile_time_ms": round(elapsed, 1)}
             accumulated["compilation"] = metrics
             _persist_stage("compilation", {"status": "done", "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'compilation', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'compilation', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
-            total_ms = (_time.monotonic() - total_t0) * 1000
+            total_ms = (_time_mod.monotonic() - total_t0) * 1000
             _attach_benchmarking()
             _persist_done("error", error=str(e), error_stage="compilation", total_ms=round(total_ms, 1))
             yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'compilation', 'total_time_ms': round(total_ms, 1), 'benchmarking': accumulated.get('benchmarking')})}\n\n"
@@ -1866,14 +1928,14 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
         # --- Stage 4: sandbox ---
         yield f"event: stage\ndata: {_json({'stage': 'sandbox', 'status': 'running'})}\n\n"
-        t0 = _time.monotonic()
+        t0 = _time_mod.monotonic()
         try:
             from research.eval.sandbox import safe_eval
             sandbox = await asyncio.to_thread(
                 safe_eval, model, batch_size=batch_size, seq_len=seq_len,
                 vocab_size=vocab_size, device=device,
             )
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             metrics = {
                 "passed": bool(sandbox.passed),
                 "forward_ms": float(getattr(sandbox, "forward_time_ms", 0)),
@@ -1888,15 +1950,15 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             _persist_stage("sandbox", {"status": "done", "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'sandbox', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
             if not sandbox.passed:
-                total_ms = (_time.monotonic() - total_t0) * 1000
+                total_ms = (_time_mod.monotonic() - total_t0) * 1000
                 _attach_benchmarking()
                 _persist_done("failed_sandbox", error=getattr(sandbox, 'error', 'sandbox failed'), error_stage="sandbox", total_ms=round(total_ms, 1))
                 yield f"event: done\ndata: {_json({'status': 'failed_sandbox', 'error': getattr(sandbox, 'error', 'sandbox failed'), 'total_time_ms': round(total_ms, 1), 'result': accumulated, 'benchmarking': accumulated.get('benchmarking')})}\n\n"
                 return
         except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'sandbox', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
-            total_ms = (_time.monotonic() - total_t0) * 1000
+            total_ms = (_time_mod.monotonic() - total_t0) * 1000
             _attach_benchmarking()
             _persist_done("error", error=str(e), error_stage="sandbox", total_ms=round(total_ms, 1))
             yield f"event: done\ndata: {_json({'status': 'error', 'error': str(e), 'error_stage': 'sandbox', 'total_time_ms': round(total_ms, 1), 'benchmarking': accumulated.get('benchmarking')})}\n\n"
@@ -1904,7 +1966,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
         # --- Stage 5: compression ---
         yield f"event: stage\ndata: {_json({'stage': 'compression', 'status': 'running'})}\n\n"
-        t0 = _time.monotonic()
+        t0 = _time_mod.monotonic()
         try:
             comp_result = await asyncio.to_thread(
                 bridge_analyze_compression, model, graph,
@@ -1914,15 +1976,15 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             metrics = comp_result.to_dict()
             accumulated["compression"] = metrics
             _persist_stage("compression", {"status": "done", "metrics": metrics})
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'compression', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'compression', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
 
         # --- Stage 6: fingerprint ---
         yield f"event: stage\ndata: {_json({'stage': 'fingerprint', 'status': 'running'})}\n\n"
-        t0 = _time.monotonic()
+        t0 = _time_mod.monotonic()
         fp_obj = None
         try:
             if run_fingerprint:
@@ -1944,15 +2006,15 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 metrics = {"skipped": True}
             accumulated["fingerprint"] = metrics
             _persist_stage("fingerprint", {"status": "done", "metrics": metrics})
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'fingerprint', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'fingerprint', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
 
         # --- Stage 7: novelty ---
         yield f"event: stage\ndata: {_json({'stage': 'novelty', 'status': 'running'})}\n\n"
-        t0 = _time.monotonic()
+        t0 = _time_mod.monotonic()
         try:
             if run_novelty:
                 from research.eval.metrics import novelty_score
@@ -1967,14 +2029,14 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 metrics = {"skipped": True}
             accumulated["novelty"] = metrics
             _persist_stage("novelty", {"status": "done", "metrics": metrics})
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'novelty', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
+            elapsed = (_time_mod.monotonic() - t0) * 1000
             yield f"event: stage\ndata: {_json({'stage': 'novelty', 'status': 'error', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
 
         # --- Done ---
-        total_ms = (_time.monotonic() - total_t0) * 1000
+        total_ms = (_time_mod.monotonic() - total_t0) * 1000
         _attach_benchmarking()
         _persist_done("success", total_ms=round(total_ms, 1))
         yield f"event: done\ndata: {_json({'status': 'success', 'total_time_ms': round(total_ms, 1), 'result': accumulated, 'benchmarking': accumulated.get('benchmarking')})}\n\n"
@@ -2007,9 +2069,7 @@ def get_eval_run(run_id: str) -> Dict[str, Any]:
     Includes all stage metrics, per-op profiles, fingerprint, novelty,
     and the original budget parameters. Available during and after the run.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     # Strip internal fields
     return {k: v for k, v in run.items() if not k.startswith("_")}
 
@@ -2021,9 +2081,7 @@ def get_eval_run_stages(run_id: str) -> Dict[str, Any]:
     Each stage (conversion, profiling, compilation, sandbox, compression,
     fingerprint, novelty) includes status and metrics. Stages not yet reached are absent.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     return {
         "run_id": run_id,
         "status": run.get("status"),
@@ -2039,9 +2097,7 @@ def get_eval_run_profile(run_id: str) -> Dict[str, Any]:
     bottleneck analysis, and native kernel coverage. Each op includes
     its aria_node_id for mapping back to the visual canvas.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     profiling = run.get("stages", {}).get("profiling", {})
     if not profiling or profiling.get("status") != "done":
         raise HTTPException(status_code=404, detail="Profiling data not available for this run")
@@ -2058,9 +2114,7 @@ def get_eval_run_fingerprint(run_id: str) -> Dict[str, Any]:
     Returns CKA similarity scores (vs transformer/SSM/conv),
     interaction locality, sparsity, intrinsic dimensionality, and isotropy.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     fingerprint = run.get("stages", {}).get("fingerprint", {})
     if not fingerprint or fingerprint.get("status") != "done":
         raise HTTPException(status_code=404, detail="Fingerprint data not available for this run")
@@ -2077,9 +2131,7 @@ def get_eval_run_novelty(run_id: str) -> Dict[str, Any]:
     Returns structural, behavioral, and overall novelty scores,
     plus the most similar known architecture.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     novelty = run.get("stages", {}).get("novelty", {})
     if not novelty or novelty.get("status") != "done":
         raise HTTPException(status_code=404, detail="Novelty data not available for this run")
@@ -2096,9 +2148,7 @@ def get_eval_run_compression(run_id: str) -> Dict[str, Any]:
     Returns pruning curve, sparse op coverage, compression ratio,
     theoretical sizes, and composite efficiency score.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     compression = run.get("stages", {}).get("compression", {})
     if not compression or compression.get("status") != "done":
         raise HTTPException(status_code=404, detail="Compression data not available for this run")
@@ -2115,9 +2165,7 @@ def get_eval_run_sandbox(run_id: str) -> Dict[str, Any]:
     Returns forward/backward timing, param count, peak memory,
     gradient norm, and stability score.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     sandbox = run.get("stages", {}).get("sandbox", {})
     if not sandbox or sandbox.get("status") != "done":
         raise HTTPException(status_code=404, detail="Sandbox data not available for this run")
@@ -2133,9 +2181,7 @@ def get_eval_run_benchmarking(run_id: str) -> Dict[str, Any]:
 
     Includes target table, on/off-target summary, and scaling projection.
     """
-    run = _get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+    run = _require_run(run_id)
     if run.get("status") == "running":
         raise HTTPException(status_code=409, detail="Benchmarking not final while run is still running")
     result_payload = run.get("result") or {}
@@ -2158,9 +2204,7 @@ def get_benchmark_targets(run_id: Optional[str] = Query(None, description="Optio
     """Return benchmark target catalog and optional run-specific comparison."""
     payload: Dict[str, Any] = benchmark_target_catalog()
     if run_id:
-        run = _get_run(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail=f"Eval run '{run_id}' not found")
+        run = _require_run(run_id)
         result_payload = run.get("result") or {}
         benchmarking = result_payload.get("benchmarking")
         if not benchmarking:

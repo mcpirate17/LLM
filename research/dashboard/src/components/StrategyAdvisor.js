@@ -1,3 +1,4 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
 import { useAriaData } from '../hooks/useAriaData';
@@ -562,7 +563,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
     setDiagnosing(true);
     setDiagResult(null);
     try {
-      const res = await fetch(`${API_BASE}/api/aria/diagnose`, { method: 'POST' });
+      const res = await apiCall(`/api/aria/diagnose`, { method: 'POST' });
       if (res.ok) {
         const result = await res.json();
         setDiagResult(result);

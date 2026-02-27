@@ -408,12 +408,19 @@ class ComputationGraph:
         canonical_id_map = {} # nid -> position in canonical order
 
         while ready:
-            # TIE-BREAKER: Sort ready nodes by (op_name, sorted_input_canonical_ids)
-            # For the very first nodes (inputs), sorted_input_canonical_ids is empty.
+            # TIE-BREAKER: Sort ready nodes by (op_name, input_canonical_ids, config)
+            # For the very first nodes (inputs), input_canonical_ids is empty.
             def sort_key(nid):
                 node = self.nodes[nid]
-                input_keys = sorted([canonical_id_map[iid] for iid in node.input_ids])
-                return (node.op_name, input_keys, nid)
+                input_keys = [canonical_id_map[iid] for iid in node.input_ids]
+                
+                # Include config in tie-breaker
+                config_str = ""
+                if node.config:
+                    config_items = sorted(f"{k}={v}" for k, v in node.config.items())
+                    config_str = f"[{','.join(config_items)}]"
+                    
+                return (node.op_name, input_keys, config_str, nid)
             
             ready.sort(key=sort_key)
             
@@ -498,11 +505,20 @@ class ComputationGraph:
         desc = []
         for nid in order:
             node = self.nodes[nid]
-            # Map input IDs to their canonical ranks
-            ranks = sorted([id_to_rank[iid] for iid in node.input_ids])
-            desc.append(f"{node.op_name}({','.join(map(str, ranks))})")
+            # Map input IDs to their canonical ranks (do not sort, order matters!)
+            ranks = [id_to_rank[iid] for iid in node.input_ids]
+            
+            # Include config in fingerprint
+            config_str = ""
+            if node.config:
+                # Sort config keys for deterministic string representation
+                config_items = sorted(f"{k}={v}" for k, v in node.config.items())
+                config_str = f"[{','.join(config_items)}]"
+                
+            desc.append(f"{node.op_name}{config_str}({','.join(map(str, ranks))})")
         
-        key = "|".join(desc)
+        # Include model_dim in fingerprint
+        key = f"dim={self.model_dim}|" + "|".join(desc)
         result = hashlib.sha256(key.encode()).hexdigest()[:16]
         self._cache["fingerprint"] = result
         return result
@@ -578,3 +594,25 @@ class ComputationGraph:
                 prefix = "[OUTPUT] "
             lines.append(f"  n{nid}: {prefix}{node.op_name}({inputs}) -> {shape}")
         return "\n".join(lines)
+
+    def has_residual_path(self) -> bool:
+        """Detect if there is a direct residual (add) path from input to output. Cached."""
+        if "has_residual" in self._cache:
+            return self._cache["has_residual"]
+            
+        input_ids = [nid for nid, node in self.nodes.items() if node.is_input]
+        if not input_ids or self._output_node_id is None:
+            return False
+        
+        main_input = input_ids[0]
+        
+        # Heuristic: is the input ID a direct input to ANY 'add' node?
+        # Most residuals in this project use 'add' nodes for the skip connection.
+        res = False
+        for node in self.nodes.values():
+            if node.op_name == "add" and main_input in node.input_ids:
+                res = True
+                break
+                
+        self._cache["has_residual"] = res
+        return res

@@ -1,6 +1,6 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect } from 'react';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 /**
  * FailureAnalysis — Funnel chart, error distribution, stage-at-death histogram.
@@ -37,7 +37,7 @@ function FailureAnalysis({ experimentId }) {
     if (!experimentId) return;
     setLoading(true);
     setError(null);
-    fetch(`${API_BASE}/api/experiments/${experimentId}/failures`)
+    apiCall(`/api/experiments/${experimentId}/failures`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

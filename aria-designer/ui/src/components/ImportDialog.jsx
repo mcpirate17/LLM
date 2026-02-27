@@ -1,6 +1,6 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect } from 'react';
-
-const DESIGNER_API_BASE = import.meta.env.VITE_DESIGNER_API_BASE || 'http://127.0.0.1:5000';
+import { DESIGNER_API_BASE } from '../config';
 
 const ImportDialog = ({ onImport, onClose }) => {
   const [survivors, setSurvivors] = useState([]);
@@ -21,7 +21,7 @@ const ImportDialog = ({ onImport, onClose }) => {
         sort_by: String(sortBy),
         min_novelty: String(minNovelty),
       });
-      const res = await fetch(`${DESIGNER_API_BASE}/api/designer/import/survivors?${params.toString()}`);
+      const res = await apiCall(`/api/v1/import/survivors?${params.toString()}`);
       const data = await res.json();
       // Support both proxy envelope ({ survivors: [...] }) and direct list payload.
       const rows = Array.isArray(data) ? data : (data?.survivors || []);
@@ -42,7 +42,7 @@ const ImportDialog = ({ onImport, onClose }) => {
     setImportingId(resultId);
     setError(null);
     try {
-      const res = await fetch(`${DESIGNER_API_BASE}/api/designer/import`, {
+      const res = await apiCall(`/api/v1/import/survivors/${encodeURIComponent(resultId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ result_id: resultId }),

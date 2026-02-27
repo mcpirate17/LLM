@@ -1,10 +1,10 @@
+import { apiCall } from "../services/apiService";
 import React, { useState, useEffect } from 'react';
 import { lossColor, noveltyColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import apiService from '../services/apiService';
 import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
 
 /**
  * ProgramDetail — Modal showing computation graph, stage pipeline,
@@ -1543,7 +1543,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     if (!resultId || !program?.stage1_passed) return;
     setRefineAnalysisLoading(true);
     setRefineAnalysisError(null);
-    fetch(`${API_BASE}/api/programs/${encodeURIComponent(resultId)}/refine-analysis`)
+    apiCall(`/api/programs/${encodeURIComponent(resultId)}/refine-analysis`)
       .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d.error || 'Failed'))))
       .then(data => { setRefineAnalysis(data); setRefineAnalysisLoading(false); })
       .catch(e => { setRefineAnalysisError(e.message); setRefineAnalysisLoading(false); });
@@ -1624,7 +1624,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
       if (cancelled) return;
       setRefineTraceLoading(true);
       try {
-        const response = await fetch(`${API_BASE}/api/experiments/${latestRefineLaunch.experimentId}`);
+        const response = await apiCall(`/api/experiments/${latestRefineLaunch.experimentId}`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
@@ -1694,7 +1694,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     setActionStarting(actionKey);
     try {
       setActionError(null);
-      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+      const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2394,7 +2394,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                           setScaleUpStarting(true);
                           try {
                             setActionError(null);
-                            const res = await fetch(`${API_BASE}/api/experiments/start`, {
+                            const res = await apiCall(`/api/experiments/start`, {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({
@@ -2449,7 +2449,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       setActionStarting('investigate');
                       try {
                         setActionError(null);
-                        const res = await fetch(`${API_BASE}/api/experiments/start`, {
+                        const res = await apiCall(`/api/experiments/start`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ mode: 'investigation', result_ids: [resultId] }),
@@ -2491,7 +2491,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       setActionStarting('validate');
                       try {
                         setActionError(null);
-                        const res = await fetch(`${API_BASE}/api/experiments/start`, {
+                        const res = await apiCall(`/api/experiments/start`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ mode: 'validation', result_ids: [resultId] }),

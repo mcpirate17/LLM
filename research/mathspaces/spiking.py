@@ -17,7 +17,14 @@ straight-through estimators (STE) for gradient flow.
 from __future__ import annotations
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+try:
+    import aria_core
+    _HAS_ARIA_CORE = True
+except ImportError:
+    _HAS_ARIA_CORE = False
 
 
 # ── Surrogate gradient helpers ──
@@ -69,23 +76,13 @@ def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
         Binary spike tensor of shape (B, S, D), values in {0, 1}
     """
     x = inputs[0]  # (B, S, D)
-    B, S, D = x.shape
     decay = 0.9
     threshold = 1.0
 
-    spikes = []
-    membrane = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+        return aria_core.lif_neuron_f32(x, decay, threshold)
 
-    for t in range(S):
-        # Leaky integration
-        membrane = decay * membrane + x[:, t, :]
-        # Fire: use surrogate gradient for the threshold comparison
-        spike = _SigmoidSTE.apply(membrane - threshold)
-        spikes.append(spike)
-        # Reset: subtract threshold on fire (soft reset)
-        membrane = membrane - spike * threshold
-
-    return torch.stack(spikes, dim=1)  # (B, S, D)
+    B, S, D = x.shape
 
 
 def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
@@ -103,6 +100,8 @@ def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.T
         Spike-coded tensor of shape (B, S, D)
     """
     x = inputs[0]  # (B, S, D)
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+        return aria_core.spike_rate_code_f32(x)
     # Firing probability from continuous activation
     probs = torch.sigmoid(x)
     # Binary spikes with STE
@@ -133,6 +132,10 @@ def execute_stdp_attention(module: nn.Module, *inputs: torch.Tensor) -> torch.Te
 
     # Temporal decay constant: tau = S/8, minimum 1
     tau = max(S / 8.0, 1.0)
+
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+        # Use tau_plus = tau, tau_minus = 0 (causal only)
+        return aria_core.stdp_attention_f32(x, tau, 0.0)
 
     # Build causal exponential decay kernel: weight[i,j] = exp(-(i-j)/tau) for j<=i
     positions = torch.arange(S, device=x.device, dtype=x.dtype)
@@ -165,6 +168,8 @@ def execute_sparse_threshold(module: nn.Module, *inputs: torch.Tensor) -> torch.
         Sparsified tensor of shape (B, S, D)
     """
     x = inputs[0]  # (B, S, D)
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+        return aria_core.sparse_threshold_f32(x)
     abs_x = x.abs()
     # Per-sample median across all positions (flatten S*D)
     median_val = abs_x.reshape(x.shape[0], -1).median(dim=-1).values  # (B,)

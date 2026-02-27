@@ -18,10 +18,15 @@ packing them into the feature dimension.
 
 from __future__ import annotations
 
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+try:
+    import aria_core
+    _HAS_ARIA_CORE = True
+except ImportError:
+    _HAS_ARIA_CORE = False
 
 
 # Cl(3,0) has 8 basis elements
@@ -51,6 +56,11 @@ def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Input: a, b of shape (B, S, K, 8)
     Output: (B, S, K, 8)
     """
+    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous():
+        y = torch.empty_like(a)
+        aria_core.clifford_geometric_product_cl30_f32(a, b, y)
+        return y
+
     # Basis: {1, e1, e2, e3, e12, e13, e23, e123}
     # Index: { 0,  1,  2,  3,   4,   5,   6,    7}
     #
@@ -124,6 +134,11 @@ def rotor_transform(x: torch.Tensor, rotor: torch.Tensor) -> torch.Tensor:
     Much more parameter-efficient: a rotor in Cl(3,0) uses 4 numbers
     to encode a 3D rotation (like quaternions).
     """
+    if _HAS_ARIA_CORE and x.is_contiguous() and rotor.is_contiguous():
+        y = torch.empty_like(x)
+        aria_core.clifford_rotor_transform_cl30_f32(x, rotor, y)
+        return y
+
     # Reverse of rotor: negate bivector and pseudoscalar parts
     rotor_rev = rotor.clone()
     rotor_rev[..., 4:7] = -rotor_rev[..., 4:7]
@@ -266,6 +281,52 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     weights = torch.softmax(scores / scale, dim=-1)
     out = torch.bmm(weights, x_padded)  # (B, S, D_padded)
 
+    if pad > 0:
+        out = out[..., :D]
+    return out
+
+
+# ── nn.Module wrappers ──────────────────────────────────────────────
+
+class CliffordLinear(nn.Module):
+    """Clifford Algebra linear layer operating on Cl(3,0) multivectors.
+
+    Applies a learned tensor contraction over multivector components,
+    capturing rotations, reflections, and projections in a single operation.
+
+    Input: (B, S, D) where D is divisible by 8.
+    Output: (B, S, D)
+
+    Reference: ARIA_NEXT_GEN_ARCHITECTURE.md §1.1
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        assert dim % N_BASIS == 0, f"dim must be divisible by {N_BASIS}"
+        self.dim = dim
+        k = dim // N_BASIS
+        self.weight = nn.Parameter(torch.randn(k, N_BASIS, N_BASIS) / (N_BASIS ** 0.5))
+        self.bias = nn.Parameter(torch.zeros(k, N_BASIS))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, S, D) -> (B, S, K, 8)
+        mv = _pack_multivector(x)
+        # Learned contraction: out[..., j] = sum_i W[k, j, i] * mv[..., k, i]
+        out = torch.einsum('bski,kij->bskj', mv, self.weight) + self.bias
+        return _unpack_multivector(out)
+
+
+def execute_clifford_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Execute CliffordLinear with module's weight parameter."""
+    B, S, D = x.shape
+    pad = (N_BASIS - D % N_BASIS) % N_BASIS
+    if pad > 0:
+        x = F.pad(x, (0, pad))
+    D_padded = x.shape[-1]
+    layer = CliffordLinear(D_padded).to(x.device)
+    if hasattr(module, 'weight') and module.weight.numel() >= layer.weight.numel():
+        layer.weight.data = module.weight[:layer.weight.numel()].reshape(layer.weight.shape)
+    out = layer(x)
     if pad > 0:
         out = out[..., :D]
     return out

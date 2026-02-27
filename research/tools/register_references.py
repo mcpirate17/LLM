@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import time
 
 import torch
@@ -96,6 +97,13 @@ def register_reference(
     loss_ratio, loss_curve = _micro_train(model, str(dev), vocab_size, seq_len, n_train_steps)
     log.info("  Loss ratio: %.6f (final=%.4f, initial=%.4f)",
              loss_ratio, loss_curve[-1] if loss_curve else 0, loss_curve[0] if loss_curve else 0)
+
+    # Sanity check: initial loss should be near ln(vocab_size)
+    random_chance = math.log(vocab_size)
+    if loss_curve and loss_curve[0] > random_chance * 1.5:
+        log.error("  INITIAL LOSS TOO HIGH: %.4f (random chance ~%.4f). Model is unstable.",
+                  loss_curve[0], random_chance)
+        # We don't return here to allow seeing the failure, but it should be fixed.
 
     # --- Fingerprint & novelty ---
     graph_fp = layer_graph.fingerprint()

@@ -1,31 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
-  ArrowUpDown, Sigma, Grid3X3, Puzzle, Waves, Activity,
-  FunctionSquare, Shuffle, Layers, GitFork, Scale, Ruler,
-  Hexagon, Box, Compass, Database, Filter, Repeat,
   ChevronDown, ChevronRight, AlertCircle,
 } from 'lucide-react'
-
-const CATEGORY_ICONS = {
-  io: ArrowUpDown, math: Sigma, linear_algebra: Grid3X3,
-  structural: Puzzle, sequence: Waves, frequency: Activity,
-  functional: FunctionSquare, mixing: Shuffle, channel_mixing: Layers,
-  routing: GitFork, normalization: Scale, positional: Ruler,
-  representation: Hexagon, topology: Compass, blocks: Box,
-  math_space: Compass, data_io: Database, data_transform: Filter,
-  control_flow: Repeat,
-}
-
-const CATEGORY_COLORS = {
-  io: '#17a3ff', math: '#24d1a0', linear_algebra: '#a060ff',
-  structural: '#f0a020', sequence: '#ff6090', frequency: '#20c0f0',
-  functional: '#c060c0', mixing: '#ff8040', channel_mixing: '#e0c040',
-  routing: '#60c060', normalization: '#8090ff', positional: '#ff60a0',
-  representation: '#40d0d0', topology: '#d09040', blocks: '#90c0ff',
-  math_space: '#2bd9a9', data_io: '#1aa5ff', data_transform: '#ff9a3d',
-  control_flow: '#8bdc65',
-}
+import { CATEGORY_ICONS, CATEGORY_COLORS } from '../utils/categoryConfig'
 
 const SCOPE_OPTION_LABELS = {
   split_scope: {

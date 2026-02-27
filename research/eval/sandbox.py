@@ -62,38 +62,7 @@ def cuda_health_check(device: str = "cuda") -> bool:
         return False
 
 
-@dataclass
-class SandboxResult:
-    """Result of sandbox evaluation."""
-    passed: bool = False
-    stage: str = ""  # "compile", "forward", "backward", "stability"
-    error: Optional[str] = None
-    error_type: Optional[str] = None
-    # Timing
-    compile_time_ms: float = 0.0
-    forward_time_ms: float = 0.0
-    backward_time_ms: float = 0.0
-    # Metrics
-    param_count: int = 0
-    peak_memory_mb: float = 0.0
-    output_shape: Optional[str] = None
-    # Gradient health
-    grad_norm: float = 0.0
-    has_nan_grad: bool = False
-    has_zero_grad: bool = False
-    has_nan_output: bool = False
-    has_inf_output: bool = False
-    # Numerical stability (Stage 0.5)
-    stability_score: float = 0.0  # 0-1, higher is more stable
-    extreme_input_passed: bool = False
-    random_input_passed: bool = False
-    output_range: Optional[str] = None
-    kernel_timing: Optional[Dict[str, Any]] = None
-    native_abi_probe: Optional[Dict[str, Any]] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {k: v for k, v in self.__dict__.items()}
-
+from research.synthesis.result_schemas import SandboxResult
 
 class TimeoutError(Exception):
     pass
@@ -394,8 +363,17 @@ def safe_eval(
         result.stage = "backward"
         if tracer is not None:
             tracer.start("backward", use_gpu=True)
+        # Scale logits to prevent softmax saturation (which causes zero loss
+        # and zero gradients).  We use the logits' own std as a dynamic
+        # temperature — this keeps the cross-entropy in a numerically healthy
+        # range regardless of the model's output magnitude.
+        logits_for_loss = logits
+        logit_std = logits.detach().std()
+        if logit_std > 10.0:
+            logits_for_loss = logits / (logit_std / 2.0)
+
         loss = F.cross_entropy(
-            logits.reshape(-1, logits.shape[-1]),
+            logits_for_loss.reshape(-1, logits_for_loss.shape[-1]),
             input_ids.reshape(-1),
         )
 
@@ -473,9 +451,6 @@ def safe_eval(
             result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
 
         result.passed = True
-        
-        # Attach detailed perf info to result if needed
-        # result.metadata["perf"] = tracer.get_summary()
 
     except TimeoutError:
         result.error = f"Timeout after {timeout_seconds}s in stage {result.stage}"

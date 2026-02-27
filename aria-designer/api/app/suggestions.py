@@ -75,10 +75,31 @@ def suggest_components(workflow: Dict[str, Any], prompt: str | None = None) -> L
             suggestions.extend(_suggest_category(by_category, "mixing", "Add attention."))
 
     # Graph-level gap analysis: suggest what's missing for a strong architecture
-    if not suggestions:
-        has_norm = any(t in all_types for t in ("layernorm", "layernorm_pre", "rmsnorm", "rmsnorm_pre"))
-        has_attn = any(t in all_types for t in ("softmax_attention", "linear_attention", "graph_attention"))
+    has_norm = any(t in all_types for t in ("layernorm", "layernorm_pre", "rmsnorm", "rmsnorm_pre"))
+    has_attn = any(t in all_types for t in ("softmax_attention", "linear_attention", "graph_attention"))
 
+    # Stability/brittleness analysis: always prioritize normalization if missing
+    is_stability_prompt = prompt and any(
+        kw in prompt.lower() for kw in ("brittle", "gradient", "unstable", "nan", "explod", "stabil", "zero grad")
+    )
+    if is_stability_prompt and not has_norm:
+        suggestions.insert(0, _make_suggestion(
+            next((c for c in all_components if c.get("id") == "rmsnorm"), None) or
+            next((c for c in by_category.get("normalization", [])), {}),
+            "Critical: add normalization to prevent exploding logits and zero gradients. "
+            "Without normalization before the output head, magnitudes grow unchecked, "
+            "causing softmax saturation and training failure."
+        ))
+    elif is_stability_prompt and has_norm:
+        # Has norm but still brittle — suggest residual connections
+        if "add" not in all_types:
+            suggestions.insert(0, _make_suggestion(
+                next((c for c in all_components if c.get("id") == "add"), None) or {},
+                "Add residual (skip) connections to stabilize gradient flow. "
+                "Without skip connections, deep graphs suffer from vanishing gradients."
+            ))
+
+    if not suggestions:
         if not has_norm:
             suggestions.extend(_suggest_category(by_category, "normalization", "Add normalization for training stability."))
         if not has_attn and len(nodes) > 3:

@@ -1,3 +1,4 @@
+import { apiCall } from "../services/apiService";
 import React, { useCallback, useEffect, useState } from 'react';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -25,7 +26,7 @@ function CycleTimeline() {
       if (modeFilter) params.set('mode', modeFilter);
       if (statusFilter) params.set('status', statusFilter);
       if (query.trim()) params.set('q', query.trim());
-      const res = await fetch(`${API_BASE}/api/aria/cycle-history?${params.toString()}`);
+      const res = await apiCall(`/api/aria/cycle-history?${params.toString()}`);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }

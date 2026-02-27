@@ -18,9 +18,19 @@ import torch
 import torch.nn as nn
 import math
 
+try:
+    import aria_core
+    _HAS_ARIA_CORE = True
+except ImportError:
+    _HAS_ARIA_CORE = False
+
 
 def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Tropical addition: element-wise minimum."""
+    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous():
+        out = torch.empty_like(x)
+        aria_core.tropical_add_f32(x, y, out)
+        return out
     return torch.minimum(x, y)
 
 
@@ -40,6 +50,16 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Input: a (B, S, D), b (B, D, S) or (B, S, D)
     Output: (B, S, S) or similar
     """
+    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.ndim == 3 and b.ndim == 3:
+        B, S, D = a.shape
+        _, D2, S2 = b.shape
+        if D == D2:
+            out = torch.empty((B, S, S2), device=a.device, dtype=a.dtype)
+            # We need to handle batch dimension in C++ or loop here
+            for i in range(B):
+                aria_core.tropical_matmul_f32(a[i], b[i], out[i])
+            return out
+
     # a: (B, S, D), b: (B, S, D) -> we want (B, S, S) min-plus
     B, S, D = a.shape
     # a_ik + b_jk for all i,j via broadcasting
@@ -110,6 +130,10 @@ def execute_tropical_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
 
 def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Center features by tropical (min) sequence baseline."""
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+        y = torch.empty_like(x)
+        aria_core.tropical_center_f32(x, y)
+        return y
     baseline = x.amin(dim=1, keepdim=True)
     return x - baseline
 

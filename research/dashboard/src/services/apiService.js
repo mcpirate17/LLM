@@ -18,124 +18,74 @@ async function handleResponse(response) {
   return response.json();
 }
 
+/**
+ * Generic request helper to reduce boilerplate.
+ */
+export const apiCall = (endpoint, options = {}) => {
+  const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
+  const config = {
+    ...options,
+    headers: {
+      ...options.headers,
+    },
+  };
+  
+  if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+    config.headers['Content-Type'] = 'application/json';
+    config.body = JSON.stringify(options.body);
+  }
+
+  return fetch(url, config).then(handleResponse);
+};
+
+const get = (endpoint) => apiCall(endpoint, { method: 'GET' });
+const post = (endpoint, body) => apiCall(endpoint, { method: 'POST', body });
+
 export const apiService = {
   // Experiments
-  getExperiments: (limit = 100) => 
-    fetch(`${API_BASE}/api/experiments?n=${limit}`).then(handleResponse),
-  
-  getExperiment: (id) => 
-    fetch(`${API_BASE}/api/experiments/${id}`).then(handleResponse),
-  
-  getExperimentAnalysis: (id) => 
-    fetch(`${API_BASE}/api/experiments/${id}/analysis`).then(handleResponse),
-  
-  startExperiment: (config) => 
-    fetch(`${API_BASE}/api/experiments/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    }).then(handleResponse),
-  
-  stopExperiment: (id) => 
-    fetch(`${API_BASE}/api/experiments/${id}/stop`, { method: 'POST' }).then(handleResponse),
-  
-  rerunExperiment: (id) => 
-    fetch(`${API_BASE}/api/experiments/${id}/rerun`, { method: 'POST' }).then(handleResponse),
+  getExperiments: (limit = 100) => get(`/api/experiments?n=${limit}`),
+  getExperiment: (id) => get(`/api/experiments/${id}`),
+  getExperimentAnalysis: (id) => get(`/api/experiments/${id}/analysis`),
+  startExperiment: (config) => post(`/api/experiments/start`, config),
+  stopExperiment: (id) => post(`/api/experiments/${id}/stop`),
+  rerunExperiment: (id) => post(`/api/experiments/${id}/rerun`),
 
   // Programs
-  getPrograms: (limit = 100) => 
-    fetch(`${API_BASE}/api/programs?limit=${limit}`).then(handleResponse),
-  
-  getProgram: (id) => 
-    fetch(`${API_BASE}/api/programs/${id}`).then(handleResponse),
-
-  getProgramLineage: (id) =>
-    fetch(`${API_BASE}/api/programs/${id}/lineage`).then(handleResponse),
-  
-  getLiveFeed: (experimentId, n = 100) =>
-    fetch(`${API_BASE}/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=${n}`).then(handleResponse),
-
-  getTrainingCurve: (id) => 
-    fetch(`${API_BASE}/api/programs/${id}/training-curve`).then(handleResponse),
-
-  getReproducibilityManifest: (id) =>
-    fetch(`${API_BASE}/api/reproducibility-manifest/${id}`).then(handleResponse),
-
-  getDecisionPacket: (id) =>
-    fetch(`${API_BASE}/api/decision-packet/${id}`).then(handleResponse),
+  getPrograms: (limit = 100) => get(`/api/programs?limit=${limit}`),
+  getProgram: (id) => get(`/api/programs/${id}`),
+  getProgramLineage: (id) => get(`/api/programs/${id}/lineage`),
+  getLiveFeed: (experimentId, n = 100) => get(`/api/live-feed?experiment_id=${encodeURIComponent(experimentId)}&n=${n}`),
+  getTrainingCurve: (id) => get(`/api/programs/${id}/training-curve`),
+  getReproducibilityManifest: (id) => get(`/api/reproducibility-manifest/${id}`),
+  getDecisionPacket: (id) => get(`/api/decision-packet/${id}`),
 
   // Analytics & Trends
-  getTrends: () => 
-    fetch(`${API_BASE}/api/trends/context`).then(handleResponse),
-  
-  getDashboardSummary: () => 
-    fetch(`${API_BASE}/api/dashboard`).then(handleResponse),
-  
-  getLeaderboard: (params = '') => 
-    fetch(`${API_BASE}/api/leaderboard${params}`).then(handleResponse),
-
-  getReferences: () =>
-    fetch(`${API_BASE}/api/references`).then(handleResponse),
-
-  getRegressionVsBaseline: (limit = 200) =>
-    fetch(`${API_BASE}/api/analytics/regression-vs-baseline?limit=${limit}`).then(handleResponse),
+  getTrends: () => get(`/api/trends/context`),
+  getDashboardSummary: () => get(`/api/dashboard`),
+  getLeaderboard: (params = '') => get(`/api/leaderboard${params}`),
+  getReferences: () => get(`/api/references`),
+  getRegressionVsBaseline: (limit = 200) => get(`/api/analytics/regression-vs-baseline?limit=${limit}`),
 
   // Knowledge & Campaigns
-  getCampaigns: () => 
-    fetch(`${API_BASE}/api/campaigns`).then(handleResponse),
-  
-  getCampaignHypotheses: (id) => 
-    fetch(`${API_BASE}/api/campaigns/${id}/hypotheses`).then(handleResponse),
-  
-  getCampaignDecisions: (id) => 
-    fetch(`${API_BASE}/api/campaigns/${id}/decisions`).then(handleResponse),
-
-  getCampaignHypotheses: (id) => 
-    fetch(`${API_BASE}/api/campaigns/${id}/hypotheses`).then(handleResponse),
+  getCampaigns: () => get(`/api/campaigns`),
+  getCampaignHypotheses: (id) => get(`/api/campaigns/${id}/hypotheses`),
+  getCampaignDecisions: (id) => get(`/api/campaigns/${id}/decisions`),
 
   // Diagnostics
-  getFingerprintDiagnostics: () => 
-    fetch(`${API_BASE}/api/diagnostics/fingerprint`).then(handleResponse),
-  
-  getReportCacheDiagnostics: () => 
-    fetch(`${API_BASE}/api/diagnostics/report-cache`).then(handleResponse),
+  getFingerprintDiagnostics: () => get(`/api/diagnostics/fingerprint`),
+  getReportCacheDiagnostics: () => get(`/api/diagnostics/report-cache`),
+  getAriaCycleStatus: () => get(`/api/aria/cycle-status`),
+  getAriaChatGuardrails: (window = 200) => get(`/api/aria/chat/guardrails?window=${window}`),
+  getHealerTasks: (limit = 5) => get(`/api/healer/tasks?limit=${limit}`),
 
-  getAriaCycleStatus: () =>
-    fetch(`${API_BASE}/api/aria/cycle-status`).then(handleResponse),
-
-  getAriaChatGuardrails: (window = 200) =>
-    fetch(`${API_BASE}/api/aria/chat/guardrails?window=${window}`).then(handleResponse),
-
-  getHealerTasks: (limit = 5) =>
-    fetch(`${API_BASE}/api/healer/tasks?limit=${limit}`).then(handleResponse),
-
-  ensureDesignerRunning: (forceRestart = false) =>
-    fetch(`${API_BASE}/api/designer/ensure-running`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force_restart: !!forceRestart }),
-    }).then(handleResponse),
-
-  touchDesigner: (reason = 'dashboard') =>
-    fetch(`${API_BASE}/api/designer/touch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
-    }).then(handleResponse),
-
-  stopDesigner: () =>
-    fetch(`${API_BASE}/api/designer/stop`, { method: 'POST' }).then(handleResponse),
+  // Designer Integration
+  ensureDesignerRunning: (forceRestart = false) => post(`/api/designer/ensure-running`, { force_restart: !!forceRestart }),
+  touchDesigner: (reason = 'dashboard') => post(`/api/designer/touch`, { reason }),
+  stopDesigner: () => post(`/api/designer/stop`),
 
   // Native runner profiling
-  getNativeProfile: () =>
-    fetch(`${API_BASE}/api/native-profile/v2/data`).then(handleResponse),
-
-  toggleNativeProfiling: (enable) =>
-    fetch(`${API_BASE}/api/native-profile/v2/enable`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enable: !!enable }),
-    }).then(handleResponse),
+  getNativeProfile: () => get(`/api/native-profile/v2/data`),
+  toggleNativeProfiling: (enable) => post(`/api/native-profile/v2/enable`, { enable: !!enable }),
 };
 
 export default apiService;
