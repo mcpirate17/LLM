@@ -1198,10 +1198,10 @@ class SynthesizedModel(nn.Module):
         self.model_dim = model_dim
         self.vocab_size = vocab_size
         self.embed = nn.Embedding(vocab_size, model_dim)
-        # Use standard small init for embeddings
-        self.embed.weight.data.normal_(mean=0.0, std=0.02)
-        
-        self.embed_norm = nn.LayerNorm(model_dim) # Stabilize input variance
+        # NOTE: Keep PyTorch default N(0,1) init for embeddings. With weight-
+        # tied lm_head, std=0.02 makes initial logits too flat (std≈0.3),
+        # causing loss_ratio≈1.0 in 500-step micro-training. Default std=1.0
+        # gives initial logits std≈16, providing strong gradient signal.
         self.layers = nn.ModuleList([CompiledLayer(g) for g in layer_graphs])
         self.norm = nn.LayerNorm(model_dim)
         self.lm_head = nn.Linear(model_dim, vocab_size, bias=False)
@@ -1213,7 +1213,7 @@ class SynthesizedModel(nn.Module):
         self.layer_needs_residual = [not g.has_residual_path() for g in layer_graphs]
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        x = self.embed_norm(self.embed(input_ids))
+        x = self.embed(input_ids)
         for i, layer in enumerate(self.layers):
             if self.layer_needs_residual[i]:
                 # Standard inter-layer residual for "flat" blocks
