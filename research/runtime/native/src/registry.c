@@ -78,6 +78,26 @@ static nk_status_t wrap_rwkv_channel(const float* x, const float* mix_k, const f
     aria_rwkv_channel_f32(x, mix_k, mix_r, W_k, W_r, W_v, y, tmp_xk, tmp_xr, tmp_k, batch, seq, dim, hidden_dim); return NK_OK;
 }
 
+/* --- Reference architecture adapter wrappers --- */
+static nk_status_t wrap_embedding_lookup(const float* table, const int32_t* indices, const float* pos_embed, float* y, int64_t batch, int64_t dim, int64_t vocab_size) {
+    aria_embedding_lookup_f32(table, indices, pos_embed, y, batch, dim, vocab_size); return NK_OK;
+}
+static nk_status_t wrap_rope_rotate(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim, float theta_base) {
+    aria_rope_rotate_f32(x, y, batch, seq, dim, theta_base); return NK_OK;
+}
+static nk_status_t wrap_gated_linear(const float* x, const float* W, const float* b, const float* W_gate, const float* b_gate, float* y, float* tmp_gate, int64_t batch, int64_t dim_in, int64_t dim_out) {
+    aria_gated_linear_f32(x, W, b, W_gate, b_gate, y, tmp_gate, batch, dim_in, dim_out); return NK_OK;
+}
+static nk_status_t wrap_cosine_similarity(const float* a, const float* b, float* out, int64_t batch, int64_t seq, int64_t dim) {
+    aria_cosine_similarity_f32(a, b, out, batch, seq, dim); return NK_OK;
+}
+static nk_status_t wrap_gather_topk(const float* scores, const float* values, float* out, int32_t* out_indices, int64_t batch, int64_t n_items, int64_t dim, int64_t k) {
+    aria_gather_topk_f32(scores, values, out, out_indices, batch, n_items, dim, k); return NK_OK;
+}
+static nk_status_t wrap_rwkv_time_mixing(const float* x, const float* w_decay, const float* u_bonus, const float* W_k, const float* W_v, const float* W_r, float* y, int64_t batch, int64_t seq, int64_t dim) {
+    aria_rwkv_time_mixing_f32(x, w_decay, u_bonus, W_k, W_v, W_r, y, batch, seq, dim); return NK_OK;
+}
+
 /* --- Backward adapter wrappers --- */
 static nk_status_t wrap_relu_bwd(const float *go, const float *fwd, float *gi, int64_t n) {
     aria_relu_backward_f32(go, fwd, gi, n); return NK_OK;
@@ -155,6 +175,14 @@ void aria_registry_init(void) {
     memset(&r, 0, sizeof(r)); r.op_name = "matmul_gelu"; r.matmul_gelu_fn = wrap_matmul_gelu; nk_register(&r);
     memset(&r, 0, sizeof(r)); r.op_name = "swiglu"; r.swiglu_fn = wrap_swiglu; nk_register(&r);
     memset(&r, 0, sizeof(r)); r.op_name = "rwkv_channel"; r.rwkv_channel_fn = wrap_rwkv_channel; nk_register(&r);
+
+    /* Reference architecture ops */
+    memset(&r, 0, sizeof(r)); r.op_name = "embedding_lookup"; r.embedding_lookup_fn = wrap_embedding_lookup; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "rope_rotate"; r.rope_rotate_fn = wrap_rope_rotate; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "gated_linear"; r.gated_linear_fn = wrap_gated_linear; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "cosine_similarity"; r.cosine_similarity_fn = wrap_cosine_similarity; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "gather_topk"; r.gather_topk_fn = wrap_gather_topk; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "rwkv_time_mixing"; r.rwkv_time_mixing_fn = wrap_rwkv_time_mixing; nk_register(&r);
 
     g_initialized = 1;
 }

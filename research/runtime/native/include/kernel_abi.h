@@ -99,6 +99,42 @@ typedef nk_status_t (*nk_rwkv_channel_f32_fn)(
     float* y, float* tmp_xk, float* tmp_xr, float* tmp_k,
     int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
 
+/* --------------- reference architecture kernel signatures --------------- */
+
+/** embedding_lookup: y = table[indices] + pos_embed */
+typedef nk_status_t (*nk_embedding_lookup_f32_fn)(
+    const float* table, const int32_t* indices, const float* pos_embed,
+    float* y, int64_t batch, int64_t dim, int64_t vocab_size);
+
+/** rope_rotate: rotary position embedding */
+typedef nk_status_t (*nk_rope_rotate_f32_fn)(
+    const float* x, float* y,
+    int64_t batch, int64_t seq, int64_t dim, float theta_base);
+
+/** gated_linear: y = (x @ W + b) * sigmoid(x @ W_gate + b_gate) */
+typedef nk_status_t (*nk_gated_linear_f32_fn)(
+    const float* x, const float* W, const float* b,
+    const float* W_gate, const float* b_gate,
+    float* y, float* tmp_gate,
+    int64_t batch, int64_t dim_in, int64_t dim_out);
+
+/** cosine_similarity: out[batch, seq] = cos_sim(a, b) */
+typedef nk_status_t (*nk_cosine_similarity_f32_fn)(
+    const float* a, const float* b, float* out,
+    int64_t batch, int64_t seq, int64_t dim);
+
+/** gather_topk: select top-k vectors by scores */
+typedef nk_status_t (*nk_gather_topk_f32_fn)(
+    const float* scores, const float* values,
+    float* out, int32_t* out_indices,
+    int64_t batch, int64_t n_items, int64_t dim, int64_t k);
+
+/** rwkv_time_mixing: linear attention with learned exponential decay */
+typedef nk_status_t (*nk_rwkv_time_mixing_f32_fn)(
+    const float* x, const float* w_decay, const float* u_bonus,
+    const float* W_k, const float* W_v, const float* W_r,
+    float* y, int64_t batch, int64_t seq, int64_t dim);
+
 /* --------------- backward function pointer signatures --------------- */
 
 /* Unary backward: grad_in = f'(input_or_output) * grad_out
@@ -148,6 +184,13 @@ typedef struct {
   nk_matmul_gelu_f32_fn             matmul_gelu_fn;
   nk_swiglu_f32_fn                  swiglu_fn;
   nk_rwkv_channel_f32_fn            rwkv_channel_fn;
+  /* Reference architecture ops */
+  nk_embedding_lookup_f32_fn        embedding_lookup_fn;
+  nk_rope_rotate_f32_fn             rope_rotate_fn;
+  nk_gated_linear_f32_fn            gated_linear_fn;
+  nk_cosine_similarity_f32_fn       cosine_similarity_fn;
+  nk_gather_topk_f32_fn             gather_topk_fn;
+  nk_rwkv_time_mixing_f32_fn        rwkv_time_mixing_fn;
   /* Backward */
   nk_unary_backward_f32_fn          unary_backward_fn;
   nk_binary_backward_simple_f32_fn  binary_backward_simple_fn;

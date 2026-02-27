@@ -162,6 +162,43 @@ impl NativeKernelDispatch {
             ) {
                 output_len = (batch * seq * dim) as usize;
             }
+        } else if op_name == "embedding_lookup" {
+            if let (Some(batch), Some(dim)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("dim").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * dim) as usize;
+            }
+        } else if op_name == "rope_rotate" || op_name == "rwkv_time_mixing" {
+            if let (Some(batch), Some(seq), Some(dim)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("seq").and_then(|v| v.as_i64()),
+                config.get("dim").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * seq * dim) as usize;
+            }
+        } else if op_name == "gated_linear" {
+            if let (Some(batch), Some(dim_out)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("dim_out").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * dim_out) as usize;
+            }
+        } else if op_name == "cosine_similarity" {
+            if let (Some(batch), Some(seq)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("seq").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * seq) as usize;
+            }
+        } else if op_name == "gather_topk" {
+            if let (Some(batch), Some(k), Some(dim)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("k").and_then(|v| v.as_i64()),
+                config.get("dim").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * k * dim) as usize;
+            }
         } else if op_name == "concat" {
             output_len = inputs.iter().map(|inp| inp.len()).sum();
         }
@@ -443,6 +480,191 @@ impl NativeKernelDispatch {
                     seq,
                     dim,
                     hidden_dim,
+                )
+            } else if let Some(embedding_lookup) = reg.embedding_lookup_fn {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "embedding_lookup dispatch requires table and indices inputs".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("embedding_lookup missing batch".to_string()))?;
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("embedding_lookup missing dim".to_string()))?;
+                let vocab_size = config
+                    .get("vocab_size")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("embedding_lookup missing vocab_size".to_string()))?;
+                // inputs[1] is indices as f32-reinterpreted i32
+                let indices_ptr = inputs[1].as_ptr() as *const i32;
+                let pos_embed_ptr = if inputs.len() > 2 {
+                    inputs[2].as_ptr()
+                } else {
+                    std::ptr::null()
+                };
+                embedding_lookup(
+                    inputs[0].as_ptr(),
+                    indices_ptr,
+                    pos_embed_ptr,
+                    output.as_mut_ptr(),
+                    batch,
+                    dim,
+                    vocab_size,
+                )
+            } else if let Some(rope_rotate) = reg.rope_rotate_fn {
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rope_rotate missing batch".to_string()))?;
+                let seq = config
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rope_rotate missing seq".to_string()))?;
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rope_rotate missing dim".to_string()))?;
+                let theta_base = config
+                    .get("theta_base")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(10000.0f32);
+                rope_rotate(
+                    inputs[0].as_ptr(),
+                    output.as_mut_ptr(),
+                    batch,
+                    seq,
+                    dim,
+                    theta_base,
+                )
+            } else if let Some(gated_linear) = reg.gated_linear_fn {
+                if inputs.len() < 4 {
+                    return Err(AriaError::ExecutionFailed(
+                        "gated_linear dispatch requires x, W, b, W_gate (+ optional b_gate)".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("gated_linear missing batch".to_string()))?;
+                let dim_in = config
+                    .get("dim_in")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("gated_linear missing dim_in".to_string()))?;
+                let dim_out = config
+                    .get("dim_out")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("gated_linear missing dim_out".to_string()))?;
+                let b_gate_ptr = if inputs.len() > 4 {
+                    inputs[4].as_ptr()
+                } else {
+                    std::ptr::null()
+                };
+                let mut tmp_gate = vec![0.0f32; (batch * dim_out) as usize];
+                gated_linear(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    inputs[2].as_ptr(),
+                    inputs[3].as_ptr(),
+                    b_gate_ptr,
+                    output.as_mut_ptr(),
+                    tmp_gate.as_mut_ptr(),
+                    batch,
+                    dim_in,
+                    dim_out,
+                )
+            } else if let Some(cosine_similarity) = reg.cosine_similarity_fn {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "cosine_similarity dispatch requires a and b inputs".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("cosine_similarity missing batch".to_string()))?;
+                let seq = config
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("cosine_similarity missing seq".to_string()))?;
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("cosine_similarity missing dim".to_string()))?;
+                cosine_similarity(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    batch,
+                    seq,
+                    dim,
+                )
+            } else if let Some(gather_topk) = reg.gather_topk_fn {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "gather_topk dispatch requires scores and values inputs".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing batch".to_string()))?;
+                let n_items = config
+                    .get("n_items")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing n_items".to_string()))?;
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing dim".to_string()))?;
+                let k = config
+                    .get("k")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing k".to_string()))?;
+                let mut out_indices = vec![0i32; (batch * k) as usize];
+                gather_topk(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    output.as_mut_ptr(),
+                    out_indices.as_mut_ptr(),
+                    batch,
+                    n_items,
+                    dim,
+                    k,
+                )
+            } else if let Some(rwkv_time_mixing) = reg.rwkv_time_mixing_fn {
+                if inputs.len() < 6 {
+                    return Err(AriaError::ExecutionFailed(
+                        "rwkv_time_mixing dispatch requires x, w_decay, u_bonus, W_k, W_v, W_r".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing batch".to_string()))?;
+                let seq = config
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing seq".to_string()))?;
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing dim".to_string()))?;
+                rwkv_time_mixing(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    inputs[2].as_ptr(),
+                    inputs[3].as_ptr(),
+                    inputs[4].as_ptr(),
+                    inputs[5].as_ptr(),
+                    output.as_mut_ptr(),
+                    batch,
+                    seq,
+                    dim,
                 )
             } else if let Some(concat) = reg.concat_fn {
                 if inputs.is_empty() {

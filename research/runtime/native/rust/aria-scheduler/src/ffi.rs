@@ -32,6 +32,13 @@ pub type NkMatmulGeluF32Fn = Option<unsafe extern "C" fn(a: *const f32, b: *cons
 pub type NkSwigluF32Fn = Option<unsafe extern "C" fn(x: *const f32, w_gate: *const f32, w_up: *const f32, w_down: *const f32, b_gate: *const f32, b_up: *const f32, b_down: *const f32, y: *mut f32, tmp_gate: *mut f32, tmp_up: *mut f32, batch: i64, dim: i64, hidden_dim: i64) -> NkStatus>;
 pub type NkRwkvChannelF32Fn = Option<unsafe extern "C" fn(x: *const f32, mix_k: *const f32, mix_r: *const f32, w_k: *const f32, w_r: *const f32, w_v: *const f32, y: *mut f32, tmp_xk: *mut f32, tmp_xr: *mut f32, tmp_k: *mut f32, batch: i64, seq: i64, dim: i64, hidden_dim: i64) -> NkStatus>;
 
+pub type NkEmbeddingLookupF32Fn = Option<unsafe extern "C" fn(table: *const f32, indices: *const i32, pos_embed: *const f32, y: *mut f32, batch: i64, dim: i64, vocab_size: i64) -> NkStatus>;
+pub type NkRopeRotateF32Fn = Option<unsafe extern "C" fn(x: *const f32, y: *mut f32, batch: i64, seq: i64, dim: i64, theta_base: f32) -> NkStatus>;
+pub type NkGatedLinearF32Fn = Option<unsafe extern "C" fn(x: *const f32, w: *const f32, b: *const f32, w_gate: *const f32, b_gate: *const f32, y: *mut f32, tmp_gate: *mut f32, batch: i64, dim_in: i64, dim_out: i64) -> NkStatus>;
+pub type NkCosineSimilarityF32Fn = Option<unsafe extern "C" fn(a: *const f32, b: *const f32, out: *mut f32, batch: i64, seq: i64, dim: i64) -> NkStatus>;
+pub type NkGatherTopkF32Fn = Option<unsafe extern "C" fn(scores: *const f32, values: *const f32, out: *mut f32, out_indices: *mut i32, batch: i64, n_items: i64, dim: i64, k: i64) -> NkStatus>;
+pub type NkRwkvTimeMixingF32Fn = Option<unsafe extern "C" fn(x: *const f32, w_decay: *const f32, u_bonus: *const f32, w_k: *const f32, w_v: *const f32, w_r: *const f32, y: *mut f32, batch: i64, seq: i64, dim: i64) -> NkStatus>;
+
 #[repr(C)]
 pub struct NkRegistration {
     pub op_name: *const c_char,
@@ -56,6 +63,13 @@ pub struct NkRegistration {
     pub matmul_gelu_fn: NkMatmulGeluF32Fn,
     pub swiglu_fn: NkSwigluF32Fn,
     pub rwkv_channel_fn: NkRwkvChannelF32Fn,
+    /* Reference architecture ops */
+    pub embedding_lookup_fn: NkEmbeddingLookupF32Fn,
+    pub rope_rotate_fn: NkRopeRotateF32Fn,
+    pub gated_linear_fn: NkGatedLinearF32Fn,
+    pub cosine_similarity_fn: NkCosineSimilarityF32Fn,
+    pub gather_topk_fn: NkGatherTopkF32Fn,
+    pub rwkv_time_mixing_fn: NkRwkvTimeMixingF32Fn,
     /* Backward */
     pub unary_backward_fn: *const std::ffi::c_void,
     pub binary_backward_simple_fn: *const std::ffi::c_void,
