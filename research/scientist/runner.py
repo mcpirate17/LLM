@@ -274,7 +274,7 @@ class RunConfig:
     stage1_lr: float = 3e-4
     stage1_batch_size: int = 4
     enable_perf_tracing: bool = False
-    collect_training_curve: bool = False
+    collect_training_curve: bool = True
     gradient_clip_norm: float = 1.0
     optimizer_fused: bool = True
     optimizer_foreach: bool = True
@@ -8950,6 +8950,12 @@ class ExperimentRunner:
                         if hasattr(fp, k):
                             setattr(fp, k, v)
 
+                    # Store fingerprint fields with fp_ prefix for DB columns
+                    if fp_dict.get("hierarchy_fitness") is not None:
+                        program_metrics["fp_hierarchy_fitness"] = fp_dict["hierarchy_fitness"]
+                    if fp_dict.get("gromov_delta") is not None:
+                        program_metrics["fp_gromov_delta"] = fp_dict["gromov_delta"]
+
                     calibration_row = self._ensure_novelty_calibration(nb, config, fp)
                     calibration = None
                     if calibration_row:
@@ -8994,6 +9000,21 @@ class ExperimentRunner:
                 most_similar_to=nov.most_similar_to,
                 novelty_confidence=nov.novelty_confidence,
             )
+        # Compute NCD before recording so values go into the initial INSERT
+        if training_curve:
+            try:
+                from ..eval.ncd import compute_graph_ncd
+                graph_json_str = graph_to_json(graph)
+                ncd_result = compute_graph_ncd(
+                    graph_json_str, training_curve,
+                    n_params=program_metrics.get("param_count"),
+                )
+                program_metrics["ncd_score"] = ncd_result["ncd_score"]
+                program_metrics["ncd_description_length"] = ncd_result["description_length"]
+                program_metrics["ncd_description_length_per_param"] = ncd_result["description_length_per_param"]
+            except Exception:
+                pass
+
         rid = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=graph.fingerprint(),
@@ -9011,29 +9032,6 @@ class ExperimentRunner:
         if training_curve and rid:
             try:
                 nb.store_training_curve(rid, training_curve)
-            except Exception:
-                pass
-
-            # Compute NCD (Normalized Compression Distance) reward signal
-            try:
-                from ..eval.ncd import compute_graph_ncd
-                graph_json_str = graph_to_json(graph)
-                ncd_result = compute_graph_ncd(
-                    graph_json_str, training_curve,
-                    n_params=program_metrics.get("param_count"),
-                )
-                program_metrics["ncd_score"] = ncd_result["ncd_score"]
-                program_metrics["ncd_description_length"] = ncd_result["description_length"]
-                program_metrics["ncd_description_length_per_param"] = ncd_result["description_length_per_param"]
-                # Update the stored result
-                if rid:
-                    try:
-                        nb.conn.execute(
-                            "UPDATE program_results SET ncd_score=?, ncd_description_length=?, ncd_description_length_per_param=? WHERE result_id=?",
-                            (ncd_result["ncd_score"], ncd_result["description_length"], ncd_result.get("description_length_per_param"), rid),
-                        )
-                    except Exception:
-                        pass
             except Exception:
                 pass
 
