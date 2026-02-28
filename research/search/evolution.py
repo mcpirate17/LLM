@@ -403,6 +403,8 @@ def _mutate_graph(
         if new_graph.fingerprint() != parent_fp:
             break
 
+    new_graph.prune_unreachable_nodes()
+
     new_graph.metadata["lineage"] = {
         "type": "mutation",
         "parent": parent_fp,
@@ -424,6 +426,7 @@ def _crossover_graphs(
     cross_grammar = _derive_crossover_grammar(g1, g2, grammar, rng)
 
     child = generate_layer_graph(cross_grammar, seed=rng.randint(0, 2**32))
+    child.prune_unreachable_nodes()
     child.metadata["lineage"] = {
         "type": "crossover",
         "parents": [p1_fp, p2_fp],

@@ -1,7 +1,7 @@
 import React from 'react';
 
 export default function RatingBadge({ program }) {
-  const lr = program.loss_ratio;
+  const lr = program.validation_loss_ratio != null ? program.validation_loss_ratio : program.loss_ratio;
   const nov = program.novelty_score || 0;
   const bl = program.baseline_loss_ratio;
 

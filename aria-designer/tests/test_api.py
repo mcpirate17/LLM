@@ -162,7 +162,7 @@ def test_get_component_execution_capability_low_rank_alias(client):
     assert r.status_code == 200
     data = r.json()
     assert data["bridge"]["bridge_supported"] is True
-    assert data["bridge"]["primitive_name"] == "linear_proj"
+    assert data["bridge"]["primitive_name"] == "low_rank_proj"
     assert data["bridge"]["semantic_fidelity"] == "approximate"
     assert data["has_semantic_warnings"] is True
     assert len(data["bridge"]["warnings"]) >= 1
@@ -444,6 +444,32 @@ def test_validate_workflow_unsupported_edge_dtype_pairing(client):
     assert "Unsupported edge dtype pairing" in mismatch_issues[0]["message"]
 
 
+def test_validate_workflow_dead_branch_detected(client):
+    workflow = {
+        "workflow": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": "wf_dead_branch",
+            "name": "Dead Branch Test",
+            "nodes": [
+                {"id": "n1", "component_type": "relu", "params": {}, "ui_meta": {}},
+                {"id": "n2", "component_type": "io/output", "params": {}, "ui_meta": {}},
+                {"id": "n3", "component_type": "gelu", "params": {}, "ui_meta": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "source_port": "y", "target": "n2", "target_port": "x"}
+            ],
+        }
+    }
+    r = client.post("/api/v1/workflows/validate", json=workflow)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["valid"] is False
+
+    dead_branch_issues = [i for i in data["issues"] if i.get("code") == "dead_branch"]
+    assert dead_branch_issues
+    assert dead_branch_issues[0].get("node_id") == "n3"
+
+
 def test_aria_suggest_components_data_control_prompt(client):
     workflow = {
         "workflow": {
@@ -580,6 +606,7 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
         "schema_version": "workflow_graph.v1",
         "workflow_id": "wf_ai_learning_loop",
         "name": "AI Learning Loop",
+        "metadata": {"model_dim": 128},
         "nodes": [
             {"id": "in", "component_type": "graph_input", "params": {}, "ui_meta": {}},
             {"id": "proj", "component_type": "linear_proj", "params": {"out_dim": 128}, "ui_meta": {}},
@@ -631,7 +658,7 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
 
     monkeypatch.setattr(main_mod, "HAS_BRIDGE", True)
     monkeypatch.setattr(main_mod, "bridge_evaluate", lambda *args, **kwargs: _FakeBridgeResult())
-    monkeypatch.setattr(main_mod, "_LINEAGE_SYNC_ENABLED", True)
+    monkeypatch.setattr(main_mod.settings, "LINEAGE_SYNC_ENABLED", True)
 
     def _capture_sync(payload):
         captured["payload"] = payload

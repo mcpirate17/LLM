@@ -99,6 +99,10 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
   };
 
   for (const entry of entries) {
+    // Skip pinned reference architectures — they are baselines, not discoveries
+    if (entry.is_reference || entry.is_pinned || entry.model_source === 'reference') {
+      continue;
+    }
     const tier = normalizeTier(entry);
     const effectiveTier = tier || 'screening';
     tierSummary[effectiveTier] += 1;

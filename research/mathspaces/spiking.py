@@ -84,6 +84,23 @@ def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
 
     B, S, D = x.shape
 
+    # Python fallback: sequential LIF over time steps
+    # Use surrogate gradient (sigmoid of membrane) for differentiability
+    membrane = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    spike_list = []
+
+    for t in range(S):
+        membrane = decay * membrane + x[:, t, :]
+        # Surrogate spike: sigmoid of shifted membrane (differentiable)
+        spike_surr = torch.sigmoid(5.0 * (membrane - threshold))
+        # Hard spike for forward, surrogate for backward (STE)
+        spike_hard = (membrane >= threshold).float()
+        spike = spike_hard + spike_surr - spike_surr.detach()  # straight-through
+        spike_list.append(spike)
+        membrane = membrane * (1.0 - spike_hard)  # reset on fire
+
+    return torch.stack(spike_list, dim=1)
+
 
 def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     """Continuous → spike → continuous rate coding.
@@ -104,8 +121,8 @@ def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.T
         return aria_core.spike_rate_code_f32(x)
     # Firing probability from continuous activation
     probs = torch.sigmoid(x)
-    # Binary spikes with STE
-    spikes = _BernoulliSTE.apply(probs)
+    # Deterministic STE: hard threshold at 0.5, gradient passes through
+    spikes = (probs >= 0.5).float().detach() + probs - probs.detach()
     # Scale by original magnitude to preserve information
     magnitude = x.abs()
     return spikes * magnitude
@@ -130,26 +147,27 @@ def execute_stdp_attention(module: nn.Module, *inputs: torch.Tensor) -> torch.Te
     x = inputs[0]  # (B, S, D)
     B, S, D = x.shape
 
-    # Temporal decay constant: tau = S/8, minimum 1
-    tau = max(S / 8.0, 1.0)
+    # Learnable tau: use module.log_tau if available (set by CompiledOp._init_params)
+    if hasattr(module, 'log_tau'):
+        tau = torch.exp(module.log_tau).clamp(min=1.0).item()
+    else:
+        tau = max(S / 8.0, 1.0)
 
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
-        # Use tau_plus = tau, tau_minus = 0 (causal only)
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and not x.requires_grad:
         return aria_core.stdp_attention_f32(x, tau, 0.0)
 
     # Build causal exponential decay kernel: weight[i,j] = exp(-(i-j)/tau) for j<=i
     positions = torch.arange(S, device=x.device, dtype=x.dtype)
-    # (S, S) matrix of time differences: dt[i,j] = i - j
-    dt = positions.unsqueeze(1) - positions.unsqueeze(0)  # (S, S): dt[i,j] = i - j
-    # Causal mask: only attend to past and current (j <= i means dt >= 0)
+    dt = positions.unsqueeze(1) - positions.unsqueeze(0)
     causal_mask = (dt >= 0).float()
-    # Exponential decay based on time gap
-    weights = torch.exp(-dt.float() / tau) * causal_mask  # (S, S)
-    # Normalize rows to sum to 1
+    # Use differentiable tau when learnable
+    if hasattr(module, 'log_tau'):
+        tau_t = torch.exp(module.log_tau).clamp(min=1.0)
+        weights = torch.exp(-dt.float() / tau_t) * causal_mask
+    else:
+        weights = torch.exp(-dt.float() / tau) * causal_mask
     weights = weights / weights.sum(dim=-1, keepdim=True).clamp(min=1e-8)
 
-    # Apply attention: (B, S, D) via matrix multiply on seq dim
-    # weights: (S, S), x: (B, S, D) -> (B, S, D)
     return torch.matmul(weights.unsqueeze(0), x)
 
 

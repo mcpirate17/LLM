@@ -9,7 +9,7 @@ This is the reverse of bridge.py (which goes workflow → ComputationGraph).
 Usage:
     from runtime.importer import import_survivors, graph_to_workflow
 
-    workflows = import_survivors(n=10, sort_by="loss_ratio")
+    workflows = import_survivors(n=10, sort_by="validation_loss_ratio")
 """
 
 from __future__ import annotations
@@ -49,14 +49,16 @@ def _get_notebook():
 
 def import_survivors(
     n: int = 10,
-    sort_by: str = "loss_ratio",
+    sort_by: str = "validation_loss_ratio",
     min_novelty: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """Import top survivors from the research lab notebook as aria-designer workflows.
 
     Args:
         n: number of survivors to import
-        sort_by: ranking metric ("loss_ratio", "novelty_score", "structural_novelty", "behavioral_novelty")
+        sort_by: ranking metric ("validation_loss_ratio", "discovery_loss_ratio",
+                                 "loss_ratio", "novelty_score",
+                                 "structural_novelty", "behavioral_novelty")
         min_novelty: minimum novelty_score threshold
 
     Returns:
@@ -115,6 +117,9 @@ def import_survivors(
                 "structural_novelty": prog.get("structural_novelty", 0),
                 "behavioral_novelty": prog.get("behavioral_novelty", 0),
                 "loss_ratio": prog.get("loss_ratio", 0),
+                "validation_loss_ratio": prog.get("validation_loss_ratio"),
+                "discovery_loss_ratio": prog.get("discovery_loss_ratio"),
+                "generalization_gap": prog.get("generalization_gap"),
                 "param_count": prog.get("param_count", 0),
                 "final_loss": prog.get("final_loss", 0),
                 "compatible": len(unknown_ops) == 0,

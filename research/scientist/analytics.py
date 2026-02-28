@@ -20,7 +20,7 @@ from scipy.spatial.distance import cdist
 
 from ..eval.utils import safe_json_load, safe_parse_float
 from ..synthesis.grammar import GrammarConfig
-from ..synthesis.primitives import get_primitive
+from ..synthesis.primitives import get_primitive, PROTECTED_OPS
 from .notebook import LabNotebook
 
 
@@ -3169,7 +3169,7 @@ class ExperimentAnalytics:
             s1_rate = stats.get("s1_rate", 0)
             if n_used >= min_usage and s1_rate == 0:
                 s0_rate = stats.get("s0_rate", 0)
-                result["failed_ops"].append({
+                entry = {
                     "op_name": op_name,
                     "n_used": n_used,
                     "s0_rate": round(s0_rate, 3),
@@ -3179,7 +3179,14 @@ class ExperimentAnalytics:
                         else "learning"
                     ),
                     "confidence": round(min(0.95, 0.4 + n_used / 100), 2),
-                })
+                }
+                if op_name in PROTECTED_OPS:
+                    # Protected ops go to weak_ops with soft penalty, never failed
+                    entry["penalty_weight"] = 0.5
+                    entry["protected_op"] = True
+                    result["weak_ops"].append(entry)
+                else:
+                    result["failed_ops"].append(entry)
 
         # 1b. Weak ops: nonzero but poor S1 rate (soft penalty candidates).
         # These shouldn't be hard-excluded but should be selected less often.

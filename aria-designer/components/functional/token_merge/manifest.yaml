@@ -1,0 +1,50 @@
+id: token_merge
+version: 1.0.0
+name: Token Merge
+category: functional
+tags:
+- core
+- structural
+status: approved
+description: Similarity-based token merging.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - n_keep
+  - D
+- name: restore_map
+  dtype: index
+  shape:
+  - B
+  - S
+params:
+  n_keep:
+    type: integer
+    default: 128
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: "0"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  Reduces sequence length by merging tokens that are highly similar or redundant.
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: y:tensor[B, n_keep, D], restore_map:index[B, S].
+  ### Plain Language
+  Combines similar pieces of data together to save memory and speed up future compute.
+  '

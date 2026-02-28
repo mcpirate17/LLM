@@ -14,6 +14,144 @@ const INTENTS = [
   { key: 'novelty', label: 'Novelty', color: 'var(--accent-orange, #e88d3f)' },
 ];
 
+function toIntId(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? String(Math.trunc(num)) : String(value);
+}
+
+function analyzeResearchGraph(graphJson) {
+  if (!graphJson || typeof graphJson !== 'object') return null;
+  const nodesObj = graphJson.nodes || {};
+  const nodeIds = Object.keys(nodesObj);
+  if (!nodeIds.length) return null;
+
+  const outputNodeId = graphJson.output_node_id != null
+    ? toIntId(graphJson.output_node_id)
+    : (nodeIds.find((id) => nodesObj[id]?.is_output) || null);
+  const inputNodeId = graphJson.input_node_id != null
+    ? toIntId(graphJson.input_node_id)
+    : (nodeIds.find((id) => nodesObj[id]?.is_input) || null);
+  if (!outputNodeId || !nodesObj[outputNodeId]) return null;
+
+  const reachable = new Set();
+  const stack = [outputNodeId];
+  while (stack.length) {
+    const current = stack.pop();
+    if (current == null || reachable.has(current)) continue;
+    reachable.add(current);
+    const node = nodesObj[current];
+    const inputs = Array.isArray(node?.input_ids) ? node.input_ids : [];
+    for (const parent of inputs) {
+      const parentId = toIntId(parent);
+      if (!reachable.has(parentId) && nodesObj[parentId]) stack.push(parentId);
+    }
+  }
+
+  let edgeCount = 0;
+  for (const id of nodeIds) {
+    const inputs = Array.isArray(nodesObj[id]?.input_ids) ? nodesObj[id].input_ids : [];
+    edgeCount += inputs.length;
+  }
+
+  return {
+    nodeCount: nodeIds.length,
+    edgeCount,
+    outputNodeId,
+    inputNodeId,
+    reachableCount: reachable.size,
+    deadNodeCount: Math.max(0, nodeIds.length - reachable.size),
+    hasInputPath: inputNodeId ? reachable.has(inputNodeId) : false,
+  };
+}
+
+function analyzeWorkflowGraph(workflow) {
+  if (!workflow || typeof workflow !== 'object') return null;
+  const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
+  const edges = Array.isArray(workflow.edges) ? workflow.edges : [];
+  if (!nodes.length) return null;
+
+  const nodeById = new Map(nodes.map((n) => [String(n.id), n]));
+  const incoming = new Map();
+  for (const edge of edges) {
+    const src = String(edge.source);
+    const dst = String(edge.target);
+    if (!incoming.has(dst)) incoming.set(dst, []);
+    incoming.get(dst).push(src);
+  }
+
+  const isOutputType = (type) => {
+    const t = String(type || '').toLowerCase();
+    return t === 'graph_output' || t.endsWith('/output') || t === 'output' || t === 'io/output';
+  };
+  const isInputType = (type) => {
+    const t = String(type || '').toLowerCase();
+    return t === 'graph_input' || t.endsWith('/input') || t === 'input' || t === 'io/input';
+  };
+
+  const outputNode = nodes.find((n) => isOutputType(n.component_type)) || null;
+  const outputNodeId = outputNode ? String(outputNode.id) : null;
+  if (!outputNodeId) return null;
+
+  const inputNodeIds = new Set(
+    nodes.filter((n) => isInputType(n.component_type)).map((n) => String(n.id))
+  );
+
+  const reachable = new Set();
+  const stack = [outputNodeId];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || reachable.has(current)) continue;
+    reachable.add(current);
+    const parents = incoming.get(current) || [];
+    for (const parent of parents) {
+      if (!reachable.has(parent) && nodeById.has(parent)) stack.push(parent);
+    }
+  }
+
+  let hasInputPath = false;
+  for (const nid of inputNodeIds) {
+    if (reachable.has(nid)) {
+      hasInputPath = true;
+      break;
+    }
+  }
+
+  return {
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    outputNodeId,
+    inputNodeCount: inputNodeIds.size,
+    reachableCount: reachable.size,
+    deadNodeCount: Math.max(0, nodes.length - reachable.size),
+    hasInputPath,
+  };
+}
+
+function buildIntegrityWarning(sourceCheck, designerCheck) {
+  if (!sourceCheck || !designerCheck) return null;
+
+  const issues = [];
+  if (sourceCheck.nodeCount !== designerCheck.nodeCount) {
+    issues.push(
+      `node count mismatch (backend ${sourceCheck.nodeCount}, viewer ${designerCheck.nodeCount})`
+    );
+  }
+  if (sourceCheck.edgeCount !== designerCheck.edgeCount) {
+    issues.push(
+      `edge count mismatch (backend ${sourceCheck.edgeCount}, viewer ${designerCheck.edgeCount})`
+    );
+  }
+  if (sourceCheck.hasInputPath && !designerCheck.hasInputPath) {
+    issues.push('viewer graph appears disconnected from input to output');
+  }
+  if (sourceCheck.deadNodeCount === 0 && designerCheck.deadNodeCount > 0) {
+    issues.push(`viewer has ${designerCheck.deadNodeCount} unreachable node(s)`);
+  }
+
+  if (!issues.length) return null;
+  return `Graph integrity mismatch: ${issues.join('; ')}. Backend-tested graph remains authoritative.`;
+}
+
 /**
  * MorphPanel — Smart Morph UI for generating intent-driven mutations.
  *
@@ -273,6 +411,7 @@ function LineagePanel({ resultId }) {
  *   onGraphLoaded — callback when graph finishes loading in designer
  */
 function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded, onActionComplete }) {
+  const DESIGNER_DIRECT = 'http://127.0.0.1:5174';
   const [loading, setLoading] = useState(true);
   const [booting, setBooting] = useState(true);
   const [designerReady, setDesignerReady] = useState(false);
@@ -280,6 +419,9 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [graphInfo, setGraphInfo] = useState(null);
+  const [sourceGraphCheck, setSourceGraphCheck] = useState(null);
+  const [designerGraphCheck, setDesignerGraphCheck] = useState(null);
+  const [integrityWarning, setIntegrityWarning] = useState(null);
   const [showMorph, setShowMorph] = useState(false);
   const [showLineage, setShowLineage] = useState(false);
   const [bridgeStep, setBridgeStep] = useState('booting');
@@ -287,6 +429,26 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   const [fallbackTried, setFallbackTried] = useState(false);
   const [committing, setCommitting] = useState(false);
   const iframeRef = useRef(null);
+  const pendingGraphRequestRef = useRef({ reason: null, requestId: null });
+
+  // Send command to iframe
+  const sendToDesigner = useCallback((type, payload = {}) => {
+    if (iframeRef.current?.contentWindow) {
+      console.log('[ArchDrawer] sending message:', type, payload);
+      iframeRef.current.contentWindow.postMessage(
+        { target: 'aria-designer', type, ...payload },
+        '*'
+      );
+    } else {
+      console.warn('[ArchDrawer] cannot send message: iframeRef.current.contentWindow is null');
+    }
+  }, []);
+
+  const requestGraph = useCallback((reason) => {
+    const requestId = `${reason}-${Date.now()}`;
+    pendingGraphRequestRef.current = { reason, requestId };
+    sendToDesigner('get-graph', { reason, requestId });
+  }, [sendToDesigner]);
 
   const handleCommit = useCallback(async (workflow) => {
     if (!workflow) return;
@@ -325,6 +487,9 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     setError(null);
     setNotice(null);
     setGraphInfo(null);
+    setSourceGraphCheck(null);
+    setDesignerGraphCheck(null);
+    setIntegrityWarning(null);
     setDesignerBase(DESIGNER_BASE);
     setFallbackTried(false);
 
@@ -420,6 +585,9 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
           setLoading(false);
           setError(null);
           setGraphInfo(parsed.graphInfo);
+          // Pull current workflow from iframe to verify connectivity parity
+          // against backend source graph.
+          requestGraph('integrity');
           setBridgeStep('done');
           if (onGraphLoaded) onGraphLoaded(parsed.payload);
           break;
@@ -439,7 +607,15 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
         case 'graph-data':
           console.log('[ArchDrawer] received graph-data for commit');
           if (parsed.payload?.workflow) {
-            handleCommit(parsed.payload.workflow);
+            const check = analyzeWorkflowGraph(parsed.payload.workflow);
+            setDesignerGraphCheck(check);
+            setIntegrityWarning(buildIntegrityWarning(sourceGraphCheck, check));
+            const reason = parsed.payload?.reason || pendingGraphRequestRef.current.reason;
+            if (reason === 'commit') {
+              handleCommit(parsed.payload.workflow);
+            } else if (reason === 'export') {
+              setNotice('Graph snapshot received from designer.');
+            }
           }
           break;
         default:
@@ -448,20 +624,36 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [onGraphLoaded, handleCommit]);
+  }, [onGraphLoaded, handleCommit, requestGraph, sourceGraphCheck]);
 
-  // Send command to iframe
-  const sendToDesigner = useCallback((type, payload = {}) => {
-    if (iframeRef.current?.contentWindow) {
-      console.log('[ArchDrawer] sending message:', type, payload);
-      iframeRef.current.contentWindow.postMessage(
-        { target: 'aria-designer', type, ...payload },
-        '*'
-      );
-    } else {
-      console.warn('[ArchDrawer] cannot send message: iframeRef.current.contentWindow is null');
-    }
-  }, []);
+  useEffect(() => {
+    if (!resultId) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiCall(`/api/programs/${encodeURIComponent(resultId)}`);
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null);
+        if (!data || cancelled) return;
+        const rawGraph = data.graph_json_parsed
+          || (typeof data.graph_json === 'string' ? (() => {
+            try { return JSON.parse(data.graph_json); } catch { return null; }
+          })() : data.graph_json);
+        const check = analyzeResearchGraph(rawGraph);
+        if (!cancelled) {
+          setSourceGraphCheck(check);
+          setIntegrityWarning((prev) => buildIntegrityWarning(check, designerGraphCheck) || prev);
+        }
+      } catch {
+        // Non-blocking diagnostics.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [resultId, designerGraphCheck]);
+
+  useEffect(() => {
+    setIntegrityWarning(buildIntegrityWarning(sourceGraphCheck, designerGraphCheck));
+  }, [sourceGraphCheck, designerGraphCheck]);
 
   // Since import_result_id is now in the iframe URL, the iframe imports
   // directly via its own URL params effect (same as full-window mode).
@@ -545,7 +737,6 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     setError('Could not connect to Aria Designer after auto-start.');
   };
 
-  const DESIGNER_DIRECT = 'http://127.0.0.1:5174';
   const handleOpenFull = () => {
     if (resultId) {
       window.open(
@@ -556,7 +747,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   };
 
   const handleGetGraph = () => {
-    sendToDesigner('get-graph');
+    requestGraph('export');
   };
 
   const handleSelectMorphCandidate = useCallback((candidate) => {
@@ -625,7 +816,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
               Morph
             </button>
             <button
-              onClick={handleGetGraph}
+              onClick={() => requestGraph('commit')}
               disabled={committing}
               title="Commit this modified architecture as a new fingerprint in the research pipeline."
               style={{
@@ -752,6 +943,25 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
               zIndex: 2,
             }}>
               {notice}
+            </div>
+          )}
+
+          {integrityWarning && !error && (
+            <div style={{
+              position: 'absolute',
+              top: notice ? 52 : 10,
+              right: 12,
+              maxWidth: 560,
+              padding: '7px 10px',
+              borderRadius: 6,
+              fontSize: 11,
+              lineHeight: 1.35,
+              background: 'rgba(210, 153, 34, 0.16)',
+              border: '1px solid rgba(210, 153, 34, 0.55)',
+              color: 'var(--accent-yellow)',
+              zIndex: 2,
+            }}>
+              {integrityWarning}
             </div>
           )}
 

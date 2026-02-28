@@ -18,6 +18,7 @@ packing them into the feature dimension.
 
 from __future__ import annotations
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -135,9 +136,10 @@ def rotor_transform(x: torch.Tensor, rotor: torch.Tensor) -> torch.Tensor:
     to encode a 3D rotation (like quaternions).
     """
     if _HAS_ARIA_CORE and x.is_contiguous() and rotor.is_contiguous():
-        y = torch.empty_like(x)
-        aria_core.clifford_rotor_transform_cl30_f32(x, rotor, y)
-        return y
+        try:
+            return aria_core.clifford_rotor_transform_cl30_f32(x, rotor)
+        except TypeError:
+            pass  # Fall through to Python path
 
     # Reverse of rotor: negate bivector and pseudoscalar parts
     rotor_rev = rotor.clone()
@@ -180,10 +182,13 @@ def execute_rotor_transform(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
     mv_x = _pack_multivector(x)
 
-    # Learned rotor
-    if hasattr(module, 'weight'):
+    # Learned rotor — param may be stored as 'rotor' or 'weight'
+    rotor_param = getattr(module, 'rotor', None)
+    if rotor_param is None:
+        rotor_param = getattr(module, 'weight', None)
+    if rotor_param is not None:
         K = D // N_BASIS if pad == 0 else (D + pad) // N_BASIS
-        rotor_params = module.weight[:N_BASIS].unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        rotor_params = rotor_param[:N_BASIS].unsqueeze(0).unsqueeze(0).unsqueeze(0)
         rotor = rotor_params.expand(B, S, K, -1)
         # Normalize rotor
         rotor = rotor / clifford_norm(rotor).clamp(min=1e-6)
@@ -229,12 +234,11 @@ def execute_grade_mix(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 
 def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """Attention using geometric product instead of dot product.
-
-    QKV projections where scores use Clifford geometric product,
-    capturing both symmetric (dot) and antisymmetric (wedge) token
-    relationships for richer attention patterns.
-    """
+    """Attention using geometric product instead of dot product."""
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
+        # Our native kernel currently doesn't take params, handles Q=K=V=x internally
+        return aria_core.clifford_attention_f32(x)
+        
     B, S, D = x.shape
     pad = (N_BASIS - D % N_BASIS) % N_BASIS
     if pad > 0:
@@ -278,6 +282,12 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     # Attention scores via dot in the scalar-projected space
     scores = torch.bmm(q_scalar, k_scalar.transpose(1, 2))  # (B, S, S)
     scale = math.sqrt(D_padded)
+    
+    # Apply causal mask if S > 1
+    if S > 1:
+        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
+        scores.masked_fill_(mask, float('-inf'))
+        
     weights = torch.softmax(scores / scale, dim=-1)
     out = torch.bmm(weights, x_padded)  # (B, S, D_padded)
 

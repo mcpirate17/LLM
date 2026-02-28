@@ -14,7 +14,18 @@ if 'novelty_scores' not in experiment_data or experiment_data['novelty_scores'] 
     return False
 if 'behavior_vector' not in experiment_data or experiment_data['behavior_vector'] is None:
     return False
-# # # # # # # Enhanced defensive handling for missing fields with proper null checks
+    return False
+# # # # # # # # # Enhanced defensive handling for missing fields with proper null checks and empty list validation
+if novelty_scores is None or not isinstance(novelty_scores, list) or len(novelty_scores) == 0:
+    return False, "Missing or invalid novelty_scores field"
+if behavior_vector is None or not isinstance(behavior_vector, list) or len(behavior_vector) == 0:
+    return False, "Missing or invalid behavior_vector field"
+    if novelty_scores is None:
+        return False, f"Missing novelty_scores field for experiment {exp_id}"
+    if not isinstance(novelty_scores, (list, tuple)) or len(novelty_scores) == 0:
+        return False, f"Invalid or empty novelty_scores for experiment {exp_id}"
+    if behavior_vector is None:
+        return False, f"Missing behavior_vector field for experiment {exp_id}"
 if exp_data.get('novelty_scores') is None or exp_data.get('behavior_vector') is None:
     return False, f"Missing required fields: novelty_scores={exp_data.get('novelty_scores')}, behavior_vector={exp_data.get('behavior_vector')}"
 # Added validation for experiment_id field and better error messages

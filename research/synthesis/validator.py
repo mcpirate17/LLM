@@ -86,6 +86,12 @@ def validate_graph(
             f"Too many params: ~{result.n_params_estimate} > {max_params}"
         )
 
+    # Dead branch detection (Shadow Complexity)
+    reachable_nodes = graph.get_reachable_nodes()
+    if len(reachable_nodes) < len(graph.nodes):
+        dead_count = len(graph.nodes) - len(reachable_nodes)
+        result.add_error(f"Graph contains {dead_count} unreachable nodes (dead branches)")
+
     # Gradient flow
     result.has_gradient_path = graph.has_gradient_path()
     if not result.has_gradient_path:
@@ -207,6 +213,28 @@ def validate_ir(
         result.add_error(
             f"Too many params: ~{result.n_params_estimate} > {max_params}"
         )
+
+    # Reachability detection (NumPy accelerated)
+    if ir.output_node_idx != -1:
+        n = ir.n_nodes()
+        adj_back = np.zeros((n, n), dtype=bool)
+        for i in range(n):
+            for j in range(2):
+                inp_idx = ir.input_indices[i, j]
+                if inp_idx != -1:
+                    adj_back[i, inp_idx] = True
+
+        reachable = np.zeros(n, dtype=bool)
+        reachable[ir.output_node_idx] = True
+        for _ in range(n):
+            new_reachable = reachable | np.any(adj_back[reachable, :], axis=0) if np.any(reachable) else reachable
+            if np.array_equal(new_reachable, reachable):
+                break
+            reachable = new_reachable
+            
+        n_reachable = int(np.sum(reachable))
+        if n_reachable < n:
+            result.add_error(f"IR contains {n - n_reachable} unreachable nodes (dead branches)")
 
     # Fast structural checks
     if _ir_has_cycle(ir):

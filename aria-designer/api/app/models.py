@@ -107,6 +107,8 @@ class ValidationIssue(BaseModel):
     severity: Literal["error", "warning"]
     code: str
     message: str
+    node_id: Optional[str] = None
+    edge_id: Optional[str] = None
 
 
 class ValidateWorkflowResponse(BaseModel):

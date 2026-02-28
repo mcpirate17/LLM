@@ -107,7 +107,7 @@ def test_resolve_category_prefix():
     assert _resolve_primitive("channel_mixing/swiglu_mlp") in {"fused_linear_gelu", "swiglu_mlp"}
     assert _resolve_primitive("linear_algebra/block_sparse") == "block_sparse_linear"
     assert _resolve_primitive("linear_algebra/semi_structured_2_4") == "semi_structured_2_4_linear"
-    assert _resolve_primitive("linear_algebra/low_rank") == "linear_proj"
+    assert _resolve_primitive("linear_algebra/low_rank") == "low_rank_proj"
     assert _resolve_primitive("channel_mixing/basis_expansion_layer") == "basis_expansion"
     assert _resolve_primitive("mixing/random_feature_attention") == "linear_attention"
     assert _resolve_primitive("mixing/differentiable_sort") == "sort_seq"
@@ -137,7 +137,7 @@ def test_execution_capability_alias():
 def test_execution_capability_approximate_alias_warning():
     info = get_component_execution_capability("linear_algebra/low_rank")
     assert info["bridge_supported"] is True
-    assert info["primitive_name"] == "linear_proj"
+    assert info["primitive_name"] == "low_rank_proj"
     assert info["semantic_fidelity"] == "approximate"
     assert len(info["warnings"]) >= 1
 
@@ -235,7 +235,7 @@ def test_residual_block_conversion():
 
 
 def test_no_nodes_raises():
-    with pytest.raises(ValueError, match="no nodes"):
+    with pytest.raises(ValueError, match="no detectable input nodes"):
         workflow_to_graph({"nodes": [], "edges": []})
 
 
@@ -251,7 +251,7 @@ def test_cycle_raises():
         ],
     }
     # Full cycle: all nodes have incoming edges → "no input nodes" detected first
-    with pytest.raises(ValueError, match="(cycle|no input)"):
+    with pytest.raises(ValueError, match="(cycle|no detectable input)"):
         workflow_to_graph(wf)
 
 
@@ -312,7 +312,7 @@ def test_validate_unknown_op():
     }
     result = validate_workflow_graph(wf, model_dim=256)
     assert result["valid"] is False
-    assert "Unknown component" in result["error"]
+    assert "Unknown op" in result["error"]
 
 
 def test_workflow_with_passthrough_component():
@@ -498,9 +498,9 @@ def test_evaluate_simple_mlp():
         seq_len=32,
     )
     assert result.status == "success"
-    assert result.sandbox_passed is True
-    assert result.param_count > 0
-    assert result.forward_time_ms > 0
+    assert result.sandbox.passed is True
+    assert result.sandbox.param_count > 0
+    assert result.sandbox.forward_time_ms > 0
     assert result.total_time_ms > 0
 
 
@@ -526,7 +526,7 @@ def test_evaluate_residual():
 def test_bridge_result_to_dict():
     result = evaluate_workflow(
         _simple_mlp(),
-        model_dim=128,
+        model_dim=256,
         device="cpu",
         run_fingerprint=False,
         run_novelty=False,

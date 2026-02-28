@@ -41,6 +41,7 @@ function NegativeResultsSection() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [open, setOpen] = useState(true);
+  const [expandedToxicCats, setExpandedToxicCats] = useState({});
 
   useEffect(() => {
     setLoading(true);
@@ -53,13 +54,6 @@ function NegativeResultsSection() {
       .catch(e => { setError(e.message); setLoading(false); });
   }, []);
 
-  if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading negative results...</p></div>;
-  if (error) return <div className="card"><p style={{ color: 'var(--accent-red)', fontSize: 12 }}>Error: {error}</p></div>;
-  if (!data) return null;
-
-  const hasContent = (data.failed_ops?.length > 0) || (data.dominant_errors?.length > 0) ||
-    (data.anti_patterns?.length > 0) || (data.toxic_bigrams?.length > 0) || (data.refuted_hypotheses?.length > 0);
-
   const groupedToxicBigrams = useMemo(() => {
     if (!data?.toxic_bigrams) return {};
     const groups = {};
@@ -71,10 +65,16 @@ function NegativeResultsSection() {
     return groups;
   }, [data?.toxic_bigrams]);
 
-  const [expandedToxicCats, setExpandedToxicCats] = useState({});
   const toggleToxicCat = (cat) => {
     setExpandedToxicCats(prev => ({ ...prev, [cat]: !prev[cat] }));
   };
+
+  if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading negative results...</p></div>;
+  if (error) return <div className="card"><p style={{ color: 'var(--accent-red)', fontSize: 12 }}>Error: {error}</p></div>;
+  if (!data) return null;
+
+  const hasContent = (data.failed_ops?.length > 0) || (data.dominant_errors?.length > 0) ||
+    (data.anti_patterns?.length > 0) || (data.toxic_bigrams?.length > 0) || (data.refuted_hypotheses?.length > 0);
 
   if (!hasContent) return null;
 
@@ -354,191 +354,193 @@ function InsightsPanel({ insights, compact }) {
 
   const columns = compact ? COLUMNS_COMPACT : COLUMNS_FULL;
 
-  if (!insights || insights.length === 0) {
-    return (
-      <div className="card">
-        <div className="card-title">Insights {compact ? '(Preview)' : ''}</div>
-        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-          No insights recorded yet. Run experiments to generate insights.
-        </p>
-      </div>
-    );
-  }
-
   return (
-    <div className="card">
-      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <span>Insights {compact ? `(${insights.length})` : `— ${insights.length} Active`}</span>
-        <input
-          value={filterQuery}
-          onChange={(e) => setFilterQuery(e.target.value)}
-          placeholder="Filter insights"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
-        />
-      </div>
-      {!compact && (
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-          Patterns and conclusions discovered during experiments. These inform future experiment
-          design — for example, if a certain operation type consistently fails, the system
-          reduces its weight. Confidence reflects how much data supports each insight.
-        </p>
-      )}
-      <table className="data-table">
-        <thead>
-          <tr>
-            {columns.map(col => (
-              <th
-                key={col.key}
-                onClick={() => handleSort(col.key)}
-                aria-label={`Sort insights by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
-                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-              >
-                {col.label}
-                {sortKey === col.key && (
-                  <span style={{ marginLeft: 4, fontSize: 10 }}>
-                    {sortDesc ? '\u25BC' : '\u25B2'}
-                  </span>
-                )}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((insight, i) => {
-            const score = insight._score;
-            const isExpanded = expandedId === (insight.insight_id || i);
-            const contentPreview = (insight.content || '').length > 120
-              ? insight.content.slice(0, 120) + '...'
-              : insight.content;
-
-            return (
-              <React.Fragment key={insight.insight_id || i}>
-                <tr
-                  style={{ cursor: 'pointer' }}
-                  role="button"
-                  tabIndex={0}
-                  aria-expanded={isExpanded}
-                  aria-label={`${isExpanded ? 'Collapse' : 'Expand'} insight ${(insight.category || 'item').replace('_', ' ')}`}
-                  onClick={() => setExpandedId(isExpanded ? null : (insight.insight_id || i))}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      setExpandedId(isExpanded ? null : (insight.insight_id || i));
-                    }
-                  }}
-                >
-                  <td style={{ fontWeight: 600, color: scoreColor(score) }}>
-                    {score}
-                  </td>
-                  <td>
-                    <span style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: CATEGORY_COLORS[insight.category] || 'var(--accent-yellow)',
-                      textTransform: 'uppercase',
-                    }}>
-                      {(insight.category || '').replace('_', ' ')}
-                    </span>
-                  </td>
-                  <td style={{ color: 'var(--text-secondary)', maxWidth: compact ? 200 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
-                    {contentPreview}
-                  </td>
-                  <td>
-                    <span style={{
-                      color: confidenceColor(insight.confidence),
-                      fontWeight: (insight.confidence || 0) >= 0.7 ? 600 : 400,
-                    }}>
-                      {((insight.confidence || 0.5) * 100).toFixed(0)}%
-                    </span>
-                  </td>
-                  {!compact && (
-                    <td>
-                      {insight.status && (
-                        <span className={`badge ${
-                          insight.status === 'confirmed' ? 'pass'
-                          : insight.status === 'active' ? 'running'
-                          : 'fail'
-                        }`}>
-                          {insight.status}
+    <>
+      <div className="card">
+        <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <span>Insights {compact ? `(${insights?.length || 0})` : `— ${insights?.length || 0} Active`}</span>
+          {insights?.length > 0 && (
+            <input
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              placeholder="Filter insights"
+              style={{
+                fontSize: 11,
+                padding: '4px 8px',
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                minWidth: 160,
+              }}
+            />
+          )}
+        </div>
+        
+        {(!insights || insights.length === 0) ? (
+          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 8 }}>
+            No insights recorded yet. Run experiments to generate insights.
+          </p>
+        ) : (
+          <>
+            {!compact && (
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+                Patterns and conclusions discovered during experiments. These inform future experiment
+                design — for example, if a certain operation type consistently fails, the system
+                reduces its weight. Confidence reflects how much data supports each insight.
+              </p>
+            )}
+            <table className="data-table">
+              <thead>
+                <tr>
+                  {columns.map(col => (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      aria-label={`Sort insights by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
+                      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                    >
+                      {col.label}
+                      {sortKey === col.key && (
+                        <span style={{ marginLeft: 4, fontSize: 10 }}>
+                          {sortDesc ? '\u25BC' : '\u25B2'}
                         </span>
                       )}
-                    </td>
-                  )}
-                  {!compact && (
-                    <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                      {formatTime(insight.timestamp)}
-                    </td>
-                  )}
+                    </th>
+                  ))}
                 </tr>
-                {isExpanded && (
-                  <tr>
-                    <td colSpan={columns.length} style={{ padding: 0 }}>
-                      <div style={{
-                        padding: '12px 16px',
-                        background: 'var(--bg-tertiary)',
-                        borderLeft: `3px solid ${CATEGORY_COLORS[insight.category] || 'var(--accent-yellow)'}`,
-                        fontSize: 13,
-                        color: 'var(--text-secondary)',
-                        lineHeight: 1.6,
-                        whiteSpace: 'pre-wrap',
-                      }}>
-                        {insight.content}
+              </thead>
+              <tbody>
+                {sorted.map((insight, i) => {
+                  const score = insight._score;
+                  const isExpanded = expandedId === (insight.insight_id || i);
+                  const contentPreview = (insight.content || '').length > 120
+                    ? insight.content.slice(0, 120) + '...'
+                    : insight.content;
+
+                  return (
+                    <React.Fragment key={insight.insight_id || i}>
+                      <tr
+                        style={{ cursor: 'pointer' }}
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={isExpanded}
+                        aria-label={`${isExpanded ? 'Collapse' : 'Expand'} insight ${(insight.category || 'item').replace('_', ' ')}`}
+                        onClick={() => setExpandedId(isExpanded ? null : (insight.insight_id || i))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setExpandedId(isExpanded ? null : (insight.insight_id || i));
+                          }
+                        }}
+                      >
+                        <td style={{ fontWeight: 600, color: scoreColor(score) }}>
+                          {score}
+                        </td>
+                        <td>
+                          <span style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: CATEGORY_COLORS[insight.category] || 'var(--accent-yellow)',
+                            textTransform: 'uppercase',
+                          }}>
+                            {(insight.category || '').replace('_', ' ')}
+                          </span>
+                        </td>
+                        <td style={{ color: 'var(--text-secondary)', maxWidth: compact ? 200 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
+                          {contentPreview}
+                        </td>
+                        <td>
+                          <span style={{
+                            color: confidenceColor(insight.confidence),
+                            fontWeight: (insight.confidence || 0) >= 0.7 ? 600 : 400,
+                          }}>
+                            {((insight.confidence || 0.5) * 100).toFixed(0)}%
+                          </span>
+                        </td>
                         {!compact && (
-                          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleBoost(insight);
-                              }}
-                              disabled={boostingId === insight.insight_id}
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 600,
-                                borderRadius: 6,
-                                border: '1px solid var(--border)',
-                                background: boostedIds.has(insight.insight_id) ? 'var(--accent-green)' : 'var(--bg-secondary)',
-                                color: boostedIds.has(insight.insight_id) ? '#0b0f13' : 'var(--text-primary)',
-                                padding: '4px 8px',
-                                cursor: boostingId === insight.insight_id ? 'progress' : 'pointer',
-                              }}
-                            >
-                              {boostedIds.has(insight.insight_id) ? 'Boosted' : (boostingId === insight.insight_id ? 'Boosting...' : 'Boost this pattern')}
-                            </button>
-                            {boostError && (
-                              <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>
-                                {boostError}
+                          <td>
+                            {insight.status && (
+                              <span className={`badge ${
+                                insight.status === 'confirmed' ? 'pass'
+                                : insight.status === 'active' ? 'running'
+                                : 'fail'
+                              }`}>
+                                {insight.status}
                               </span>
                             )}
-                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                              Adds a learning-log note to bias future experiments toward this pattern.
-                            </span>
-                          </div>
+                          </td>
                         )}
-                        {insight.supporting_evidence && (
-                          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' }}>
-                            <strong>Evidence:</strong> {insight.supporting_evidence}
-                          </div>
+                        {!compact && (
+                          <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                            {formatTime(insight.timestamp)}
+                          </td>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </React.Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={columns.length} style={{ padding: 0 }}>
+                            <div style={{
+                              padding: '12px 16px',
+                              background: 'var(--bg-tertiary)',
+                              borderLeft: `3px solid ${CATEGORY_COLORS[insight.category] || 'var(--accent-yellow)'}`,
+                              fontSize: 13,
+                              color: 'var(--text-secondary)',
+                              lineHeight: 1.6,
+                              whiteSpace: 'pre-wrap',
+                            }}>
+                              {insight.content}
+                              {!compact && (
+                                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleBoost(insight);
+                                    }}
+                                    disabled={boostingId === insight.insight_id}
+                                    style={{
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      borderRadius: 6,
+                                      border: '1px solid var(--border)',
+                                      background: boostedIds.has(insight.insight_id) ? 'var(--accent-green)' : 'var(--bg-secondary)',
+                                      color: boostedIds.has(insight.insight_id) ? '#0b0f13' : 'var(--text-primary)',
+                                      padding: '4px 8px',
+                                      cursor: boostingId === insight.insight_id ? 'progress' : 'pointer',
+                                    }}
+                                  >
+                                    {boostedIds.has(insight.insight_id) ? 'Boosted' : (boostingId === insight.insight_id ? 'Boosting...' : 'Boost this pattern')}
+                                  </button>
+                                  {boostError && (
+                                    <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>
+                                      {boostError}
+                                    </span>
+                                  )}
+                                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                    Adds a learning-log note to bias future experiments toward this pattern.
+                                  </span>
+                                </div>
+                              )}
+                              {insight.supporting_evidence && (
+                                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' }}>
+                                  <strong>Evidence:</strong> {insight.supporting_evidence}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
       {!compact && <NegativeResultsSection />}
-    </div>
+    </>
   );
 }
 

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import gc
 import traceback
+import time
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 import torch
 import torch.nn as nn
@@ -58,6 +59,14 @@ class Stage1Result:
     final_loss: float = float("inf")
     best_loss: float = float("inf")
     loss_ratio: float = float("inf")  # final/initial — <1 means learning
+    
+    # Dual-metrics (Discovery vs Validation)
+    discovery_loss: float = float("inf")
+    discovery_loss_ratio: float = float("inf")
+    validation_loss: float = float("inf")
+    validation_loss_ratio: float = float("inf")
+    generalization_gap: float = 0.0
+
     avg_step_time_ms: float = 0.0
     throughput_tok_s: float = 0.0
     peak_memory_mb: float = 0.0
@@ -132,8 +141,6 @@ def stage0_smoke_test(
 
         # Check output shape
         expected_shape = (batch_size, seq_len, config.vocab_size)
-        if output.shape != expected_shape:
-            raise ValueError(f"Output shape mismatch: got {output.shape}, expected {expected_shape}")
         result.output_shape = str(tuple(logits.shape))
         if logits.shape != expected_shape:
             result.error = f"Bad output shape: got {logits.shape}, expected {expected_shape}"
@@ -225,15 +232,14 @@ def stage1_micro_train(
     lr: float = 3e-4,
     log_every: int = 10,
     max_grad_norm: float = 1.0,
+    data_fn: Optional[Callable] = None, # Function that returns (train_loader, val_loader)
 ) -> Stage1Result:
     """
     Stage 1: Does the model actually learn anything?
 
-    Trains for n_steps on random data, measuring:
-    - Loss curve (should decrease)
-    - Gradient health (should stay finite and non-zero)
-    - Throughput (tokens/sec)
-    - Memory usage
+    Dual-evaluation funnel:
+    1. Discovery: Fast triage on random tokens.
+    2. Validation: Real learning on corpus data with train/val split.
 
     Takes ~2-10 minutes per candidate depending on model size.
     """
@@ -255,18 +261,60 @@ def stage1_micro_train(
         model = build_model(spec, config).to(dev)
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
 
-        # Generate "training data" — random tokens
-        # For Stage 1, we use random data. The point is whether the model can
-        # memorize/learn patterns, not generalize.
-        data = torch.randint(0, config.vocab_size, (n_steps, batch_size, seq_len), device=dev)
+        # --- Part 1: Discovery (Random Tokens) ---
+        # Quick check for baseline ability to compress random noise
+        discovery_steps = min(50, n_steps // 10)
+        discovery_data = torch.randint(0, config.vocab_size, (discovery_steps, batch_size, seq_len), device=dev)
+        
+        model.train()
+        discovery_losses = []
+        for step in range(discovery_steps):
+            input_ids = discovery_data[step]
+            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+                logits = model(input_ids)
+                loss = F.cross_entropy(logits[:, :-1].reshape(-1, config.vocab_size), input_ids[:, 1:].reshape(-1))
+            
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            discovery_losses.append(loss.item())
+        
+        if discovery_losses:
+            result.discovery_loss = discovery_losses[-1]
+            result.discovery_loss_ratio = discovery_losses[-1] / max(discovery_losses[0], 1e-6)
+
+        # --- Part 2: Validation (Corpus Data) ---
+        # Real training with train/val split
+        train_data = None
+        val_data = None
+        
+        if data_fn:
+            train_loader, val_loader = data_fn(batch_size, seq_len)
+            train_data = iter(train_loader)
+            val_data = list(val_loader) # Keep small validation set in memory
+        else:
+            # Fallback to random data if no corpus provided
+            # Split n_steps into 80% train, 20% val
+            full_data = torch.randint(0, config.vocab_size, (n_steps, batch_size, seq_len), device=dev)
+            split = int(n_steps * 0.8)
+            train_data = iter(full_data[:split])
+            val_data = full_data[split:]
 
         model.train()
         step_times = []
         total_tokens = 0
+        train_losses = []
 
         for step in range(n_steps):
-            input_ids = data[step]
-            targets = input_ids  # next-token prediction on same tokens (shifted internally)
+            try:
+                input_ids = next(train_data)
+            except StopIteration:
+                break
+                
+            if isinstance(input_ids, (list, tuple)):
+                input_ids = input_ids[0] # Handle (input, target) pairs
+            input_ids = input_ids.to(dev)
+            targets = input_ids
 
             t0 = time.perf_counter()
 
@@ -284,10 +332,7 @@ def stage1_micro_train(
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-
-            # Gradient clipping
-            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm).item()
-
+            nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
 
             if dev.type == "cuda":
@@ -298,11 +343,10 @@ def stage1_micro_train(
             step_times.append(step_time)
             total_tokens += batch_size * seq_len
             loss_val = loss.item()
+            train_losses.append(loss_val)
 
-            # Record metrics
             if step % log_every == 0:
                 result.loss_curve.append(loss_val)
-                result.grad_norm_curve.append(grad_norm)
 
             if step == 0:
                 result.initial_loss = loss_val
@@ -310,25 +354,38 @@ def stage1_micro_train(
             result.best_loss = min(result.best_loss, loss_val)
             result.steps_completed = step + 1
 
-            # Track grad norm stats
-            result.avg_grad_norm += grad_norm
-            result.max_grad_norm = max(result.max_grad_norm, grad_norm)
+        # --- Held-out Validation ---
+        model.eval()
+        val_losses = []
+        with torch.no_grad():
+            for val_batch in val_data:
+                if isinstance(val_batch, (list, tuple)):
+                    val_batch = val_batch[0]
+                val_batch = val_batch.to(dev)
+                with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+                    logits = model(val_batch)
+                    v_loss = F.cross_entropy(logits[:, :-1].reshape(-1, config.vocab_size), val_batch[:, 1:].reshape(-1))
+                val_losses.append(v_loss.item())
+        
+        if val_losses:
+            result.validation_loss = sum(val_losses) / len(val_losses)
+            result.validation_loss_ratio = result.validation_loss / max(result.initial_loss, 1e-6)
+            result.generalization_gap = result.validation_loss - result.final_loss
 
-        # Compute summary stats
-        result.avg_grad_norm /= n_steps
-        result.avg_step_time_ms = sum(step_times) / len(step_times)
-        result.throughput_tok_s = total_tokens / (sum(step_times) / 1000)
+        # Summary stats
+        result.avg_step_time_ms = sum(step_times) / len(step_times) if step_times else 0
+        result.throughput_tok_s = total_tokens / (sum(step_times) / 1000) if step_times else 0
 
         if dev.type == "cuda":
             result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
 
         # Convergence analysis
         result.loss_ratio = result.final_loss / max(result.initial_loss, 1e-6)
-        result.loss_stable = not any(
-            math.isnan(l) or math.isinf(l) for l in result.loss_curve
-        )
+        result.loss_stable = not any(math.isnan(l) or math.isinf(l) for l in result.loss_curve)
         result.loss_decreasing = len(result.loss_curve) >= 2 and result.loss_curve[-1] < result.loss_curve[0]
-        result.converges = result.loss_ratio < 0.8  # at least 20% loss reduction
+        
+        # Stricter convergence: must pass validation as well
+        result.converges = result.loss_ratio < 0.8 and result.validation_loss_ratio < 0.85
 
         result.passed = result.loss_stable and result.converges
 

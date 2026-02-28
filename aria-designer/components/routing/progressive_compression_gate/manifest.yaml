@@ -1,0 +1,44 @@
+id: progressive_compression_gate
+version: 1.0.0
+name: Progressive Compression Gate
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+- compression
+- exotic
+status: approved
+description: Learned per-layer compression schedule.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D + D*rank*2 + 1
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  A gating mechanism that learns how much to compress a layer based on its depth and training progress.
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: y:tensor[B, S, D].
+  ### Plain Language
+  Automatically finds the best compression level for this specific layer during training.
+  '

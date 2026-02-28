@@ -27,10 +27,8 @@ except ImportError:
 
 def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Tropical addition: element-wise minimum."""
-    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous():
-        out = torch.empty_like(x)
-        aria_core.tropical_add_f32(x, y, out)
-        return out
+    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous() and x.device.type == "cpu":
+        return aria_core.tropical_add_f32(x, y)
     return torch.minimum(x, y)
 
 
@@ -50,15 +48,12 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Input: a (B, S, D), b (B, D, S) or (B, S, D)
     Output: (B, S, S) or similar
     """
-    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.ndim == 3 and b.ndim == 3:
+    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.ndim == 3 and b.ndim == 3 and a.device.type == "cpu":
         B, S, D = a.shape
         _, D2, S2 = b.shape
         if D == D2:
-            out = torch.empty((B, S, S2), device=a.device, dtype=a.dtype)
             # We need to handle batch dimension in C++ or loop here
-            for i in range(B):
-                aria_core.tropical_matmul_f32(a[i], b[i], out[i])
-            return out
+            return torch.stack([aria_core.tropical_matmul_f32(a[i], b[i]) for i in range(B)])
 
     # a: (B, S, D), b: (B, S, D) -> we want (B, S, S) min-plus
     B, S, D = a.shape
@@ -95,6 +90,13 @@ def tropical_attention(q: torch.Tensor, k: torch.Tensor,
     """
     # Distance matrix via tropical matmul
     distances = tropical_matmul(q, k)  # (B, S, S)
+    
+    # Apply causal mask if S > 1
+    S = q.shape[1]
+    if S > 1:
+        mask = torch.triu(torch.ones(S, S, device=q.device), diagonal=1).bool()
+        distances.masked_fill_(mask, float('inf'))
+        
     # Softmin: attend to closest tokens
     weights = tropical_softmax(distances, dim=-1)  # (B, S, S)
     # Standard value aggregation
@@ -108,6 +110,13 @@ def execute_tropical_matmul(module: nn.Module, x: torch.Tensor,
     """Tropical matmul then project back to D dim."""
     B, S, D = x.shape
     scores = tropical_matmul(x, y)  # (B, S, S)
+    
+    # Apply causal mask if S > 1
+    if S > 1:
+        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
+        # For tropical softmax (distance-based), we set future distances to infinity
+        scores.masked_fill_(mask, float('inf'))
+        
     weights = tropical_softmax(scores, dim=-1)
     return torch.bmm(weights, y)  # (B, S, D)
 
@@ -130,12 +139,15 @@ def execute_tropical_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
 
 def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Center features by tropical (min) sequence baseline."""
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
-        y = torch.empty_like(x)
-        aria_core.tropical_center_f32(x, y)
-        return y
-    baseline = x.amin(dim=1, keepdim=True)
-    return x - baseline
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
+        return aria_core.tropical_center_f32(x)
+    # Causal min centering: subtract minimum of tokens up to current position
+    # x: (B, S, D)
+    B, S, D = x.shape
+    # Use cummin to get cumulative minimum along sequence dimension
+    # torch.cummin returns (values, indices)
+    cmin = torch.cummin(x, dim=1).values
+    return x - cmin
 
 
 def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
@@ -148,6 +160,12 @@ def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     B, S, D = x.shape
     # Tropical distance scores: pairwise min-plus distances
     distances = tropical_matmul(x, x)  # (B, S, S)
+    
+    # Apply causal mask if S > 1
+    if S > 1:
+        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
+        distances.masked_fill_(mask, float('inf'))
+        
     gate_scores = tropical_softmax(distances, dim=-1)  # (B, S, S)
     gated = torch.bmm(gate_scores, x)  # (B, S, D)
     # Linear projection if params available

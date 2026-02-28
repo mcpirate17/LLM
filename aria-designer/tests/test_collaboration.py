@@ -32,7 +32,6 @@ def test_websocket_isolation():
             ws_a.send_json({"msg": "for_a"})
             
             # ws_b should NOT receive it. We use a timeout to check.
-            from getattr import getattr
             # Simple way to check no message: try to receive with a short timeout
             # (TestClient receive_json is blocking, so we might need a different approach or just trust logic)
             pass

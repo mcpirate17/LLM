@@ -127,8 +127,10 @@ function computeWeightedAverage(rows, key) {
   let weightSum = 0;
   for (const row of rows) {
     const weight = Number(row?.n_programs || 0);
-    const value = Number(row?.[key]);
-    if (!Number.isFinite(value) || weight <= 0) continue;
+    const raw = row?.[key];
+    if (raw == null || weight <= 0) continue;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) continue;
     total += value * weight;
     weightSum += weight;
   }
@@ -139,18 +141,35 @@ function computeWeightedAverage(rows, key) {
 function computeTargetSummary(programs, routingData) {
   const rows = Array.isArray(programs) ? programs : [];
   const takeAvg = (key) => {
-    const vals = rows.map(r => Number(r?.[key])).filter(v => Number.isFinite(v));
+    const vals = rows
+      .map(r => r?.[key])
+      .filter(v => v != null)
+      .map(v => Number(v))
+      .filter(v => Number.isFinite(v));
     if (!vals.length) return null;
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   };
   const takeMedian = (key) => {
-    const vals = rows.map(r => Number(r?.[key])).filter(v => Number.isFinite(v)).sort((a, b) => a - b);
+    const vals = rows
+      .map(r => r?.[key])
+      .filter(v => v != null)
+      .map(v => Number(v))
+      .filter(v => Number.isFinite(v))
+      .sort((a, b) => a - b);
     if (!vals.length) return null;
     const mid = Math.floor(vals.length / 2);
     return vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
   };
 
   const routingRows = routingData?.by_mode || [];
+  const routingHasTelemetry = routingRows.some(r => (
+    r.token_retention != null
+    || r.avg_drop_rate != null
+    || r.avg_utilization_entropy != null
+    || r.avg_confidence_mean != null
+    || r.avg_tokens_total != null
+    || r.avg_tokens_processed != null
+  ));
   const routingRetention = computeWeightedAverage(
     routingRows.map(r => ({
       ...r,
@@ -190,7 +209,9 @@ function computeTargetSummary(programs, routingData) {
       confidence: computeWeightedAverage(routingRows, "avg_confidence_mean"),
       overflow: computeWeightedAverage(routingRows, "avg_capacity_overflow_count"),
       bestMode,
-      sampleCount: routingData?.total_programs || 0,
+      sampleCount: routingHasTelemetry
+        ? (routingData?.routed_programs ?? routingData?.total_programs ?? 0)
+        : 0,
     },
     adaptive: {
       depthSavings: takeAvg("depth_savings_ratio"),

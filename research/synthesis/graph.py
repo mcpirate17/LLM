@@ -342,19 +342,25 @@ class ComputationGraph:
         elif rule == "transpose_seq_dim":
             return ShapeInfo(dim=s0.dim, seq=s0.seq)  # we handle internally
 
-        elif rule == "split":
-            n = 2 if op.name == "split2" else 3
-            if s0.dim % n != 0:
-                raise ValueError(f"Can't split dim={s0.dim} into {n} parts")
-            return ShapeInfo(dim=s0.dim // n, seq=s0.seq)
-
         elif rule == "concat":
-            if len(input_shapes) != 2:
-                raise ValueError("Concat needs 2 inputs")
-            s1 = input_shapes[1]
-            if s0.seq != s1.seq:
-                raise ValueError(f"Concat: seq mismatch {s0.seq} vs {s1.seq}")
-            return ShapeInfo(dim=s0.dim + s1.dim, seq=s0.seq)
+            if not input_shapes:
+                raise ValueError("Concat needs at least 1 input")
+            # Sum dimensions across all inputs
+            total_dim = sum(s.dim for s in input_shapes)
+            return ShapeInfo(dim=total_dim, seq=s0.seq)
+
+        elif rule == "split":
+            # Determine split divisor from op name or config
+            if op.name == "split2": n = 2
+            elif op.name == "split3": n = 3
+            elif op.name == "split4": n = 4
+            else: n = int(config.get("n_splits", 2))
+            
+            if s0.dim % n != 0:
+                # Fallback: if not perfectly divisible, last split gets remainder
+                # but for simplicity in research, we often just want floor
+                return ShapeInfo(dim=s0.dim // n, seq=s0.seq)
+            return ShapeInfo(dim=s0.dim // n, seq=s0.seq)
 
         elif rule == "linear":
             out_dim = config.get("out_dim", s0.dim)
@@ -441,6 +447,49 @@ class ComputationGraph:
         self._cache["topo"] = order
         return order
 
+    def get_reachable_nodes(self) -> set:
+        """Return set of node IDs reachable from the output via backward BFS.
+
+        A node is "reachable" if it lies on any path from the output node
+        back to the input node.  Nodes not in this set are dead branches.
+        """
+        if "reachable" in self._cache:
+            return self._cache["reachable"]
+        if self._output_node_id is None:
+            self._cache["reachable"] = set()
+            return set()
+        visited: set = set()
+        queue = [self._output_node_id]
+        while queue:
+            nid = queue.pop()
+            if nid in visited:
+                continue
+            visited.add(nid)
+            node = self.nodes.get(nid)
+            if node:
+                for iid in node.input_ids:
+                    if iid not in visited:
+                        queue.append(iid)
+        self._cache["reachable"] = visited
+        return visited
+
+    def get_dead_nodes(self) -> set:
+        """Return set of node IDs that are NOT reachable from the output."""
+        return set(self.nodes.keys()) - self.get_reachable_nodes()
+
+    def prune_unreachable_nodes(self) -> int:
+        """Remove dead-branch nodes not connected to the output.
+
+        Returns the number of nodes removed.
+        """
+        dead = self.get_dead_nodes()
+        if not dead:
+            return 0
+        for nid in dead:
+            del self.nodes[nid]
+        self._cache.clear()
+        return len(dead)
+
     def depth(self) -> int:
         """Longest path from input to output. Cached."""
         if "depth" in self._cache:
@@ -518,7 +567,15 @@ class ComputationGraph:
             desc.append(f"{node.op_name}{config_str}({','.join(map(str, ranks))})")
         
         # Include model_dim in fingerprint
-        key = f"dim={self.model_dim}|" + "|".join(desc)
+        # Z13: Include routing/compression policy in fingerprint
+        rc_str = ""
+        rc = self.metadata.get("routing_compression")
+        if rc:
+            r_kind = rc.get("routing", {}).get("kind", "unknown")
+            c_kind = rc.get("compression", {}).get("kind", "unknown")
+            rc_str = f"|rc={r_kind}:{c_kind}"
+
+        key = f"dim={self.model_dim}{rc_str}|" + "|".join(desc)
         result = hashlib.sha256(key.encode()).hexdigest()[:16]
         self._cache["fingerprint"] = result
         return result
@@ -544,12 +601,61 @@ class ComputationGraph:
         g.metadata = d.get("metadata", {})
         return g
 
+    def get_reachable_node_ids(self) -> Set[int]:
+        """Find all node IDs that contribute to the output via backward traversal.
+        
+        Returns a set of node IDs reachable from the designated output node.
+        If no output node is set, returns an empty set.
+        """
+        if self._output_node_id is None:
+            return set()
+            
+        reachable = {self._output_node_id}
+        queue = deque([self._output_node_id])
+        
+        while queue:
+            curr_id = queue.popleft()
+            node = self.nodes[curr_id]
+            for input_id in node.input_ids:
+                if input_id not in reachable:
+                    reachable.add(input_id)
+                    queue.append(input_id)
+        return reachable
+
+    def prune_dead_branches(self) -> int:
+        """Remove all nodes that are not reachable from the output.
+        
+        Returns the number of nodes removed.
+        """
+        if self._output_node_id is None:
+            return 0
+            
+        reachable = self.get_reachable_node_ids()
+        all_ids = set(self.nodes.keys())
+        dead_ids = all_ids - reachable
+        
+        for nid in dead_ids:
+            del self.nodes[nid]
+            
+        if dead_ids:
+            self._cache.clear()
+            # If input was pruned, reset it
+            if self._input_node_id in dead_ids:
+                self._input_node_id = None
+                
+        return len(dead_ids)
+
     def lower_to_ir(self) -> ComputationGraphIR:
-        """Lower the graph to its compact IR representation. Cached."""
+        """Lower the graph to its compact IR representation. Cached.
+
+        Only reachable nodes (connected to the output) are included;
+        dead branches are silently stripped during lowering.
+        """
         if "ir" in self._cache:
             return self._cache["ir"]
 
-        node_ids = sorted(self.nodes.keys())
+        reachable = self.get_reachable_nodes()
+        node_ids = sorted(nid for nid in self.nodes.keys() if nid in reachable)
         id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
         n = len(node_ids)
 

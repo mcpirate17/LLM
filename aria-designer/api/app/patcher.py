@@ -197,11 +197,26 @@ def _apply_rewire(
         }
 
     elif action == "remove":
-        if not edge_id:
-            raise PatchError(idx, "rewire", "Missing 'edge_id' for remove action")
-        if edge_id not in edges:
-            raise PatchError(idx, "rewire", f"Edge '{edge_id}' not found")
-        del edges[edge_id]
+        if edge_id:
+            if edge_id not in edges:
+                raise PatchError(idx, "rewire", f"Edge '{edge_id}' not found")
+            del edges[edge_id]
+        else:
+            source = payload.get("source")
+            target = payload.get("target")
+            if not source or not target:
+                raise PatchError(idx, "rewire", "Missing 'edge_id' or 'source'+'target' for remove action")
+            
+            to_remove = [
+                eid for eid, e in edges.items()
+                if e.get("source") == source and e.get("target") == target
+            ]
+            if not to_remove:
+                # Log or warn? For patches, if it's already gone, maybe it's fine,
+                # but PatchError is safer to detect bugs in patch generation.
+                raise PatchError(idx, "rewire", f"No edge found from '{source}' to '{target}'")
+            for eid in to_remove:
+                del edges[eid]
 
     elif action == "modify":
         if not edge_id:

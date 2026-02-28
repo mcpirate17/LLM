@@ -139,13 +139,6 @@ component_execution_class: {}
 passthrough_components:
   - sequential
   - loop
-  - uniform
-  - layerdrop
-  - early_exit
-  - token_merging
-  - cascade
-  - adaptive_recursion
-  - speculative
   - dense_float
   - none
   - identity_skip
@@ -154,6 +147,7 @@ passthrough_components:
   - dataset_filter
   - filter
   - split_train_val_test
+  - select_columns
   - file_writer
 
 # Components that lower to graph inputs during research-bridge conversion.
@@ -174,3 +168,5 @@ template_lowered_components:
   - parallel_streams
   - feedback_loop
   - mixture_of_paths
+  - uniform
+  - layerdrop

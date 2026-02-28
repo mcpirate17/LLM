@@ -24,11 +24,12 @@ export default function AlternativesToAttention({ programs }) {
           familyStats[fam] = { count: 0, totalLoss: 0, totalNovelty: 0, bestLoss: Infinity, bestFingerprint: null };
           familyPrograms[fam] = [];
         }
+        const lr = p.validation_loss_ratio != null ? p.validation_loss_ratio : p.loss_ratio;
         familyStats[fam].count++;
-        if (p.loss_ratio != null) familyStats[fam].totalLoss += p.loss_ratio;
+        if (lr != null) familyStats[fam].totalLoss += lr;
         if (p.novelty_score != null) familyStats[fam].totalNovelty += p.novelty_score;
-        if (p.loss_ratio != null && p.loss_ratio < familyStats[fam].bestLoss) {
-          familyStats[fam].bestLoss = p.loss_ratio;
+        if (lr != null && lr < familyStats[fam].bestLoss) {
+          familyStats[fam].bestLoss = lr;
           familyStats[fam].bestFingerprint = (p.graph_fingerprint || '').slice(0, 12);
         }
         familyPrograms[fam].push(p);
@@ -128,7 +129,7 @@ export default function AlternativesToAttention({ programs }) {
           }}
         />
       </div>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      <table className="data-table table-compact">
         <thead>
           <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
             <th onClick={() => handleSort('family')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>

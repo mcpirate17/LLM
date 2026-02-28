@@ -46,7 +46,7 @@ from .native_runner import (
 )
 from ..synthesis.validator import validate_graph
 from ..synthesis.serializer import graph_to_json, graph_from_json, graph_summary
-from ..synthesis.primitives import get_primitive, list_primitives
+from ..synthesis.primitives import get_primitive, list_primitives, PROTECTED_OPS
 from ..eval.sandbox import safe_eval
 from ..eval.metrics import novelty_score
 from ..eval.flops import estimate_flops
@@ -419,9 +419,9 @@ class RunConfig:
     allow_heuristic_novelty_promotion: bool = False
     heuristic_novelty_justification: str = ""
     # Evidence-based selection policy
-    selection_quality_weight: float = 0.40
+    selection_quality_weight: float = 0.35
     selection_novelty_weight: float = 0.25
-    selection_efficiency_weight: float = 0.20
+    selection_efficiency_weight: float = 0.25
     selection_feasibility_weight: float = 0.15
     selection_policy: str = "ucb"  # "ucb" | "epsilon_greedy"
     selection_epsilon: float = 0.20
@@ -3757,6 +3757,22 @@ class ExperimentRunner:
             nb.strip_graph_json_for_failures(exp_id)
             nb.update_failure_signatures(exp_id)
 
+            # Periodic op rehabilitation: test excluded ops in isolation
+            try:
+                total_exp = nb.conn.execute(
+                    "SELECT COUNT(*) FROM experiments"
+                ).fetchone()[0]
+                if total_exp % 10 == 0:
+                    from ..eval.op_rehab import rehabilitate_ops
+                    rehab_results = rehabilitate_ops(nb, model_dim=config.model_dim)
+                    if rehab_results:
+                        logger.info(
+                            "Op rehabilitation passed %d ops: %s",
+                            len(rehab_results), ", ".join(rehab_results),
+                        )
+            except Exception as e:
+                logger.warning("Op rehabilitation failed: %s", e)
+
             # Save effective weights + S1 outcome for EMA continuity
             applied_w = results.get("applied_grammar_weights")
             total = results.get("total", 0)
@@ -4379,20 +4395,30 @@ class ExperimentRunner:
 
             loss_ratio = self._to_float(row.get("loss_ratio"), default=1.0)
             baseline_ratio = self._to_float(row.get("baseline_loss_ratio"), default=1.0)
-            quality_raw[rid] = max(0.0, (1.0 - loss_ratio) + max(0.0, 1.0 - baseline_ratio))
+            ncd = self._to_float(row.get("ncd_score"), default=1.0)
+            
+            # Quality: Weighted combination of Loss and NCD (Information Redundancy)
+            # Higher NCD = structure does not explain the behavior (memorization).
+            # Lower NCD = structure captures the underlying rules (learning).
+            loss_score = max(0.0, (1.0 - loss_ratio) + max(0.0, 1.0 - baseline_ratio))
+            quality_raw[rid] = (0.7 * loss_score) + (0.3 * (1.0 - ncd))
 
             novelty_raw[rid] = self._to_float(row.get("novelty_score"), default=0.0)
 
             throughput = self._to_float(row.get("throughput_tok_s"), default=0.0)
             flops = self._to_float(row.get("flops_per_token"), default=0.0)
             mem = self._to_float(row.get("peak_memory_mb"), default=0.0)
+            dl = self._to_float(row.get("ncd_description_length"), default=1000.0)
             
             # Baseline targets from research
             is_efficient_arch = family.startswith("MoE-") or family.startswith("Adaptive-") or "Mamba" in family
             target_throughput = 10000.0 if is_efficient_arch else 5000.0
             throughput_bonus = max(0.0, throughput / target_throughput)
             
-            efficiency_raw[rid] = (throughput_bonus * 5.0) - (0.35 * flops) - (0.15 * mem)
+            # Efficiency: Throughput, FLOPs, and MDL (Description Length)
+            # We penalize large description lengths (complex IR)
+            mdl_penalty = math.log(max(1.0, dl)) * 0.1
+            efficiency_raw[rid] = (throughput_bonus * 5.0) - (0.35 * flops) - (0.15 * mem) - mdl_penalty
             
             # Add adaptive savings bonus if available
             savings = self._to_float(row.get("depth_savings_ratio"), default=0.0)
@@ -5439,36 +5465,43 @@ class ExperimentRunner:
                 if pis is not None:
                     is_worth_it = float(pis) >= 20.0
                 else:
-                    # Legacy:
-                    # 1. Exceptional performance (LR < 0.2)
-                    # 2. Good performance + decent novelty (LR < 0.4 AND Nov > 0.4)
-                    # 3. High novelty + moderate performance (LR < 0.6 AND Nov > 0.7)
+                    # Tightened worthiness bar to prevent investigation flood:
+                    # 1. Exceptional performance (LR < 0.15)
+                    # 2. Good performance + decent novelty (LR < 0.3 AND Nov > 0.5)
                     is_worth_it = (
-                        lr < 0.2 or
-                        (lr < 0.4 and nov > 0.4) or
-                        (lr < 0.6 and nov > 0.7)
+                        lr < 0.15 or
+                        (lr < 0.3 and nov > 0.5)
                     )
                 
                 if is_worth_it and fp not in _investigated_fps:
                     worth_it_investigation.append(e["result_id"])
 
             investigation_backlog = len(worth_it_investigation)
-            
-            if investigation_backlog >= 5 and "investigation" not in recent_modes[:3]:
-                return {
-                    "mode": "investigation",
-                    "reasoning": f"Backlog of {investigation_backlog} ELITE investigation-ready candidates detected. Prioritizing unique, high-performing architectures.",
-                    "confidence": 1.0,
-                    "config": {"n_programs": min(investigation_backlog, 20)}
-                }
-            
-            if validation_ready >= 3 and "validation" not in recent_modes[:3]:
-                return {
-                    "mode": "validation",
-                    "reasoning": f"Pipeline bottleneck at validation: {validation_ready} candidates ready. Switching to multi-seed verification.",
-                    "confidence": 1.0,
-                    "config": {"n_programs": min(validation_ready, 10)}
-                }
+
+            # Enforce minimum synthesis ratio: at least 50% of recent experiments
+            # should be synthesis/novelty to prevent investigation/validation starvation
+            synthesis_modes = {"synthesis", "novelty"}
+            recent_synthesis_count = sum(1 for m in recent_modes if m in synthesis_modes)
+            synthesis_ratio = recent_synthesis_count / max(len(recent_modes), 1)
+            synthesis_starved = synthesis_ratio < 0.5
+
+            if not synthesis_starved:
+                # Only force investigation/validation if we have enough synthesis going
+                if investigation_backlog >= 10 and "investigation" not in recent_modes[:4]:
+                    return {
+                        "mode": "investigation",
+                        "reasoning": f"Backlog of {investigation_backlog} ELITE investigation-ready candidates detected. Prioritizing unique, high-performing architectures.",
+                        "confidence": 1.0,
+                        "config": {"n_programs": min(investigation_backlog, 20)}
+                    }
+
+                if validation_ready >= 5 and "validation" not in recent_modes[:4]:
+                    return {
+                        "mode": "validation",
+                        "reasoning": f"Pipeline bottleneck at validation: {validation_ready} candidates ready. Switching to multi-seed verification.",
+                        "confidence": 1.0,
+                        "config": {"n_programs": min(validation_ready, 10)}
+                    }
 
             recent_failures = [e for e in recent if e.get("status") == "failed"]
             unique_fingerprints = set()
@@ -7183,6 +7216,12 @@ class ExperimentRunner:
                 if best_lr and (results["best_loss_ratio"] is None
                                 or best_lr < results["best_loss_ratio"]):
                     results["best_loss_ratio"] = best_lr
+                source_novelty = source.get("novelty_score")
+                if source_novelty is not None and (
+                    results["best_novelty_score"] is None
+                    or source_novelty > results["best_novelty_score"]
+                ):
+                    results["best_novelty_score"] = source_novelty
 
                 # Update leaderboard
                 best_tp_json = None
@@ -8134,6 +8173,12 @@ class ExperimentRunner:
                 if val_loss_ratio and (results["best_loss_ratio"] is None
                                        or val_loss_ratio < results["best_loss_ratio"]):
                     results["best_loss_ratio"] = val_loss_ratio
+                source_novelty = source.get("novelty_score")
+                if source_novelty is not None and (
+                    results["best_novelty_score"] is None
+                    or source_novelty > results["best_novelty_score"]
+                ):
+                    results["best_novelty_score"] = source_novelty
 
                 # Update leaderboard - find the actual entry for this result
                 for entry in nb.get_leaderboard(limit=200):
@@ -8875,7 +8920,9 @@ class ExperimentRunner:
                                 data_mode="random",
                                 data_tag="discovery_baseline",
                             )
-                            program_metrics["discovery_loss_ratio"] = discovery_ratio
+                            # Keep measured discovery_loss_ratio intact; store
+                            # baseline-relative comparison separately.
+                            program_metrics["discovery_baseline_ratio"] = discovery_ratio
                         except Exception as e:
                             logger.debug("Discovery baseline failed: %s", e)
 
@@ -8899,8 +8946,10 @@ class ExperimentRunner:
                                 data_tag=v_data_tag,
                                 cache_data_fn=v_cache,
                             )
+                            # Keep measured validation_loss_ratio intact; store
+                            # baseline-relative comparison separately.
                             program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
-                            program_metrics["validation_loss_ratio"] = v_baseline_ratio
+                            program_metrics["validation_baseline_ratio"] = v_baseline_ratio
                         except Exception:
                             pass
 
@@ -9116,15 +9165,39 @@ class ExperimentRunner:
                 logger.warning("Failed computing learned grammar weights for %s: %s", exp_id, e)
 
             # Populate excluded_ops and soft-penalty op_weights from negative results
+            # IMPORTANT: Only hard-exclude ops that fail at LEARNING (s0 passes but
+            # s1 never does). Ops failing at COMPILATION are compiler bugs, not bad
+            # ops — soft-penalize them instead so they can be retried as the compiler
+            # improves.  Ops that pass rehabilitation (work in isolation) get a mild
+            # penalty instead of exclusion — their failures are placement problems.
             op_weights: Dict[str, float] = {}
             try:
+                rehab_cache = nb.get_op_rehabilitation_cache()
                 if analytics is not None:
                     neg = analytics.negative_results_synthesis()
+                    compilation_failures = []
+                    rehabilitated_ops = []
                     for op_info in neg.get("failed_ops", []):
                         if (op_info.get("s1_rate", 1) == 0
                                 and op_info.get("n_used", 0) >= 5
                                 and op_info.get("confidence", 0) >= 0.7):
-                            excluded_ops.add(op_info["op_name"])
+                            op_name = op_info["op_name"]
+                            rehab = rehab_cache.get(op_name)
+                            if rehab and rehab.get("compile_passed") and rehab.get("forward_passed"):
+                                # Op works in isolation — placement problem, not op problem
+                                op_weights[op_name] = 0.5
+                                rehabilitated_ops.append(op_name)
+                            elif op_info.get("failure_stage") == "compilation":
+                                # Compiler bug — soft-penalize, don't exclude
+                                op_weights[op_name] = 0.15
+                                compilation_failures.append(op_name)
+                            else:
+                                if op_name in PROTECTED_OPS:
+                                    # Protected op — soft-penalize instead of excluding
+                                    op_weights[op_name] = 0.5
+                                else:
+                                    # Genuine learning failure — hard exclude
+                                    excluded_ops.add(op_name)
                     # Soft-penalize weak ops (nonzero but poor S1 rate)
                     for op_info in neg.get("weak_ops", []):
                         op_name = op_info.get("op_name", "")
@@ -9134,9 +9207,23 @@ class ExperimentRunner:
                     if excluded_ops:
                         nb.log_learning_event(
                             "excluded_ops_applied",
-                            f"Excluded {len(excluded_ops)} ops with 0% S1 rate: "
+                            f"Excluded {len(excluded_ops)} ops with 0% S1 rate (learning failures): "
                             f"{', '.join(sorted(excluded_ops))}",
                             excluded_ops=sorted(excluded_ops),
+                        )
+                    if rehabilitated_ops:
+                        nb.log_learning_event(
+                            "rehabilitated_ops_softpenalized",
+                            f"Soft-penalized {len(rehabilitated_ops)} ops that passed rehabilitation "
+                            f"(work in isolation, placement problem): {', '.join(sorted(rehabilitated_ops))}",
+                            rehabilitated_ops=sorted(rehabilitated_ops),
+                        )
+                    if compilation_failures:
+                        nb.log_learning_event(
+                            "compilation_failures_softpenalized",
+                            f"Soft-penalized {len(compilation_failures)} ops failing at compilation "
+                            f"(compiler bugs, not excluded): {', '.join(sorted(compilation_failures))}",
+                            compilation_failures=sorted(compilation_failures),
                         )
                     if op_weights:
                         nb.log_learning_event(
@@ -9965,10 +10052,10 @@ class ExperimentRunner:
         recipe = analysis.get("recipe", {})
         hints = recipe.get("grammar_hints", {})
 
-        # Exclude risky ops
+        # Exclude risky ops (but never protected ones)
         exclude_ops = hints.get("exclude_ops", [])
         if exclude_ops:
-            base_grammar.excluded_ops = base_grammar.excluded_ops | set(exclude_ops)
+            base_grammar.excluded_ops = base_grammar.excluded_ops | (set(exclude_ops) - PROTECTED_OPS)
 
         # Boost ops (cap at 3.0)
         boost_ops = hints.get("boost_ops", {})
@@ -10629,8 +10716,9 @@ class ExperimentRunner:
                     result["discovery_loss_ratio"] = discovery_loss_ratio
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
                 result["passed"] = result["loss_ratio"] < config.stage1_loss_ratio_threshold
-
-                # Compute improvement rate
+                if not result["passed"] and result.get("error_type") is None:
+                    result["error_type"] = "failed_convergence"
+                    result["error"] = f"Insufficient loss reduction: {result['loss_ratio']:.4f} >= {config.stage1_loss_ratio_threshold}"
                 if initial_loss > 0:
                     result["loss_improvement_rate"] = (initial_loss - final_loss) / initial_loss
 
@@ -11126,6 +11214,11 @@ class ExperimentRunner:
                         grammar_overrides[cat_name] = _clamp(float(weight), *GRAMMAR_WEIGHT_CLAMP)
             elif k == "excluded_ops" and isinstance(v, list):
                 new_excluded = {str(op) for op in v if isinstance(op, str)}
+                # Strip protected ops — they must never be hard-excluded
+                protected_stripped = new_excluded & PROTECTED_OPS
+                new_excluded -= PROTECTED_OPS
+                if protected_stripped:
+                    logger.info("Blocked Aria from excluding protected ops: %s", sorted(protected_stripped))
                 if new_excluded:
                     self._excluded_ops_overrides |= new_excluded
                     nb.log_learning_event(
@@ -11713,8 +11806,9 @@ class ExperimentRunner:
                 result["min_loss"] = min_loss
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
                 result["passed"] = result["loss_ratio"] < config.stage1_loss_ratio_threshold
-
-                if initial_loss > 0:
+                if not result["passed"] and result.get("error_type") is None:
+                    result["error_type"] = "failed_convergence"
+                    result["error"] = f"Insufficient loss reduction during investigation: {result['loss_ratio']:.4f}"
                     result["loss_improvement_rate"] = (initial_loss - final_loss) / initial_loss
 
                 result["avg_step_time_ms"] = sum(step_times) / len(step_times) if step_times else 0
@@ -12317,6 +12411,12 @@ class ExperimentRunner:
                 if best_lr and (results["best_loss_ratio"] is None
                                 or best_lr < results["best_loss_ratio"]):
                     results["best_loss_ratio"] = best_lr
+                source_novelty = source.get("novelty_score")
+                if source_novelty is not None and (
+                    results["best_novelty_score"] is None
+                    or source_novelty > results["best_novelty_score"]
+                ):
+                    results["best_novelty_score"] = source_novelty
 
                 # Update leaderboard
                 best_tp_json = None
@@ -13358,6 +13458,12 @@ class ExperimentRunner:
                 if val_loss_ratio and (results["best_loss_ratio"] is None
                                        or val_loss_ratio < results["best_loss_ratio"]):
                     results["best_loss_ratio"] = val_loss_ratio
+                source_novelty = source.get("novelty_score")
+                if source_novelty is not None and (
+                    results["best_novelty_score"] is None
+                    or source_novelty > results["best_novelty_score"]
+                ):
+                    results["best_novelty_score"] = source_novelty
 
                 # Update leaderboard — find the actual entry for this result
                 for entry in nb.get_leaderboard(limit=200):

@@ -8,6 +8,7 @@ import logging
 from typing import Any, Dict, List, Optional, Set
 from .graph import ComputationGraph
 from .component_registry import registry, fe_type_to_op_name
+from .primitives import PRIMITIVE_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,15 @@ def _lower_template_component(
         mix = graph.add_op("add", [p1, p2], {})
         return graph.add_op("linear_proj", [mix], {"out_dim": d})
 
+    if component_leaf == "uniform":
+        # Lower to identity but tagged for routing telemetry
+        return graph.add_op("identity", [x], {"routing_kind": "uniform"})
+
+    if component_leaf == "layerdrop":
+        # Lower to topk_gate with k=1 and deterministic dropout-like behavior
+        # For simplicity in Phase 0/1, we'll use a gate that can skip
+        return graph.add_op("topk_gate", [x], {"k": 1, "routing_kind": "layerdrop"})
+
     raise ValueError(f"No template-lowering implementation for '{component_leaf}'")
 
 def workflow_to_computation_graph(
@@ -71,6 +81,16 @@ def workflow_to_computation_graph(
     
     model_dim = metadata.get("model_dim", default_model_dim)
     graph = ComputationGraph(model_dim)
+    
+    # Z13: Unify routing/compression schema validation
+    rc = metadata.get("routing_compression")
+    if rc:
+        from ..schemas.validator import validate_routing_compression
+        try:
+            validate_routing_compression(rc)
+            graph.metadata["routing_compression"] = rc
+        except ValueError as e:
+            logger.warning(f"Invalid routing_compression metadata: {e}")
     
     # Map frontend string IDs to backend integer IDs
     fe_to_be: Dict[str, int] = {}
@@ -98,6 +118,8 @@ def workflow_to_computation_graph(
 
     pending = [n for n in nodes if n["id"] not in fe_to_be]
     added_any = True
+    first_error: Optional[str] = None
+
     while pending and added_any:
         added_any = False
         next_pending = []
@@ -105,6 +127,18 @@ def workflow_to_computation_graph(
             comp_type = node["component_type"]
             leaf_id = comp_type.split("/")[-1]
             op_name = registry.get_primitive_name(comp_type)
+
+            # Strict routing: routing components must lower to a real primitive or template.
+            if comp_type.startswith("routing/"):
+                if registry.is_passthrough(comp_type):
+                    pass
+                elif leaf_id in registry.template_lowered_components:
+                    pass
+                elif op_name not in PRIMITIVE_REGISTRY:
+                    raise ValueError(
+                        f"Routing component '{comp_type}' is not supported in the research bridge. "
+                        "Implement lowering or add a real primitive mapping before use."
+                    )
             
             # Skip explicit output nodes during construction
             if node["id"] == output_fe_id:
@@ -137,7 +171,9 @@ def workflow_to_computation_graph(
                         added_any = True
                         continue
                     except Exception as e:
-                        logger.error(f"Template lowering failed for {node['id']} ({leaf_id}): {e}")
+                        err_msg = str(e)
+                        if not first_error: first_error = err_msg
+                        logger.error(f"Template lowering failed for {node['id']} ({leaf_id}): {err_msg}")
 
                 if not be_input_ids and op_name != "input":
                     logger.warning(f"Node {node['id']} ({op_name}) has no inputs, skipping.")
@@ -148,7 +184,9 @@ def workflow_to_computation_graph(
                     fe_to_be[node["id"]] = be_id
                     added_any = True
                 except Exception as e:
-                    logger.error(f"Failed to add node {node['id']} ({op_name}): {e}")
+                    err_msg = str(e)
+                    if not first_error: first_error = err_msg
+                    logger.error(f"Failed to add node {node['id']} ({op_name}): {err_msg}")
                     next_pending.append(node)
             else:
                 next_pending.append(node)
@@ -158,7 +196,10 @@ def workflow_to_computation_graph(
         # Check if only the output node remains
         remaining_non_output = [n for n in pending if n["id"] != output_fe_id]
         if remaining_non_output:
-            logger.warning(f"Graph has cycles or disconnected components. Remaining nodes: {[n['id'] for n in remaining_non_output]}")
+            msg = f"Graph has cycles or disconnected components. Remaining nodes: {[n['id'] for n in remaining_non_output]}"
+            if first_error:
+                msg += f" (First error: {first_error})"
+            raise ValueError(msg)
 
     # 3. Set output node
     if output_fe_id:
@@ -286,7 +327,7 @@ def graph_to_workflow(
         max_depth = max(depths.values()) if depths else 0
         nodes.append({
             "id": "node_out",
-            "component_type": "io/output",
+            "component_type": "io/output_head",
             "params": {},
             "ui_meta": {"position": {"x": 100 + (max_depth + 1) * 250, "y": 100}}
         })
@@ -303,6 +344,15 @@ def graph_to_workflow(
         "name": name or "Imported Graph",
         "nodes": nodes,
         "edges": edges,
-        "metadata": {**metadata, "model_dim": graph.model_dim} if metadata else {"model_dim": graph.model_dim},
+        "metadata": {
+            **metadata, 
+            "model_dim": graph.model_dim,
+            "source": "research_import",
+            "graph_fingerprint": graph.fingerprint(),
+        } if metadata else {
+            "model_dim": graph.model_dim,
+            "source": "research_import",
+            "graph_fingerprint": graph.fingerprint(),
+        },
         "schema_version": "workflow_graph.v1"
     }

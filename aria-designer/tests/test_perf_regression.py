@@ -236,7 +236,7 @@ def test_mlp_evaluation_succeeds():
         seq_len=32,
     )
     assert result.status == "success"
-    assert result.sandbox_passed
+    assert result.sandbox.passed
     assert result.param_count > 0
 
 

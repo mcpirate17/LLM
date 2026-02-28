@@ -63,9 +63,27 @@ class PrimitiveOp:
     # Description for debugging/display
     description: str = ""
     config_keys: Tuple[str, ...] = ()  # Required config keys
+    # Can this op be placed standalone by the grammar?
+    # False for routing signal helpers that produce non-standard outputs
+    # (tuples, indices, reduced dims) consumed by specific routing ops.
+    standalone: bool = True
 
     def __hash__(self):
         return hash(self.name)
+
+
+# ── Protected Ops ────────────────────────────────────────────────────
+# Ops that must never be hard-excluded by the auto-exclusion system.
+# These ops have known root-cause fixes and should be given fair chances.
+PROTECTED_OPS: frozenset = frozenset({
+    "lif_neuron", "stdp_attention", "spike_rate_code", "sparse_threshold",
+    "swiglu_mlp", "rwkv_channel", "reciprocal", "sliding_window_mask",
+    "token_merge", "rmsnorm", "div_safe", "ultrametric_attention",
+    "rotor_transform", "padic_residual", "padic_expand", "tropical_center",
+    "rwkv_time_mixing", "mod_topk", "adaptive_recursion", "speculative",
+    "entropy_router", "latent_attention_compressor", "token_type_classifier",
+    "route_topk", "route_lanes", "route_recursion", "token_merging",
+})
 
 
 # ── Shape Rules ──────────────────────────────────────────────────────
@@ -219,10 +237,11 @@ _register(PrimitiveOp("max_last", OpCategory.REDUCTION, 1, "reduce_last",
                        description="Max along last dimension"))
 _register(PrimitiveOp("norm_last", OpCategory.REDUCTION, 1, "reduce_last",
                        description="L2 norm along last dimension"))
-_register(PrimitiveOp("sum_seq", OpCategory.REDUCTION, 1, "reduce_seq",
-                       description="Sum along sequence dimension"))
-_register(PrimitiveOp("mean_seq", OpCategory.REDUCTION, 1, "reduce_seq",
-                       description="Mean along sequence dimension"))
+# Removed sum_seq and mean_seq as they reduce over the entire sequence, breaking causality.
+# _register(PrimitiveOp("sum_seq", OpCategory.REDUCTION, 1, "reduce_seq",
+#                        description="Sum along sequence dimension"))
+# _register(PrimitiveOp("mean_seq", OpCategory.REDUCTION, 1, "reduce_seq",
+#                        description="Mean along sequence dimension"))
 _register(PrimitiveOp("cumsum", OpCategory.REDUCTION, 1, "cumulative",
                        description="Cumulative sum along sequence dim"))
 _register(PrimitiveOp("cumprod_safe", OpCategory.REDUCTION, 1, "cumulative",
@@ -248,14 +267,16 @@ _register(PrimitiveOp("split3", OpCategory.STRUCTURAL, 1, "split",
                        config_keys=("n_splits",)))
 _register(PrimitiveOp("concat", OpCategory.STRUCTURAL, 2, "concat",
                        description="Concatenate along last dimension"))
-_register(PrimitiveOp("roll_seq", OpCategory.STRUCTURAL, 1, "roll",
-                       description="Circular shift by 1 along sequence dim"))
-_register(PrimitiveOp("roll_neg", OpCategory.STRUCTURAL, 1, "roll",
-                       description="Circular shift by -1 along sequence dim"))
-_register(PrimitiveOp("gather_sorted", OpCategory.STRUCTURAL, 2, "gather",
-                       description="Gather elements using sort indices"))
-_register(PrimitiveOp("scatter_unsort", OpCategory.STRUCTURAL, 2, "scatter",
-                       description="Scatter elements back using unsort indices"))
+# Removed roll_seq and roll_neg as they inherently break causality in an autoregressive context.
+# _register(PrimitiveOp("roll_seq", OpCategory.STRUCTURAL, 1, "roll",
+#                        description="Circular shift by 1 along sequence dim"))
+# _register(PrimitiveOp("roll_neg", OpCategory.STRUCTURAL, 1, "roll",
+#                        description="Circular shift by -1 along sequence dim"))
+# Removed gather_sorted and scatter_unsort as they can gather from future tokens.
+# _register(PrimitiveOp("gather_sorted", OpCategory.STRUCTURAL, 2, "gather",
+#                        description="Gather elements using sort indices"))
+# _register(PrimitiveOp("scatter_unsort", OpCategory.STRUCTURAL, 2, "scatter",
+#                        description="Scatter elements back using unsort indices"))
 _register(PrimitiveOp("multi_head_mix", OpCategory.STRUCTURAL, 1, "identity",
                        description="Multi-head reshape + per-head L2 normalize",
                        config_keys=("n_heads",)))
@@ -312,29 +333,33 @@ _register(PrimitiveOp("semi_structured_2_4_linear", OpCategory.PARAMETERIZED, 1,
 
 _register(PrimitiveOp("softmax_last", OpCategory.SEQUENCE, 1, "softmax",
                        description="Softmax along last dimension"))
-_register(PrimitiveOp("softmax_seq", OpCategory.SEQUENCE, 1, "softmax",
-                       description="Softmax along sequence dimension"))
+# Removed softmax_seq as it inherently breaks causality in an autoregressive context.
+# _register(PrimitiveOp("softmax_seq", OpCategory.SEQUENCE, 1, "softmax",
+#                        description="Softmax along sequence dimension"))
 _register(PrimitiveOp("causal_mask", OpCategory.SEQUENCE, 1, "causal_mask",
                        description="Apply causal (lower-triangular) mask"))
-_register(PrimitiveOp("sort_seq", OpCategory.SEQUENCE, 1, "sort",
-                       description="Sort along sequence dim by learned key"))
-_register(PrimitiveOp("argsort_seq", OpCategory.SEQUENCE, 1, "sort",
-                       description="Argsort along sequence dim"))
+# Removed sort_seq and argsort_seq as they inherently break causality in an autoregressive context.
+# _register(PrimitiveOp("sort_seq", OpCategory.SEQUENCE, 1, "sort",
+#                        description="Sort along sequence dim by learned key"))
+# _register(PrimitiveOp("argsort_seq", OpCategory.SEQUENCE, 1, "sort",
+#                        description="Argsort along sequence dim"))
 _register(PrimitiveOp("local_window_attn", OpCategory.SEQUENCE, 1, "identity",
                        description="Local windowed causal self-attention (Q=K=V)",
                        config_keys=("window_size",)))
 _register(PrimitiveOp("sliding_window_mask", OpCategory.SEQUENCE, 1, "causal_mask",
                        description="Exponential distance decay mask for windowed composition",
                        config_keys=("window_size",)))
-_register(PrimitiveOp("token_pool_restore", OpCategory.SEQUENCE, 1, "identity",
-                       description="Pool adjacent token pairs then restore via repeat"))
+# Removed token_pool_restore as it inherently breaks causality in an autoregressive context.
+# _register(PrimitiveOp("token_pool_restore", OpCategory.SEQUENCE, 1, "identity",
+#                        description="Pool adjacent token pairs then restore via repeat"))
 
 # ── Frequency Domain ──────────────────────────────────────────────────
 
-_register(PrimitiveOp("rfft_seq", OpCategory.FREQUENCY, 1, "rfft",
-                       description="Real FFT along sequence dimension"))
-_register(PrimitiveOp("irfft_seq", OpCategory.FREQUENCY, 1, "irfft",
-                       description="Inverse real FFT along sequence dim"))
+# Removed rfft_seq and irfft_seq as they inherently break causality in an autoregressive context.
+# _register(PrimitiveOp("rfft_seq", OpCategory.FREQUENCY, 1, "rfft",
+#                        description="Real FFT along sequence dimension"))
+# _register(PrimitiveOp("irfft_seq", OpCategory.FREQUENCY, 1, "irfft",
+#                        description="Inverse real FFT along sequence dim"))
 
 # ── Mixing Operations ─────────────────────────────────────────────────
 
@@ -347,8 +372,9 @@ _register(PrimitiveOp("linear_attention", OpCategory.MIXING, 1, "identity",
 _register(PrimitiveOp("graph_attention", OpCategory.MIXING, 1, "identity",
                        has_params=True, param_formula="D*D",
                        description="Graph-based sequence mixing with learned adjacency"))
-_register(PrimitiveOp("fourier_mixing", OpCategory.MIXING, 1, "identity",
-                       description="Unparameterized global mixing via FFT"))
+# Removed fourier_mixing as it inherently breaks causality in an autoregressive context.
+# _register(PrimitiveOp("fourier_mixing", OpCategory.MIXING, 1, "identity",
+#                        description="Unparameterized global mixing via FFT"))
 _register(PrimitiveOp("state_space", OpCategory.MIXING, 1, "identity",
                        has_params=True, param_formula="D*4",
                        description="State-space sequence mixer (Mamba-style)"))
@@ -398,6 +424,79 @@ _register(PrimitiveOp("gather_topk", OpCategory.STRUCTURAL, 2, "identity",
 _register(PrimitiveOp("rwkv_time_mixing", OpCategory.PARAMETERIZED, 1, "identity",
                        has_params=True, param_formula="D*D*3",
                        description="RWKV WKV linear attention with learned decay"))
+
+# ── Routing Primitives (Phase 1/2) ───────────────────────────────────
+
+_register(PrimitiveOp("route_topk", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Top-k token selection: (B,S) -> (B,K) indices + weights",
+                       config_keys=("k",), standalone=False))
+_register(PrimitiveOp("route_lanes", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Multi-lane dispatch: (B,S,L) -> (B,S) lane indices",
+                       config_keys=("n_lanes",), standalone=False))
+_register(PrimitiveOp("route_recursion", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Adaptive recursion depth: (B,S,Dp) -> (B,S) depth",
+                       config_keys=("max_depth",), standalone=False))
+_register(PrimitiveOp("token_merge", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Similarity-based token merging: (B,S,D) -> (B,K,D)",
+                       config_keys=("n_keep",)))
+
+# ── Routing (control-style ops operating on tensors) ──────────────────
+
+_register(PrimitiveOp("mod_topk", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Mixture-of-Depths top-k token routing (masking)",
+                       config_keys=("capacity_factor",)))
+_register(PrimitiveOp("early_exit", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Early-exit routing (token gating)",
+                       config_keys=("threshold",)))
+_register(PrimitiveOp("adaptive_recursion", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Adaptive recursion routing (depth gating)",
+                       config_keys=("max_depth",)))
+_register(PrimitiveOp("token_merging", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Token merging routing (merge + restore)",
+                       config_keys=("n_keep",)))
+_register(PrimitiveOp("cascade", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Cascade routing (difficulty-scaled gate)",
+                       config_keys=("threshold",)))
+_register(PrimitiveOp("speculative", OpCategory.FUNCTIONAL, 1, "identity",
+                       description="Speculative routing (quality gate)",
+                       config_keys=("threshold",)))
+
+# ── Exotic Routing & Compression (Phase 4) ──────────────────────────
+
+_register(PrimitiveOp("adaptive_lane_mixer", OpCategory.PARAMETERIZED, 2, "identity",
+                       has_params=True,
+                       description="Difficulty-adaptive lane routing: routes tokens to experts based on learned difficulty"))
+_register(PrimitiveOp("mixed_recursion_gate", OpCategory.PARAMETERIZED, 2, "identity",
+                       has_params=True,
+                       description="Tokens re-enter block with different transforms per recursion step, depth conditional"))
+_register(PrimitiveOp("routing_conditioned_compression", OpCategory.PARAMETERIZED, 2, "identity",
+                       has_params=True,
+                       description="Compression level chosen per-token by routing scores"))
+_register(PrimitiveOp("token_type_classifier", OpCategory.PARAMETERIZED, 1, "reduce_last",
+                       has_params=True, param_formula="D*K",
+                       description="Learned classifier to produce routing scores from token embeddings",
+                       config_keys=("n_classes",), standalone=False))
+_register(PrimitiveOp("entropy_router", OpCategory.FUNCTIONAL, 1, "reduce_last",
+                       description="Produces routing signal based on entropy of input scores (B,S,K) -> (B,S,1)",
+                       standalone=False))
+_register(PrimitiveOp("progressive_compression_gate", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True,
+                       description="Learned per-layer compression schedule: heavier early, lighter late"))
+_register(PrimitiveOp("compression_mixture_experts", OpCategory.PARAMETERIZED, 2, "identity",
+                       has_params=True,
+                       description="Routing assigns tokens to method-specific compression experts (e.g. low-rank, sparse, bottleneck)"))
+
+# ── 2026 Frontier Exotic Ops ────────────────────────────────────────
+
+_register(PrimitiveOp("relu_gate_routing", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True,
+                       description="Differentiable ReLU-based gating: learns optimal expert count per token"))
+_register(PrimitiveOp("ternary_projection", OpCategory.PARAMETERIZED, 1, "linear",
+                       has_params=True,
+                       description="1.58-bit ternary simulated projection (-1, 0, 1 weights)"))
+_register(PrimitiveOp("latent_attention_compressor", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True,
+                       description="Multi-Head Latent Attention (MLA) style KV cache compression"))
 
 # ── Functional (operator-learning / neural-field) ────────────────────
 

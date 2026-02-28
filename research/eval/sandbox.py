@@ -13,11 +13,14 @@ Safe evaluation of synthesized programs with:
 from __future__ import annotations
 
 import gc
+import logging
 import os
 import random
 import signal
 import time
 import traceback
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ..scientist.perf import PerfTracer, OpKernelProfiler
+from .sparsity import check_activation_sparsity
 
 # Substrings in CUDA errors that indicate an unrecoverable (sticky) context
 _CUDA_FATAL_MARKERS = (
@@ -439,13 +443,72 @@ def safe_eval(
             result.stage = "stability"
             if tracer is not None:
                 tracer.start("stability", use_gpu=True)
+            
+            # Enable heatmap capture during stability probe
+            if hasattr(model, "set_capture_heatmap"):
+                model.set_capture_heatmap(True)
+                
             stability = _stability_probe(model, dev, batch_size, seq_len, vocab_size)
             result.stability_score = stability["score"]
             result.extreme_input_passed = stability["extreme_passed"]
             result.random_input_passed = stability["random_passed"]
+            result.causality_passed = stability["causality_passed"]
             result.output_range = stability.get("output_range")
+            
+            # Extract heatmaps if captured
+            heatmaps = {}
+            total_savings = 0.0
+            total_depth_ratio = 0.0
+            routing_op_count = 0
+            
+            for name, module in model.named_modules():
+                rt = getattr(module, "routing_telemetry", None)
+                if rt:
+                    if rt.get("heatmap") is not None:
+                        heatmaps[name] = rt["heatmap"]
+                    
+                    # Z13: Aggregate routing efficiency
+                    routing_op_count += 1
+                    # Basic estimates for now
+                    total_savings += rt.get("savings_ratio", 0.0)
+                    total_depth_ratio += rt.get("depth_ratio", 1.0)
+
+            if routing_op_count > 0:
+                if getattr(result, "sparsity_report", None) is None:
+                    result.sparsity_report = {}
+                result.sparsity_report["routing_savings_ratio"] = round(total_savings / routing_op_count, 4)
+                result.sparsity_report["routing_depth_ratio"] = round(total_depth_ratio / routing_op_count, 4)
+                if heatmaps:
+                    result.sparsity_report["routing_heatmaps"] = heatmaps
+
+            if hasattr(model, "set_capture_heatmap"):
+                model.set_capture_heatmap(False)
+            
+            if not result.causality_passed:
+                result.passed = False
+                result.error = "Strict Causality Gate Failed: Model looks ahead at future tokens."
+                result.error_type = "causality_violation"
+                return result
+                
             if tracer is not None:
                 tracer.stop("stability")
+
+            # ── Activation Sparsity Check ──
+            # Uses the last input_ids batch from forward pass
+            sparsity_report = check_activation_sparsity(model, [input_ids])
+            result.activation_sparsity = sparsity_report.overall_sparsity
+            result.dead_neuron_count = sparsity_report.total_dead_neurons
+            result.sparsity_report = {
+                "dead_neuron_ratio": sparsity_report.dead_neuron_ratio,
+                "max_layer_collapse": sparsity_report.max_layer_collapse,
+                "n_collapsed_layers": sum(1 for r in sparsity_report.layers if r.is_collapsed)
+            }
+            
+            if any(r.is_collapsed for r in sparsity_report.layers):
+                result.passed = False
+                result.error = f"Activation collapse: {result.sparsity_report['n_collapsed_layers']} layers collapsed"
+                result.error_type = "activation_collapse"
+                return result
 
         if dev.type == "cuda":
             result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
@@ -462,6 +525,17 @@ def safe_eval(
         if is_cuda_fatal(e):
             result.error = f"Fatal CUDA error in stage {result.stage}: {e}"
             result.error_type = "cuda_fatal"
+            # Reset CUDA context after fatal error so subsequent evals can proceed
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                    torch.cuda.reset_peak_memory_stats()
+                    # Attempt a small allocation to verify recovery
+                    _probe = torch.zeros(1, device="cuda")
+                    del _probe
+                    torch.cuda.synchronize()
+                except Exception:
+                    logger.warning("CUDA context unrecoverable after fatal error")
         else:
             tb = traceback.format_exc().strip().split("\n")
             result.error = "\n".join(tb[-3:])
@@ -505,7 +579,7 @@ def _stability_probe(
 ) -> Dict:
     """Run numerical stability probes."""
     model.eval()
-    results = {"score": 0.0, "extreme_passed": False, "random_passed": False}
+    results = {"score": 0.0, "extreme_passed": False, "random_passed": False, "causality_passed": True}
     checks_passed = 0
     total_checks = 0
 
@@ -553,6 +627,33 @@ def _stability_probe(
     ids = torch.full((batch_size, seq_len), vocab_size - 1, dtype=torch.long, device=dev)
     if _check_ids(ids) is not None:
         checks_passed += 1
+
+    # Test 5: Strict Causality Gate
+    # Ensure that changing future tokens does not change past logits
+    total_checks += 1
+    try:
+        with torch.no_grad(), torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+            # Base sequence
+            ids_base = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+            out_base = model(ids_base)
+            
+            # Modified sequence (change the second half)
+            ids_mod = ids_base.clone()
+            midpoint = seq_len // 2
+            ids_mod[:, midpoint:] = torch.randint(0, vocab_size, (batch_size, seq_len - midpoint), device=dev)
+            out_mod = model(ids_mod)
+            
+            # Check if the first half of the logits are identical
+            # We use a small tolerance for floating point differences, but they should be exactly equal
+            # if the model is strictly causal.
+            diff = torch.abs(out_base[:, :midpoint, :] - out_mod[:, :midpoint, :]).max().item()
+            if diff < 1e-4:
+                checks_passed += 1
+                results["causality_passed"] = True
+            else:
+                results["causality_passed"] = False
+    except Exception:
+        results["causality_passed"] = False
 
     results["score"] = checks_passed / max(total_checks, 1)
     model.train()

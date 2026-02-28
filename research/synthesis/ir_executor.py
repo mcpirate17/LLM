@@ -9,6 +9,7 @@ the entire IR traversal into a single compiled kernel.
 from __future__ import annotations
 
 import os
+import logging
 import torch
 import torch.nn as nn
 import numpy as np
@@ -17,6 +18,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from .graph import ComputationGraphIR
 from .primitives import PrimitiveOp, get_primitive, REVERSE_OPCODE_MAP
 
+logger = logging.getLogger(__name__)
 
 class IRExecutor(nn.Module):
     """Executes ComputationGraphIR with minimal overhead."""
@@ -37,6 +39,16 @@ class IRExecutor(nn.Module):
             in2 = self.input_indices[i, 1]
             if in1 != -1: self.consumer_counts[in1] += 1
             if in2 != -1: self.consumer_counts[in2] += 1
+        if self.output_node_idx is not None:
+            for i in range(len(self.op_codes)):
+                if self.op_codes[i] == 0:
+                    continue
+                if i != int(self.output_node_idx) and self.consumer_counts[i] == 0:
+                    op_name = REVERSE_OPCODE_MAP.get(self.op_codes[i], "unknown")
+                    logger.warning(
+                        "IRExecutor: node %d (%s) has zero consumers (possible dead branch)",
+                        i, op_name
+                    )
 
         self.ops = nn.ModuleList()
         # Map IR index to Module index in self.ops

@@ -48,12 +48,13 @@ export default function RoutingModeComparison({ programs, comparison }) {
       const m = byMode[mode];
       m.count++;
       if (p.stage1_passed) m.s1Pass++;
-      if (p.loss_ratio != null) { m.totalLoss += p.loss_ratio; m.lossCount++; }
+      const lr = p.validation_loss_ratio != null ? p.validation_loss_ratio : p.loss_ratio;
+      if (lr != null) { m.totalLoss += lr; m.lossCount++; }
       if (p.routing_drop_rate != null) { m.totalDrop += p.routing_drop_rate; m.dropCount++; }
       if (p.routing_utilization_entropy != null) { m.totalEntropy += p.routing_utilization_entropy; m.entropyCount++; }
       if (p.routing_confidence_mean != null) { m.totalConf += p.routing_confidence_mean; m.confCount++; }
-      if (p.loss_ratio != null && p.loss_ratio < m.bestLoss) {
-        m.bestLoss = p.loss_ratio;
+      if (lr != null && lr < m.bestLoss) {
+        m.bestLoss = lr;
         m.bestFingerprint = (p.graph_fingerprint || '').slice(0, 12);
       }
     }
@@ -150,7 +151,7 @@ export default function RoutingModeComparison({ programs, comparison }) {
         />
       </div>
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table className="data-table table-compact">
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
               <th onClick={() => handleSort('mode')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>

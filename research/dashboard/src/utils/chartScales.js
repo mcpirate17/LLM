@@ -61,6 +61,7 @@ export const CHART_DEFAULTS = {
   s1_rate: { min: 0, max: 1 },
   novelty: { min: 0, max: 1 },
   loss_ratio: { min: 0, max: 2 },
+  generalization_gap: { min: -1, max: 2 },
   baseline_ratio: { min: 0, max: 1.5 },
   training_loss: { min: 0, max: 2 },
   grammar_weight: { min: 0, max: 1 },

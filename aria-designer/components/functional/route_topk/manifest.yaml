@@ -1,0 +1,51 @@
+id: route_topk
+version: 1.0.0
+name: Route Top-k
+category: functional
+tags:
+- core
+- routing
+status: approved
+description: Top-k token selection.
+inputs:
+- name: scores
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - K
+outputs:
+- name: indices
+  dtype: index
+  shape:
+  - B
+  - S
+  - k
+- name: weights
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - k
+params:
+  k:
+    type: integer
+    default: 1
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: "0"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  Selects the top-k experts per token based on input scores.
+
+  Inputs: scores:tensor[B, S, K].
+  Outputs: indices:index[B, S, k], weights:tensor[B, S, k].
+  ### Plain Language
+  A selector that picks the "best" path for each token from a list of possibilities.
+  '

@@ -36,7 +36,34 @@ from research.synthesis.workflow_converter import workflow_to_computation_graph 
 register_all_mathspaces()
 
 
+# ── Constants for Component Mapping ──────────────────────────────────
+
+_IO_COMPONENTS = {"graph_input", "graph_output", "input", "output"}
+_COMPONENT_ALIASES = registry.aliases
+_PASSTHROUGH_COMPONENTS = registry.passthrough_components
+_SOURCE_COMPONENTS = registry.source_components
+_TEMPLATE_LOWERED_COMPONENTS = registry.template_lowered_components
+
+
 # ── Component ID → Primitive Name mapping ────────────────────────────
+
+def _resolve_primitive(component_type: str) -> Optional[str]:
+    """Legacy helper for mapping component type to primitive name."""
+    parts = component_type.split("/")
+    cid = parts[-1]
+
+    if cid in _IO_COMPONENTS:
+        return None
+    if cid in _SOURCE_COMPONENTS or cid in _PASSTHROUGH_COMPONENTS or cid in _TEMPLATE_LOWERED_COMPONENTS:
+        return None
+
+    if cid in PRIMITIVE_REGISTRY:
+        return cid
+    if cid in registry.aliases:
+        return registry.aliases[cid]
+
+    raise ValueError(f"Unknown component: {component_type}")
+
 
 def _execution_class(component_leaf: str, category: Optional[str]) -> str:
     if component_leaf in registry.component_execution_class:
@@ -70,6 +97,9 @@ def _alias_semantic_info(component_leaf: str, primitive_name: str) -> Dict[str, 
 
 def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
     """Return bridge execution capability metadata for a component type."""
+    # Defensive: ensure IO component set exists in globals (guards partial reloads).
+    if "_IO_COMPONENTS" not in globals():
+        globals()["_IO_COMPONENTS"] = {"graph_input", "graph_output", "input", "output"}
     parts = component_type.split("/")
     cid = parts[-1]
     category = parts[0] if len(parts) > 1 else None
@@ -351,6 +381,60 @@ def analyze_compression(
     )
 
     return result
+
+
+def bridge_analyze_routing(model, graph) -> List[Dict[str, Any]]:
+    """Extract per-op routing telemetry from a live model.
+    Maps submodule telemetry back to ComputationGraph node IDs.
+    """
+    results = []
+    
+    # We need to find modules that have routing_telemetry
+    for name, module in model.named_modules():
+        # CompiledOp/OpModule stores telemetry in .routing_telemetry
+        rt = getattr(module, "routing_telemetry", None)
+        if rt:
+            # Map name (e.g. 'layers.0.ops.5') back to graph node ID
+            # In IRExecutor, ops are indexable.
+            # Simplified heuristic: if name is just an integer, it might be node ID
+            node_id = None
+            try:
+                # 'layers.0.ops.12' -> 12
+                node_id = int(name.split('.')[-1])
+            except ValueError:
+                continue
+                
+            entry = {
+                "node_id": node_id,
+                "op_name": getattr(module, "op_name", "unknown"),
+                "savings_ratio": rt.get("savings_ratio"),
+                "depth_ratio": rt.get("depth_ratio"),
+                "heatmap": rt.get("heatmap"),
+                "entropy": rt.get("entropy_sum") / max(1, rt.get("count", 1)) if "entropy_sum" in rt else None
+            }
+            results.append(entry)
+            
+        # Also check for compression info
+        st = getattr(module, "sparsity_report", None)
+        if st:
+            try:
+                node_id = int(name.split('.')[-1])
+            except ValueError:
+                continue
+            
+            entry = {
+                "node_id": node_id,
+                "op_name": getattr(module, "op_name", "unknown"),
+                "compression_ratio": st.get("compression_ratio")
+            }
+            # Merge if already exists or add new
+            existing = next((r for r in results if r["node_id"] == node_id), None)
+            if existing:
+                existing.update(entry)
+            else:
+                results.append(entry)
+                
+    return results
 
 
 from research.synthesis.result_schemas import BridgeResult, SandboxResult, FingerprintResult

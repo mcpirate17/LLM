@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import importlib.util
 import json
 import logging
@@ -66,11 +67,11 @@ def _optional_import(module: str, names: list[str], *, aliases: dict[str, str] |
 (export_onnx,) = _optional_import("runtime.export", ["export_onnx"])
 
 (bridge_evaluate, bridge_validate, bridge_estimate, bridge_list_primitives,
- bridge_analyze_compression, bridge_component_capability) = _optional_import(
+ bridge_analyze_compression, bridge_analyze_routing, bridge_component_capability) = _optional_import(
     "runtime.bridge", [
         "evaluate_workflow", "validate_workflow_graph", "estimate_performance",
         "list_available_primitives", "analyze_compression",
-        "get_component_execution_capability",
+        "bridge_analyze_routing", "get_component_execution_capability",
     ])
 HAS_BRIDGE = bridge_evaluate is not None
 
@@ -643,6 +644,39 @@ def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
 
     # Validate manifest-port dtype compatibility for all edges.
     workflow_payload = workflow.model_dump()
+    
+    output_types = {"output", "output_head", "graph_output"}
+    output_node_ids = {
+        node.id
+        for node in workflow.nodes
+        if (node.component_type or "").split("/")[-1] in output_types
+    }
+    if output_node_ids:
+        reverse_adj: Dict[str, List[str]] = {node.id: [] for node in workflow.nodes}
+        for edge in workflow.edges:
+            if edge.source in node_ids and edge.target in node_ids:
+                reverse_adj[edge.target].append(edge.source)
+
+        reachable = set()
+        queue = deque(output_node_ids)
+        while queue:
+            current = queue.popleft()
+            if current in reachable:
+                continue
+            reachable.add(current)
+            for source in reverse_adj.get(current, []):
+                if source not in reachable:
+                    queue.append(source)
+
+        for node in workflow.nodes:
+            if node.id not in reachable:
+                issues.append(ValidationIssue(
+                    node_id=node.id,
+                    severity="error",
+                    code="dead_branch",
+                    message="Dead branch detected. Node does not connect to the final output.",
+                ))
+
     if find_unsupported_edge_dtype_pairings is not None:
         dtype_issues = find_unsupported_edge_dtype_pairings(
             workflow_payload,
@@ -941,10 +975,13 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
     workflow = json.loads(wf_row["graph_json"])
 
     # Apply patch operations
+    from .patcher import PatchError as _PE
     try:
         patched_workflow = apply_patch_ops(workflow, ops)
-    except PatchError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except _PE as e:
+        raise HTTPException(status_code=422, detail=f"Patch application failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Unexpected error applying patch: {str(e)}")
 
     # Validate patched workflow with bridge if available
     validation_info = None
@@ -1525,7 +1562,7 @@ def get_proposal(proposal_id: str) -> Dict[str, Any]:
 @app.get("/api/v1/import/survivors")
 def get_survivors(
     n: int = Query(10, ge=1, le=100),
-    sort_by: str = Query("loss_ratio"),
+    sort_by: str = Query("validation_loss_ratio"),
     min_novelty: float = Query(0.0, ge=0.0, le=1.0),
 ) -> List[Dict[str, Any]]:
     """List top survivors from the research pipeline as importable workflows."""
@@ -1949,6 +1986,36 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             accumulated["sandbox"] = metrics
             _persist_stage("sandbox", {"status": "done", "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'sandbox', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
+            
+            # --- Stage 4.5: routing (Phase 5.1 live-sync) ---
+            if bridge_analyze_routing:
+                yield f"event: stage\ndata: {_json({'stage': 'routing', 'status': 'running'})}\n\n"
+                t0 = _time_mod.monotonic()
+                try:
+                    # Use bridge helper
+                    rt_results = await asyncio.to_thread(
+                        bridge_analyze_routing, model, graph
+                    )
+                    
+                    # Map back to aria node IDs
+                    mapped_rt = []
+                    for entry in rt_results:
+                        cg_node_id = entry.get("node_id")
+                        aria_node_id = cg_to_aria.get(cg_node_id)
+                        if aria_node_id:
+                            mapped_rt.append({**entry, "aria_node_id": aria_node_id})
+                    
+                    metrics = {"op_routing": mapped_rt}
+                    accumulated["routing"] = metrics
+                    _persist_stage("routing", {"status": "done", "metrics": metrics})
+                    elapsed = (_time_mod.monotonic() - t0) * 1000
+                    yield f"event: stage\ndata: {_json({'stage': 'routing', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
+                except Exception as e:
+                    logger.error(f"Routing analysis failed: {e}")
+                    # Don't fail the whole stream for telemetry
+                    elapsed = (_time_mod.monotonic() - t0) * 1000
+                    yield f"event: stage\ndata: {_json({'stage': 'routing', 'status': 'skipped', 'elapsed_ms': round(elapsed, 1), 'error': str(e)})}\n\n"
+
             if not sandbox.passed:
                 total_ms = (_time_mod.monotonic() - total_t0) * 1000
                 _attach_benchmarking()

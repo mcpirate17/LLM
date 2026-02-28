@@ -314,7 +314,7 @@ function ScoreBreakdown({ entry }) {
           <div
             key={c.key}
             style={{
-              width: `${c.weight}%`,
+              width: `${(c.weight / total) * 100}%`,
               background: c.color,
               height: '100%'
             }}
@@ -370,16 +370,18 @@ const COLUMNS = [
   { key: 'architecture_desc', label: 'Description', title: 'Human-readable summary of the model topology.' },
   { key: '_vs_reference', label: 'vs Ref Loss', title: 'Percentage of the loss achieved by the nearest frontier baseline (lower is better).' },
   { key: 'composite_score', label: 'Composite', title: 'Internal technical score used by the scientist for optimization.' },
-  { key: 'screening_loss_ratio', label: 'S.Loss', title: 'Loss ratio from the initial screening phase.' },
+  { key: 'discovery_loss_ratio', label: 'D.Loss', title: 'Loss ratio on random tokens (discovery phase).' },
+  { key: 'validation_loss_ratio', label: 'V.Loss', title: 'Validation loss ratio on micro-corpus (Stage 1 or higher).' },
+  { key: 'screening_loss_ratio', label: 'S.Loss', title: 'Tiered loss ratio from the initial screening phase (Legacy or Rescored).' },
   { key: 'screening_novelty', label: 'Novelty', title: 'How different this architecture is from known patterns (0-1).' },
   { key: 'investigation_loss_ratio', label: 'I.Loss', title: 'Loss ratio from the deeper investigation phase.' },
   { key: 'investigation_robustness', label: 'Robust', title: 'Fraction of training recipes that succeed (higher is more stable).' },
-  { key: 'validation_loss_ratio', label: 'V.Loss', title: 'Final multi-seed validation loss ratio.' },
   { key: 'validation_baseline_ratio', label: 'V.Base', title: 'Final loss compared to a fixed baseline; < 1.0 means it beats the baseline.' },
   { key: 'robustness_noise_score', label: 'Noise', title: 'Sensitivity to input noise (lower is more robust).' },
   { key: 'quant_int8_retention', label: 'INT8 Ret', title: 'Performance preserved after INT8 quantization (higher is better).' },
   { key: 'robustness_long_ctx_score', label: 'LongCtx', title: 'Scaling performance on longer sequences (higher is better).' },
   { key: 'init_sensitivity_std', label: 'InitStd', title: 'Sensitivity to weight initialization variance (lower is better).' },
+  { key: 'pre_inv_score', label: 'Readiness', title: 'Pre-investigation gate readiness score (0-100). Higher means more likely to succeed in investigation.' },
   { key: 'jacobian_spectral_norm', label: 'Spectral', title: 'Jacobian Spectral Norm: measures gradient explosion risk (lower is more stable).' },
   { key: '_compression_ratio', label: 'Compression', title: 'Effective parameter reduction compared to a dense baseline.' },
   { key: '_metric_quality', label: 'Metric Quality', title: 'Reliability of recorded metrics based on evidence depth.' },
@@ -436,7 +438,7 @@ function Leaderboard({
   const [visibleColumns, setVisibleColumns] = useState(() => {
     return Array.isArray(leaderboardPrefs?.visibleColumns) 
       ? leaderboardPrefs.visibleColumns 
-      : ['_score', 'tier', 'architecture_family', 'composite_score', 'screening_loss_ratio', 'screening_novelty', 'investigation_loss_ratio', 'validation_baseline_ratio', '_actions'];
+      : ['_score', 'tier', 'architecture_family', 'composite_score', 'discovery_loss_ratio', 'validation_loss_ratio', 'screening_loss_ratio', 'screening_novelty', 'investigation_loss_ratio', 'validation_baseline_ratio', '_actions'];
   });
   const [highlightId, setHighlightId] = useState(null);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
@@ -472,28 +474,36 @@ function Leaderboard({
     }
   }, [highlightResultId, onHighlightClear]);
 
-  const fetchLeaderboard = useCallback(async () => {
-    console.log('[Leaderboard] Refreshing data...');
-    setLoading(true);
-    setError(null);
+  const lastDataRef = useRef(null);
+
+  const fetchLeaderboard = useCallback(async (isBackground = false) => {
+    if (!isBackground) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const params = new URLSearchParams({ sort: 'composite_score', limit: '100' });
       if (activeTier !== 'all') params.set('tier', activeTier);
       const res = await apiCall(`/api/leaderboard?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      setData(json);
-      setLastUpdated(new Date());
+      // Only update state if data actually changed — prevents scroll reset
+      const jsonStr = JSON.stringify(json);
+      if (jsonStr !== lastDataRef.current) {
+        lastDataRef.current = jsonStr;
+        setData(json);
+        setLastUpdated(new Date());
+      }
       setError(null);
     } catch (e) {
-      setError('Failed to load leaderboard: ' + e.message);
+      if (!isBackground) setError('Failed to load leaderboard: ' + e.message);
     }
-    setLoading(false);
+    if (!isBackground) setLoading(false);
   }, [activeTier]);
 
   useEffect(() => {
-    fetchLeaderboard();
-    const interval = setInterval(fetchLeaderboard, 15000);
+    fetchLeaderboard(false);
+    const interval = setInterval(() => fetchLeaderboard(true), 60000);
     return () => clearInterval(interval);
   }, [fetchLeaderboard]);
 
@@ -554,6 +564,21 @@ function Leaderboard({
     }
   };
 
+  const togglePin = async (entryId, currentPinned) => {
+    try {
+      const res = await apiCall(`/api/leaderboard/pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entry_id: entryId, pinned: !currentPinned }),
+      });
+      if (res.ok) {
+        fetchLeaderboard();
+      }
+    } catch (e) {
+      console.error('Failed to toggle pin:', e);
+    }
+  };
+
   const rawEntries = data?.entries || [];
   const stabilitySummary = data?.cross_run_stability_summary || {};
   const stabilityWindow = data?.cross_run_stability_window || 0;
@@ -598,6 +623,10 @@ function Leaderboard({
       };
     });
     augmented.sort((a, b) => {
+      const aPinned = Number(Boolean(a?.is_pinned));
+      const bPinned = Number(Boolean(b?.is_pinned));
+      if (aPinned !== bPinned) return bPinned - aPinned;
+
       const aRef = Number(Boolean(a?.is_reference));
       const bRef = Number(Boolean(b?.is_reference));
       if (aRef !== bRef) return bRef - aRef;
@@ -855,6 +884,52 @@ function Leaderboard({
         )}
       </div>
 
+      {/* Reference Baselines Banner */}
+      {showReferences && referenceEntries.length > 0 && (
+        <div style={{
+          marginBottom: 14, padding: '10px 14px',
+          background: 'rgba(188, 140, 255, 0.06)',
+          border: '1px solid rgba(188, 140, 255, 0.25)',
+          borderRadius: 6,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-purple)', marginBottom: 8 }}>
+            Reference Baselines
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {referenceEntries.map(ref => {
+              const loss = bestLoss(ref);
+              const retention = toRetentionPercent(ref?.quant_int8_retention);
+              return (
+                <div key={ref.entry_id || ref.result_id} style={{
+                  padding: '6px 12px', borderRadius: 5,
+                  background: 'rgba(188, 140, 255, 0.10)',
+                  border: '1px solid rgba(188, 140, 255, 0.18)',
+                  fontSize: 11, lineHeight: 1.5, minWidth: 130,
+                }}>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                    {ref.reference_name || ref.architecture_desc || 'Reference'}
+                  </div>
+                  <div style={{ color: 'var(--text-muted)' }}>
+                    {TIER_LABELS[ref.tier] || ref.tier || '--'}
+                    {loss != null && <span style={{ marginLeft: 8 }}>Loss: {loss.toFixed(4)}</span>}
+                  </div>
+                  {(retention != null || ref.robustness_noise_score != null) && (
+                    <div style={{ color: 'var(--text-muted)' }}>
+                      {retention != null && <span>INT8: {retention.toFixed(0)}%</span>}
+                      {ref.robustness_noise_score != null && (
+                        <span style={{ marginLeft: retention != null ? 8 : 0 }}>
+                          Noise: {Number(ref.robustness_noise_score).toFixed(3)}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {error && (
         <p style={{ color: 'var(--accent-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>
       )}
@@ -891,11 +966,11 @@ function Leaderboard({
           )}
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
+        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
+          <table className="data-table table-wide">
+            <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card, #1a1a2e)' }}>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                <th style={thStyle}>#</th>
+                <th style={{ ...thStyle, position: 'sticky', top: 0, background: 'inherit' }}>#</th>
                 {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => (
                   <th
                     key={col.key}
@@ -906,6 +981,9 @@ function Leaderboard({
                     title={col.title}
                     style={{
                       ...thStyle,
+                      position: 'sticky',
+                      top: 0,
+                      background: 'inherit',
                       cursor: col.key === '_actions' ? 'default' : 'pointer',
                       userSelect: 'none',
                     }}
@@ -956,7 +1034,26 @@ function Leaderboard({
                   }}
                   onClick={() => onSelectProgram && onSelectProgram(entry.result_id)}
                 >
-                  <td style={tdStyle}>{i + 1}</td>
+                  <td style={tdStyle}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePin(entry.entry_id, entry.is_pinned);
+                        }}
+                        title={entry.is_pinned ? "Unpin from top" : "Pin to top"}
+                        style={{ 
+                          cursor: 'pointer', 
+                          fontSize: 14, 
+                          color: entry.is_pinned ? 'var(--accent-yellow)' : 'var(--text-muted)',
+                          opacity: entry.is_pinned ? 1 : 0.3
+                        }}
+                      >
+                        {entry.is_pinned ? '★' : '☆'}
+                      </span>
+                      {i + 1}
+                    </div>
+                  </td>
                   {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => {
                     switch (col.key) {
                       case '_score':
@@ -1053,6 +1150,10 @@ function Leaderboard({
                             {fmt(entry.composite_score, 3)}
                           </td>
                         );
+                      case 'discovery_loss_ratio':
+                        return <td key={col.key} style={tdStyle}>{fmt(entry.discovery_loss_ratio)}</td>;
+                      case 'validation_loss_ratio':
+                        return <td key={col.key} style={tdStyle}>{fmt(entry.validation_loss_ratio)}</td>;
                       case 'screening_loss_ratio':
                         return <td key={col.key} style={tdStyle}>{fmt(entry.screening_loss_ratio)}</td>;
                       case 'screening_novelty':
@@ -1072,8 +1173,6 @@ function Leaderboard({
                               : '--'}
                           </td>
                         );
-                      case 'validation_loss_ratio':
-                        return <td key={col.key} style={tdStyle}>{fmt(entry.validation_loss_ratio)}</td>;
                       case 'validation_baseline_ratio':
                         return (
                           <td key={col.key} style={tdStyle}>
@@ -1095,6 +1194,13 @@ function Leaderboard({
                         return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_score != null ? fmt(entry.robustness_long_ctx_score, 3) : '--'}</td>;
                       case 'init_sensitivity_std':
                         return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? fmt(entry.init_sensitivity_std, 4) : '--'}</td>;
+                      case 'pre_inv_score': {
+                        const pis = entry.pre_inv_score;
+                        if (pis == null || entry.tier !== 'screening') return <td key={col.key} style={tdStyle}>--</td>;
+                        const pisNum = Number(pis);
+                        const pisColor = pisNum >= 50 ? 'var(--accent-green)' : pisNum >= 20 ? 'var(--accent-yellow)' : 'var(--accent-red, #f44)';
+                        return <td key={col.key} style={{ ...tdStyle, color: pisColor, fontWeight: 600 }}>{fmt(pisNum, 1)}</td>;
+                      }
                       case 'jacobian_spectral_norm':
                         const specValLB = entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm;
                         return <td key={col.key} style={tdStyle}>{specValLB != null ? fmt(specValLB, 4) : '--'}</td>;
@@ -1189,14 +1295,41 @@ function Leaderboard({
                                 Investigate
                               </button>
                             )}
-                            {!eligibility.investigationEligible && entry.tier === 'screening' && (
-                              <span style={{
-                                fontSize: 10, padding: '2px 6px', borderRadius: 4,
-                                background: 'rgba(210,153,34,0.12)', color: 'var(--accent-yellow)',
-                                whiteSpace: 'nowrap',
-                              }} title="Candidate already has investigation evidence; wait for changed conditions before re-investigating">
-                                Already investigated
-                              </span>
+                            {!eligibility.investigationEligible && entry.tier === 'screening' && entry.investigation_loss_ratio != null && (
+                              <>
+                                <span style={{
+                                  fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                                  background: 'rgba(210,153,34,0.12)', color: 'var(--accent-yellow)',
+                                  whiteSpace: 'nowrap',
+                                }} title={`Previous investigation LR: ${entry.investigation_loss_ratio?.toFixed?.(3) ?? '?'}`}>
+                                  Inv'd
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    if (!window.confirm(`Re-investigate ${entry.result_id.slice(0, 8)} with longer training? Previous investigation LR: ${entry.investigation_loss_ratio?.toFixed?.(3) ?? '?'}`)) return;
+                                    setActionError(null);
+                                    apiCall(`/api/experiments/start`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({
+                                        mode: 'investigation',
+                                        result_ids: [entry.result_id],
+                                        force: true,
+                                        investigation_steps: 5000,
+                                        investigation_batch_size: 8,
+                                        n_training_programs: 5,
+                                      }),
+                                    })
+                                      .then(r => r.json())
+                                      .then(d => { if (d.error) setActionError(d.error); })
+                                      .catch(e => setActionError(e.message));
+                                  }}
+                                  style={{ ...actionBtnStyle, background: 'rgba(210,153,34,0.12)', border: '1px solid rgba(210,153,34,0.4)', color: 'var(--accent-yellow)', fontSize: 10 }}
+                                  title="Force re-investigation with 5000 steps, batch 8, 5 training programs"
+                                >
+                                  Re-inv
+                                </button>
+                              </>
                             )}
                             {eligibility.validationEligible && (
                               <button

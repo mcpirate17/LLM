@@ -4824,6 +4824,51 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/recompute-failure-signatures", methods=["POST"])
+    def api_recompute_failure_signatures():
+        """Delete and rebuild failure_signatures using S1-only failures."""
+        nb = LabNotebook(notebook_path)
+        try:
+            count = nb.recompute_failure_signatures()
+            return jsonify({"status": "ok", "signatures_created": count})
+        except Exception as e:
+            logger.error(f"Error in /api/recompute-failure-signatures: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/reset-op-stats", methods=["POST"])
+    def api_reset_op_stats():
+        """Reset op_success_rates for specific ops so they get a fresh start.
+
+        POST body: {"ops": ["op1", "op2", ...]}
+        If no ops specified, resets all ops with 0 S1 passes.
+        """
+        nb = LabNotebook(notebook_path)
+        try:
+            data = request.get_json(silent=True) or {}
+            ops = data.get("ops")
+            if ops:
+                for op_name in ops:
+                    nb.conn.execute(
+                        "DELETE FROM op_success_rates WHERE op_name = ?",
+                        (op_name,),
+                    )
+                nb.conn.commit()
+                count = len(ops)
+            else:
+                cur = nb.conn.execute(
+                    "DELETE FROM op_success_rates WHERE n_stage1_passed = 0 AND n_used >= 5"
+                )
+                nb.conn.commit()
+                count = cur.rowcount
+            return jsonify({"status": "ok", "ops_reset": count})
+        except Exception as e:
+            logger.error(f"Error in /api/reset-op-stats: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/healer/tasks")
     def api_healer_tasks():
         """List recent Code Healer tasks."""

@@ -5,6 +5,7 @@ import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
 import { candidateScore, candidateScoreBreakdown, promotionEvidence, TIER_ORDER } from '../utils/scoringEngine';
 
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
+const QUALITY_FLOOR_BEST_LOSS_MAX = 0.8;
 
 const TIER_COLORS = {
   screening: 'var(--accent-blue)',
@@ -40,6 +41,29 @@ function bestLoss(entry) {
   if (entry?.screening_loss_ratio != null) return Number(entry.screening_loss_ratio);
   if (entry?.loss_ratio != null) return Number(entry.loss_ratio);
   return null;
+}
+
+function discoveryLossDisplay(entry) {
+  if (entry?.discovery_loss_ratio != null) return Number(entry.discovery_loss_ratio);
+  if (entry?.screening_loss_ratio != null) return Number(entry.screening_loss_ratio);
+  if (entry?.loss_ratio != null) return Number(entry.loss_ratio);
+  return null;
+}
+
+function validationLossDisplay(entry) {
+  if (entry?.validation_loss_ratio != null) return Number(entry.validation_loss_ratio);
+  const tier = String(entry?.tier || '').toLowerCase();
+  if (tier === 'validation' || tier === 'breakthrough') {
+    if (entry?.investigation_loss_ratio != null) return Number(entry.investigation_loss_ratio);
+  }
+  return null;
+}
+
+function finitePositiveOrNull(value) {
+  if (value == null) return null;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return num;
 }
 
 function percentOfReference(entryLoss, refLoss) {
@@ -177,7 +201,7 @@ function ScoreCell({ entry }) {
       <div style={{ fontWeight: 600, color: scoreColor(score) }}>{score}</div>
       <div style={{ display: 'flex', height: 3, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)', marginTop: 2 }}>
         {components.map(c => (
-          <div key={c.key} style={{ width: `${c.weight}%`, background: c.color, height: '100%' }} />
+          <div key={c.key} style={{ width: `${(c.weight / total) * 100}%`, background: c.color, height: '100%' }} />
         ))}
       </div>
       {show && (
@@ -453,7 +477,9 @@ const COLUMNS = [
   { key: '_score', label: 'Discovery Score', title: 'Internal ranking score based on novelty and performance.' },
   { key: 'display_name', label: 'Architecture', title: 'Human-readable name or fingerprint of the model topology.' },
   { key: 'architecture_family', label: 'Family', title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
-  { key: '_best_loss', label: 'Loss', title: 'The lowest loss ratio achieved by this architecture across all tests.' },
+  { key: 'discovery_loss_ratio', label: 'Discovery Loss', title: 'Loss ratio on random tokens (fast triage).' },
+  { key: 'validation_loss_ratio', label: 'Validation Loss', title: 'Loss ratio on real micro-corpus (true causal performance).' },
+  { key: '_best_loss', label: 'Best Loss', title: 'The lowest loss ratio achieved by this architecture across all tests.' },
   { key: '_vs_ref', label: 'vs Ref', title: 'How this model compares to the GPT-2 baseline (lower % is better).' },
   { key: '_novelty', label: 'Novelty', title: 'Measures how unique this model is compared to existing designs.' },
   { key: 'investigation_robustness', label: 'Robustness', title: 'Consistency across different training recipes (higher is more stable).' },
@@ -508,6 +534,9 @@ function Discoveries({
   const [showReferences, setShowReferences] = useState(() =>
     typeof prefs?.showReferences === 'boolean' ? prefs.showReferences : true
   );
+  const [qualityFloorEnabled, setQualityFloorEnabled] = useState(() =>
+    typeof prefs?.qualityFloorEnabled === 'boolean' ? prefs.qualityFloorEnabled : true
+  );
   const [visibleColumns, setVisibleColumns] = useState(() =>
     Array.isArray(prefs?.visibleColumns) ? prefs.visibleColumns : COLUMNS.map(c => c.key)
   );
@@ -520,10 +549,11 @@ function Discoveries({
     try {
       if (typeof window === 'undefined') return;
       window.localStorage.setItem(DISCOVERIES_PREFS_KEY, JSON.stringify({
-        activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, visibleColumns,
+        activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences,
+        qualityFloorEnabled, visibleColumns,
       }));
     } catch {}
-  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, visibleColumns]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns]);
 
   // Handle external highlight
   useEffect(() => {
@@ -544,28 +574,36 @@ function Discoveries({
     }
   }, [highlightId]);
 
-  const fetchData = useCallback(async () => {
-    console.log('[Discoveries] Refreshing data...');
-    setLoading(true);
-    setError(null);
+  const lastDataRef = useRef(null);
+
+  const fetchData = useCallback(async (isBackground = false) => {
+    if (!isBackground) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const params = new URLSearchParams({ sort: 'composite_score', limit: '200', view: 'ranked' });
       if (activeTier !== 'all') params.set('tier', activeTier);
       const res = await apiCall(`/api/discoveries?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      setData(json);
-      setLastUpdated(new Date());
+      // Only update state if data actually changed — prevents scroll reset
+      const jsonStr = JSON.stringify(json);
+      if (jsonStr !== lastDataRef.current) {
+        lastDataRef.current = jsonStr;
+        setData(json);
+        setLastUpdated(new Date());
+      }
       setError(null);
     } catch (e) {
-      setError('Failed to load discoveries: ' + e.message);
+      if (!isBackground) setError('Failed to load discoveries: ' + e.message);
     }
-    setLoading(false);
+    if (!isBackground) setLoading(false);
   }, [activeTier]);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 15000);
+    fetchData(false);
+    const interval = setInterval(() => fetchData(true), 60000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -689,18 +727,32 @@ function Discoveries({
     return sorted.filter(e => !e?.is_reference);
   }, [sorted, showReferences]);
 
+  const qualityFiltered = useMemo(() => {
+    if (!qualityFloorEnabled) return visibilityFiltered;
+    return visibilityFiltered.filter((e) => {
+      if (e?.is_reference) return true;
+      const best = bestLoss(e);
+      return best != null && Number(best) <= QUALITY_FLOOR_BEST_LOSS_MAX;
+    });
+  }, [visibilityFiltered, qualityFloorEnabled]);
+
+  const qualityHiddenCount = useMemo(() => {
+    if (!qualityFloorEnabled) return 0;
+    return Math.max(0, (visibilityFiltered?.length || 0) - (qualityFiltered?.length || 0));
+  }, [qualityFloorEnabled, visibilityFiltered, qualityFiltered]);
+
   // Search filter
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return visibilityFiltered;
+    if (!searchQuery.trim()) return qualityFiltered;
     const q = searchQuery.trim().toLowerCase();
-    return visibilityFiltered.filter(e =>
+    return qualityFiltered.filter(e =>
       (e.display_name && e.display_name.toLowerCase().includes(q)) ||
       (e.architecture_family && e.architecture_family.toLowerCase().includes(q)) ||
       (e.graph_fingerprint && e.graph_fingerprint.toLowerCase().includes(q)) ||
       (e.result_id && e.result_id.toLowerCase().includes(q)) ||
       (e.architecture_desc && e.architecture_desc.toLowerCase().includes(q))
     );
-  }, [visibilityFiltered, searchQuery]);
+  }, [qualityFiltered, searchQuery]);
 
   const tierCounts = data?.tier_counts || {};
   const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
@@ -777,6 +829,19 @@ function Discoveries({
           {showReferences ? 'Hide references' : 'Show references'}
         </button>
         <button
+          onClick={() => setQualityFloorEnabled(v => !v)}
+          aria-label={qualityFloorEnabled ? 'Disable quality floor' : 'Enable quality floor'}
+          style={{
+            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
+            background: qualityFloorEnabled ? 'rgba(63, 185, 80, 0.14)' : 'transparent',
+            border: `1px solid ${qualityFloorEnabled ? 'var(--accent-green)' : 'var(--border)'}`,
+            borderRadius: 4, color: qualityFloorEnabled ? 'var(--accent-green)' : 'var(--text-secondary)',
+          }}
+          title={`Hide low-quality entries where best loss > ${QUALITY_FLOOR_BEST_LOSS_MAX.toFixed(1)}`}
+        >
+          {qualityFloorEnabled ? `Quality floor ≤ ${QUALITY_FLOOR_BEST_LOSS_MAX.toFixed(1)}` : 'Show all quality'}
+        </button>
+        <button
           onClick={() => setShowColumnPicker(!showColumnPicker)}
           style={{
             fontSize: 11, padding: '5px 12px', cursor: 'pointer',
@@ -839,10 +904,52 @@ function Discoveries({
         />
         {searchQuery && (
           <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-            {filtered.length} of {sorted.length} entries
+            {filtered.length} of {qualityFiltered.length} entries
+          </span>
+        )}
+        {qualityFloorEnabled && qualityHiddenCount > 0 && (
+          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent-yellow)' }}>
+            {qualityHiddenCount} low-quality hidden
           </span>
         )}
       </div>
+
+      {/* Reference Baselines Banner */}
+      {showReferences && sorted.filter(e => e.is_reference).length > 0 && (
+        <div style={{
+          marginBottom: 14, padding: '10px 14px',
+          background: 'rgba(188, 140, 255, 0.06)',
+          border: '1px solid rgba(188, 140, 255, 0.25)',
+          borderRadius: 6,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-purple)', marginBottom: 8 }}>
+            Reference Baselines
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {sorted.filter(e => e.is_reference).map(ref => (
+              <div key={ref.entry_id || ref.result_id} style={{
+                padding: '6px 12px', borderRadius: 5,
+                background: 'rgba(188, 140, 255, 0.10)',
+                border: '1px solid rgba(188, 140, 255, 0.18)',
+                fontSize: 11, lineHeight: 1.5, minWidth: 130,
+              }}>
+                <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                  {ref.reference_name || ref.display_name || ref.architecture_desc || 'Reference'}
+                </div>
+                <div style={{ color: 'var(--text-muted)' }}>
+                  {ref.architecture_family || '--'}
+                  {ref._best_loss != null && <span style={{ marginLeft: 8 }}>Loss: {ref._best_loss.toFixed(4)}</span>}
+                </div>
+                {ref.param_count != null && (
+                  <div style={{ color: 'var(--text-muted)' }}>
+                    {(ref.param_count / 1e6).toFixed(1)}M params
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error && <p style={{ color: 'var(--accent-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>}
       {statusError && <p style={{ color: 'var(--accent-red)', fontSize: 12, marginBottom: 8 }}>{statusError}</p>}
@@ -860,12 +967,12 @@ function Discoveries({
           )}
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
+        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
+          <table className="data-table table-wide">
+            <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card, #1a1a2e)' }}>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                <th style={{ ...thStyle, width: 26 }} aria-label="Pinned marker" />
-                <th style={thStyle}>#</th>
+                <th style={{ ...thStyle, width: 26, position: 'sticky', top: 0, background: 'inherit' }} aria-label="Pinned marker" />
+                <th style={{ ...thStyle, position: 'sticky', top: 0, background: 'inherit' }}>#</th>
                 {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => (
                   <th
                     key={col.key}
@@ -873,6 +980,9 @@ function Discoveries({
                     title={col.title}
                     style={{
                       ...thStyle,
+                      position: 'sticky',
+                      top: 0,
+                      background: 'inherit',
                       width: col.width ? `${col.width}px` : undefined,
                       cursor: col.key === '_actions' ? 'default' : 'pointer',
                       userSelect: 'none',
@@ -948,6 +1058,20 @@ function Discoveries({
                                 </span>
                               </td>
                             );
+                          case 'discovery_loss_ratio':
+                            const discoveryDisplay = discoveryLossDisplay(entry);
+                            return (
+                              <td key={col.key} style={{ ...tdStyle, color: lossColor(discoveryDisplay), fontFamily: 'monospace' }}>
+                                {discoveryDisplay != null ? Number(discoveryDisplay).toFixed(4) : '--'}
+                              </td>
+                            );
+                          case 'validation_loss_ratio':
+                            const validationDisplay = validationLossDisplay(entry);
+                            return (
+                              <td key={col.key} style={{ ...tdStyle, color: lossColor(validationDisplay), fontFamily: 'monospace' }}>
+                                {validationDisplay != null ? Number(validationDisplay).toFixed(4) : '--'}
+                              </td>
+                            );
                           case '_best_loss':
                             return (
                               <td key={col.key} style={{ ...tdStyle, color: lossColor(entry._best_loss), fontFamily: 'monospace' }}>
@@ -980,7 +1104,7 @@ function Discoveries({
                               </td>
                             );
                           case 'jacobian_spectral_norm':
-                            const specVal = entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm;
+                            const specVal = finitePositiveOrNull(entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm);
                             return <td key={col.key} style={tdStyle}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
                           case 'init_sensitivity_std':
                             return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;

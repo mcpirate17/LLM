@@ -22,6 +22,9 @@ from .primitives import (
 )
 from .graph import ComputationGraph, ShapeInfo, OpNode
 
+# Alias for backward compatibility — some test files import Node from grammar
+Node = OpNode
+
 
 @dataclass
 class GrammarConfig:
@@ -36,7 +39,7 @@ class GrammarConfig:
     split_prob: float = 0.3     # probability of branching into parallel paths
     stability_check: bool = True  # validate architectures before compilation
     merge_prob: float = 0.4     # probability of merging paths
-    risky_op_prob: float = 0.2  # probability of using numerically risky ops
+    risky_op_prob: float = 0.6  # probability of using numerically risky ops
     freq_domain_prob: float = 0.15  # probability of FFT detour
     # Category weights (higher = more likely to be chosen)
     category_weights: Dict[str, float] = field(default_factory=lambda: {
@@ -50,12 +53,13 @@ class GrammarConfig:
         "sequence": 1.2,
         "frequency": 1.0,  # Increased from 0.5 to encourage basic ops
         "math_space": 1.5,
-        "functional": 1.0,
+        "functional": 1.5,
     })
     # Excluded op names (if any)
     excluded_ops: Set[str] = field(default_factory=set)
     # Per-op weight multipliers (op_name -> weight, default 1.0 if absent).
     # Values < 1.0 soft-penalize weak ops; values > 1.0 boost strong ops.
+    # Empty by default: the runtime learning system derives weights from actual data.
     op_weights: Dict[str, float] = field(default_factory=dict)
     
     # Structured Sparsity Constraints (Z7)
@@ -428,6 +432,8 @@ def _pick_op(
         for op in list_primitives(cat):
             if op.name in config.excluded_ops:
                 continue
+            if not op.standalone:
+                continue
             if op.n_inputs != len(input_shapes):
                 continue
             if op.numerically_risky and rng.random() > config.risky_op_prob:
@@ -619,6 +625,8 @@ def _apply_parameterized(graph, config, rng, available_nodes,
         for op in list_primitives(cat):
             if op.name in config.excluded_ops:
                 continue
+            if not op.standalone:
+                continue
             # Only pick 1-input ops here; 2-input ops go through _apply_binary
             if op.n_inputs != 1:
                 continue
@@ -660,6 +668,8 @@ def _apply_parameterized(graph, config, rng, available_nodes,
         elif op_name == "nm_sparse_linear":
             op_config["n"] = 2
             op_config["m"] = 4
+        elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk", "rwkv_time_mixing"):
+            op_config["mlp_ratio"] = rng.choice([2.0, 3.0, 4.0])
         # New parameterized ops don't need special config beyond defaults
         new_id = graph.add_op(op_name, [node_id], config=op_config)
     except ValueError:

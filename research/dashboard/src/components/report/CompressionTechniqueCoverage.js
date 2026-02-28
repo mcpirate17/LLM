@@ -29,10 +29,11 @@ export default function CompressionTechniqueCoverage({ programs }) {
       const m = byTechnique[key];
       m.count++;
       if (p.stage1_passed) m.s1Pass++;
-      if (p.loss_ratio != null) { m.totalLoss += p.loss_ratio; m.lossCount++; }
+      const lr = p.validation_loss_ratio != null ? p.validation_loss_ratio : p.loss_ratio;
+      if (lr != null) { m.totalLoss += lr; m.lossCount++; }
       if (p.param_count != null) { m.totalParams += p.param_count; m.paramsCount++; }
-      if (p.loss_ratio != null && p.loss_ratio < m.bestLoss) {
-        m.bestLoss = p.loss_ratio;
+      if (lr != null && lr < m.bestLoss) {
+        m.bestLoss = lr;
         m.bestFingerprint = (p.graph_fingerprint || '').slice(0, 12);
       }
     }
@@ -127,7 +128,7 @@ export default function CompressionTechniqueCoverage({ programs }) {
         />
       </div>
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table className="data-table table-compact">
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
               <th onClick={() => handleSort('label')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>

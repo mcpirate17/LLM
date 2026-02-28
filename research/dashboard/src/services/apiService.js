@@ -35,11 +35,11 @@ export const apiCall = (endpoint, options = {}) => {
     config.body = JSON.stringify(options.body);
   }
 
-  return fetch(url, config).then(handleResponse);
+  return fetch(url, config);
 };
 
-const get = (endpoint) => apiCall(endpoint, { method: 'GET' });
-const post = (endpoint, body) => apiCall(endpoint, { method: 'POST', body });
+const get = (endpoint) => apiCall(endpoint, { method: 'GET' }).then(handleResponse);
+const post = (endpoint, body) => apiCall(endpoint, { method: 'POST', body }).then(handleResponse);
 
 export const apiService = {
   // Experiments

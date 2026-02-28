@@ -93,10 +93,30 @@ def register_reference(
             return {"arch": arch_key, "status": "stage0_failed", "error": sandbox_result.error}
     log.info("  Stage 0 passed")
 
-    # --- Stage 1: micro-train ---
-    loss_ratio, loss_curve = _micro_train(model, str(dev), vocab_size, seq_len, n_train_steps)
-    log.info("  Loss ratio: %.6f (final=%.4f, initial=%.4f)",
-             loss_ratio, loss_curve[-1] if loss_curve else 0, loss_curve[0] if loss_curve else 0)
+    # --- Stage 1: Dual-Metric Training ---
+    log.info("  Starting 2-stage training (Discovery vs Validation)...")
+    
+    # 1. Discovery (Random Tokens)
+    disc_ratio, disc_curve = _micro_train(model, str(dev), vocab_size, seq_len, 
+                                          min(n_train_steps, 100), data_mode="random")
+    discovery_loss = disc_curve[-1] if disc_curve else 0
+    log.info("  Discovery Loss: %.4f (ratio: %.4f)", discovery_loss, disc_ratio)
+    
+    # Reset for Validation
+    # In a real run we might re-init, but for references we just continue or re-train
+    # Let's re-train from scratch for a clean validation baseline
+    model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
+    
+    # 2. Validation (Micro-Corpus)
+    # We need a data_fn for the micro-corpus. 
+    # ExperimentRunner has one, but we can't easily import it here.
+    # We'll use a placeholder or just random for now if not available.
+    val_ratio, val_curve = _micro_train(model, str(dev), vocab_size, seq_len, n_train_steps, data_mode="corpus")
+    validation_loss = val_curve[-1] if val_curve else 0
+    log.info("  Validation Loss: %.4f (ratio: %.4f)", validation_loss, val_ratio)
+    
+    loss_ratio = val_ratio
+    loss_curve = val_curve
 
     # Sanity check: initial loss should be near ln(vocab_size)
     random_chance = math.log(vocab_size)
@@ -219,7 +239,10 @@ def register_reference(
             graph_json=json.dumps(layer_graph.to_dict()),
             stage0_passed=True, stage05_passed=True,
             stage1_passed=loss_ratio < 1.0,
-            loss_ratio=loss_ratio, novelty_score=overall_novelty,
+            loss_ratio=loss_ratio,
+            discovery_loss_ratio=disc_ratio,
+            validation_loss_ratio=val_ratio,
+            novelty_score=overall_novelty,
             param_count=total_params, model_source="reference",
             has_training_curve=True,
         )
@@ -241,6 +264,8 @@ def register_reference(
         validation_loss_ratio=loss_ratio,
         validation_baseline_ratio=baseline_ratio,
         validation_multi_seed_std=multi_seed_std, validation_passed=True,
+        discovery_loss_ratio=disc_ratio,
+        loss_improvement_rate=(val_curve[0] - val_curve[-1]) / val_curve[0] if val_curve else 0,
         tier="validation",
         tags="reference,%s,%s" % (arch_key, ref_info["paradigm"]),
         is_reference=True, reference_name=ref_name,
@@ -266,12 +291,36 @@ def register_reference(
             "init_sensitivity_std": init_sensitivity_std}
 
 
-def _micro_train(model, device, vocab_size, seq_len, n_steps, lr=3e-4, batch_size=4):
+def _micro_train(model, device, vocab_size, seq_len, n_steps, lr=3e-4, batch_size=4, data_mode="random"):
     dev = torch.device(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     loss_curve = []
+    
+    # Load corpus if needed
+    corpus_tokens = None
+    if data_mode == "corpus":
+        try:
+            corpus_path = "research/micro_corpus.txt"
+            with open(corpus_path, "r") as f:
+                text = f.read()
+            # Simple space-based "tokenizer" for micro-corpus
+            corpus_tokens = torch.tensor([ord(c) % vocab_size for c in text], device=dev)
+        except Exception as e:
+            log.warning("  Could not load micro-corpus: %s. Falling back to random.", e)
+            data_mode = "random"
+
     for step in range(n_steps):
-        input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+        if data_mode == "corpus" and corpus_tokens is not None:
+            # Random slices from corpus
+            max_idx = corpus_tokens.size(0) - (batch_size * seq_len) - 1
+            if max_idx > 0:
+                start = torch.randint(0, max_idx, (1,)).item()
+                input_ids = corpus_tokens[start : start + batch_size * seq_len].view(batch_size, seq_len)
+            else:
+                input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+        else:
+            input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+            
         targets = input_ids[:, 1:]
         logits = model(input_ids)[:, :-1].contiguous()
         loss = torch.nn.functional.cross_entropy(

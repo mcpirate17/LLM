@@ -147,6 +147,14 @@ This project uses a shared task board in `.current_plan.md`. Before working:
 
 Active agents: claude-opus, gemini, codex. Always re-read the plan before editing to avoid conflicts.
 
+### Rules of Engagement for Shared Plans
+
+1. **Claim before coding.** Update the plan claim AND `.current_plan.md` before writing code. Do NOT overwrite another agent's existing claim.
+2. **No silent reclaims.** If a task is claimed, don't change the owner. If it seems stale (>48h), add a note asking for status instead.
+3. **Don't mark done prematurely.** A task is only `[✓]` when code compiles, tests pass, and the work is listed in `.current_plan.md` completed section.
+4. **Conflict resolution.** First agent with a timestamped `.current_plan.md` entry wins. Second agent's changes get reviewed for merge by the user.
+5. **Re-read the plan file fresh** before claiming — another agent may have updated it since your last read.
+
 ## Testing
 
 ```bash

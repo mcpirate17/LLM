@@ -1,18 +1,13 @@
 """Auto-generated Python fallback kernel for reciprocal."""
+
 import torch
-import torch.nn as nn
 
-
-class ComponentHandler:
+class ReciprocalFallback:
     """Fallback handler for reciprocal."""
 
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return nn.Identity()
-
-    def forward(self, inputs, config):
-        x = inputs["x"]
-        # TODO: implement reciprocal
-        return {"y": x}
+    def __call__(self, module, x):
+        """Execute reciprocal operation."""
+        # Differentiable stable reciprocal: 1 / (x + epsilon*sgn(x))
+        ones = torch.ones_like(x)
+        sign = torch.where(x >= 0, ones, -ones)
+        return 1.0 / (x + 1e-6 * sign.clamp(min=1.0))

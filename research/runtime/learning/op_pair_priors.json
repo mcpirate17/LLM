@@ -1,0 +1,779 @@
+{
+  "generated_at": 1772246742.0407338,
+  "soft_fail": 0.6,
+  "hard_fail": 0.8,
+  "pairs": {
+    "gelu->concat": {
+      "p_fail": 0.7938,
+      "n_total": 93
+    },
+    "split2->gelu": {
+      "p_fail": 0.79,
+      "n_total": 96
+    },
+    "learnable_scale->add": {
+      "p_fail": 0.7333,
+      "n_total": 11
+    },
+    "mul->matmul": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "silu->concat": {
+      "p_fail": 0.8,
+      "n_total": 66
+    },
+    "silu->mul": {
+      "p_fail": 0.7143,
+      "n_total": 10
+    },
+    "split2->concat": {
+      "p_fail": 0.8051,
+      "n_total": 273
+    },
+    "split2->silu": {
+      "p_fail": 0.7887,
+      "n_total": 67
+    },
+    "cos->add": {
+      "p_fail": 0.7391,
+      "n_total": 19
+    },
+    "relu->concat": {
+      "p_fail": 0.7969,
+      "n_total": 60
+    },
+    "split2->relu": {
+      "p_fail": 0.8065,
+      "n_total": 58
+    },
+    "tanh->add": {
+      "p_fail": 0.8,
+      "n_total": 16
+    },
+    "add->tanh": {
+      "p_fail": 0.6154,
+      "n_total": 9
+    },
+    "exp->add": {
+      "p_fail": 0.6429,
+      "n_total": 10
+    },
+    "learnable_bias->split2": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "sigmoid->concat": {
+      "p_fail": 0.7317,
+      "n_total": 78
+    },
+    "split2->sigmoid": {
+      "p_fail": 0.7262,
+      "n_total": 80
+    },
+    "square->mul": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "learnable_bias->concat": {
+      "p_fail": 0.9318,
+      "n_total": 40
+    },
+    "split2->learnable_bias": {
+      "p_fail": 0.9333,
+      "n_total": 41
+    },
+    "cos->sub": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "concat->add": {
+      "p_fail": 0.8584,
+      "n_total": 109
+    },
+    "concat->sign_ste": {
+      "p_fail": 0.75,
+      "n_total": 12
+    },
+    "sign_ste->add": {
+      "p_fail": 0.6818,
+      "n_total": 18
+    },
+    "learnable_scale->concat": {
+      "p_fail": 0.913,
+      "n_total": 42
+    },
+    "split2->learnable_scale": {
+      "p_fail": 0.9167,
+      "n_total": 44
+    },
+    "concat->split2": {
+      "p_fail": 0.7895,
+      "n_total": 15
+    },
+    "sin->concat": {
+      "p_fail": 0.8548,
+      "n_total": 58
+    },
+    "split2->sin": {
+      "p_fail": 0.8571,
+      "n_total": 59
+    },
+    "concat->relu": {
+      "p_fail": 0.6875,
+      "n_total": 12
+    },
+    "abs->mul": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "split2->square": {
+      "p_fail": 0.8081,
+      "n_total": 95
+    },
+    "square->concat": {
+      "p_fail": 0.8061,
+      "n_total": 94
+    },
+    "concat->minimum": {
+      "p_fail": 0.6471,
+      "n_total": 13
+    },
+    "concat->gelu": {
+      "p_fail": 0.8125,
+      "n_total": 12
+    },
+    "concat->linear_proj": {
+      "p_fail": 0.8788,
+      "n_total": 29
+    },
+    "linear_proj->concat": {
+      "p_fail": 0.6667,
+      "n_total": 8
+    },
+    "split2->abs": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "split2->split2": {
+      "p_fail": 0.8,
+      "n_total": 16
+    },
+    "maximum->split2": {
+      "p_fail": 0.7647,
+      "n_total": 13
+    },
+    "split2->matmul": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "mul->add": {
+      "p_fail": 0.8235,
+      "n_total": 30
+    },
+    "sin->split2": {
+      "p_fail": 0.7692,
+      "n_total": 9
+    },
+    "neg->sub": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "relu->sub": {
+      "p_fail": 0.6667,
+      "n_total": 8
+    },
+    "concat->silu": {
+      "p_fail": 0.85,
+      "n_total": 16
+    },
+    "linear_proj->add": {
+      "p_fail": 0.8261,
+      "n_total": 42
+    },
+    "linear_proj_up->linear_proj": {
+      "p_fail": 0.8421,
+      "n_total": 15
+    },
+    "matmul->concat": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "sigmoid->outer_product": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "abs->maximum": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "maximum->mul": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "fused_linear_gelu->add": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "gelu->outer_product": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "abs->add": {
+      "p_fail": 0.875,
+      "n_total": 28
+    },
+    "minimum->add": {
+      "p_fail": 0.7333,
+      "n_total": 26
+    },
+    "relu->mul": {
+      "p_fail": 0.6429,
+      "n_total": 10
+    },
+    "concat->mul": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "gelu->mul": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "maximum->abs": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "maximum->add": {
+      "p_fail": 0.8684,
+      "n_total": 34
+    },
+    "conv1d_seq->add": {
+      "p_fail": 0.7222,
+      "n_total": 14
+    },
+    "silu->sub": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "local_window_attn->add": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "add->add": {
+      "p_fail": 0.8571,
+      "n_total": 17
+    },
+    "silu->add": {
+      "p_fail": 0.8333,
+      "n_total": 20
+    },
+    "minimum->concat": {
+      "p_fail": 0.7333,
+      "n_total": 11
+    },
+    "split2->minimum": {
+      "p_fail": 0.7778,
+      "n_total": 14
+    },
+    "abs->sub": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "sub->abs": {
+      "p_fail": 0.7857,
+      "n_total": 10
+    },
+    "sub->cos": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "sub->sub": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "mul->cos": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "cos->matmul": {
+      "p_fail": 0.7857,
+      "n_total": 10
+    },
+    "square->sub": {
+      "p_fail": 0.6,
+      "n_total": 11
+    },
+    "split2->tanh": {
+      "p_fail": 0.8205,
+      "n_total": 74
+    },
+    "tanh->concat": {
+      "p_fail": 0.8228,
+      "n_total": 75
+    },
+    "concat->outer_product": {
+      "p_fail": 0.6842,
+      "n_total": 15
+    },
+    "outer_product->split2": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "relu->add": {
+      "p_fail": 0.7619,
+      "n_total": 17
+    },
+    "concat->neg": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "learnable_scale->split2": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "cos->outer_product": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "square->add": {
+      "p_fail": 0.76,
+      "n_total": 21
+    },
+    "mul->sub": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "sub->add": {
+      "p_fail": 0.7812,
+      "n_total": 28
+    },
+    "concat->maximum": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "concat->square": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "sub->relu": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "add->minimum": {
+      "p_fail": 0.8,
+      "n_total": 16
+    },
+    "cos->maximum": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "learnable_bias->add": {
+      "p_fail": 0.8,
+      "n_total": 11
+    },
+    "maximum->maximum": {
+      "p_fail": 0.7059,
+      "n_total": 13
+    },
+    "minimum->maximum": {
+      "p_fail": 0.7333,
+      "n_total": 11
+    },
+    "outer_product->maximum": {
+      "p_fail": 0.7857,
+      "n_total": 10
+    },
+    "outer_product->nm_sparse_linear": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "relu->outer_product": {
+      "p_fail": 0.8125,
+      "n_total": 12
+    },
+    "concat->matmul": {
+      "p_fail": 0.8333,
+      "n_total": 14
+    },
+    "matmul->sub": {
+      "p_fail": 0.8125,
+      "n_total": 12
+    },
+    "sub->split2": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "add->maximum": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "add->softmax_last": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "integral_kernel->outer_product": {
+      "p_fail": 0.7692,
+      "n_total": 9
+    },
+    "maximum->outer_product": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "rmsnorm->add": {
+      "p_fail": 0.6667,
+      "n_total": 11
+    },
+    "tanh->maximum": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "minimum->integral_kernel": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "minimum->outer_product": {
+      "p_fail": 0.7333,
+      "n_total": 11
+    },
+    "maximum->silu": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "add->outer_product": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "block_sparse_linear->outer_product": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "outer_product->add": {
+      "p_fail": 0.7576,
+      "n_total": 29
+    },
+    "gelu->add": {
+      "p_fail": 0.8636,
+      "n_total": 18
+    },
+    "softmax_last->minimum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "tanh->split2": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "split2->sub": {
+      "p_fail": 0.6471,
+      "n_total": 13
+    },
+    "matmul->add": {
+      "p_fail": 0.8696,
+      "n_total": 19
+    },
+    "concat->sub": {
+      "p_fail": 0.75,
+      "n_total": 12
+    },
+    "minimum->matmul": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "sigmoid->minimum": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "relu->split2": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "sign_ste->maximum": {
+      "p_fail": 0.6667,
+      "n_total": 8
+    },
+    "gelu->minimum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "neg->add": {
+      "p_fail": 0.8333,
+      "n_total": 26
+    },
+    "sigmoid->sub": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "mul->concat": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "sin->mul": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "split2->mul": {
+      "p_fail": 0.7857,
+      "n_total": 10
+    },
+    "add->neg": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "selective_scan->add": {
+      "p_fail": 0.7143,
+      "n_total": 10
+    },
+    "neg->maximum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "sin->maximum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "sliding_window_mask->minimum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "add->concat": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "sigmoid->add": {
+      "p_fail": 0.75,
+      "n_total": 12
+    },
+    "split2->add": {
+      "p_fail": 0.6667,
+      "n_total": 8
+    },
+    "sliding_window_mask->add": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "concat->abs": {
+      "p_fail": 0.75,
+      "n_total": 12
+    },
+    "maximum->concat": {
+      "p_fail": 0.6364,
+      "n_total": 7
+    },
+    "split2->maximum": {
+      "p_fail": 0.7895,
+      "n_total": 15
+    },
+    "add->matmul": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "integral_kernel->add": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "topk_gate->add": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "sign_ste->split2": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "cos->minimum": {
+      "p_fail": 0.7143,
+      "n_total": 10
+    },
+    "concat->softmax_last": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "mul->outer_product": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "abs->matmul": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "sigmoid->split2": {
+      "p_fail": 0.6667,
+      "n_total": 8
+    },
+    "mul->split2": {
+      "p_fail": 0.6154,
+      "n_total": 9
+    },
+    "concat->concat": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "silu->maximum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "split2->sign_ste": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "add->sigmoid": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "sin->add": {
+      "p_fail": 0.7368,
+      "n_total": 15
+    },
+    "neg->concat": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "split2->selective_scan": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "minimum->minimum": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "linear_proj_up->silu": {
+      "p_fail": 0.8333,
+      "n_total": 14
+    },
+    "silu->linear_proj_down": {
+      "p_fail": 0.8333,
+      "n_total": 14
+    },
+    "add->sin": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "gelu->linear_proj_down": {
+      "p_fail": 0.6429,
+      "n_total": 10
+    },
+    "linear_proj_up->gelu": {
+      "p_fail": 0.6667,
+      "n_total": 11
+    },
+    "relu->maximum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "linear_proj_up->add": {
+      "p_fail": 0.8636,
+      "n_total": 18
+    },
+    "linear_proj_up->tanh": {
+      "p_fail": 0.8125,
+      "n_total": 12
+    },
+    "rwkv_channel->add": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "split2->linear_proj_down": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "tanh->linear_proj_down": {
+      "p_fail": 0.8125,
+      "n_total": 12
+    },
+    "concat->cos": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "sub->mul": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "semi_structured_2_4_linear->concat": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "split2->semi_structured_2_4_linear": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "linear_proj_up->split2": {
+      "p_fail": 0.7692,
+      "n_total": 9
+    },
+    "add->split2": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "split2->neg": {
+      "p_fail": 0.75,
+      "n_total": 8
+    },
+    "linear_proj_down->split2": {
+      "p_fail": 0.7692,
+      "n_total": 9
+    },
+    "linear_proj_up->relu": {
+      "p_fail": 0.8421,
+      "n_total": 15
+    },
+    "relu->linear_proj_down": {
+      "p_fail": 0.8333,
+      "n_total": 14
+    },
+    "softmax_last->add": {
+      "p_fail": 0.8125,
+      "n_total": 12
+    },
+    "linear_proj_down->add": {
+      "p_fail": 0.6875,
+      "n_total": 12
+    },
+    "abs->concat": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "split2->basis_expansion": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "conv1d_seq->split2": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "linear_proj_up->concat": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "square->maximum": {
+      "p_fail": 0.6923,
+      "n_total": 9
+    },
+    "concat->learnable_bias": {
+      "p_fail": 0.6,
+      "n_total": 6
+    },
+    "gelu->sub": {
+      "p_fail": 0.7,
+      "n_total": 6
+    },
+    "concat->tanh": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "linear_proj_down->linear_proj": {
+      "p_fail": 0.7857,
+      "n_total": 10
+    },
+    "causal_mask->add": {
+      "p_fail": 0.7273,
+      "n_total": 7
+    },
+    "sin->minimum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    },
+    "rmsnorm->minimum": {
+      "p_fail": 0.6667,
+      "n_total": 5
+    }
+  }
+}

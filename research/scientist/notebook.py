@@ -352,6 +352,15 @@ CREATE TABLE IF NOT EXISTS failure_signatures (
     last_updated REAL
 );
 
+CREATE TABLE IF NOT EXISTS op_rehabilitation_cache (
+    op_name TEXT PRIMARY KEY,
+    compile_passed INTEGER,
+    forward_passed INTEGER,
+    error_message TEXT,
+    tested_at REAL,
+    model_dim INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS learning_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp REAL NOT NULL,
@@ -2243,7 +2252,8 @@ class LabNotebook:
         rows = self.conn.execute(
             """SELECT graph_json, stage1_passed, error_type
                FROM program_results
-               WHERE experiment_id = ? AND graph_json IS NOT NULL""",
+               WHERE experiment_id = ? AND graph_json IS NOT NULL
+                 AND stage0_passed = 1 AND stage05_passed = 1""",
             (experiment_id,),
         ).fetchall()
 
@@ -2291,7 +2301,9 @@ class LabNotebook:
             return 0
         rows = self.conn.execute(
             """SELECT graph_json, stage1_passed, error_type
-               FROM program_results WHERE graph_json IS NOT NULL"""
+               FROM program_results
+               WHERE graph_json IS NOT NULL
+                 AND stage0_passed = 1 AND stage05_passed = 1"""
         ).fetchall()
         sig_stats: Dict[str, Dict] = {}
         for r in rows:
@@ -2320,8 +2332,49 @@ class LabNotebook:
         LOGGER.info("Backfilled %d failure signatures from existing results", len(sig_stats))
         return len(sig_stats)
 
-    def get_failure_signature_blocklist(self, min_seen: int = 5,
-                                        max_fail_rate: float = 0.85) -> Dict[str, float]:
+    def recompute_failure_signatures(self) -> int:
+        """Delete and rebuild failure_signatures from scratch using S1-only failures.
+
+        Unlike backfill_failure_signatures(), this always runs (even if data exists)
+        and only counts programs that passed S0+S0.5 but failed at S1 as failures.
+        This cleans up historically contaminated data from S0.5 causality failures.
+        """
+        self.conn.execute("DELETE FROM failure_signatures")
+        rows = self.conn.execute(
+            """SELECT graph_json, stage1_passed, error_type
+               FROM program_results
+               WHERE graph_json IS NOT NULL
+                 AND stage0_passed = 1 AND stage05_passed = 1"""
+        ).fetchall()
+        sig_stats: Dict[str, Dict] = {}
+        for r in rows:
+            bigrams = self._extract_op_bigrams(r[0])
+            s1 = r[1]
+            err = r[2] or ""
+            for bg in bigrams:
+                if bg not in sig_stats:
+                    sig_stats[bg] = {"n_f": 0, "n_s": 0, "errs": set()}
+                if s1:
+                    sig_stats[bg]["n_s"] += 1
+                else:
+                    sig_stats[bg]["n_f"] += 1
+                    if err:
+                        sig_stats[bg]["errs"].add(err)
+        now = time.time()
+        for sig, st in sig_stats.items():
+            errs_str = ",".join(sorted(st["errs"])[:3]) if st["errs"] else None
+            self.conn.execute(
+                """INSERT INTO failure_signatures
+                   (signature, n_failures, n_successes, error_types, last_updated)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (sig, st["n_f"], st["n_s"], errs_str, now),
+            )
+        self._maybe_commit()
+        LOGGER.info("Recomputed %d failure signatures (S1-only failures)", len(sig_stats))
+        return len(sig_stats)
+
+    def get_failure_signature_blocklist(self, min_seen: int = 20,
+                                        max_fail_rate: float = 0.95) -> Dict[str, float]:
         """Return op-pair bigrams that consistently fail.
 
         Returns {signature: penalty} where penalty is 0.0 (hard block) for
@@ -2343,6 +2396,49 @@ class LabNotebook:
                 penalty = max(0.0, 0.3 * (1.0 - fail_rate) / (1.0 - max_fail_rate))
                 blocklist[r[0]] = round(penalty, 2)
         return blocklist
+
+    # ── Op Rehabilitation Cache ──
+
+    def get_op_rehabilitation_cache(self, max_age_hours: float = 24.0) -> Dict[str, Dict]:
+        """Return cached op rehabilitation results, filtered by recency.
+
+        Returns {op_name: {compile_passed, forward_passed, error_message, tested_at, model_dim}}.
+        """
+        cutoff = time.time() - max_age_hours * 3600
+        rows = self.conn.execute(
+            """SELECT op_name, compile_passed, forward_passed, error_message, tested_at, model_dim
+               FROM op_rehabilitation_cache
+               WHERE tested_at >= ?""",
+            (cutoff,),
+        ).fetchall()
+        cache: Dict[str, Dict] = {}
+        for r in rows:
+            cache[r[0]] = {
+                "compile_passed": bool(r[1]),
+                "forward_passed": bool(r[2]),
+                "error_message": r[3],
+                "tested_at": r[4],
+                "model_dim": r[5],
+            }
+        return cache
+
+    def save_op_rehabilitation_result(self, op_name: str, compile_passed: bool,
+                                       forward_passed: bool, error_message: Optional[str],
+                                       model_dim: int) -> None:
+        """Store a rehabilitation test result."""
+        self.conn.execute(
+            """INSERT INTO op_rehabilitation_cache
+               (op_name, compile_passed, forward_passed, error_message, tested_at, model_dim)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(op_name) DO UPDATE SET
+                compile_passed = excluded.compile_passed,
+                forward_passed = excluded.forward_passed,
+                error_message = excluded.error_message,
+                tested_at = excluded.tested_at,
+                model_dim = excluded.model_dim""",
+            (op_name, int(compile_passed), int(forward_passed), error_message, time.time(), model_dim),
+        )
+        self._maybe_commit()
 
     # ── Learning Log ──
 
@@ -3783,9 +3879,9 @@ class LabNotebook:
             # Fields for client-side candidateScore computation
             "pr.loss_ratio AS loss_ratio, "
             "pr.discovery_loss AS discovery_loss, "
-            "COALESCE(l.discovery_loss_ratio, pr.discovery_loss_ratio) AS discovery_loss_ratio, "
+            "pr.discovery_loss_ratio AS _pr_discovery_loss_ratio, "
             "pr.validation_loss AS validation_loss, "
-            "COALESCE(l.validation_loss_ratio, pr.validation_loss_ratio) AS validation_loss_ratio, "
+            "pr.validation_loss_ratio AS _pr_validation_loss_ratio, "
             "pr.generalization_gap AS generalization_gap, "
             "pr.novelty_score AS novelty_score, "
             "pr.final_loss AS final_loss, "
@@ -3830,6 +3926,12 @@ class LabNotebook:
         results = []
         for r in rows:
             d = dict(r)
+            # Prefer leaderboard-curated phase metrics, but backfill from raw
+            # program_results when leaderboard fields are absent.
+            if d.get("discovery_loss_ratio") is None and d.get("_pr_discovery_loss_ratio") is not None:
+                d["discovery_loss_ratio"] = d.get("_pr_discovery_loss_ratio")
+            if d.get("validation_loss_ratio") is None and d.get("_pr_validation_loss_ratio") is not None:
+                d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
             if include_family:
                 d["architecture_family"] = self._classify_architecture_family(
                     graph_json=d.get("_graph_json"),
@@ -3843,6 +3945,8 @@ class LabNotebook:
             d["novelty_confidence"] = d.pop("_novelty_confidence", None)
             d["cka_source"] = d.pop("_cka_source", None)
             d["routing_confidence_mean"] = d.pop("_routing_confidence_mean", None)
+            d.pop("_pr_discovery_loss_ratio", None)
+            d.pop("_pr_validation_loss_ratio", None)
             
             if d.get("investigation_best_training"):
                 try:

@@ -100,6 +100,12 @@ def ultrametric_attention(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
     x_i = x.unsqueeze(2)  # (B, S, 1, D)
     x_j = x.unsqueeze(1)  # (B, 1, S, D)
     dist = padic_distance(x_i, x_j, p).mean(dim=-1)  # (B, S, S)
+    
+    # Apply causal mask if S > 1
+    if S > 1:
+        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
+        dist.masked_fill_(mask, float('inf'))
+        
     # Invert: close = high weight
     weights = torch.softmax(-dist, dim=-1)
     return torch.bmm(weights, x)
@@ -125,15 +131,18 @@ def execute_padic_expand(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 def execute_ultrametric_attn(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Ultrametric attention."""
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
+        return aria_core.ultrametric_attention_f32(x, float(DEFAULT_P))
     return ultrametric_attention(x)
 
 
 def execute_padic_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Gate activations using smooth p-adic valuation signal."""
     if _HAS_ARIA_CORE and x.is_contiguous():
-        y = torch.empty_like(x)
-        aria_core.padic_gate_f32(x, y, float(DEFAULT_P))
-        return y
+        try:
+            return aria_core.padic_gate_f32(x, float(DEFAULT_P))
+        except TypeError:
+            pass  # Fall through to Python path
     valuation = padic_valuation(x).clamp(min=-10.0, max=10.0)
     gate = torch.sigmoid(valuation)
     return x * gate

@@ -89,6 +89,37 @@ function DesignerNode({ data, selected, onHelp }) {
         </div>
       )}
 
+      {data.routing && (
+        <div className="node-routing-overlay" title="Routing efficiency & telemetry">
+          {data.routing.savings_ratio != null && (
+            <span className="routing-savings">-{Math.round(data.routing.savings_ratio * 100)}% tokens</span>
+          )}
+          {data.routing.heatmap && (
+            <div className="routing-heatmap-mini">
+              {data.routing.heatmap.slice(0, 10).map((v, i) => (
+                <div 
+                  key={i} 
+                  style={{ 
+                    height: 4, 
+                    flex: 1, 
+                    background: `rgba(0, 255, 128, ${v})`,
+                    borderRadius: 1
+                  }} 
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {data.compression && data.compression.ratio != null && (
+        <div className="node-compression-overlay" title="Parameter compression ratio">
+          <span className="compression-badge">
+            {data.compression.ratio < 1.0 ? `${(1/data.compression.ratio).toFixed(1)}x compressed` : 'dense'}
+          </span>
+        </div>
+      )}
+
       {evalStatus === 'running' && (
         <div className="node-eval-badge running">
           <Loader size={10} /> evaluating...

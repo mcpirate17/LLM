@@ -33,6 +33,7 @@ typedef struct {
     int32_t n_nodes;
     int32_t n_edges;
     AriaEdge edges[ARIA_MAX_EDGES];
+    int32_t op_codes[ARIA_MAX_NODES]; /* operator type for each node */
 } AriaGraph;
 
 /* ── Result codes ──────────────────────────────────────────────────── */
@@ -47,7 +48,19 @@ typedef enum {
     ARIA_ERR_SELF_LOOP       = -6,
     ARIA_ERR_NO_SOURCE       = -7,   /* graph has no root/source node */
     ARIA_ERR_DISCONNECTED    = -8,
+    ARIA_ERR_PROACTIVE_GATING_FAILED = -9, /* unstable or toxic */
 } AriaResult;
+
+/* ── Proactive Gating result ────────────────────────────────────────── */
+
+typedef struct {
+    int32_t passed;
+    char    reason[ARIA_MAX_ERROR_LEN];
+    float   toxic_ratio;
+    int32_t n_toxic_motifs;
+    int32_t max_depth;
+    int32_t has_normalization_gap;
+} AriaProactiveGatingResult;
 
 /* ── Validation result ─────────────────────────────────────────────── */
 
@@ -89,6 +102,21 @@ int32_t aria_find_sources(const AriaValidationResult *result, int32_t n_nodes,
  */
 int32_t aria_find_sinks(const AriaValidationResult *result, int32_t n_nodes,
                         int32_t sink_nodes[], int32_t max_sinks);
+
+/**
+ * Proactive stability and toxicity check. 
+ * Prevents training of models with known instability patterns.
+ */
+AriaResult aria_proactive_gating(const AriaGraph *graph, 
+                               const AriaValidationResult *validation,
+                               AriaProactiveGatingResult *result);
+
+/**
+ * Detect toxic motifs: (e.g. A -> B -> C). 
+ * Higher-level toxicity than simple bigrams.
+ */
+int32_t aria_detect_toxic_motifs(const AriaGraph *graph, 
+                                 const AriaValidationResult *validation);
 
 #ifdef __cplusplus
 }

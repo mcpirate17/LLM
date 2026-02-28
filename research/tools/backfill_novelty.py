@@ -27,6 +27,7 @@ def backfill_novelty(
     batch_size: int = 50,
     dry_run: bool = False,
     verbose: bool = True,
+    include_all: bool = False,
 ):
     """Compute and store novelty scores for S1 survivors that lack them."""
     import torch
@@ -37,25 +38,30 @@ def backfill_novelty(
     from ..synthesis.compiler import compile_model
     from ..synthesis.graph import ComputationGraph
     from ..synthesis.serializer import graph_from_json
+    from ..mathspaces.registry import register_all_mathspaces
+
+    # Ensure all exotic/mathspace primitives are registered
+    register_all_mathspaces()
 
     nb = LabNotebook(db_path)
 
-    # Find S1 survivors missing novelty
-    rows = nb.conn.execute(
-        """SELECT result_id, graph_json, graph_fingerprint, param_count
+    # Find candidates missing novelty
+    query = """SELECT result_id, graph_json, graph_fingerprint, param_count
            FROM program_results
-           WHERE stage1_passed = 1
-             AND (novelty_score IS NULL OR novelty_score = 0)
-             AND graph_json IS NOT NULL AND graph_json != ''
-           ORDER BY timestamp DESC"""
-    ).fetchall()
+           WHERE (novelty_score IS NULL OR novelty_score = 0)
+             AND graph_json IS NOT NULL AND graph_json != ''"""
+    if not include_all:
+        query += " AND stage1_passed = 1"
+    query += " ORDER BY timestamp DESC"
+    rows = nb.conn.execute(query).fetchall()
     candidates = [dict(r) for r in rows]
 
     if verbose:
         print(f"Novelty backfill")
         print(f"  DB: {db_path}")
         print(f"  Device: {device}")
-        print(f"  Candidates: {len(candidates)} S1 survivors missing novelty")
+        scope = "all fingerprints" if include_all else "S1 survivors"
+        print(f"  Candidates: {len(candidates)} {scope} missing novelty")
         print()
 
     if not candidates:
@@ -145,6 +151,13 @@ def backfill_novelty(
                     else "structural_only"
                 ),
             }
+            if behavioral_fp is not None:
+                try:
+                    update_fields["fp_jacobian_spectral_norm"] = float(
+                        getattr(behavioral_fp, "jacobian_spectral_norm", 0.0) or 0.0
+                    )
+                except Exception:
+                    pass
 
             set_clauses = ", ".join(f"{k} = ?" for k in update_fields)
             values = list(update_fields.values()) + [rid]
@@ -251,6 +264,10 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be scored"
     )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Backfill novelty for all fingerprints (not just S1 survivors)",
+    )
     args = parser.parse_args()
 
     if not Path(args.db).exists():
@@ -262,6 +279,7 @@ def main():
         device=args.device,
         batch_size=args.batch_size,
         dry_run=args.dry_run,
+        include_all=args.all,
     )
 
 

@@ -7,7 +7,7 @@ const ImportDialog = ({ onImport, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
-  const [sortBy, setSortBy] = useState('loss_ratio');
+  const [sortBy, setSortBy] = useState('validation_loss_ratio');
   const [limit, setLimit] = useState(25);
   const [minNovelty, setMinNovelty] = useState(0);
   const [importingId, setImportingId] = useState(null);
@@ -88,7 +88,9 @@ const ImportDialog = ({ onImport, onClose }) => {
             placeholder="Search by result id, name, fingerprint"
           />
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-            <option value="loss_ratio">Sort: loss ratio</option>
+            <option value="validation_loss_ratio">Sort: validation loss</option>
+            <option value="discovery_loss_ratio">Sort: discovery loss</option>
+            <option value="loss_ratio">Sort: loss ratio (legacy)</option>
             <option value="novelty_score">Sort: novelty</option>
             <option value="created_at">Sort: newest</option>
           </select>
@@ -126,6 +128,10 @@ const ImportDialog = ({ onImport, onClose }) => {
               <div className="survivor-info">
                 <strong>{s.name || s.result_id}</strong>
                 <div className="survivor-meta">
+                  V.Loss: {Number.isFinite(s.validation_loss_ratio) ? s.validation_loss_ratio.toFixed(4) : '-'}
+                  {' · '}
+                  D.Loss: {Number.isFinite(s.discovery_loss_ratio) ? s.discovery_loss_ratio.toFixed(4) : '-'}
+                  {' · '}
                   Loss: {Number.isFinite(s.loss_ratio) ? s.loss_ratio.toFixed(4) : '-'}
                   {' · '}
                   Novelty: {Number.isFinite(s.novelty_score) ? s.novelty_score.toFixed(2) : '-'}

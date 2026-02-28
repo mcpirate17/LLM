@@ -56,6 +56,8 @@ class CorpusConfig:
     text_key: str = "text"
     tokenizer: str = "byte"  # byte|whitespace
     max_chars: int = 200_000
+    train_fraction: float = 0.9
+    val_fraction: float = 0.1
 
 
 class CorpusTokenBatcher:
@@ -67,6 +69,7 @@ class CorpusTokenBatcher:
         self.path = Path(config.path)
         self._tokenizer = self._build_tokenizer(config.tokenizer)
         self._tokens = self._load_tokens()
+        self._train_tokens, self._val_tokens = self._split_tokens(self._tokens)
 
     @property
     def token_count(self) -> int:
@@ -75,6 +78,26 @@ class CorpusTokenBatcher:
     @property
     def ready(self) -> bool:
         return len(self._tokens) > 1
+
+    def _split_tokens(self, tokens: List[int]) -> tuple[List[int], List[int]]:
+        if not tokens:
+            return [], []
+        train_frac = max(0.0, min(1.0, float(self.config.train_fraction or 0.0)))
+        val_frac = max(0.0, min(1.0, float(self.config.val_fraction or 0.0)))
+        # Normalize if sum > 1
+        total = train_frac + val_frac
+        if total <= 0:
+            train_frac = 1.0
+            val_frac = 0.0
+        elif total > 1.0:
+            train_frac = train_frac / total
+            val_frac = val_frac / total
+
+        split_idx = int(len(tokens) * train_frac)
+        split_idx = max(1, min(len(tokens), split_idx))
+        train_tokens = tokens[:split_idx]
+        val_tokens = tokens[split_idx:] if val_frac > 0 else []
+        return train_tokens, val_tokens
 
     def _build_tokenizer(self, name: str) -> TokenizerAdapter:
         lowered = (name or "byte").strip().lower()
@@ -146,11 +169,20 @@ class CorpusTokenBatcher:
         seq_len: int,
         generator: torch.Generator,
         device: torch.device,
+        split: str = "train",
     ) -> Optional[torch.Tensor]:
         if not self.ready or seq_len <= 0 or batch_size <= 0:
             return None
 
-        max_start = len(self._tokens) - seq_len - 1
+        if str(split).lower() == "val":
+            tokens = self._val_tokens
+        else:
+            tokens = self._train_tokens
+
+        if not tokens:
+            return None
+
+        max_start = len(tokens) - seq_len - 1
         if max_start < 0:
             return None
 
@@ -165,7 +197,7 @@ class CorpusTokenBatcher:
         rows: List[List[int]] = []
         for value in starts:
             start = int(value.item())
-            rows.append(self._tokens[start: start + seq_len])
+            rows.append(tokens[start: start + seq_len])
 
         if not rows:
             return None

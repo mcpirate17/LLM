@@ -113,7 +113,7 @@ REASONING: [2-3 sentences analyzing the data and recommending changes]
 CONFIDENCE: [0.0-1.0]
 CONFIG:
 ```json
-{{"n_programs": 50, "max_depth": 10, "max_ops": 16, "math_space_weight": 2.0, "residual_prob": 0.7, "grammar_split_prob": 0.3, "category_weights": {{"functional": 2.5, "elementwise_unary": 2.6}}, "excluded_ops": ["lif_neuron", "stdp_attention"]}}
+{{"n_programs": 50, "max_depth": 10, "max_ops": 16, "math_space_weight": 2.0, "residual_prob": 0.7, "grammar_split_prob": 0.3, "category_weights": {{"functional": 2.5, "elementwise_unary": 2.6}}, "op_weights": {{"selective_scan": 2.0}}}}
 ```
 
 RULES: No Python code. No shell commands. No code blocks except the CONFIG json above. Describe findings in plain English."""
@@ -456,7 +456,7 @@ ACTION BLOCKS — include one or more in your response:
 ```
 
 ```action
-{{"type": "adjust_config", "changes": {{"excluded_ops": ["lif_neuron", "stdp_attention"], "op_weights": {{"selective_scan": 2.0, "swiglu_mlp": 1.5}}, "category_weights": {{"functional": 2.5, "math_space": 3.0}}}}}}
+{{"type": "adjust_config", "changes": {{"op_weights": {{"selective_scan": 2.0, "swiglu_mlp": 1.5}}, "category_weights": {{"functional": 2.5, "math_space": 3.0}}}}}}
 ```
 
 ```action

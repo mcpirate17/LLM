@@ -57,6 +57,7 @@ def find_unsupported_edge_dtype_pairings(
         _IMPLICIT_COMPAT = {
             ("complex_tensor", "tensor"),   # runtime takes .real
             ("tensor", "complex_tensor"),   # runtime zero-fills imaginary
+            ("mask", "tensor"),             # mask is a tensor
         }
         if (src_dtype, tgt_dtype) in _IMPLICIT_COMPAT:
             continue

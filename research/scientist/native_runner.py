@@ -138,8 +138,6 @@ _SOFT_BRIDGE_OPS: Set[str] = {
     # Structural (torch.roll, torch.gather, torch.scatter)
     "roll_seq",
     "roll_neg",
-    "gather_sorted",
-    "scatter_unsort",
     "multi_head_mix",
     # Math space binary ops with existing C kernels
     "tropical_add",

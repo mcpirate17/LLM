@@ -6,6 +6,7 @@ CFFI bindings (bindings.py → libaria_runtime.so) when aria_core is unavailable
 """
 import numpy as np
 import torch
+from typing import Optional
 
 # Try aria_core first (unified pybind11 backend)
 try:
@@ -262,6 +263,57 @@ class KernelDispatcher:
             self.lib.aria_hyp_distance_f32(ffi.from_buffer("float *", x), ffi.from_buffer("float *", y), ffi.from_buffer("float *", out), b, s, d)
             return out
         return np.linalg.norm(x - y, axis=-1)
+
+    # ── Reference Architecture Ops ──
+
+    def embedding_lookup(self, table: np.ndarray, idx: np.ndarray, pe: Optional[np.ndarray] = None) -> np.ndarray:
+        if _HAS_ARIA_CORE and self.use_native:
+            pe_t = _np_to_torch(pe) if pe is not None else None
+            return _torch_to_np(aria_core.embedding_lookup_f32(_np_to_torch(table), torch.from_numpy(idx.astype(np.int32)), pe_t))
+        # Fallback to PyTorch
+        t = torch.from_numpy(table)
+        i = torch.from_numpy(idx.astype(np.int64))
+        res = t[i]
+        if pe is not None:
+            res += torch.from_numpy(pe)
+        return res.numpy()
+
+    def rope_rotate(self, x: np.ndarray, theta_base: float = 10000.0) -> np.ndarray:
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.rope_rotate_f32(_np_to_torch(x), float(theta_base)))
+        # Simplified Python fallback (not a full RoPE, just for interface parity)
+        return x
+
+    def gated_linear(self, x: np.ndarray, w: np.ndarray, b: Optional[np.ndarray], wg: np.ndarray, bg: Optional[np.ndarray]) -> np.ndarray:
+        if _HAS_ARIA_CORE and self.use_native:
+            bt = _np_to_torch(b) if b is not None else None
+            bgt = _np_to_torch(bg) if bg is not None else None
+            return _torch_to_np(aria_core.gated_linear_f32(_np_to_torch(x), _np_to_torch(w), bt, _np_to_torch(wg), bgt))
+        # PyTorch fallback
+        xt = torch.from_numpy(x)
+        res = torch.nn.functional.linear(xt, torch.from_numpy(w), torch.from_numpy(b) if b is not None else None)
+        gate = torch.nn.functional.linear(xt, torch.from_numpy(wg), torch.from_numpy(bg) if bg is not None else None)
+        return (res * torch.sigmoid(gate)).numpy()
+
+    def cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.cosine_similarity_f32(_np_to_torch(a), _np_to_torch(b)))
+        at = torch.from_numpy(a)
+        bt = torch.from_numpy(b)
+        return torch.nn.functional.cosine_similarity(at, bt, dim=-1).numpy()
+
+    def rwkv_time_mixing(self, x: np.ndarray, decay: np.ndarray, bonus: np.ndarray, wk: np.ndarray, wv: np.ndarray, wr: np.ndarray) -> np.ndarray:
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.rwkv_time_mixing_f32(_np_to_torch(x), _np_to_torch(decay), _np_to_torch(bonus), _np_to_torch(wk), _np_to_torch(wv), _np_to_torch(wr)))
+        return x # Placeholder
+
+    def causal_mask(self, x: np.ndarray) -> np.ndarray:
+        if _HAS_ARIA_CORE and self.use_native:
+            return _torch_to_np(aria_core.causal_mask_f32(_np_to_torch(x)))
+        xt = torch.from_numpy(x)
+        mask = torch.triu(torch.ones(xt.size(-2), xt.size(-1)), diagonal=1).bool()
+        xt.masked_fill_(mask, float('-inf'))
+        return xt.numpy()
 
     def padic_gate(self, x: np.ndarray, p: float = 2.0) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:

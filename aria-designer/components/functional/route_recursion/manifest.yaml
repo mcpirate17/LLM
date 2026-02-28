@@ -1,0 +1,44 @@
+id: route_recursion
+version: 1.0.0
+name: Route Recursion
+category: functional
+tags:
+- core
+- recursion
+status: approved
+description: Adaptive recursion depth.
+inputs:
+- name: scores
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - Dp
+outputs:
+- name: depth
+  dtype: index
+  shape:
+  - B
+  - S
+params:
+  max_depth:
+    type: integer
+    default: 3
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: "0"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  Determines the recursion depth for each token based on categorical scores.
+
+  Inputs: scores:tensor[B, S, Dp].
+  Outputs: depth:index[B, S].
+  ### Plain Language
+  Decides how many times a token should repeat a compute step based on its complexity.
+  '

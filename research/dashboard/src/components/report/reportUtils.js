@@ -19,6 +19,14 @@ export function parseArchSpec(value) {
   }
 }
 
+export function resolveLossRatio(program) {
+  if (!program) return null;
+  const val = program.validation_loss_ratio;
+  if (val != null && Number.isFinite(Number(val))) return Number(val);
+  const lr = program.loss_ratio;
+  return (lr != null && Number.isFinite(Number(lr))) ? Number(lr) : null;
+}
+
 export function compressionSummary(program) {
   const spec = parseArchSpec(program.arch_spec_json);
   const compressionKey = spec?.choices?.weight_storage || spec?.choices?.token_representation;
@@ -29,10 +37,11 @@ export function compressionSummary(program) {
     ? Math.max(0.01, Math.min(1.0, compressedParams / rawParams))
     : null;
   const memoryMb = compressedParams != null ? (compressedParams * 4) / (1024 * 1024) : null;
+  const primaryLoss = resolveLossRatio(program);
   const qualityRetention = program.baseline_loss_ratio != null
     ? Math.max(0, Math.min(1, 1.25 - program.baseline_loss_ratio))
-    : program.loss_ratio != null
-      ? Math.max(0, Math.min(1, 1.0 - program.loss_ratio))
+    : primaryLoss != null
+      ? Math.max(0, Math.min(1, 1.0 - primaryLoss))
       : null;
   return {
     label: compressionKey || 'dense',
@@ -44,7 +53,8 @@ export function compressionSummary(program) {
 
 export function metricChips(program) {
   const chips = [];
-  chips.push({ label: 'Loss', source: 'measured', reliability: program.loss_ratio != null ? 'high' : 'low' });
+  const primaryLoss = resolveLossRatio(program);
+  chips.push({ label: 'Loss', source: primaryLoss != null ? 'validation' : 'measured', reliability: primaryLoss != null ? 'high' : 'low' });
   chips.push({
     label: 'Novelty',
     source: program.cka_source === 'artifact' ? 'artifact-backed' : 'heuristic',
@@ -223,7 +233,7 @@ export function reproducibilityPacketStatus(program) {
     { label: 'result_id', ok: !!program?.result_id },
     { label: 'graph_fingerprint', ok: !!program?.graph_fingerprint },
     { label: 'arch_spec', ok: !!spec },
-    { label: 'loss_ratio', ok: program?.loss_ratio != null },
+    { label: 'loss_ratio', ok: resolveLossRatio(program) != null },
     { label: 'baseline_ratio', ok: program?.baseline_loss_ratio != null },
     { label: 'cka_artifact', ok: program?.cka_source === 'artifact' },
   ];
@@ -240,7 +250,7 @@ export function reproducibilityPacketStatus(program) {
 
 export function decisionGate(program) {
   const checks = {
-    screeningEvidence: program.loss_ratio != null && program.novelty_score != null,
+    screeningEvidence: resolveLossRatio(program) != null && program.novelty_score != null,
     baselineEvidence: program.baseline_loss_ratio != null,
     baselineBeatsReference: program.baseline_loss_ratio != null && program.baseline_loss_ratio < 1.0,
     ckaArtifactBacked: program.cka_source === 'artifact',
@@ -261,7 +271,7 @@ export const DISC_COLUMNS = [
   { key: '_score', label: 'Score' },
   { key: 'graph_fingerprint', label: 'Fingerprint' },
   { key: 'repeat_count', label: 'Repeats' },
-  { key: 'loss_ratio', label: 'Loss Ratio' },
+  { key: 'loss_ratio', label: 'Loss Ratio (val)' },
   { key: 'novelty_score', label: 'Novelty' },
   { key: 'baseline_loss_ratio', label: 'Baseline' },
   { key: '_compressionRatio', label: 'Compression' },

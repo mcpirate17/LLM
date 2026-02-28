@@ -100,6 +100,8 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
             bfp = compute_fingerprint(model, seq_len=min(seq_len, 64), model_dim=d_model,
                                       vocab_size=vocab_size, device=str(dev))
             nm = novelty_score(graph, fingerprint=bfp)
+            # Z13: Capture spectral norm for stability scoring
+            updates["fp_jacobian_spectral_norm"] = float(bfp.jacobian_spectral_norm)
         else:
             nm = novelty_score(graph)
         updates["screening_novelty"] = float(nm.overall_novelty)
@@ -227,7 +229,9 @@ def main():
         AND lb.screening_loss_ratio < ?
         AND (lb.quant_int8_retention IS NULL
              OR lb.robustness_noise_score IS NULL
-             OR lb.init_sensitivity_std IS NULL)
+             OR lb.init_sensitivity_std IS NULL
+             OR lb.discovery_loss_ratio IS NULL
+             OR lb.fp_jacobian_spectral_norm IS NULL)
         AND pr.graph_json IS NOT NULL
         {tier_filter}
         ORDER BY lb.screening_loss_ratio ASC

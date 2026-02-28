@@ -196,3 +196,111 @@ AriaResult aria_validate_graph(const AriaGraph *graph, AriaValidationResult *res
     result->code = ARIA_OK;
     return ARIA_OK;
 }
+
+/* ── Proactive Gating Implementation ───────────────────────────────── */
+
+/* 
+ * Identify op categories without hard-coding full OPCODE_MAP.
+ * These are standard architectural motifs for stability.
+ */
+static int is_normalization_op(int32_t op_code) {
+    /* Map these to known normalization opcodes in bridge.py */
+    return (op_code >= 60 && op_code <= 64); /* RMSNorm, LayerNorm, etc. */
+}
+
+static int is_parameterized_op(int32_t op_code) {
+    /* Projections, Convs, Attention heads */
+    return (op_code >= 40 && op_code <= 55); 
+}
+
+AriaResult aria_proactive_gating(const AriaGraph *graph, 
+                               const AriaValidationResult *validation,
+                               AriaProactiveGatingResult *result) {
+    memset(result, 0, sizeof(AriaProactiveGatingResult));
+    result->passed = 1;
+
+    AdjList adj;
+    build_adjacency(graph, &adj);
+
+    /* 1. Calculate Max Logical Depth (Path-walking) */
+    int32_t node_depth[ARIA_MAX_NODES];
+    memset(node_depth, 0, sizeof(int32_t) * graph->n_nodes);
+    
+    int32_t max_d = 0;
+    for (int32_t i = 0; i < validation->topo_len; i++) {
+        int32_t u = validation->topo_order[i];
+        for (int32_t j = adj.adj_start[u]; j < adj.adj_start[u+1]; j++) {
+            int32_t v = adj.adj[j];
+            if (node_depth[u] + 1 > node_depth[v]) {
+                node_depth[v] = node_depth[u] + 1;
+                if (node_depth[v] > max_d) max_d = node_depth[v];
+            }
+        }
+    }
+    result->max_depth = max_d;
+
+    /* 2. Normalization Gap Detection (Heuristic) 
+     * Deep parameterized stacks without normalization are training risks.
+     */
+    if (max_d > 8) {
+        int has_norm = 0;
+        for (int32_t i = 0; i < graph->n_nodes; i++) {
+            if (is_normalization_op(graph->op_codes[i])) {
+                has_norm = 1;
+                break;
+            }
+        }
+        if (!has_norm) {
+            result->passed = 0;
+            result->has_normalization_gap = 1;
+            snprintf(result->reason, ARIA_MAX_ERROR_LEN, 
+                     "Normalization Gap: depth %d model has no LayerNorm/RMSNorm", max_d);
+            return ARIA_ERR_PROACTIVE_GATING_FAILED;
+        }
+    }
+
+    /* 3. Detect Toxic Motifs */
+    result->n_toxic_motifs = aria_detect_toxic_motifs(graph, validation);
+    if (result->n_toxic_motifs > 5) {
+        result->passed = 0;
+        snprintf(result->reason, ARIA_MAX_ERROR_LEN, 
+                 "Toxic Density: %d high-failure motifs detected", result->n_toxic_motifs);
+        return ARIA_ERR_PROACTIVE_GATING_FAILED;
+    }
+
+    return ARIA_OK;
+}
+
+int32_t aria_detect_toxic_motifs(const AriaGraph *graph, 
+                                 const AriaValidationResult *validation) {
+    /* 
+     * Identify structural motifs that historically lead to S0/S0.5 failure.
+     * Example: A -> B -> C where B is a volatile op without scaling.
+     */
+    int32_t toxic_count = 0;
+    
+    AdjList adj;
+    build_adjacency(graph, &adj);
+
+    for (int32_t u = 0; u < graph->n_nodes; u++) {
+        int32_t op_u = graph->op_codes[u];
+        
+        /* Level-2 Motif: u -> v -> w */
+        for (int32_t j = adj.adj_start[u]; j < adj.adj_start[u+1]; j++) {
+            int32_t v = adj.adj[j];
+            int32_t op_v = graph->op_codes[v];
+
+            for (int32_t k = adj.adj_start[v]; k < adj.adj_start[v+1]; k++) {
+                int32_t w = adj.adj[k];
+                int32_t op_w = graph->op_codes[w];
+
+                /* Toxic Motif: (Parameterized -> Linear -> Parameterized) 
+                 * without normalization/residuals leads to rank collapse. */
+                if (is_parameterized_op(op_u) && op_v == 15 && is_parameterized_op(op_w)) {
+                    toxic_count++;
+                }
+            }
+        }
+    }
+    return toxic_count;
+}

@@ -10,6 +10,16 @@ This file provides guidance to Claude Code when working with code in this reposi
 - When you finish, move it to "Recently Completed" with the commit hash
 - Add any non-obvious context to "Notes" so the other agent doesn't break your work
 
+### Shared Plan File Rules of Engagement
+
+When working from shared plan files (e.g., `PIPELINE_UPGRADE_PLAN.md`, `REFERENCE_ARCH_PLAN.md`):
+
+1. **Claim before coding.** Before writing any code for a task, update BOTH the plan file claim AND `.current_work.md`. If another agent has already claimed the task, do NOT overwrite their claim.
+2. **No silent reclaims.** If a task is claimed by another agent, you must not change the claim owner. If you believe the claim is stale (>48h with no progress), add a note in `.current_work.md` asking for status — do not just take it.
+3. **Don't mark `[x]` prematurely.** A task is only `[x]` when: (a) code compiles, (b) relevant tests pass, and (c) the completed work is listed in `.current_work.md` with file paths.
+4. **Conflict resolution.** If two agents produce overlapping work, the one with a `.current_work.md` entry timestamped first wins. The second agent's changes should be reviewed for merge by the user.
+5. **Read the plan file fresh** before claiming — another agent may have updated it since your last read.
+
 ## Shared Observations Workflow
 
 To keep observations synchronized across agents:

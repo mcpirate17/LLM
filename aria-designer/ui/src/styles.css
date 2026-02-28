@@ -23,7 +23,7 @@ body {
 
 .page {
   display: grid;
-  grid-template-columns: 260px 1fr auto;
+  grid-template-columns: 260px 1fr var(--right-panel-width, 300px);
   min-height: 100vh;
 }
 
@@ -35,9 +35,29 @@ body {
 }
 
 .panel.right {
-  width: 300px;
+  width: 100%;
   border-right: none;
   border-left: 1px solid var(--border);
+  position: relative;
+  padding: 16px 16px 16px 24px; /* Space for resize handle */
+}
+
+.resize-handle-left {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--border);
+  transition: background 0.2s;
+  z-index: 10;
+}
+
+.resize-handle-left:hover, .resize-handle-left.resizing {
+  background: rgba(23, 163, 255, 0.15);
+  border-left-color: var(--accent);
 }
 
 .panel h2 { margin: 0 0 10px; font-size: 16px; }
@@ -1154,6 +1174,43 @@ button.small {
   border-top: 1px solid var(--border);
   font-family: monospace;
   display: flex; align-items: center; gap: 4px;
+}
+
+.node-routing-overlay {
+  padding: 3px 6px;
+  background: rgba(0, 255, 128, 0.05);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.routing-savings {
+  font-size: 9px;
+  color: #24d1a0;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.routing-heatmap-mini {
+  display: flex;
+  gap: 1px;
+  width: 100%;
+  height: 4px;
+}
+
+.node-compression-overlay {
+  padding: 3px 6px;
+  background: rgba(160, 96, 255, 0.05);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.compression-badge {
+  font-size: 9px;
+  color: #bc8cff;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 /* ── Embedded Mode ──────────────────────────────────────── */

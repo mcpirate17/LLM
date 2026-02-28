@@ -107,9 +107,9 @@ def test_multi_input_identity_falls_back_to_handler_forward():
     b = torch.tensor([10.0, 20.0, 30.0])
 
     outputs = model({"input_a": a, "input_b": b})
-
+    
     assert "add1" in outputs
-    torch.testing.assert_close(outputs["add1"], a)
+    torch.testing.assert_close(outputs["add1"], a + b)
 
 
 def test_compile_rejects_unsupported_edge_dtype_pairing():

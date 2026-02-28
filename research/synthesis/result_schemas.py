@@ -36,8 +36,14 @@ class SandboxResult:
     stability_score: float = 0.0  # 0-1, higher is more stable
     extreme_input_passed: bool = False
     random_input_passed: bool = False
+    causality_passed: bool = True
     output_range: Optional[str] = None
     
+    # Sparsity & routing telemetry
+    activation_sparsity: float = 0.0
+    dead_neuron_count: int = 0
+    sparsity_report: Optional[Dict[str, Any]] = None
+
     # Debug/Advanced
     kernel_timing: Optional[Dict[str, Any]] = None
     native_abi_probe: Optional[Dict[str, Any]] = None

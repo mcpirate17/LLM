@@ -6,7 +6,7 @@ tags:
 - standard
 - channel_mixing
 status: approved
-description: SwiGLU MLP (baseline)
+description: SwiGLU MLP channel mixer (Gated Linear Unit with SiLU).
 inputs:
 - name: x
   dtype: tensor
@@ -21,7 +21,11 @@ outputs:
   - B
   - S
   - D
-params: {}
+params:
+  mlp_ratio:
+    type: float
+    default: 3.0
+    description: Expansion factor for the hidden dimension.
 implementation:
   native: null
   rust: null
@@ -29,7 +33,7 @@ implementation:
   python: kernel_fallback.py
 performance:
   has_params: true
-  param_formula: D*D
+  param_formula: D*D*3.5
   preserves_gradient: true
   numerically_risky: false
 constraints:
@@ -43,7 +47,7 @@ help_md: '### Technical
 
   Outputs: y:tensor[B, S, D].
 
-  Params: none.
+  Params: mlp_ratio (float, default 3.0).
 
 
   ### Plain Language
@@ -51,6 +55,6 @@ help_md: '### Technical
   SwiGLU MLP (baseline)
 
 
-  Use when you need this specific transformation in a workflow.
+  High-performance gated feed-forward block using SiLU activation.
 
   '

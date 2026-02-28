@@ -1,0 +1,50 @@
+id: routing_conditioned_compression
+version: 1.0.0
+name: Routing Conditioned Compression
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+- compression
+- exotic
+status: approved
+description: Compression level chosen per-token by routing signal.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+- name: routing_signal
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - 1
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D + D*rank*2
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  Interpolates between a full dense matrix and a low-rank approximation on a per-token basis, driven by an external routing signal.
+
+  Inputs: x:tensor[B, S, D], routing_signal:tensor[B, S, 1].
+  Outputs: y:tensor[B, S, D].
+  ### Plain Language
+  Dynamically compresses model parameters for easy tokens, using full precision only when the routing signal says it is needed.
+  '

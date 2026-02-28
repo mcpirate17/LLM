@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "routing_compression.v1",
+  "title": "Aria Routing + Compression Schema v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["routing", "compression"],
+  "properties": {
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "uniform",
+            "mod_topk",
+            "early_exit",
+            "adaptive_recursion",
+            "token_merging",
+            "cascade",
+            "speculative",
+            "mixture_of_paths",
+            "multi_lane"
+          ]
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "compression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "dense_matrix",
+            "low_rank",
+            "shared_basis",
+            "tied_proj",
+            "grouped_linear",
+            "block_sparse",
+            "structured_sparse",
+            "semi_structured_2_4",
+            "bottleneck_proj",
+            "quantized"
+          ]
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

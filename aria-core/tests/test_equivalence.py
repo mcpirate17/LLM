@@ -143,6 +143,22 @@ class TestLinAlg:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Causality helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestCausalMask:
+    def test_causal_mask_f32(self):
+        x = torch.randn(1, 4, 4)
+        y = aria_core.causal_mask_f32(x)
+        for i in range(4):
+            for j in range(4):
+                if j <= i:
+                    torch.testing.assert_close(y[0, i, j], x[0, i, j], atol=ATOL, rtol=RTOL)
+                else:
+                    assert y[0, i, j].item() < -1e8
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Normalization
 # ═══════════════════════════════════════════════════════════════════════
 

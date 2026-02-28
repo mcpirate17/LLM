@@ -72,6 +72,14 @@ DEFINE_BINARY_F32(outer_product_f32, aria_outer_product_f32)
 float sum_f32(torch::Tensor x) { CHECK_INPUT(x); return aria_sum_f32(x.data_ptr<float>(), x.numel()); }
 float mean_f32(torch::Tensor x) { CHECK_INPUT(x); return aria_mean_f32(x.data_ptr<float>(), x.numel()); }
 
+float linear_cka_f32(torch::Tensor X, torch::Tensor Y) {
+    CHECK_INPUT(X); CHECK_INPUT(Y);
+    TORCH_CHECK(X.numel() == Y.numel(), "X and Y must have same number of elements");
+    int64_t n = (int64_t)sqrt(X.numel());
+    TORCH_CHECK(n * n == X.numel(), "X must be a square matrix [n, n]");
+    return aria_linear_cka_f32(X.data_ptr<float>(), Y.data_ptr<float>(), n);
+}
+
 // ═══ Linear algebra ═══
 
 torch::Tensor matmul_f32(torch::Tensor A, torch::Tensor B) {
@@ -244,6 +252,135 @@ torch::Tensor topk_gate_f32(torch::Tensor x, torch::Tensor Wg, int64_t k) { CHEC
 torch::Tensor basis_expansion_f32(torch::Tensor x, torch::Tensor f, int64_t nb) { CHECK_INPUT(x); CHECK_INPUT(f); auto y = torch::empty({x.size(0), x.size(1), x.size(2)*nb}, x.options()); aria_basis_expansion_f32(x.data_ptr<float>(), f.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), nb); return y; }
 torch::Tensor sparse_threshold_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_sparse_threshold_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
 torch::Tensor token_pool_restore_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_token_pool_restore_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
+std::tuple<torch::Tensor, torch::Tensor> route_topk_indices_f32(torch::Tensor scores, int64_t k) {
+    CHECK_INPUT(scores);
+    auto idx = torch::empty({scores.size(0), k}, torch::dtype(torch::kInt64));
+    auto w = torch::empty({scores.size(0), k}, scores.options());
+    aria_route_topk_indices_f32(scores.data_ptr<float>(), idx.data_ptr<int64_t>(), w.data_ptr<float>(),
+                                scores.size(0), scores.size(1), k);
+    return {idx, w};
+}
+torch::Tensor route_lane_argmax_f32(torch::Tensor scores) {
+    CHECK_INPUT(scores);
+    auto idx = torch::empty({scores.size(0), scores.size(1)}, torch::dtype(torch::kInt64));
+    aria_route_lane_argmax_f32(scores.data_ptr<float>(), idx.data_ptr<int64_t>(),
+                               scores.size(0), scores.size(1), scores.size(2));
+    return idx;
+}
+torch::Tensor route_recursion_depth_f32(torch::Tensor scores) {
+    CHECK_INPUT(scores);
+    auto depth = torch::empty({scores.size(0), scores.size(1)}, torch::dtype(torch::kInt64));
+    aria_route_recursion_depth_f32(scores.data_ptr<float>(), depth.data_ptr<int64_t>(),
+                                   scores.size(0), scores.size(1), scores.size(2));
+    return depth;
+}
+std::tuple<torch::Tensor, torch::Tensor> token_merge_simple_f32(torch::Tensor x, int64_t n_keep) {
+    CHECK_INPUT(x);
+    auto y = torch::empty({x.size(0), n_keep, x.size(2)}, x.options());
+    auto restore = torch::empty({x.size(0), x.size(1)}, torch::dtype(torch::kInt64));
+    aria_token_merge_simple_f32(x.data_ptr<float>(), y.data_ptr<float>(), restore.data_ptr<int64_t>(),
+                                x.size(0), x.size(1), x.size(2), n_keep);
+    return {y, restore};
+}
+
+torch::Tensor linear_low_rank_f32(torch::Tensor x, torch::Tensor U, torch::Tensor V, c10::optional<torch::Tensor> bias) {
+    CHECK_INPUT(x); CHECK_INPUT(U); CHECK_INPUT(V);
+    int64_t batch = x.size(0), dim_in = x.size(1), dim_out = V.size(0), rank = U.size(0);
+    const float *bp = nullptr;
+    if (bias.has_value()) {
+        CHECK_INPUT(bias.value());
+        bp = bias.value().data_ptr<float>();
+    }
+    
+    auto y = torch::empty({batch, dim_out}, x.options());
+    aria_linear_low_rank_f32(x.data_ptr<float>(), U.data_ptr<float>(), V.data_ptr<float>(), bp, y.data_ptr<float>(), batch, dim_in, dim_out, rank);
+    return y;
+}
+
+torch::Tensor linear_block_sparse_f32(torch::Tensor x, torch::Tensor W, torch::Tensor mask, c10::optional<torch::Tensor> bias, int64_t bs) {
+    CHECK_INPUT(x); CHECK_INPUT(W);
+    TORCH_CHECK(mask.dtype() == torch::kUInt8, "mask must be uint8");
+    int64_t batch = x.size(0), dim_in = x.size(1), dim_out = W.size(0);
+    const float *bp = nullptr;
+    if (bias.has_value()) {
+        CHECK_INPUT(bias.value());
+        bp = bias.value().data_ptr<float>();
+    }
+    auto y = torch::empty({batch, dim_out}, x.options());
+    aria_linear_block_sparse_f32(x.data_ptr<float>(), W.data_ptr<float>(), bp, mask.data_ptr<uint8_t>(), y.data_ptr<float>(), batch, dim_in, dim_out, bs);
+    return y;
+}
+
+torch::Tensor nm_sparse_mask_f32(torch::Tensor W, int32_t n, int32_t m) {
+    CHECK_INPUT(W);
+    auto mask = torch::empty_like(W, torch::kUInt8);
+    aria_nm_sparse_mask_f32(W.data_ptr<float>(), mask.data_ptr<uint8_t>(), W.size(0), W.size(1), n, m);
+    return mask;
+}
+
+torch::Tensor linear_grouped_f32(torch::Tensor x, torch::Tensor W, c10::optional<torch::Tensor> bias, int64_t groups) {
+    CHECK_INPUT(x); CHECK_INPUT(W);
+    int64_t n_tokens = x.numel() / x.size(-1);
+    int64_t dim = x.size(-1);
+    const float *bp = nullptr;
+    if (bias.has_value()) {
+        CHECK_INPUT(bias.value());
+        bp = bias.value().data_ptr<float>();
+    }
+    auto y = torch::empty_like(x);
+    aria_linear_grouped_f32(x.data_ptr<float>(), W.data_ptr<float>(), bp, y.data_ptr<float>(), n_tokens, dim, groups);
+    return y;
+}
+
+torch::Tensor linear_bottleneck_f32(torch::Tensor x, torch::Tensor W_down, torch::Tensor W_up,
+                                     c10::optional<torch::Tensor> b_down, c10::optional<torch::Tensor> b_up) {
+    CHECK_INPUT(x); CHECK_INPUT(W_down); CHECK_INPUT(W_up);
+    int64_t n_tokens = x.numel() / x.size(-1);
+    int64_t dim_in = x.size(-1), dim_out = W_up.size(0), rank = W_down.size(0);
+    const float *bd = nullptr;
+    if (b_down.has_value()) {
+        CHECK_INPUT(b_down.value());
+        bd = b_down.value().data_ptr<float>();
+    }
+    const float *bu = nullptr;
+    if (b_up.has_value()) {
+        CHECK_INPUT(b_up.value());
+        bu = b_up.value().data_ptr<float>();
+    }
+    auto y_shape = x.sizes().vec();
+    y_shape.back() = dim_out;
+    auto y = torch::empty(y_shape, x.options());
+    aria_linear_bottleneck_f32(x.data_ptr<float>(), W_down.data_ptr<float>(), W_up.data_ptr<float>(), bd, bu, y.data_ptr<float>(), n_tokens, dim_in, dim_out, rank);
+    return y;
+}
+
+torch::Tensor linear_shared_basis_f32(torch::Tensor x, torch::Tensor Mixing, torch::Tensor Basis) {
+    CHECK_INPUT(x); CHECK_INPUT(Mixing); CHECK_INPUT(Basis);
+    int64_t n_tokens = x.numel() / x.size(-1);
+    int64_t dim = x.size(-1), k_basis = Mixing.size(0);
+    auto y = torch::empty_like(x);
+    aria_linear_shared_basis_f32(x.data_ptr<float>(), Mixing.data_ptr<float>(), Basis.data_ptr<float>(), y.data_ptr<float>(), n_tokens, dim, k_basis);
+    return y;
+}
+
+torch::Tensor linear_tied_f32(torch::Tensor x, torch::Tensor W, c10::optional<torch::Tensor> b_down, c10::optional<torch::Tensor> b_up) {
+    CHECK_INPUT(x); CHECK_INPUT(W);
+    int64_t n_tokens = x.numel() / x.size(-1);
+    int64_t dim_in = x.size(-1), rank = W.size(0);
+    const float *bd = nullptr;
+    if (b_down.has_value()) {
+        CHECK_INPUT(b_down.value());
+        bd = b_down.value().data_ptr<float>();
+    }
+    const float *bu = nullptr;
+    if (b_up.has_value()) {
+        CHECK_INPUT(b_up.value());
+        bu = b_up.value().data_ptr<float>();
+    }
+    auto y = torch::empty_like(x);
+    aria_linear_tied_f32(x.data_ptr<float>(), W.data_ptr<float>(), bd, bu, y.data_ptr<float>(), n_tokens, dim_in, rank);
+    return y;
+}
 
 // ═══ Hyperbolic ═══
 
@@ -284,6 +421,52 @@ torch::Tensor clifford_rotor_transform_cl30_f32(torch::Tensor x, torch::Tensor r
 torch::Tensor lif_neuron_f32(torch::Tensor x, float tau, float thr) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_lif_neuron_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), tau, thr); return y; }
 torch::Tensor spike_rate_code_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_spike_rate_code_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
 torch::Tensor stdp_attention_f32(torch::Tensor x, float tp, float tm) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_stdp_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), tp, tm); return y; }
+
+// ═══ SwiGLU / RWKV Channel / Gather Top-K ═══
+
+torch::Tensor swiglu_f32(torch::Tensor x, torch::Tensor W_gate, torch::Tensor W_up, torch::Tensor W_down,
+                          c10::optional<torch::Tensor> b_gate, c10::optional<torch::Tensor> b_up, c10::optional<torch::Tensor> b_down) {
+    CHECK_INPUT(x); CHECK_INPUT(W_gate); CHECK_INPUT(W_up); CHECK_INPUT(W_down);
+    int64_t batch = x.size(0), dim = x.size(1), hidden_dim = W_gate.size(0);
+    const float *bg = nullptr, *bu = nullptr, *bd = nullptr;
+    if (b_gate.has_value()) { CHECK_INPUT(b_gate.value()); bg = b_gate.value().data_ptr<float>(); }
+    if (b_up.has_value()) { CHECK_INPUT(b_up.value()); bu = b_up.value().data_ptr<float>(); }
+    if (b_down.has_value()) { CHECK_INPUT(b_down.value()); bd = b_down.value().data_ptr<float>(); }
+    auto y = torch::empty_like(x);
+    auto tmp_gate = torch::empty({batch, hidden_dim}, x.options());
+    auto tmp_up = torch::empty({batch, hidden_dim}, x.options());
+    aria_swiglu_f32(x.data_ptr<float>(), W_gate.data_ptr<float>(), W_up.data_ptr<float>(), W_down.data_ptr<float>(),
+                    bg, bu, bd, y.data_ptr<float>(), tmp_gate.data_ptr<float>(), tmp_up.data_ptr<float>(),
+                    batch, dim, hidden_dim);
+    return y;
+}
+
+torch::Tensor rwkv_channel_f32(torch::Tensor x, torch::Tensor mix_k, torch::Tensor mix_r,
+                                torch::Tensor W_k, torch::Tensor W_r, torch::Tensor W_v) {
+    CHECK_INPUT(x); CHECK_INPUT(mix_k); CHECK_INPUT(mix_r);
+    CHECK_INPUT(W_k); CHECK_INPUT(W_r); CHECK_INPUT(W_v);
+    int64_t batch = x.size(0), seq = x.size(1), dim = x.size(2), hidden_dim = W_k.size(0);
+    auto y = torch::empty_like(x);
+    auto tmp_xk = torch::empty({batch, seq, dim}, x.options());
+    auto tmp_xr = torch::empty({batch, seq, dim}, x.options());
+    auto tmp_k = torch::empty({batch, seq, hidden_dim}, x.options());
+    aria_rwkv_channel_f32(x.data_ptr<float>(), mix_k.data_ptr<float>(), mix_r.data_ptr<float>(),
+                          W_k.data_ptr<float>(), W_r.data_ptr<float>(), W_v.data_ptr<float>(),
+                          y.data_ptr<float>(), tmp_xk.data_ptr<float>(), tmp_xr.data_ptr<float>(), tmp_k.data_ptr<float>(),
+                          batch, seq, dim, hidden_dim);
+    return y;
+}
+
+std::tuple<torch::Tensor, torch::Tensor> gather_topk_f32(torch::Tensor scores, torch::Tensor values, int64_t k) {
+    CHECK_INPUT(scores); CHECK_INPUT(values);
+    int64_t batch = scores.size(0), n_items = scores.size(1), dim = values.size(2);
+    auto out = torch::empty({batch, k, dim}, values.options());
+    auto out_indices = torch::empty({batch, k}, torch::dtype(torch::kInt32));
+    aria_gather_topk_f32(scores.data_ptr<float>(), values.data_ptr<float>(),
+                         out.data_ptr<float>(), out_indices.data_ptr<int32_t>(),
+                         batch, n_items, dim, k);
+    return {out, out_indices};
+}
 
 // ═══ Reference Architecture ═══
 
@@ -374,8 +557,9 @@ private:
 
 // ═══ Graph validation & shape inference ═══
 
-py::dict validate_graph(int32_t n_nodes, std::vector<std::vector<int32_t>> edges) {
+py::dict validate_graph(int32_t n_nodes, std::vector<std::vector<int32_t>> edges, std::vector<int32_t> op_codes) {
     AriaGraph graph;
+    memset(&graph, 0, sizeof(graph));
     graph.n_nodes = n_nodes;
     graph.n_edges = static_cast<int32_t>(edges.size());
     for (int32_t i = 0; i < graph.n_edges; i++) {
@@ -384,6 +568,10 @@ py::dict validate_graph(int32_t n_nodes, std::vector<std::vector<int32_t>> edges
         graph.edges[i].src_port = edges[i].size() > 2 ? edges[i][2] : 0;
         graph.edges[i].tgt_port = edges[i].size() > 3 ? edges[i][3] : 0;
     }
+    for (int32_t i = 0; i < n_nodes && i < (int32_t)op_codes.size(); i++) {
+        graph.op_codes[i] = op_codes[i];
+    }
+
     AriaValidationResult result;
     memset(&result, 0, sizeof(result));
     AriaResult rc = aria_validate_graph(&graph, &result);
@@ -402,6 +590,34 @@ py::dict validate_graph(int32_t n_nodes, std::vector<std::vector<int32_t>> edges
         out["error"] = std::string(result.error);
         out["code"] = static_cast<int>(rc);
     }
+    return out;
+}
+
+py::dict proactive_gating(int32_t n_nodes, std::vector<std::vector<int32_t>> edges, std::vector<int32_t> op_codes) {
+    AriaGraph graph;
+    memset(&graph, 0, sizeof(graph));
+    graph.n_nodes = n_nodes;
+    graph.n_edges = static_cast<int32_t>(edges.size());
+    for (int32_t i = 0; i < graph.n_edges; i++) {
+        graph.edges[i].source = edges[i][0];
+        graph.edges[i].target = edges[i][1];
+    }
+    for (int32_t i = 0; i < n_nodes && i < (int32_t)op_codes.size(); i++) {
+        graph.op_codes[i] = op_codes[i];
+    }
+
+    AriaValidationResult val;
+    aria_validate_graph(&graph, &val);
+
+    AriaProactiveGatingResult res;
+    aria_proactive_gating(&graph, &val, &res);
+
+    py::dict out;
+    out["passed"] = res.passed != 0;
+    out["reason"] = std::string(res.reason);
+    out["max_depth"] = res.max_depth;
+    out["n_toxic_motifs"] = res.n_toxic_motifs;
+    out["has_normalization_gap"] = res.has_normalization_gap != 0;
     return out;
 }
 
@@ -493,6 +709,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("tropical_add_f32", &tropical_add_f32); m.def("maximum_f32", &maximum_f32);
     m.def("minimum_f32", &minimum_f32); m.def("div_safe_f32", &div_safe_f32); m.def("outer_product_f32", &outer_product_f32);
     m.def("sum_f32", &sum_f32); m.def("mean_f32", &mean_f32);
+    m.def("linear_cka_f32", &linear_cka_f32, "Linear CKA similarity score");
     m.def("matmul_f32", &matmul_f32); m.def("tropical_matmul_f32", &tropical_matmul_f32); m.def("linear_f32", &linear_f32);
     m.def("rmsnorm_f32", &rmsnorm_f32); m.def("layernorm_f32", &layernorm_f32);
     m.def("softmax_f32", &softmax_f32); m.def("softmax_seq_f32", &softmax_seq_f32);
@@ -512,7 +729,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("conv1d_seq_f32", &conv1d_seq_f32); m.def("selective_scan_f32", &selective_scan_f32);
     m.def("topk_gate_f32", &topk_gate_f32); m.def("basis_expansion_f32", &basis_expansion_f32);
     m.def("sparse_threshold_f32", &sparse_threshold_f32); m.def("token_pool_restore_f32", &token_pool_restore_f32);
+    m.def("route_topk_indices_f32", &route_topk_indices_f32);
+    m.def("route_lane_argmax_f32", &route_lane_argmax_f32);
+    m.def("route_recursion_depth_f32", &route_recursion_depth_f32);
+    m.def("token_merge_simple_f32", &token_merge_simple_f32);
+    
+    // Phase 3 Compression (Standardized 2D Linear API)
+    m.def("linear_low_rank_f32", &linear_low_rank_f32);
+    m.def("linear_block_sparse_f32", &linear_block_sparse_f32);
+    m.def("nm_sparse_mask_f32", &nm_sparse_mask_f32);
+    m.def("linear_grouped_f32", &linear_grouped_f32);
+    m.def("linear_bottleneck_f32", &linear_bottleneck_f32);
+    m.def("linear_shared_basis_f32", &linear_shared_basis_f32);
+    m.def("linear_tied_f32", &linear_tied_f32);
+    
     m.def("exp_map_f32", &exp_map_f32); m.def("log_map_f32", &log_map_f32);
+    
     m.def("poincare_add_f32", &poincare_add_f32); m.def("hyp_linear_f32", &hyp_linear_f32);
     m.def("hyperbolic_norm_f32", &hyperbolic_norm_f32); m.def("hyp_tangent_nonlinear_f32", &hyp_tangent_nonlinear_f32);
     m.def("hyp_distance_f32", &hyp_distance_f32); m.def("hyperbolic_mobius_add_f32", &hyperbolic_mobius_add_f32);
@@ -530,9 +762,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("embedding_lookup_f32", &embedding_lookup_f32); m.def("rope_rotate_f32", &rope_rotate_f32);
     m.def("gated_linear_f32", &gated_linear_f32); m.def("cosine_similarity_f32", &cosine_similarity_f32);
     m.def("rwkv_time_mixing_f32", &rwkv_time_mixing_f32);
+    m.def("swiglu_f32", &swiglu_f32);
+    m.def("rwkv_channel_f32", &rwkv_channel_f32);
+    m.def("gather_topk_f32", &gather_topk_f32);
     // Graph validation & shape inference
     m.def("validate_graph", &validate_graph, "Validate a DAG: cycle detection, topological sort",
-          py::arg("n_nodes"), py::arg("edges"));
+          py::arg("n_nodes"), py::arg("edges"), py::arg("op_codes") = std::vector<int32_t>());
+    m.def("proactive_gating", &proactive_gating, "Native proactive stability and toxicity gating",
+          py::arg("n_nodes"), py::arg("edges"), py::arg("op_codes"));
     m.def("propagate_shapes", &propagate_shapes, "Propagate tensor shapes through a graph",
           py::arg("topo_order"), py::arg("edges"), py::arg("node_rules"));
 

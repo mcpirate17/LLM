@@ -43,6 +43,14 @@ void aria_tropical_add_f32(const float *a, const float *b, float *y, int64_t n);
 float aria_sum_f32(const float *x, int64_t n);
 float aria_mean_f32(const float *x, int64_t n);
 
+/**
+ * Linear CKA similarity between two similarity matrices X and Y.
+ * Computes: HSIC(X, Y) / sqrt(HSIC(X, X) * HSIC(Y, Y))
+ * where HSIC(X, Y) = sum((X - mean(X)) * (Y - mean(Y)))
+ * Matrices are assumed to be square [n, n].
+ */
+float aria_linear_cka_f32(const float *X, const float *Y, int64_t n);
+
 /* ── Linear algebra ────────────────────────────────────────────────── */
 
 /**
@@ -327,6 +335,69 @@ void aria_basis_expansion_f32(const float *x, const float *freqs, float *y,
 /** Sparse threshold: zero values below adaptive median threshold */
 void aria_sparse_threshold_f32(const float *x, float *y,
                                  int64_t batch, int64_t seq, int64_t dim);
+
+/* ── Routing Kernels (CPU reference) ────────────────────────────────── */
+
+/** Top-k routing over sequence tokens: scores shape (B, S) -> indices (B, K), weights (B, K) */
+void aria_route_topk_indices_f32(const float *scores, int64_t *indices, float *weights,
+                                   int64_t batch, int64_t seq, int64_t k);
+
+/** Lane routing: scores shape (B, S, L) -> lane_idx (B, S) */
+void aria_route_lane_argmax_f32(const float *scores, int64_t *lane_idx,
+                                  int64_t batch, int64_t seq, int64_t lanes);
+
+/** Recursion depth routing: scores shape (B, S, Dp) -> depth (B, S), 1-based depth */
+void aria_route_recursion_depth_f32(const float *scores, int64_t *depth,
+                                      int64_t batch, int64_t seq, int64_t max_depth);
+
+/** Simple token merge: keep first n_keep tokens, map dropped tokens to last kept */
+void aria_token_merge_simple_f32(const float *x, float *y, int64_t *restore_map,
+                                   int64_t batch, int64_t seq, int64_t dim, int64_t n_keep);
+
+/* ── Compression Kernels (CPU reference) ───────────────────────────── */
+
+void aria_grouped_linear_f32(const float *x, const float *W, float *y,
+                               int64_t batch, int64_t seq, int64_t dim,
+                               int64_t groups, int64_t group_dim);
+
+void aria_bottleneck_proj_f32(const float *x, const float *down, const float *up, float *y,
+                                int64_t batch, int64_t seq, int64_t dim, int64_t rank);
+
+void aria_shared_basis_proj_f32(const float *x, const float *mixing, const float *basis, float *y,
+                                  int64_t batch, int64_t seq, int64_t dim, int64_t k);
+
+void aria_tied_proj_f32(const float *x, const float *W, float *y,
+                          int64_t batch, int64_t seq, int64_t dim, int64_t rank);
+
+/* ── Compression Kernels (CPU reference) ────────────────────────────── */
+
+/** Low-rank factorized linear: y = x @ (V @ U) + bias */
+void aria_linear_low_rank_f32(const float *x, const float *U, const float *V, const float *bias,
+                                float *y, int64_t batch, int64_t dim_in, int64_t dim_out, int64_t rank);
+
+/** Block-sparse linear: only compute blocks where mask is 1 */
+void aria_linear_block_sparse_f32(const float *x, const float *W, const float *bias, const uint8_t *block_mask,
+                                   float *y, int64_t batch, int64_t dim_in, int64_t dim_out, int64_t block_size);
+
+/** N:M semi-structured sparsity mask generation (CPU) */
+void aria_nm_sparse_mask_f32(const float *W, uint8_t *mask, int64_t rows, int64_t cols, int32_t n, int32_t m);
+
+/** Grouped linear: y = x @ W_groups (block-diagonal) */
+void aria_linear_grouped_f32(const float *x, const float *W, const float *bias,
+                               float *y, int64_t batch, int64_t dim, int64_t groups);
+
+/** Bottleneck projection: y = GELU(x @ W_down) @ W_up */
+void aria_linear_bottleneck_f32(const float *x, const float *W_down, const float *W_up,
+                                  const float *b_down, const float *b_up,
+                                  float *y, int64_t batch, int64_t dim_in, int64_t dim_out, int64_t rank);
+
+/** Shared-basis projection: y = x @ Mixing @ Basis */
+void aria_linear_shared_basis_f32(const float *x, const float *Mixing, const float *Basis,
+                                    float *y, int64_t batch, int64_t dim, int64_t k_basis);
+
+/** Tied projection: y = GELU(x @ W) @ W^T */
+void aria_linear_tied_f32(const float *x, const float *W, const float *b_down, const float *b_up,
+                            float *y, int64_t batch, int64_t dim_in, int64_t rank);
 
 /* ══════════════════════════════════════════════════════════════════════
  * TIER 3: Math Space Ops

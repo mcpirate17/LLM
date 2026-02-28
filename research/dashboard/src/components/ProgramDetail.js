@@ -284,7 +284,22 @@ function RobustnessProfile({ program, leaderboardEntry }) {
     ? null
     : (Number(quantRetentionRaw) <= 1 ? Number(quantRetentionRaw) * 100 : Number(quantRetentionRaw));
   const qualityPerByte = source?.quant_quality_per_byte;
-  const spectralNorm = source?.jacobian_spectral_norm ?? source?.fp_jacobian_spectral_norm ?? source?.fp_spectral_norm ?? source?.spectral_norm ?? null;
+  const spectralCandidates = [
+    program?.jacobian_spectral_norm,
+    program?.fp_jacobian_spectral_norm,
+    source?.jacobian_spectral_norm,
+    source?.fp_jacobian_spectral_norm,
+    source?.fp_spectral_norm,
+    source?.spectral_norm,
+  ];
+  const spectralNorm = (() => {
+    for (const candidate of spectralCandidates) {
+      if (candidate == null) continue;
+      const num = Number(candidate);
+      if (Number.isFinite(num) && num > 0) return num;
+    }
+    return null;
+  })();
 
   const hasAny = [noise, longCtx, initStd, quantRetention, qualityPerByte, spectralNorm]
     .some(v => v != null && Number.isFinite(Number(v)));
@@ -397,17 +412,52 @@ function ReferenceComparison({ program, leaderboardEntry }) {
   if (references.length === 0 && !loading) return null;
 
   const metrics = [
-    { key: 'validation_loss_ratio', label: 'Loss Ratio', higherIsBetter: false },
+    { key: '_loss_ratio_compare', label: 'Loss Ratio', higherIsBetter: false },
     { key: 'param_efficiency', label: 'Param Efficiency', higherIsBetter: true },
     { key: 'quant_int8_retention', label: 'Quant Retention', higherIsBetter: true },
     { key: 'robustness_long_ctx_score', label: 'Long-Context', higherIsBetter: true },
     { key: 'robustness_noise_score', label: 'Noise Score', higherIsBetter: false },
   ];
 
-  const getValue = (obj, key) => {
-    let val = obj?.[key];
-    if (val === undefined || val === null) return null;
-    return Number(val);
+  const toFiniteNumber = (value) => {
+    if (value === undefined || value === null) return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const firstFinite = (...values) => {
+    for (const value of values) {
+      const num = toFiniteNumber(value);
+      if (num !== null) return num;
+    }
+    return null;
+  };
+
+  const getCandidateValue = (key) => {
+    if (key === '_loss_ratio_compare') {
+      return firstFinite(
+        leaderboardEntry?.validation_loss_ratio,
+        program?.validation_loss_ratio,
+        leaderboardEntry?.investigation_loss_ratio,
+        leaderboardEntry?.screening_loss_ratio,
+        program?.loss_ratio,
+      );
+    }
+    return firstFinite(
+      leaderboardEntry?.[key],
+      program?.[key],
+    );
+  };
+
+  const getReferenceValue = (key, ref) => {
+    if (key === '_loss_ratio_compare') {
+      return firstFinite(
+        ref?.validation_loss_ratio,
+        ref?.investigation_loss_ratio,
+        ref?.screening_loss_ratio,
+      );
+    }
+    return firstFinite(ref?.[key]);
   };
 
   return (
@@ -435,8 +485,8 @@ function ReferenceComparison({ program, leaderboardEntry }) {
             <span style={{ textAlign: 'right' }}>{selectedRef.reference_name || 'Ref'}</span>
           </div>
           {metrics.map(m => {
-            const vCan = getValue(leaderboardEntry || program, m.key);
-            const vRef = getValue(selectedRef, m.key);
+            const vCan = getCandidateValue(m.key);
+            const vRef = getReferenceValue(m.key, selectedRef);
             if (vCan === null && vRef === null) return null;
             
             const diff = (vCan !== null && vRef !== null) ? (m.higherIsBetter ? vCan - vRef : vRef - vCan) : null;

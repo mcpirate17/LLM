@@ -21,7 +21,9 @@ import Leaderboard from './components/Leaderboard';
 import Discoveries from './components/Discoveries';
 import CampaignView from './components/CampaignView';
 import KnowledgeBase from './components/KnowledgeBase';
+import CompareView from './components/CompareView';
 import StrategyAdvisor from './components/StrategyAdvisor';
+import GlobalParetoChart from './components/GlobalParetoChart';
 import ActionQueue from './components/ActionQueue';
 import AriaChatPanel from './components/AriaChatPanel';
 import ArchitectureDrawer from './components/ArchitectureDrawer';
@@ -236,7 +238,7 @@ function ReferenceBaselinesPanel() {
         Reference Architecture Baselines
       </div>
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table className="data-table table-compact">
           <thead>
             <tr style={{ borderBottom: '2px solid var(--border)' }}>
               <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Architecture</th>
@@ -455,6 +457,7 @@ function AppContent({ onRunningChange }) {
     trends: 'Analytics',
     experiments: 'Experiments',
     discoveries: 'Discoveries',
+    comparison: 'Comparison',
     perf: 'Optimization',
     reports: 'Reports',
     log: 'Log',
@@ -464,9 +467,10 @@ function AppContent({ onRunningChange }) {
     trends: 'Analytics: trends, learning signals, and diagnostic charts (2)',
     experiments: 'Browse all experiments and their results (3)',
     discoveries: 'Best architectures found so far, ranked by tier (4)',
-    perf: 'System performance and optimization metrics (5)',
-    reports: 'Publishable findings, campaigns, and knowledge base (6)',
-    log: 'Raw notebook entries and cycle timeline (7)',
+    comparison: 'Side-by-side architecture comparison (5)',
+    perf: 'System performance and optimization metrics (6)',
+    reports: 'Publishable findings, campaigns, and knowledge base (7)',
+    log: 'Raw notebook entries and cycle timeline (8)',
   };
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -534,6 +538,23 @@ function AppContent({ onRunningChange }) {
       return [];
     }
   });
+
+  const [comparisonList, setComparisonList] = useState([]);
+
+  const handleAddToComparison = useCallback((resultId) => {
+    setComparisonList(prev => {
+      if (prev.includes(resultId)) return prev;
+      if (prev.length >= 5) {
+        setActionError("Max 5 candidates for comparison.");
+        return prev;
+      }
+      return [...prev, resultId];
+    });
+  }, []);
+
+  const handleRemoveFromComparison = useCallback((resultId) => {
+    setComparisonList(prev => prev.filter(id => id !== resultId));
+  }, []);
 
   useEffect(() => {
     try {
@@ -1656,14 +1677,14 @@ function AppContent({ onRunningChange }) {
                 />
               </div>
               <div className="card" style={{ padding: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Activity</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Discovery Frontier</div>
                 {data?.is_running ? (
                   <LiveFeed
                     apiBase={API_BASE}
                     experimentId={data?.progress?.experiment_id || null}
                   />
                 ) : (
-                  <MetricsChart experiments={data?.recent_experiments} />
+                  <GlobalParetoChart programs={leaderboardEntries} />
                 )}
               </div>
             </div>
@@ -1723,6 +1744,14 @@ function AppContent({ onRunningChange }) {
             onFillGapsExperiment={handleFillGapsExperiment}
             onNavigateStrategy={handleNavigateStrategy}
             onStartExperiment={handleStartExperiment}
+          />
+        )}
+
+        {activeTab === 'comparison' && (
+          <CompareView
+            comparisonList={comparisonList}
+            onRemoveProgram={handleRemoveFromComparison}
+            onSelectProgram={handleSelectProgram}
           />
         )}
 
@@ -1888,6 +1917,7 @@ function AppContent({ onRunningChange }) {
           onViewInLeaderboard={handleViewInLeaderboard}
           onSelectCampaign={handleSelectCampaign}
           onOpenInDesigner={(rid) => setDesignerResultId(rid)}
+          onAddToComparison={handleAddToComparison}
           eligibilityByResultId={eligibilityByResultId}
         />
       )}

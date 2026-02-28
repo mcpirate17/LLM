@@ -30,6 +30,124 @@ function metricText(value, fallbackReason, formatter) {
   return formatter(value);
 }
 
+function parseExperimentTime(exp) {
+  const raw = exp?.timestamp || exp?.created_at || '';
+  const t = raw ? new Date(raw).getTime() : Number.NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+function MiniSparkline({ values, color }) {
+  const finite = (Array.isArray(values) ? values : []).filter((v) => Number.isFinite(v));
+  if (finite.length < 2) {
+    return <div style={{ height: 26, borderRadius: 4, background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }} />;
+  }
+
+  const W = 130;
+  const H = 26;
+  const pad = 2;
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const range = max - min || 1;
+  const points = finite.map((value, idx) => {
+    const x = pad + (idx / Math.max(finite.length - 1, 1)) * (W - pad * 2);
+    const y = H - pad - ((value - min) / range) * (H - pad * 2);
+    return `${x},${y}`;
+  }).join(' ');
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 26 }}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ExperimentKpiStrip({ experiments }) {
+  const series = useMemo(() => {
+    const rows = (Array.isArray(experiments) ? experiments : [])
+      .slice()
+      .sort((a, b) => parseExperimentTime(a) - parseExperimentTime(b))
+      .slice(-20);
+
+    const passRate = rows.map((exp) => {
+      const generated = exp.n_programs_generated || 0;
+      return generated > 0 ? ((exp.n_stage1_passed || 0) / generated) * 100 : 0;
+    });
+    const bestLoss = rows.map((exp) => (exp.best_loss_ratio == null ? null : exp.best_loss_ratio));
+    const novelty = rows.map((exp) => (exp.best_novelty_score == null ? null : exp.best_novelty_score));
+    const failureRate = rows.map((exp) => {
+      const generated = exp.n_programs_generated || 0;
+      const compiled = exp.n_stage0_passed || 0;
+      return generated > 0 ? (1 - (compiled / generated)) * 100 : 0;
+    });
+    return { passRate, bestLoss, novelty, failureRate };
+  }, [experiments]);
+
+  const kpis = [
+    {
+      key: 'passRate',
+      label: 'S1 pass',
+      values: series.passRate,
+      color: 'var(--accent-green)',
+      higherBetter: true,
+      format: (v) => `${v.toFixed(1)}%`,
+    },
+    {
+      key: 'bestLoss',
+      label: 'Best loss',
+      values: series.bestLoss,
+      color: 'var(--accent-blue)',
+      higherBetter: false,
+      format: (v) => v.toFixed(3),
+    },
+    {
+      key: 'novelty',
+      label: 'Novelty',
+      values: series.novelty,
+      color: 'var(--accent-purple)',
+      higherBetter: true,
+      format: (v) => v.toFixed(3),
+    },
+    {
+      key: 'failureRate',
+      label: 'Compile failure',
+      values: series.failureRate,
+      color: 'var(--accent-red)',
+      higherBetter: false,
+      format: (v) => `${v.toFixed(1)}%`,
+    },
+  ];
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+      gap: 10,
+      marginBottom: 12,
+    }}>
+      {kpis.map((kpi) => {
+        const finite = kpi.values.filter((v) => Number.isFinite(v));
+        const current = finite.length > 0 ? finite[finite.length - 1] : null;
+        const previous = finite.length > 1 ? finite[finite.length - 2] : null;
+        const delta = current != null && previous != null ? current - previous : null;
+        const positiveDelta = delta != null && ((kpi.higherBetter && delta >= 0) || (!kpi.higherBetter && delta <= 0));
+        return (
+          <div key={kpi.key} style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-tertiary)', padding: '8px 10px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{kpi.label}</span>
+              <span style={{ fontSize: 12, color: kpi.color, fontWeight: 700 }}>
+                {current == null ? '--' : kpi.format(current)}
+              </span>
+            </div>
+            <MiniSparkline values={kpi.values} color={kpi.color} />
+            <div style={{ marginTop: 3, fontSize: 10, color: delta == null ? 'var(--text-muted)' : (positiveDelta ? 'var(--accent-green)' : 'var(--accent-red)') }}>
+              {delta == null ? 'No prior point' : `${delta > 0 ? '+' : ''}${kpi.format(delta)}`}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 
 function experimentMetricChips(exp) {
   const nPrograms = exp.n_programs_generated || 0;
@@ -61,34 +179,46 @@ const COLUMNS = [
   { key: 'experiment_type', label: 'Type' },
   { key: 'hypothesis', label: 'Hypothesis' },
   { key: 'status', label: 'Status' },
-  { key: 'stage_funnel', label: 'Funnel' },
+  { key: 'stage_funnel', label: 'Funnel Progress' },
+  { key: 'top_discoveries', label: 'Top Discoveries' },
   { key: 'n_stage1_passed', label: 'S1 Pass' },
   { key: 'best_loss_ratio', label: 'Best Loss' },
   { key: 'best_novelty_score', label: 'Best Novelty' },
-  { key: 'aria_summary', label: 'Outcome' },
-  { key: 'duration_seconds', label: 'Duration' },
   { key: 'timestamp', label: 'Time' },
 ];
 
 /** Mini stage funnel: generated -> compiled -> stage0.5 -> S1 */
 function StageFunnel({ generated, s0, s05, s1 }) {
   if (!generated) return <span style={{ color: 'var(--text-muted)' }}>--</span>;
+  
   const stages = [
-    { label: 'Gen', value: generated, color: 'var(--text-secondary)' },
+    { label: 'S0', value: s0 || 0, color: 'var(--accent-blue)', total: generated },
+    { label: 'S0.5', value: s05 || 0, color: 'var(--accent-yellow)', total: generated },
+    { label: 'S1', value: s1 || 0, color: 'var(--accent-green)', total: generated },
   ];
-  if (s0 != null) stages.push({ label: 'S0', value: s0, color: s0 > 0 ? 'var(--accent-blue)' : 'var(--text-muted)' });
-  if (s05 != null) stages.push({ label: 'S0.5', value: s05, color: s05 > 0 ? 'var(--accent-yellow)' : 'var(--text-muted)' });
-  stages.push({ label: 'S1', value: s1, color: s1 > 0 ? 'var(--accent-green)' : 'var(--text-muted)' });
 
   return (
-    <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
-      {stages.map((s, i) => (
-        <React.Fragment key={s.label}>
-          {i > 0 && <span style={{ color: 'var(--text-muted)', margin: '0 2px' }}>{'\u203A'}</span>}
-          <span style={{ color: s.color, fontWeight: s.label === 'S1' ? 600 : 400 }}>{s.value}</span>
-        </React.Fragment>
-      ))}
-    </span>
+    <div style={{ width: 100, display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{ display: 'flex', height: 6, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+        {stages.map((s, i) => (
+          <div 
+            key={i} 
+            title={`${s.label}: ${s.value}/${s.total}`}
+            style={{ 
+              width: `${(s.value / generated) * 100}%`, 
+              height: '100%', 
+              background: s.color,
+              opacity: 0.8,
+              transition: 'width 0.3s ease'
+            }} 
+          />
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-muted)' }}>
+        <span>{generated} gen</span>
+        <span>{s1} pass</span>
+      </div>
+    </div>
   );
 }
 
@@ -478,6 +608,7 @@ function ExperimentList({
           {batchRerunStatus.remaining.length > 0 && <span>, {batchRerunStatus.remaining.length} queued</span>}
         </div>
       )}
+      <ExperimentKpiStrip experiments={sorted} />
       <table className="data-table">
         <thead>
           <tr>
@@ -556,7 +687,7 @@ function ExperimentList({
                   if (col.key === 'experiment_id') {
                     return (
                       <td key="id" style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
-                        {exp.experiment_id}
+                        <span title={exp.experiment_id}>{exp.experiment_id?.slice(0, 8)}...</span>
                         {exp.experiment_id && (
                           <button
                             className="refresh-btn"
@@ -570,6 +701,36 @@ function ExperimentList({
                             {copiedValue === exp.experiment_id ? 'Copied' : 'Copy'}
                           </button>
                         )}
+                      </td>
+                    );
+                  }
+                  if (col.key === 'top_discoveries') {
+                    return (
+                      <td key="top_discoveries">
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          {exp.best_loss_ratio != null && (
+                            <span 
+                              title={`Best Loss: ${exp.best_loss_ratio.toFixed(4)}`}
+                              style={{ fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'rgba(63, 185, 80, 0.15)', color: 'var(--accent-green)', border: '1px solid rgba(63, 185, 80, 0.3)' }}
+                            >
+                              Loss: {exp.best_loss_ratio.toFixed(2)}
+                            </span>
+                          )}
+                          {exp.best_novelty_score != null && (
+                            <span 
+                              title={`Best Novelty: ${exp.best_novelty_score.toFixed(3)}`}
+                              style={{ fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'rgba(188, 140, 255, 0.15)', color: 'var(--accent-purple)', border: '1px solid rgba(188, 140, 255, 0.3)' }}
+                            >
+                              Nov: {exp.best_novelty_score.toFixed(2)}
+                            </span>
+                          )}
+                          {exp.n_stage1_passed > 0 && !exp.best_loss_ratio && (
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>awaiting eval</span>
+                          )}
+                          {exp.n_stage1_passed === 0 && exp.status === 'completed' && (
+                            <span style={{ fontSize: 10, color: 'var(--accent-red)', opacity: 0.6 }}>no survivors</span>
+                          )}
+                        </div>
                       </td>
                     );
                   }

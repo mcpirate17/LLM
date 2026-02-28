@@ -17,6 +17,8 @@ import MathspaceOperatorImpact from './report/MathspaceOperatorImpact';
 import RoutingModeComparison from './report/RoutingModeComparison';
 import CompressionTechniqueCoverage from './report/CompressionTechniqueCoverage';
 import NegativeResultsSummary from './report/NegativeResultsSummary';
+import ConfidenceInfographic from './report/ConfidenceInfographic';
+import MirroredOpsChart from './report/MirroredOpsChart';
 
 
 export default function ReportDetail({
@@ -470,17 +472,14 @@ export default function ReportDetail({
             {confidenceBand.label} ({confidenceScore}%)
           </span>
         </div>
+        <ConfidenceInfographic
+          factors={confidenceFactors}
+          decisionReadyCount={decisionReadyCount}
+          totalCandidates={top.length || 0}
+          avgPromotionScore={averagePromotionScore}
+          avgReproCompleteness={avgReproCompleteness}
+        />
         <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Experiment depth: {(confidenceFactors.experiments * 100).toFixed(0)}%</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Program volume: {(confidenceFactors.programs * 100).toFixed(0)}%</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ranking coverage: {(confidenceFactors.rankings * 100).toFixed(0)}%</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Op coverage: {(confidenceFactors.opCoverage * 100).toFixed(0)}%</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Decision-ready candidates: {decisionReadyCount}/{top.length || 0}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Avg promotion confidence (top set): {averagePromotionScore}%
-          </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             Repro packet completeness: {avgReproCompleteness}% ({fullReproPacketCount}/{top.length || 0} fully ready)
           </div>
@@ -596,7 +595,7 @@ export default function ReportDetail({
             />
           </div>
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <table className="data-table table-compact">
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
                   <th scope="col" onClick={() => handleStabilitySort('graph_fingerprint')} style={{ padding: '6px', cursor: 'pointer' }}>
@@ -699,6 +698,9 @@ export default function ReportDetail({
       )}
 
       {/* What Works + What Doesn't Work */}
+      {(bestOps.length > 0 || worstOps.length > 0) && (
+        <MirroredOpsChart bestOps={bestOps} worstOps={worstOps} rows={6} />
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card">
           <div className="card-title">What Works</div>

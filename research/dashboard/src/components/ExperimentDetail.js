@@ -57,33 +57,77 @@ const ROW_RATING_ORDER = { Excellent: 5, Strong: 4, Learned: 3, Stable: 2, Compi
 
 function FunnelViz({ experiment }) {
   const stages = [
-    { label: 'Generated', value: experiment.n_programs_generated || 0, color: 'var(--accent-blue)' },
-    { label: 'S0 Pass', value: experiment.n_stage0_passed || 0, color: 'var(--accent-green)' },
-    { label: 'S0.5 Pass', value: experiment.n_stage05_passed || 0, color: 'var(--accent-yellow)' },
-    { label: 'S1 Pass', value: experiment.n_stage1_passed || 0, color: 'var(--accent-purple)' },
+    { label: 'Generated', value: experiment.n_programs_generated || 0, color: 'var(--accent-blue)', icon: 'Σ' },
+    { label: 'Compiled', value: experiment.n_stage0_passed || 0, color: 'var(--accent-green)', icon: '✓' },
+    { label: 'Stable', value: experiment.n_stage05_passed || 0, color: 'var(--accent-yellow)', icon: '±' },
+    { label: 'Learned', value: experiment.n_stage1_passed || 0, color: 'var(--accent-purple)', icon: '★' },
   ];
 
   const max = stages[0].value || 1;
 
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center', background: 'var(--bg-tertiary)', padding: '16px 20px', borderRadius: 8, border: '1px solid var(--border)' }}>
       {stages.map((stage, i) => {
-        const height = Math.max((stage.value / max) * 60, 4);
+        const percent = Math.round((stage.value / max) * 100);
         return (
-          <div key={i} style={{ flex: 1, textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: stage.color }}>{stage.value}</div>
-            <div style={{
-              height,
-              background: stage.color,
-              opacity: 0.3,
-              borderRadius: '4px 4px 0 0',
-              margin: '4px auto',
-              width: '80%',
-            }} />
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{stage.label}</div>
-          </div>
+          <React.Fragment key={i}>
+            {i > 0 && <div style={{ color: 'var(--text-muted)', fontSize: 20 }}>&rarr;</div>}
+            <div style={{ flex: 1, textAlign: 'center' }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{stage.label}</div>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 4 }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)' }}>{stage.value}</div>
+                {i > 0 && <div style={{ fontSize: 12, color: stage.color }}>{percent}%</div>}
+              </div>
+              <div style={{ height: 4, background: 'var(--border)', borderRadius: 2, marginTop: 8, overflow: 'hidden' }}>
+                <div style={{ width: `${percent}%`, height: '100%', background: stage.color }} />
+              </div>
+            </div>
+          </React.Fragment>
         );
       })}
+    </div>
+  );
+}
+
+function ExperimentSummaryHeader({ experiment, programs }) {
+  const bestProgram = useMemo(() => {
+    if (!programs || programs.length === 0) return null;
+    return [...programs].sort((a, b) => candidateScore(b) - candidateScore(a))[0];
+  }, [programs]);
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 16 }}>
+      <div className="card" style={{ borderLeft: '4px solid var(--accent-blue)' }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>RESEARCH HYPOTHESIS</div>
+        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4 }}>
+          {experiment.hypothesis || "No hypothesis recorded for this session."}
+        </div>
+        {experiment.aria_summary && (
+          <div style={{ marginTop: 12, fontSize: 13, color: 'var(--text-secondary)', borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            <strong>Outcome:</strong> {experiment.aria_summary}
+          </div>
+        )}
+      </div>
+
+      {bestProgram && (
+        <div className="card" style={{ borderLeft: '4px solid var(--accent-green)', background: 'linear-gradient(135deg, var(--bg-secondary) 0%, rgba(63, 185, 80, 0.05) 100%)' }}>
+          <div style={{ fontSize: 10, color: 'var(--accent-green)', fontWeight: 700, marginBottom: 4 }}>TOP DISCOVERY</div>
+          <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'monospace' }}>{bestProgram.graph_fingerprint?.slice(0, 12)}</div>
+          <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ fontSize: 11 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Loss Ratio:</span> 
+              <span style={{ color: 'var(--accent-green)', marginLeft: 4, fontWeight: 600 }}>{bestProgram.loss_ratio?.toFixed(4)}</span>
+            </div>
+            <div style={{ fontSize: 11 }}>
+              <span style={{ color: 'var(--text-muted)' }}>Novelty:</span> 
+              <span style={{ color: 'var(--accent-purple)', marginLeft: 4, fontWeight: 600 }}>{bestProgram.novelty_score?.toFixed(3)}</span>
+            </div>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-muted)' }}>
+            Score: <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{candidateScore(bestProgram)}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -313,9 +357,9 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Header */}
+      {/* Header Info */}
       <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <button className="refresh-btn" onClick={() => onBack && onBack()} style={{ marginRight: 12 }}>&larr; Back</button>
             <span style={{ fontFamily: 'monospace', color: 'var(--accent-blue)', marginRight: 8 }}>{experimentId}</span>
@@ -340,68 +384,15 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
             {formatTime(exp.timestamp)} | {formatDuration(exp.duration_seconds)}
           </div>
         </div>
-
-        {/* Hypothesis */}
-        {exp.hypothesis && (
-          <div style={{
-            fontStyle: 'italic',
-            color: 'var(--text-secondary)',
-            fontSize: 13,
-            padding: 8,
-            background: 'var(--bg-tertiary)',
-            borderRadius: 4,
-            marginBottom: 12,
-          }}>
-            {exp.hypothesis}
-          </div>
-        )}
-
-        {prereg && (
-          <div style={{
-            marginBottom: 12,
-            padding: 10,
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            background: 'var(--bg-secondary)',
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
-              Decision Rationale
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
-              Primary metrics: {(prereg.analysis_plan_json?.primary_metrics || []).join(', ') || 'n/a'}
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
-              Success criteria: {JSON.stringify(prereg.hypothesis_json?.success_criteria || {})}
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-              Falsification: {(prereg.falsification_json || []).slice(0, 2).join(' | ') || 'n/a'}
-            </div>
-            {preregDeviations.length > 0 && (
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--accent-yellow)' }}>
-                Exploratory deviations logged: {preregDeviations.length}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Funnel */}
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
-          The evaluation funnel: each generated architecture is tested in stages.
-          S0 = compiles and produces outputs. S0.5 = gradients are stable. S1 = loss actually
-          decreases during training. Only S1 survivors are viable LLM layer candidates.
-        </p>
-        <FunnelViz experiment={exp} />
       </div>
 
-      {/* Aria Summary */}
-      {exp.aria_summary && (
-        <div className="card">
-          <div className="card-title">Aria's Summary</div>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
-            {exp.aria_summary}
-          </div>
-        </div>
-      )}
+      <ExperimentSummaryHeader experiment={exp} programs={programs} />
+
+      {/* Funnel */}
+      <div className="card">
+        <div className="card-title">Evaluation Funnel</div>
+        <FunnelViz experiment={exp} />
+      </div>
 
       {/* LLM Analysis */}
       {analysis?.analysis && (

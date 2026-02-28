@@ -197,8 +197,21 @@ function RegressionBaselineChart({ points, frontier }) {
   const W = 440;
   const H = 180;
   const PAD = 28;
-  const xs = points.map((p) => Number(p.throughput_tok_s || 0));
-  const ys = points.map((p) => Number(p.baseline_loss_ratio || 0));
+  const validPoints = points.filter((p) => {
+    const x = Number(p?.throughput_tok_s);
+    const y = Number(p?.baseline_loss_ratio);
+    return Number.isFinite(x) && Number.isFinite(y) && y > 0;
+  });
+  if (validPoints.length === 0) {
+    return (
+      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        No baseline-ratio points to plot yet. Baseline comparison is only available after baseline matching succeeds.
+      </div>
+    );
+  }
+
+  const xs = validPoints.map((p) => Number(p.throughput_tok_s));
+  const ys = validPoints.map((p) => Number(p.baseline_loss_ratio));
   const xDefaults = CHART_DEFAULTS.throughput_tok_s;
   const yDefaults = CHART_DEFAULTS.baseline_ratio;
   const xScale = getFixedScale('trend.throughput_tok_s', xs, {
@@ -215,6 +228,9 @@ function RegressionBaselineChart({ points, frontier }) {
   const yMax = yScale.max;
   const xRange = (xMax - xMin) || 1;
   const yRange = (yMax - yMin) || 1;
+  const ySpread = Math.max(...ys) - Math.min(...ys);
+  const applyJitter = ySpread < 0.01;
+  const frontierColor = '#36d7ff';
 
   const project = (x, y) => ({
     x: PAD + ((clampToScale(x, xScale) - xMin) / xRange) * (W - PAD * 2),
@@ -227,24 +243,53 @@ function RegressionBaselineChart({ points, frontier }) {
     })
     .join(' ');
 
+  const stableJitter = (seed, amplitude = 0.003) => {
+    let h = 0;
+    const s = String(seed || '');
+    for (let i = 0; i < s.length; i += 1) {
+      h = ((h << 5) - h) + s.charCodeAt(i);
+      h |= 0;
+    }
+    return ((Math.abs(h) % 1000) / 1000 - 0.5) * 2 * amplitude;
+  };
+
+  // Compact baseline-ratio distribution (spark histogram) for overlap-heavy cases.
+  const histBins = 12;
+  const histogram = Array.from({ length: histBins }, () => 0);
+  for (const y of ys) {
+    const norm = (clampToScale(y, yScale) - yMin) / yRange;
+    const idx = Math.max(0, Math.min(histBins - 1, Math.floor(norm * histBins)));
+    histogram[idx] += 1;
+  }
+  const histMax = Math.max(...histogram, 1);
+  const histX = W - PAD - 44;
+  const histW = 40;
+
   return (
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
+      <defs>
+        <filter id="paretoGlow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="0" stdDeviation="1.4" floodColor={frontierColor} floodOpacity="0.85" />
+        </filter>
+      </defs>
       <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
       <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
       <text x={W / 2} y={H - 6} textAnchor="middle" fontSize={10} fill="var(--text-muted)">Throughput (tok/s)</text>
       <text x={8} y={H / 2} transform={`rotate(-90 8 ${H / 2})`} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
         Baseline Ratio (lower is better)
       </text>
-      {points.map((p, idx) => {
-        const pt = project(Number(p.throughput_tok_s || 0), Number(p.baseline_loss_ratio || 0));
-        const beats = Number(p.baseline_loss_ratio || 0) < 1.0;
+      {validPoints.map((p, idx) => {
+        const baseY = Number(p.baseline_loss_ratio);
+        const yValue = applyJitter ? baseY + stableJitter(p.result_id || idx) : baseY;
+        const pt = project(Number(p.throughput_tok_s), yValue);
+        const beats = baseY < 1.0;
         return (
           <circle
             key={`${p.result_id || idx}`}
             cx={pt.x}
             cy={pt.y}
             r={3}
-            fill={beats ? 'var(--accent-green)' : 'var(--accent-yellow)'}
+            fill={beats ? '#3edc81' : '#ffb347'}
             opacity={0.85}
           >
             <title>
@@ -253,7 +298,98 @@ function RegressionBaselineChart({ points, frontier }) {
           </circle>
         );
       })}
-      {frontierPath && <path d={frontierPath} fill="none" stroke="var(--accent-red)" strokeWidth={1.5} strokeDasharray="4 3" />}
+      {frontierPath && (
+        <path
+          d={frontierPath}
+          fill="none"
+          stroke={frontierColor}
+          strokeWidth={2.6}
+          strokeDasharray="6 4"
+          filter="url(#paretoGlow)"
+        />
+      )}
+      {applyJitter && (
+        <text x={W - PAD} y={PAD - 8} textAnchor="end" fontSize={9} fill="var(--text-muted)">
+          low Y-spread: visual jitter applied
+        </text>
+      )}
+      <g>
+        <rect
+          x={histX - 2}
+          y={PAD - 2}
+          width={histW + 4}
+          height={H - (PAD * 2) + 4}
+          fill="rgba(255,255,255,0.02)"
+          stroke="var(--border)"
+          strokeWidth={0.7}
+          rx={2}
+        />
+        {histogram.map((count, i) => {
+          if (count <= 0) return null;
+          const binH = (H - PAD * 2) / histBins;
+          const y = H - PAD - (i + 1) * binH;
+          const w = (count / histMax) * (histW - 4);
+          return (
+            <rect
+              key={`hist-${i}`}
+              x={histX}
+              y={y + 1}
+              width={w}
+              height={Math.max(1, binH - 2)}
+              fill="rgba(62, 220, 129, 0.75)"
+            />
+          );
+        })}
+        <text x={histX + histW / 2} y={H - 8} textAnchor="middle" fontSize={8.5} fill="var(--text-muted)">
+          Y dist
+        </text>
+      </g>
+    </svg>
+  );
+}
+
+function ParetoEfficiencyChart({ points }) {
+  if (!Array.isArray(points) || points.length === 0) return null;
+  const W = 440;
+  const H = 220;
+  const PAD = 32;
+  
+  // X: Compute Savings (normalized throughput or explicit savings ratio)
+  // Y: Accuracy (1 - Loss Ratio)
+  // Size: Compression Ratio
+  
+  const xs = points.map(p => {
+      const throughput = Number(p.throughput_tok_s || 0);
+      return Math.min(1.0, throughput / 50000); // Normalize to 50k tok/s
+  });
+  const ys = points.map(p => Math.max(0, 1.0 - (p.validation_loss_ratio || p.loss_ratio || 1.0)));
+  const sizes = points.map(p => {
+      const ratio = p.compression_ratio || 1.0;
+      return Math.sqrt(Math.min(10, 1 / Math.max(0.1, ratio))) * 4 + 2; // radius
+  });
+
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
+      <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
+      <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
+      
+      <text x={W/2} y={H-8} textAnchor="middle" fontSize={10} fill="var(--text-muted)">Compute Efficiency (Throughput)</text>
+      <text x={10} y={H/2} transform={`rotate(-90 10 ${H/2})`} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
+        Accuracy (1 - LR)
+      </text>
+
+      {points.map((p, i) => {
+        const x = PAD + xs[i] * (W - PAD*2);
+        const y = H - PAD - ys[i] * (H - PAD*2);
+        return (
+          <circle 
+            key={i} cx={x} cy={y} r={sizes[i]} 
+            fill="var(--accent)" opacity={0.6} stroke="var(--bg-primary)" strokeWidth={1}
+          >
+            <title>{`${p.result_id?.slice(0,8)} | Acc: ${(ys[i]*100).toFixed(1)}% | Eff: ${(xs[i]*100).toFixed(1)}% | Comp: ${Number(p.compression_ratio || 1).toFixed(2)}x`}</title>
+          </circle>
+        );
+      })}
     </svg>
   );
 }
@@ -552,11 +688,41 @@ function TrendCharts({ onSelectExperiment }) {
         />
         <MiniChart
           data={filtered}
+          valueKey="avg_discovery_loss_ratio"
+          label="Avg Discovery Loss Ratio"
+          color="#ff8c42"
+          formatValue={v => v.toFixed(4)}
+          weightEvents={weightEvents}
+          scaleKey="loss_ratio"
+          windowSize={Number(chartWindowSize)}
+        />
+        <MiniChart
+          data={filtered}
+          valueKey="avg_validation_loss_ratio"
+          label="Avg Validation Loss Ratio"
+          color="#4cc9f0"
+          formatValue={v => v.toFixed(4)}
+          weightEvents={weightEvents}
+          scaleKey="loss_ratio"
+          windowSize={Number(chartWindowSize)}
+        />
+        <MiniChart
+          data={filtered}
           valueKey="best_novelty_score"
           label="Best Novelty Score"
           color="var(--accent-purple, #bc8cff)"
           weightEvents={weightEvents}
           scaleKey="novelty"
+          windowSize={Number(chartWindowSize)}
+        />
+        <MiniChart
+          data={filtered}
+          valueKey="avg_generalization_gap"
+          label="Avg Generalization Gap"
+          color="#6d6df6"
+          formatValue={v => v.toFixed(4)}
+          weightEvents={weightEvents}
+          scaleKey="generalization_gap"
           windowSize={Number(chartWindowSize)}
         />
         <MiniChart
@@ -686,7 +852,8 @@ function TrendCharts({ onSelectExperiment }) {
             Regression vs Baseline (Accuracy/Speed Tradeoff)
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-            Scatter of Stage-1 survivors by throughput vs baseline ratio. Dashed red line is Pareto frontier.
+            Scatter of Stage-1 survivors by throughput vs baseline ratio. Cyan dashed line is Pareto frontier.
+            Rows missing baseline ratio are omitted.
           </div>
           <RegressionBaselineChart
             points={regressionVsBaseline.points.slice(0, 120)}
@@ -698,6 +865,18 @@ function TrendCharts({ onSelectExperiment }) {
             {' '}best ratio {Number(regressionVsBaseline.summary?.best_baseline_ratio || 0).toFixed(3)} ·
             {' '}best throughput {Math.round(Number(regressionVsBaseline.summary?.best_throughput_tok_s || 0))} tok/s
           </div>
+        </div>
+      )}
+
+      {Array.isArray(regressionVsBaseline.points) && regressionVsBaseline.points.length > 0 && (
+        <div className="card" style={{ marginBottom: 14, padding: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text-primary)' }}>
+            Pareto Efficiency (3-Way Tradeoff)
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Accuracy (Y) vs Compute Efficiency (X). Bubble size = Compression Ratio.
+          </div>
+          <ParetoEfficiencyChart points={regressionVsBaseline.points.slice(0, 150)} />
         </div>
       )}
 

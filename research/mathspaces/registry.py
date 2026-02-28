@@ -368,7 +368,9 @@ def register_all_mathspaces():
         category=OpCategory.MATH_SPACE,
         n_inputs=1,
         shape_rule="identity",
-        description="STDP-inspired causal attention with temporal decay kernel",
+        has_params=True,
+        param_formula="1",
+        description="STDP-inspired causal attention with learnable temporal decay",
     )
     op = _with_execute(op, spiking.execute_stdp_attention)
     register_external_primitive(op)

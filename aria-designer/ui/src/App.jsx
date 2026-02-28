@@ -71,6 +71,35 @@ function DesignerApp() {
   
   const [snapToGridEnabled, setSnapToGridEnabled] = useState(true)
   
+  const [rightPanelWidth, setRightPanelWidth] = useState(300)
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeRef = useRef({ startX: 0, startWidth: 300 })
+
+  const startResizing = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    resizeRef.current = { startX: e.clientX, startWidth: rightPanelWidth }
+    setIsResizing(true)
+  }, [rightPanelWidth])
+
+  useEffect(() => {
+    if (!isResizing) return
+    const handleMouseMove = (e) => {
+      const deltaX = resizeRef.current.startX - e.clientX
+      const nextWidth = resizeRef.current.startWidth + deltaX
+      setRightPanelWidth(Math.max(250, Math.min(900, nextWidth)))
+    }
+    const handleMouseUp = () => {
+      setIsResizing(false)
+    }
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizing])
+
   // Use a ref to store initial URL params to avoid re-runs
   const initialParams = useMemo(() => new URLSearchParams(window.location.search), [])
   const [readOnly, setReadOnly] = useState(() => initialParams.get('readonly') === '1')
@@ -276,7 +305,11 @@ function DesignerApp() {
       if (e.data?.target !== 'aria-designer') return
       if (e.data.type === 'get-graph') {
         const workflow = buildWorkflowJson(nodesRef.current, edgesRef.current, workflowMeta)
-        postToParent('graph-data', { workflow })
+        postToParent('graph-data', {
+          workflow,
+          reason: e.data.reason || null,
+          requestId: e.data.requestId || null,
+        })
       }
       if (e.data.type === 'load-result' && e.data.resultId) {
         loadResultReceived.current = true
@@ -992,6 +1025,32 @@ function DesignerApp() {
                   )
                 }
 
+                // Phase 5.1: Routing/Compression telemetry live-sync
+                if (payload.stage === 'routing' && payload.status === 'done' && payload.metrics) {
+                  const routingMap = {}
+                  const compressionMap = {}
+                  
+                  if (payload.metrics.op_routing) {
+                    for (const r of payload.metrics.op_routing) {
+                      if (r.aria_node_id) routingMap[r.aria_node_id] = r
+                    }
+                  }
+                  if (payload.metrics.op_compression) {
+                    for (const c of payload.metrics.op_compression) {
+                      if (c.aria_node_id) compressionMap[c.aria_node_id] = c
+                    }
+                  }
+
+                  setNodes((nds) =>
+                    nds.map((n) => {
+                      let nextData = { ...n.data }
+                      if (routingMap[n.id]) nextData.routing = routingMap[n.id]
+                      if (compressionMap[n.id]) nextData.compression = compressionMap[n.id]
+                      return { ...n, data: nextData }
+                    })
+                  )
+                }
+
                 // Sandbox failure: mark all nodes as failed with the sandbox error
                 if (payload.stage === 'sandbox' && payload.status === 'done' && payload.metrics && !payload.metrics.passed) {
                   setAllNodeEvalStatus('fail', 'Sandbox evaluation failed')
@@ -1486,7 +1545,7 @@ function DesignerApp() {
   }
 
   return (
-    <div className={`page ${embeddedMode ? 'embedded-mode' : ''}`}>
+    <div className={`page ${embeddedMode ? 'embedded-mode' : ''}`} style={{ '--right-panel-width': `${rightPanelWidth}px` }}>
       {!embeddedMode && (
         <Palette
           components={components}
@@ -1658,6 +1717,11 @@ function DesignerApp() {
 
       {!embeddedMode && (
         <aside className="panel right">
+          <div 
+            className={`resize-handle-left ${isResizing ? 'resizing' : ''}`} 
+            onMouseDown={startResizing}
+            title="Drag to resize properties panel"
+          />
           <div className="panel-tabs">
             <button
               className={rightPanelTab === 'inspector' ? 'active' : ''}

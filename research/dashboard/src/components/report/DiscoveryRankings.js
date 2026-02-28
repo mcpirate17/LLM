@@ -7,6 +7,7 @@ import RatingBadge from './RatingBadge';
 import { filterRowsByQuery } from '../../utils/tableFiltering';
 import {
   compressionSummary, metricChips, qkvUsageDescriptor,
+  resolveLossRatio,
   decisionGate, reproducibilityPacketStatus,
   DISC_COLUMNS, DISC_RATING_ORDER,
   REPORT_DISCOVERY_SORT_PREFS_KEY, REPORT_DISCOVERY_VIEW_PREFS_KEY,
@@ -105,7 +106,7 @@ export default function DiscoveryRankings({
     const aug = filtered.map(p => {
       const repeatCount = Number(p.repeat_count || p.group_repeat_count || 1);
       const repeatIndex = Number(p.group_repeat_index || 1);
-      const lr = p.loss_ratio;
+      const lr = resolveLossRatio(p) ?? p.loss_ratio;
       const nov = p.novelty_score || 0;
       const bl = p.baseline_loss_ratio;
       let rLabel;
@@ -224,7 +225,7 @@ export default function DiscoveryRankings({
         QKV alternative labels are candidate-level: <strong>Full QKV</strong>, <strong>Q=K=V</strong>, or <strong>QKV-free</strong>.
       </p>
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table className="data-table table-compact">
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
               <th scope="col" style={{ padding: '8px 6px', color: 'var(--text-muted)' }}>#</th>
@@ -265,7 +266,7 @@ export default function DiscoveryRankings({
               <tr key={p.result_id || i} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px', color: 'var(--text-muted)' }}>{i + 1}</td>
                 <td style={{ padding: '6px', fontWeight: 600, color: scoreColor(p._score) }}>
-                  <span title={`Loss ${(p._scoreBreakdown.loss || 0).toFixed(1)}/35 | Novelty ${(p._scoreBreakdown.novelty || 0).toFixed(1)}/25 | Baseline ${(p._scoreBreakdown.baseline || 0).toFixed(1)}/30 | ID ${(p._scoreBreakdown.id || 0).toFixed(1)}/10 | Efficiency ${(p._scoreBreakdown.efficiencyBonus || 0).toFixed(1)} | Routing ${(p._scoreBreakdown.routingBonus || 0).toFixed(1)} | Adaptive ${(p._scoreBreakdown.adaptiveBonus || 0).toFixed(1)}`}>
+                  <span title={`Loss ${(p._scoreBreakdown.loss || 0)}% | Novelty ${(p._scoreBreakdown.novelty || 0)}% | Baseline ${(p._scoreBreakdown.baseline || 0)}% | ID ${(p._scoreBreakdown.id || 0)}% | ParamEff ${(p._scoreBreakdown.paramEfficiency || 0)}% | Speed ${(p._scoreBreakdown.learningSpeed || 0)}% | Efficiency ${(p._scoreBreakdown.efficiencyBonus || 0).toFixed(1)} | Routing ${(p._scoreBreakdown.routingBonus || 0).toFixed(1)} | Adaptive ${(p._scoreBreakdown.adaptiveBonus || 0).toFixed(1)}`}>
                     {p._score}
                   </span>
                 </td>
@@ -331,9 +332,9 @@ export default function DiscoveryRankings({
                 </td>
                 <td style={{
                   padding: '6px', fontWeight: 600,
-                  color: (p.loss_ratio || 1) < 0.5 ? 'var(--accent-green)' : (p.loss_ratio || 1) < 0.7 ? 'var(--accent-yellow)' : 'var(--text-secondary)',
+                  color: (lr || 1) < 0.5 ? 'var(--accent-green)' : (lr || 1) < 0.7 ? 'var(--accent-yellow)' : 'var(--text-secondary)',
                 }}>
-                  {p.loss_ratio != null ? p.loss_ratio.toFixed(4) : '--'}
+                  {lr != null ? lr.toFixed(4) : '--'}
                 </td>
                 <td style={{ padding: '6px', color: (p.novelty_score || 0) > 0.7 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>
                   {p.novelty_score != null ? p.novelty_score.toFixed(3) : '--'}
@@ -437,7 +438,7 @@ export default function DiscoveryRankings({
                   </span>
                 </td>
                 <td style={{ padding: '6px' }}>
-                  {p.loss_ratio != null && <RatingBadge program={p} />}
+                  {lr != null && <RatingBadge program={p} />}
                   {p.result_id && (
                     <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       {onInvestigate && eligibility.investigationEligible && (

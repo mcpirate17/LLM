@@ -185,6 +185,12 @@ class NextExperimentDecisionPlanner:
         config.setdefault("selection_policy", "ucb")
         config.setdefault("selection_epsilon", 0.0)
 
+        # Strip protected ops from LLM-suggested exclusions.
+        if "excluded_ops" in config and isinstance(config["excluded_ops"], list):
+            from ...synthesis.primitives import PROTECTED_OPS
+            config["excluded_ops"] = [op for op in config["excluded_ops"]
+                                      if isinstance(op, str) and op not in PROTECTED_OPS]
+
         # Cost/time bounds.
         if "n_programs" in config:
             try:
@@ -222,7 +228,7 @@ class NextExperimentDecisionPlanner:
             "summary_excerpt": {
                 "recent_experiment_id": summary.get("recent_experiment_id"),
                 "stage1_survivors": summary.get("stage1_survivors", 0),
-                "best_loss_ratio": summary.get("best_loss_ratio"),
+                "best_loss_ratio": summary.get("best_validation_loss_ratio", summary.get("best_loss_ratio")),
                 "best_novelty": summary.get("best_novelty"),
             },
         }

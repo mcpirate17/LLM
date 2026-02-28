@@ -560,8 +560,10 @@ export function candidateScore(entry) {
                  entry.loss_ratio;
 
   if (perfLR != null) {
-    // 1.0 (baseline) -> 0 utility, 0.5 (2x better) -> 50 utility
-    utility += 100.0 * Math.max(0, 1.0 - perfLR);
+    // Nonlinear utility curve: heavily reward strong loss ratios and
+    // suppress mediocre survivors that only look good on novelty.
+    const perfNorm = clamp01(1.0 - Number(perfLR));
+    utility += 100.0 * Math.pow(perfNorm, 1.6);
   }
   
   // Discovery channel (random tokens)
@@ -575,7 +577,13 @@ export function candidateScore(entry) {
   const isRef = Boolean(entry.is_reference);
   const conf = entry.novelty_confidence ?? 1.0;
   const effectiveNov = isRef ? 1.0 : novelty;
-  utility += 40.0 * effectiveNov * conf;
+  // Gate novelty by performance quality so novelty cannot dominate when
+  // loss evidence is weak.
+  let noveltyGate = 1.0;
+  if (perfLR != null) {
+    noveltyGate = clamp01((0.9 - Number(perfLR)) / 0.6);
+  }
+  utility += 40.0 * effectiveNov * conf * noveltyGate;
 
   // 3. Efficiency Utility
   // scaling_param_efficiency is a multiplier (1-5x range) — do NOT fallback
@@ -627,6 +635,21 @@ export function candidateScore(entry) {
   const std = entry.validation_multi_seed_std;
   if (std != null && std > 0.1) {
     utility -= 50.0 * Math.min(2.0, std / 0.5);
+  }
+
+  const vLR = entry.validation_loss_ratio;
+  if (vLR != null && Number(vLR) >= 1.0) {
+    utility -= 45.0 * Math.min(2.0, Number(vLR) - 1.0 + 0.5);
+  }
+
+  const vBase = entry.validation_baseline_ratio;
+  if (vBase != null && Number(vBase) > 1.0) {
+    utility -= 35.0 * Math.min(2.0, Number(vBase) - 1.0);
+  }
+
+  const iLR = entry.investigation_loss_ratio;
+  if (iLR != null && Number(iLR) > 0.35) {
+    utility -= 20.0 * Math.min(2.0, (Number(iLR) - 0.35) / 0.35);
   }
   
   const entropy = entry.routing_utilization_entropy;

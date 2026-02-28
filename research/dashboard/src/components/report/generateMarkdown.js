@@ -20,12 +20,13 @@ export default function generateMarkdown(data) {
   const top = data.top_programs || [];
   if (top.length > 0) {
     lines.push('## Discovery Rankings\n');
-    lines.push('| Rank | Fingerprint | Loss Ratio | Novelty | Baseline | Similar To |');
-    lines.push('|------|-------------|------------|---------|----------|------------|');
+    lines.push('| Rank | Fingerprint | Validation Loss Ratio | Novelty | Baseline | Similar To |');
+    lines.push('|------|-------------|-----------------------|---------|----------|------------|');
     top.forEach((p, i) => {
+      const loss = p.validation_loss_ratio != null ? p.validation_loss_ratio : p.loss_ratio;
       lines.push(
         `| ${i + 1} | \`${(p.graph_fingerprint || '').slice(0, 12)}\` ` +
-        `| ${p.loss_ratio != null ? p.loss_ratio.toFixed(4) : '--'} ` +
+        `| ${loss != null ? loss.toFixed(4) : '--'} ` +
         `| ${p.novelty_score != null ? p.novelty_score.toFixed(3) : '--'} ` +
         `| ${p.baseline_loss_ratio != null ? p.baseline_loss_ratio.toFixed(3) : '--'} ` +
         `| ${p.most_similar_to || '--'} |`

@@ -1,0 +1,44 @@
+id: route_lanes
+version: 1.0.0
+name: Route Lanes
+category: functional
+tags:
+- core
+- routing
+status: approved
+description: Multi-lane dispatch.
+inputs:
+- name: scores
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - L
+outputs:
+- name: lane_indices
+  dtype: index
+  shape:
+  - B
+  - S
+params:
+  n_lanes:
+    type: integer
+    default: 2
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: "0"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  Assigns each token to one of several compute "lanes" based on maximal score.
+
+  Inputs: scores:tensor[B, S, L].
+  Outputs: lane_indices:index[B, S].
+  ### Plain Language
+  A traffic controller that sends each token down a different processing lane depending on its properties.
+  '

@@ -96,7 +96,8 @@ class TransformerBaseline:
                     weight_decay: float = 0.01,
                     momentum: float = 0.0,
                     betas: Optional[Tuple[float, float]] = None,
-                    data_tag: str = "random") -> str:
+                    data_mode: str = "random",
+                    data_tag: str = "none") -> str:
         dev_tag = "gpu" if device == "cuda" else "cpu"
         opt = (optimizer_name or "adamw").lower()
         wd_tag = f"{weight_decay:.8f}"
@@ -106,7 +107,7 @@ class TransformerBaseline:
             beta_tag = f"{float(betas[0]):.6f}_{float(betas[1]):.6f}"
         return (
             f"{d_model}_{seq_len}_{n_steps}_{vocab_size}_{n_layers}_{dev_tag}_"
-            f"{opt}_{wd_tag}_{mom_tag}_{beta_tag}_{data_tag}"
+            f"{opt}_{wd_tag}_{mom_tag}_{beta_tag}_{data_mode}_{data_tag}"
         )
 
     def _get_cached(self, config_key: str) -> Optional[float]:
@@ -145,26 +146,25 @@ class TransformerBaseline:
         momentum: float = 0.0,
         betas: Optional[Tuple[float, float]] = None,
         data_fn=None,
-        data_tag: str = "random",
+        data_mode: str = "random",
+        data_tag: str = "none",
+        cache_data_fn: bool = True,
     ) -> float:
         """Get the baseline transformer final loss, training if needed.
 
-        Trains n_seeds independent runs and returns the mean loss for
-        more stable baseline comparison.
-
         Args:
             data_fn: Optional callable(batch_size, seq_len, device) -> input_ids tensor.
-                     When provided, baseline trains on real data instead of random tokens.
-            data_tag: Cache key suffix distinguishing data sources (e.g. "hydra").
+                     Used for training on real data.
+            data_mode: "random" or "corpus".
+            data_tag: Cache key suffix for data source (e.g. "shakespeare").
         """
         config_key = self._config_key(
             d_model, seq_len, n_steps, vocab_size,
             n_layers, device, optimizer_name, weight_decay, momentum, betas,
-            data_tag=data_tag,
+            data_mode=data_mode, data_tag=data_tag,
         )
 
-        # Don't use cache when training on real data — data_fn is stateful
-        if data_fn is None:
+        if cache_data_fn:
             cached = self._get_cached(config_key)
             if cached is not None:
                 return cached
@@ -187,7 +187,7 @@ class TransformerBaseline:
                 losses.append(loss)
 
         final_loss = sum(losses) / len(losses) if losses else float("inf")
-        if math.isfinite(final_loss):
+        if math.isfinite(final_loss) and cache_data_fn:
             self._save_cache(config_key, final_loss, losses[0])
         return final_loss
 
@@ -290,34 +290,22 @@ class TransformerBaseline:
         momentum: float = 0.0,
         betas: Optional[Tuple[float, float]] = None,
         data_fn=None,
-        data_tag: str = "random",
+        data_mode: str = "random",
+        data_tag: str = "none",
+        cache_data_fn: bool = True,
     ) -> float:
-        """Compare program loss to baseline. Returns ratio (< 1.0 = better).
-
-        The baseline is always a 2-layer transformer regardless of the caller's
-        n_layers — it's meant as a *minimal* reference, not a matched one.
-        (Use compare_normalized() for param-matched comparison.)
-
-        If the baseline hasn't learned (loss within 5% of random chance),
-        returns 1.0 to avoid meaningless ratios.
-        """
-        # Always use 2 layers for the raw baseline — callers may pass
-        # config.n_layers but the baseline is intentionally minimal.
+        """Compare program loss to baseline. Returns ratio (< 1.0 = better)."""
         baseline_loss = self.get_baseline_loss(
             d_model, seq_len, n_steps, vocab_size, batch_size, lr, device,
             n_layers=2, optimizer_name=optimizer_name,
             weight_decay=weight_decay, momentum=momentum, betas=betas,
-            data_fn=data_fn, data_tag=data_tag,
+            data_fn=data_fn, data_mode=data_mode, data_tag=data_tag, cache_data_fn=cache_data_fn,
         )
         if baseline_loss <= 0 or math.isnan(baseline_loss):
             return 1.0
 
-        # Sanity check: if baseline hasn't learned beyond random chance,
-        # the ratio is meaningless.  ln(vocab_size) is the expected loss
-        # when predicting uniformly at random.
         random_chance = math.log(max(vocab_size, 2))
         if baseline_loss >= random_chance * 0.95:
-            # Baseline didn't learn — ratio is unreliable
             return 1.0
 
         return program_loss / baseline_loss
@@ -339,20 +327,16 @@ class TransformerBaseline:
         momentum: float = 0.0,
         betas: Optional[Tuple[float, float]] = None,
         data_fn=None,
-        data_tag: str = "random",
+        data_mode: str = "random",
+        data_tag: str = "none",
+        cache_data_fn: bool = True,
     ) -> Dict[str, float]:
-        """Compare program loss to a parameter-matched baseline.
-
-        Trains a baseline with enough layers to approximately match program_params,
-        giving a fair comparison that penalizes parameter-inefficient architectures.
-
-        Returns dict with raw_ratio, normalized_ratio, and param_efficiency.
-        """
-        # Raw comparison against standard 2-layer baseline (compare() forces 2 layers)
+        """Compare program loss to a parameter-matched baseline."""
         raw_ratio = self.compare(
             program_loss, d_model, seq_len, n_steps, vocab_size,
             batch_size, lr, device, n_layers, optimizer_name,
-            weight_decay, momentum, betas, data_fn, data_tag,
+            weight_decay, momentum, betas, data_fn, data_mode=data_mode, data_tag=data_tag,
+            cache_data_fn=cache_data_fn,
         )
 
         # Estimate how many layers the baseline needs to match program_params
@@ -377,7 +361,7 @@ class TransformerBaseline:
             device, n_layers=matched_layers,
             optimizer_name=optimizer_name, weight_decay=weight_decay,
             momentum=momentum, betas=betas,
-            data_fn=data_fn, data_tag=data_tag,
+            data_fn=data_fn, data_mode=data_mode, data_tag=data_tag,
         )
 
         random_chance = math.log(max(vocab_size, 2))

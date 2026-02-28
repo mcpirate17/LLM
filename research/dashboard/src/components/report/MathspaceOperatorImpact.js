@@ -90,7 +90,7 @@ export default function MathspaceOperatorImpact({ impact }) {
         />
       </div>
       <div style={{ overflowX: 'auto', marginBottom: 10 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table className="data-table table-compact">
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
               <th onClick={() => handleSort('op_name')} style={{ padding: '6px 8px', cursor: 'pointer' }}>
