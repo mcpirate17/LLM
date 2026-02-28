@@ -4522,6 +4522,11 @@ def create_app(
                     child = _mutate_graph(parent_graph, grammar, rng)
                 except Exception:
                     continue
+                
+                # Z15: Prune dead branches (unreachable nodes) before validation 
+                # to prevent redundant complexity from bloat mutations.
+                child.prune_dead_branches()
+                
                 validation = validate_graph(child, max_ops=30, max_depth=20)
                 if not validation.valid:
                     continue
@@ -5415,6 +5420,20 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/analytics/efficiency-frontier-3d")
+    def api_efficiency_frontier_3d():
+        """Pareto-optimal programs on loss vs FLOPs vs compression (3D)."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            return jsonify(analytics.efficiency_frontier_3d())
+        except Exception as e:
+            logger.error(f"Error in efficiency-frontier-3d: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/analytics/regression-vs-baseline")
     def api_regression_vs_baseline():
         """Accuracy/speed tradeoff view based on baseline ratio vs throughput."""
@@ -5555,6 +5574,21 @@ def create_app(
             return jsonify(payload)
         except Exception as e:
             logger.error(f"Error in gating-diagnostics: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/gate-health")
+    def api_gate_health():
+        """Causality gate performance: daily failure rate + loss correlation."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            n_days = request.args.get("days", 14, type=int)
+            return jsonify(analytics.gate_health_daily(n_days=n_days))
+        except Exception as e:
+            logger.error(f"Error in gate-health: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -6003,8 +6037,11 @@ def create_app(
                     "stage05_passed": bool(program.get("stage05_passed")),
                     "stage1_passed": bool(program.get("stage1_passed")),
                     "loss_ratio": program.get("loss_ratio"),
+                    "discovery_loss_ratio": program.get("discovery_loss_ratio"),
+                    "validation_loss_ratio": program.get("validation_loss_ratio"),
                     "novelty_score": program.get("novelty_score"),
                     "baseline_loss_ratio": program.get("baseline_loss_ratio"),
+                    "validation_baseline_ratio": program.get("validation_baseline_ratio"),
                 },
                 "canonical_metrics": {
                     "compression": analytics.canonical_compression_metrics(program),
@@ -6015,6 +6052,35 @@ def create_app(
         except Exception as e:
             logger.error(f"Error in /api/reproducibility-manifest/{result_id}: {e}\n"
                          f"{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/reproducibility-manifest/<result_id>/workflow", methods=["GET"])
+    def api_workflow_export(result_id: str):
+        """Export a program result as an aria-designer workflow JSON."""
+        nb = LabNotebook(notebook_path)
+        try:
+            row = nb.conn.execute(
+                "SELECT graph_json, model_dim FROM program_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if not row or not row["graph_json"]:
+                return jsonify({"error": "Program not found or has no graph"}), 404
+            
+            from ..synthesis.serializer import graph_from_json
+            from ..synthesis.workflow_converter import graph_to_workflow
+            
+            graph = graph_from_json(row["graph_json"], model_dim=row["model_dim"])
+            workflow = graph_to_workflow(
+                graph, 
+                workflow_id=f"aria_{result_id[:8]}",
+                name=f"Aria Discovery {result_id[:8]}",
+                metadata={"result_id": result_id}
+            )
+            return jsonify(workflow)
+        except Exception as e:
+            logger.error(f"Error exporting workflow for {result_id}: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -6147,6 +6213,39 @@ def create_app(
             })
         except Exception as e:
             logger.error(f"Error in /api/leaderboard/status: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/leaderboard/pin", methods=["POST"])
+    def api_leaderboard_pin():
+        """Pin or unpin a leaderboard entry."""
+        body = request.get_json(silent=True) or {}
+        entry_id = str(body.get("entry_id") or "").strip()
+        result_id = str(body.get("result_id") or "").strip()
+        pinned = bool(body.get("pinned", False))
+
+        if not entry_id and not result_id:
+            return jsonify({"error": "entry_id or result_id is required"}), 400
+
+        nb = LabNotebook(notebook_path)
+        try:
+            resolved_entry_id = entry_id
+            if not resolved_entry_id and result_id:
+                row = nb.conn.execute(
+                    "SELECT entry_id FROM leaderboard WHERE result_id = ?",
+                    (result_id,),
+                ).fetchone()
+                if row:
+                    resolved_entry_id = row["entry_id"]
+            
+            if not resolved_entry_id:
+                return jsonify({"error": "Leaderboard entry not found"}), 404
+
+            nb.set_leaderboard_pin(resolved_entry_id, pinned)
+            return jsonify({"success": True, "entry_id": resolved_entry_id, "pinned": pinned})
+        except Exception as e:
+            logger.error(f"Error in /api/leaderboard/pin: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -6433,22 +6532,25 @@ def create_app(
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
                     return jsonify({"error": "result_ids required for investigation mode"}), 400
-                nb = LabNotebook(notebook_path)
-                try:
-                    eligibility = _build_start_mode_eligibility(nb, "investigation", result_ids)
-                finally:
-                    nb.close()
-                if not eligibility.get("all_eligible"):
-                    return jsonify({
-                        "error": "Ineligible result_ids for investigation mode",
-                        "eligibility": eligibility,
-                    }), 409
+                force_reinvestigate = bool(body.get("force") or body.get("force_reinvestigate"))
+                if not force_reinvestigate:
+                    nb = LabNotebook(notebook_path)
+                    try:
+                        eligibility = _build_start_mode_eligibility(nb, "investigation", result_ids)
+                    finally:
+                        nb.close()
+                    if not eligibility.get("all_eligible"):
+                        return jsonify({
+                            "error": "Ineligible result_ids for investigation mode",
+                            "eligibility": eligibility,
+                        }), 409
                 exp_id = runner.start_investigation(
                     result_ids,
                     config,
                     hypothesis=hypothesis,
                     preregistration=preregistration,
                     exploratory=exploratory,
+                    force=force_reinvestigate,
                 )
             elif mode == "validation":
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
