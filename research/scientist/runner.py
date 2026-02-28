@@ -87,6 +87,37 @@ from .llm.decision import NextExperimentDecisionPlanner
 import logging
 logger = logging.getLogger(__name__)
 
+import aria_core
+from ..synthesis.primitives import OPCODE_MAP
+
+def _native_proactive_gating(graph) -> Dict[str, Any]:
+    """
+    Perform high-performance DAG validation and proactive gating using aria-core.
+    Identifies stability risks and toxic motifs before compilation.
+    """
+    try:
+        # 1. Map node IDs to 0..N-1 for C++ interop
+        nodes = list(graph.nodes.values())
+        id_map = {node.id: i for i, node in enumerate(nodes)}
+        n_nodes = len(nodes)
+        
+        # 2. Extract edges
+        edges = []
+        for node in nodes:
+            for iid in node.input_ids:
+                if iid in id_map:
+                    edges.append([id_map[iid], id_map[node.id]])
+        
+        # 3. Extract op_codes
+        op_codes = []
+        for node in nodes:
+            op_codes.append(OPCODE_MAP.get(node.op_name, -1))
+            
+        # 4. Call native engine
+        return aria_core.proactive_gating(n_nodes, edges, op_codes)
+    except Exception as e:
+        logger.debug(f"Native proactive gating failed: {e}")
+        return {"passed": True, "reason": "native_gating_error", "error": str(e)}
 
 def _native_runner_progress_report() -> Dict[str, Any]:
     try:
@@ -254,16 +285,29 @@ class RunConfig:
     enable_kernel_profiling: bool = False
     kernel_profile_top_k: int = 20
     # Training data source
-    data_mode: str = "random"  # "random" | "corpus" | "hydra"
-    corpus_path: str = ""      # TXT or JSONL path for corpus mode
+    data_mode: str = "corpus"  # "random" | "corpus" | "hydra"
+    corpus_path: str = "/home/tim/Projects/LLM/research/micro_corpus.txt"      # TXT or JSONL path for corpus mode
     corpus_format: str = "auto"  # "auto" | "txt" | "jsonl"
     corpus_text_key: str = "text"  # JSONL key when format is jsonl
     tokenizer_mode: str = "byte"  # "byte" | "whitespace"
     corpus_max_chars: int = 200000
+    corpus_train_fraction: float = 0.9
+    corpus_val_fraction: float = 0.1
+    stage1_compute_val_loss: bool = True
+    stage1_val_batches: int = 2
+    stage1_val_batch_size: int = 4
+    stage1_compute_discovery_loss: bool = True
+    stage1_discovery_batches: int = 2
+    stage1_discovery_batch_size: int = 4
     # HYDRA data loader settings (data_mode="hydra")
     hydra_data_dir: str = "../HYDRA/data"
     hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name
     hydra_project_root: str = "../HYDRA"
+    # HuggingFace dataset (data_mode="huggingface")
+    hf_dataset: str = ""           # e.g. "roneneldan/TinyStories", "wikitext"
+    hf_subset: str = ""            # e.g. "wikitext-2-raw-v1"
+    hf_split: str = "train"        # train | validation | test
+    hf_text_key: str = "text"      # column name containing text
     # Synthesis grammar
     min_depth: int = 3
     max_depth: int = 10
@@ -338,6 +382,8 @@ class RunConfig:
     morph_ratio: float = 0.5           # fraction of morphological candidates in mixed mode
     morph_focus_sparse: bool = False   # force sparse weight-storage options in morphological mode
     morph_sparse_weight_storage: str = ""  # optional explicit sparse storage choice
+    morph_compute_routing: str = ""   # optional fixed compute_routing choice for morphology
+    morph_channel_mixing: str = ""    # optional fixed channel_mixing choice for morphology
     refine_source_result_ids: str = ""  # comma-separated source result IDs for local fingerprint refinement
     refine_mutations_per_source: int = 4
     refine_intent: str = "balanced"  # balanced|quality|compression|sparsity|novelty
@@ -405,11 +451,22 @@ class RunConfig:
     stage05_stability_threshold: float = 0.5
     investigation_loss_ratio_threshold: float = 0.5
     investigation_robustness_threshold: float = 0.5
+    # Pre-investigation gate
+    pre_inv_gate_enabled: bool = True
+    pre_inv_min_stability: float = 0.3
+    pre_inv_max_spectral_norm: float = 50.0
+    pre_inv_min_spectral_norm: float = 0.01
+    pre_inv_min_improvement_rate: float = 0.0
+    pre_inv_top_n: int = 5
+    pre_inv_reference_margin: float = 1.5
+    pre_inv_probe_enabled: bool = False
+    pre_inv_probe_steps_fraction: float = 0.25
+    pre_inv_probe_max_lr: float = 0.85
     # Grammar structure probabilities (forwarded to GrammarConfig)
     grammar_split_prob: float = 0.3
     grammar_merge_prob: float = 0.2
     grammar_risky_op_prob: float = 0.1
-    grammar_freq_domain_prob: float = 0.15
+    grammar_freq_domain_prob: float = 0.0
     # Healer/agent settings
     max_agent_seconds: int = 300
     # LLM consultation in continuous mode
@@ -1010,6 +1067,8 @@ class ExperimentRunner:
         self._hydra_loader = None
         self._hydra_iter = None
         self._hydra_signature: Optional[str] = None
+        self._hf_batcher: Optional[CorpusTokenBatcher] = None
+        self._hf_signature: Optional[str] = None
         self._last_cycle_summary: Optional[Dict[str, Any]] = None
         self._aria_cycle_history: List[Dict[str, Any]] = []
         self._aria_cycle_paused: bool = False
@@ -1131,6 +1190,8 @@ class ExperimentRunner:
             str(config.tokenizer_mode or "byte"),
             int(config.corpus_max_chars),
             int(config.vocab_size),
+            float(getattr(config, "corpus_train_fraction", 0.9) or 0.9),
+            float(getattr(config, "corpus_val_fraction", 0.1) or 0.1),
         )
 
         if self._corpus_batcher is not None and self._corpus_signature == signature:
@@ -1149,6 +1210,8 @@ class ExperimentRunner:
                 text_key=str(config.corpus_text_key or "text"),
                 tokenizer=str(config.tokenizer_mode or "byte"),
                 max_chars=int(config.corpus_max_chars),
+                train_fraction=float(getattr(config, "corpus_train_fraction", 0.9) or 0.9),
+                val_fraction=float(getattr(config, "corpus_val_fraction", 0.1) or 0.1),
             ),
             vocab_size=int(config.vocab_size),
         )
@@ -1161,6 +1224,73 @@ class ExperimentRunner:
             )
             self._corpus_warned_unavailable = True
         return batcher
+
+    def _get_hf_batcher(self, config: RunConfig) -> Optional[CorpusTokenBatcher]:
+        """Lazily create or reuse a corpus batcher backed by a HuggingFace dataset."""
+        ds_name = str(config.hf_dataset or "").strip()
+        if not ds_name:
+            return None
+
+        subset = str(config.hf_subset or "").strip() or None
+        split = str(config.hf_split or "train").strip()
+        text_key = str(config.hf_text_key or "text").strip()
+        signature = f"{ds_name}|{subset}|{split}|{text_key}|{config.vocab_size}"
+
+        if self._hf_batcher is not None and self._hf_signature == signature:
+            return self._hf_batcher
+
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            logger.warning("datasets library not installed; pip install datasets")
+            return None
+
+        try:
+            ds = load_dataset(ds_name, subset, split=split, trust_remote_code=True)
+            texts = []
+            char_budget = int(config.corpus_max_chars)
+            total = 0
+            for row in ds:
+                t = row.get(text_key, "")
+                if not t:
+                    continue
+                texts.append(t)
+                total += len(t)
+                if total >= char_budget:
+                    break
+            if not texts:
+                logger.warning("HuggingFace dataset %s had no text in column '%s'", ds_name, text_key)
+                return None
+
+            # Write concatenated text to a temp file and wrap with CorpusBatcher
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", prefix="hf_", delete=False,
+            )
+            tmp.write("\n".join(texts))
+            tmp.flush()
+            tmp.close()
+
+            batcher = CorpusTokenBatcher(
+                CorpusConfig(
+                    path=tmp.name,
+                    fmt="txt",
+                    text_key=text_key,
+                    tokenizer=str(config.tokenizer_mode or "byte"),
+                    max_chars=char_budget,
+                    train_fraction=0.9,
+                    val_fraction=0.1,
+                ),
+                vocab_size=int(config.vocab_size),
+            )
+            self._hf_batcher = batcher
+            self._hf_signature = signature
+            logger.info("HuggingFace batcher ready: %s (%s), %d chars loaded",
+                        ds_name, split, total)
+            return batcher
+        except Exception as e:
+            logger.warning("Failed to load HuggingFace dataset %s: %s", ds_name, e)
+            return None
 
     def _get_hydra_batch(
         self, config: RunConfig, batch_size: int, seq_len: int, dev: torch.device,
@@ -1228,11 +1358,26 @@ class ExperimentRunner:
         batch_size: int,
         seq_len: int,
         seed: int,
+        split: str = "train",
     ) -> torch.Tensor:
         """Sample input IDs from configured data source with deterministic seed."""
         mode = str(config.data_mode or "random").strip().lower()
         generator = torch.Generator(device=dev)
         generator.manual_seed(int(seed))
+
+        if mode == "huggingface":
+            batcher = self._get_hf_batcher(config)
+            if batcher is not None:
+                batch = batcher.sample_batch(
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                    generator=generator,
+                    device=dev,
+                    split=split,
+                )
+                if batch is not None:
+                    return batch
+            # Fall through to random on failure
 
         if mode == "hydra":
             batch = self._get_hydra_batch(config, batch_size, seq_len, dev)
@@ -1248,6 +1393,7 @@ class ExperimentRunner:
                     seq_len=seq_len,
                     generator=generator,
                     device=dev,
+                    split=split,
                 )
                 if batch is not None:
                     return batch
@@ -1260,21 +1406,90 @@ class ExperimentRunner:
             generator=generator,
         )
 
-    def _make_baseline_data_fn(self, config: RunConfig):
+    def _corpus_version_tag(self, path: str) -> str:
+        try:
+            stat = os.stat(path)
+            name = os.path.basename(path)
+            return f"{name}:{stat.st_size}:{stat.st_mtime_ns}"
+        except Exception:
+            return "missing"
+
+    def _make_baseline_data_fn(self, config: RunConfig, split: str = "train"):
         """Build a data_fn for baseline training when using real data.
 
-        Returns (data_fn, data_tag) tuple. data_fn is None for random mode
-        (baseline uses its own random tokens). data_tag is a cache key suffix.
+        Returns (data_fn, data_tag, cache_data_fn) tuple. data_fn is None for
+        random mode (baseline uses its own random tokens). data_tag is a cache
+        key suffix. cache_data_fn indicates safe caching for data_fn.
         """
         mode = str(config.data_mode or "random").strip().lower()
+        if mode == "huggingface":
+            ds_name = str(config.hf_dataset or "").strip()
+            subset = str(config.hf_subset or "").strip()
+            data_tag = f"hf:{ds_name}:{subset}:{config.hf_split}:{split}"
+            step_state = {"step": 0}
+
+            def data_fn(batch_size, seq_len, dev):
+                step = step_state["step"]
+                step_state["step"] = step + 1
+                generator = torch.Generator(device=dev)
+                generator.manual_seed(1337 + step)
+                batcher = self._get_hf_batcher(config)
+                if batcher is not None:
+                    batch = batcher.sample_batch(
+                        batch_size=batch_size,
+                        seq_len=seq_len,
+                        generator=generator,
+                        device=dev,
+                        split=str(split or "train").lower(),
+                    )
+                    if batch is not None:
+                        return batch
+                return torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev, generator=generator)
+
+            return data_fn, data_tag, True
         if mode == "hydra":
             def data_fn(batch_size, seq_len, dev):
                 batch = self._get_hydra_batch(config, batch_size, seq_len, dev)
                 if batch is not None:
                     return batch
                 return torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev)
-            return data_fn, "hydra"
-        return None, "random"
+            return data_fn, "hydra", False
+        if mode == "corpus":
+            path = str(config.corpus_path or "").strip()
+            version = self._corpus_version_tag(path)
+            train_frac = float(getattr(config, "corpus_train_fraction", 0.9) or 0.9)
+            val_frac = float(getattr(config, "corpus_val_fraction", 0.1) or 0.1)
+            fmt = str(config.corpus_format or "auto")
+            text_key = str(config.corpus_text_key or "text")
+            tok = str(config.tokenizer_mode or "byte")
+            max_chars = int(config.corpus_max_chars)
+            split_tag = str(split or "train").lower()
+            data_tag = (
+                f"corpus:{version}:{fmt}:{text_key}:{tok}:{max_chars}:"
+                f"train{train_frac:.3f}:val{val_frac:.3f}:split{split_tag}"
+            )
+            step_state = {"step": 0}
+
+            def data_fn(batch_size, seq_len, dev):
+                step = step_state["step"]
+                step_state["step"] = step + 1
+                generator = torch.Generator(device=dev)
+                generator.manual_seed(1337 + step)
+                batcher = self._get_corpus_batcher(config)
+                if batcher is not None:
+                    batch = batcher.sample_batch(
+                        batch_size=batch_size,
+                        seq_len=seq_len,
+                        generator=generator,
+                        device=dev,
+                        split=split_tag,
+                    )
+                    if batch is not None:
+                        return batch
+                return torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev, generator=generator)
+
+            return data_fn, data_tag, True
+        return None, "random", False
 
     @property
     def progress(self) -> LiveProgress:
@@ -4668,6 +4883,97 @@ class ExperimentRunner:
             return
 
         try:
+            allowed_categories = {
+                "principle",
+                "anti_pattern",
+                "sweet_spot",
+                "correlation",
+                "tool_insight",
+            }
+
+            def _normalize_category(raw: str) -> str:
+                value = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+                aliases = {
+                    "anti_pattern": "anti_pattern",
+                    "anti_patterns": "anti_pattern",
+                    "antipattern": "anti_pattern",
+                    "anti-pattern": "anti_pattern",
+                    "principles": "principle",
+                    "sweetspot": "sweet_spot",
+                    "sweet_spot": "sweet_spot",
+                    "tool": "tool_insight",
+                    "toolinsight": "tool_insight",
+                    "tool_insights": "tool_insight",
+                }
+                value = aliases.get(value, value)
+                return value if value in allowed_categories else "principle"
+
+            def _canonical_text(raw: str) -> str:
+                text = " ".join(str(raw or "").split()).strip().lower()
+                text = re.sub(r"\b\d+(?:\.\d+)?%?\b", "#", text)
+                text = re.sub(r"[^a-z0-9#\s]+", " ", text)
+                return re.sub(r"\s+", " ", text).strip()
+
+            stopwords = {
+                "the", "and", "for", "that", "with", "this", "from", "into", "when", "then", "than", "were",
+                "been", "have", "has", "had", "are", "was", "show", "shows", "showed", "over", "under",
+                "across", "between", "using", "use", "used", "high", "low", "very", "more", "less", "near",
+                "around", "recent", "experiments", "experiment", "result", "results", "indicate", "indicates",
+                "suggest", "suggests", "mode", "patterns", "pattern", "architecture", "architectures",
+            }
+
+            def _tokenize_semantic(raw: str) -> Set[str]:
+                canonical = _canonical_text(raw)
+                return {
+                    tok for tok in canonical.split()
+                    if len(tok) > 3 and tok not in stopwords
+                }
+
+            def _is_semantic_duplicate(tokens: Set[str], existing_tokens: Set[str]) -> bool:
+                if not tokens or not existing_tokens:
+                    return False
+                inter = len(tokens & existing_tokens)
+                if inter < 5:
+                    return False
+                union = len(tokens | existing_tokens)
+                return bool(union) and (inter / union) >= 0.18
+
+            def _is_low_value_entry(title: str, content: str) -> bool:
+                title_clean = " ".join(str(title or "").split()).strip()
+                content_clean = " ".join(str(content or "").split()).strip()
+                title_l = title_clean.lower()
+                content_l = content_clean.lower()
+
+                if len(title_clean) < 12 or len(content_clean) < 40:
+                    return True
+                if "..." in title_clean or "..." in content_clean:
+                    return True
+                if "1-2 sentences" in content_l or "i will now synthesize" in content_l:
+                    return True
+                if title_l.startswith("recent experiments show ") or title_l.startswith("all recent experiments show "):
+                    return True
+                if title_l.startswith("recent synthesis") and "failure" in title_l:
+                    return True
+                if "[principle/" in title_l or "hybrid? no" in title_l:
+                    return True
+                if "$" in content_clean or "\\approx" in content_l:
+                    return True
+
+                mechanism_tokens = (
+                    "depth", "residual", "inverse", "log ", "frequency", "math_space",
+                    "parameter", "parallel", "routing", "s1", "loss", "novelty", "baseline",
+                )
+                action_tokens = (
+                    "improve", "improves", "degrade", "degrades", "fail", "fails", "underperform",
+                    "correlate", "correlates", "correlation", "predict", "predicts",
+                    "optimal", "requires", "avoid", "boost", "increase", "reduce",
+                    "enhance", "enhances", "outperform", "outperforms", "suggests", "indicates",
+                )
+                has_mechanism = any(tok in content_l or tok in title_l for tok in mechanism_tokens)
+                has_action = any(tok in content_l for tok in action_tokens)
+                has_numeric = bool(re.search(r"\d", content_clean))
+                return not (has_mechanism and (has_action or has_numeric))
+
             recent = nb.get_recent_experiments(config.knowledge_extraction_interval)
             resolved = []
             if self._active_campaign_id:
@@ -4678,27 +4984,86 @@ class ExperimentRunner:
             context = build_knowledge_extraction_context(recent, resolved)
             entries = self.aria.extract_knowledge(recent, resolved, context=context)
 
+            existing_entries = nb.get_knowledge()
+            existing_by_title: Dict[str, str] = {}
+            existing_by_content: Dict[str, str] = {}
+            existing_by_semantic: Dict[str, List[Tuple[str, Set[str]]]] = {}
+            for row in existing_entries:
+                eid = str(row.get("entry_id") or "")
+                if not eid:
+                    continue
+                existing_by_title[_canonical_text(row.get("title") or "")] = eid
+                existing_by_content[_canonical_text(row.get("content") or "")] = eid
+                category = _normalize_category(str(row.get("category") or "principle"))
+                tokens = _tokenize_semantic(f"{row.get('title') or ''} {row.get('content') or ''}")
+                if tokens:
+                    existing_by_semantic.setdefault(category, []).append((eid, tokens))
+
+            accepted = 0
+            skipped_low_value = 0
+            deduped = 0
+
             for entry in entries:
-                # Check if knowledge already exists
-                existing = nb.search_knowledge(entry.get("title", ""))
-                if existing:
-                    nb.validate_knowledge(existing[0]["entry_id"])
-                else:
-                    evidence = [e.get("experiment_id", "") for e in recent[:3]]
-                    nb.add_knowledge(
-                        category=entry.get("category", "principle"),
-                        title=entry.get("title", ""),
-                        content=entry.get("content", ""),
-                        evidence=evidence,
-                        confidence=entry.get("confidence", 0.5),
-                    )
+                raw_title = str(entry.get("title") or "").strip()
+                raw_content = str(entry.get("content") or "").strip()
+                if _is_low_value_entry(raw_title, raw_content):
+                    skipped_low_value += 1
+                    continue
+
+                category = _normalize_category(entry.get("category", "principle"))
+                confidence = float(entry.get("confidence", 0.5) or 0.5)
+                confidence = max(0.45, min(0.95, confidence))
+                title = " ".join(raw_title.split())
+                content = " ".join(raw_content.split())
+
+                title_key = _canonical_text(title)
+                content_key = _canonical_text(content)
+
+                existing_entry_id = (
+                    existing_by_title.get(title_key)
+                    or existing_by_content.get(content_key)
+                )
+                if not existing_entry_id:
+                    semantic_tokens = _tokenize_semantic(f"{title} {content}")
+                    for eid, seen_tokens in existing_by_semantic.get(category, []):
+                        if _is_semantic_duplicate(semantic_tokens, seen_tokens):
+                            existing_entry_id = eid
+                            break
+                if existing_entry_id:
+                    nb.validate_knowledge(existing_entry_id)
+                    deduped += 1
+                    continue
+
+                evidence = [
+                    str(e.get("experiment_id", "")).strip()
+                    for e in recent[:5]
+                    if str(e.get("experiment_id", "")).strip()
+                ]
+                new_entry_id = nb.add_knowledge(
+                    category=category,
+                    title=title,
+                    content=content,
+                    evidence=evidence,
+                    confidence=confidence,
+                )
+                existing_by_title[title_key] = new_entry_id
+                existing_by_content[content_key] = new_entry_id
+                semantic_tokens = _tokenize_semantic(f"{title} {content}")
+                if semantic_tokens:
+                    existing_by_semantic.setdefault(category, []).append((new_entry_id, semantic_tokens))
+                accepted += 1
 
             if entries:
                 self._emit_event("knowledge_extracted", {
-                    "n_entries": len(entries),
+                    "n_entries": accepted,
                     "categories": list(set(e.get("category", "") for e in entries)),
+                    "n_deduped": deduped,
+                    "n_skipped_low_value": skipped_low_value,
                 })
-                logger.info(f"Knowledge extracted: {len(entries)} entries")
+                logger.info(
+                    "Knowledge extracted: accepted=%d deduped=%d skipped_low_value=%d raw=%d",
+                    accepted, deduped, skipped_low_value, len(entries),
+                )
         except Exception as e:
             logger.debug(f"Knowledge extraction failed: {e}")
 
@@ -4861,6 +5226,24 @@ class ExperimentRunner:
             nb = self._make_notebook()
             try:
                 self.run_aria_cycle(config, nb, n_experiments, t_start)
+                
+                # Periodic Gate Performance Summary (Task 9)
+                if n_experiments % 5 == 0:
+                    try:
+                        from .analytics import ExperimentAnalytics
+                        analytics = ExperimentAnalytics(nb)
+                        stats = analytics.gate_performance_summary()
+                        if stats:
+                            logger.info(
+                                "Gate Performance (Cycle %d): pass_rate=%.2f, violations=%d, corr=%s (n=%d)",
+                                n_experiments, 
+                                stats.get("stage05_pass_rate", 0),
+                                stats.get("causality_violations", 0),
+                                f"{stats.get('discovery_validation_correlation'):.2f}" if stats.get("discovery_validation_correlation") is not None else "N/A",
+                                stats.get("n_correlation_samples", 0)
+                            )
+                    except Exception as e:
+                        logger.debug("Failed to generate gate performance summary: %s", e)
             finally:
                 nb.close()
 
@@ -5050,14 +5433,21 @@ class ExperimentRunner:
                 seen_fps.add(fp)
                 
                 # Worthiness Bar:
-                # 1. Exceptional performance (LR < 0.2)
-                # 2. Good performance + decent novelty (LR < 0.4 AND Nov > 0.4)
-                # 3. High novelty + moderate performance (LR < 0.6 AND Nov > 0.7)
-                is_worth_it = (
-                    lr < 0.2 or 
-                    (lr < 0.4 and nov > 0.4) or 
-                    (lr < 0.6 and nov > 0.7)
-                )
+                # Prefer pre_inv_score when available (from pre-investigation gate)
+                # Fall back to legacy heuristic thresholds
+                pis = e.get("pre_inv_score")
+                if pis is not None:
+                    is_worth_it = float(pis) >= 20.0
+                else:
+                    # Legacy:
+                    # 1. Exceptional performance (LR < 0.2)
+                    # 2. Good performance + decent novelty (LR < 0.4 AND Nov > 0.4)
+                    # 3. High novelty + moderate performance (LR < 0.6 AND Nov > 0.7)
+                    is_worth_it = (
+                        lr < 0.2 or
+                        (lr < 0.4 and nov > 0.4) or
+                        (lr < 0.6 and nov > 0.7)
+                    )
                 
                 if is_worth_it and fp not in _investigated_fps:
                     worth_it_investigation.append(e["result_id"])
@@ -6413,6 +6803,160 @@ class ExperimentRunner:
             },
         )
 
+    # ── Pre-investigation gate ─────────────────────────────────────────
+
+    def _get_reference_baseline_lr(self, nb: LabNotebook) -> Optional[float]:
+        """Fetch best screening_loss_ratio from registered reference architectures."""
+        try:
+            refs = nb.get_references()
+            if not refs:
+                return None
+            lrs = [float(r["screening_loss_ratio"]) for r in refs
+                   if r.get("screening_loss_ratio") is not None]
+            return min(lrs) if lrs else None
+        except Exception:
+            return None
+
+    def _pre_inv_probe(self, config: RunConfig, nb: LabNotebook,
+                       result_id: str) -> Optional[float]:
+        """Stage C: single-seed probe at reduced step count.
+
+        Runs 1 training program at probe_steps_fraction of investigation_steps.
+        Returns loss_ratio or None on failure.
+        """
+        try:
+            details = nb.get_program_details([result_id])
+            if not details or not details[0]:
+                return None
+            source = details[0]
+            graph_json = source.get("graph_json")
+            if not graph_json:
+                return None
+
+            probe_config = RunConfig.from_dict(config.to_dict())
+            probe_config.stage1_steps = max(
+                50, int(config.investigation_steps * config.pre_inv_probe_steps_fraction))
+            probe_config.stage1_batch_size = config.investigation_batch_size
+            probe_config.n_programs = 1
+
+            dev_str = config.device if torch.cuda.is_available() else "cpu"
+            dev = torch.device(dev_str)
+
+            from research.synthesis.compiler import compile_model
+            model = compile_model(graph_json, probe_config, device=dev)
+            if model is None:
+                return None
+
+            from research.evaluator import evaluate_stage1
+            result = evaluate_stage1(model, probe_config, device=dev)
+            lr = result.get("loss_ratio") if result else None
+            return float(lr) if lr is not None else None
+        except Exception as e:
+            logger.warning("Pre-inv probe failed for %s: %s", result_id[:8], e)
+            return None
+
+    def _pre_investigation_gate(self, config: RunConfig, nb: LabNotebook,
+                                leaderboard: list) -> List[str]:
+        """Orchestrate three-stage pre-investigation gate.
+
+        Stage A: SQL hard reject (numerical health, stability, gradient path)
+        Stage B: Composite readiness score, rank and take top-N
+        Stage C: Optional single-seed probe
+
+        Returns filtered, ranked result_ids ready for investigation.
+        Falls back to legacy behavior when pre_inv_gate_enabled=False.
+        """
+        if not config.pre_inv_gate_enabled:
+            # Legacy behavior: filter by loss_ratio threshold only
+            investigated_fps = nb.get_investigated_fingerprints()
+            candidates = [
+                e for e in leaderboard
+                if e.get("tier") == "screening"
+                and e.get("screening_loss_ratio") is not None
+                and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
+            ]
+            if investigated_fps:
+                candidates = [
+                    c for c in candidates
+                    if c.get("graph_fingerprint", c.get("architecture_desc", ""))
+                    not in investigated_fps
+                ]
+            return [c["result_id"] for c in candidates[:config.auto_investigate_top_n]
+                    if c.get("result_id")]
+
+        # ── Stage A: Hard reject via SQL ──
+        ref_lr = self._get_reference_baseline_lr(nb)
+        ref_lr_ceiling = None
+        if ref_lr is not None:
+            ref_lr_ceiling = ref_lr * config.pre_inv_reference_margin
+
+        eligible = nb.get_investigation_eligible(
+            max_lr=config.investigation_loss_ratio_threshold,
+            min_stability=config.pre_inv_min_stability,
+            min_spectral_norm=config.pre_inv_min_spectral_norm,
+            max_spectral_norm=config.pre_inv_max_spectral_norm,
+            min_improvement_rate=config.pre_inv_min_improvement_rate,
+            ref_lr_ceiling=ref_lr_ceiling,
+        )
+
+        # Filter out already-investigated fingerprints
+        investigated_fps = nb.get_investigated_fingerprints()
+        if investigated_fps:
+            before = len(eligible)
+            eligible = [e for e in eligible
+                        if e.get("graph_fingerprint") not in investigated_fps]
+            skipped = before - len(eligible)
+            if skipped:
+                logger.info("Pre-inv gate: skipped %d already-investigated candidates", skipped)
+
+        if not eligible:
+            logger.info("Pre-inv gate Stage A: no eligible candidates")
+            return []
+
+        logger.info("Pre-inv gate Stage A: %d candidates pass hard filters", len(eligible))
+
+        # ── Stage B: Composite score + rank ──
+        for row in eligible:
+            row["_pre_inv_score"] = LabNotebook.compute_pre_investigation_score(
+                row, best_ref_lr=ref_lr)
+
+        eligible.sort(key=lambda r: r.get("_pre_inv_score", 0), reverse=True)
+        top_n = eligible[:config.pre_inv_top_n]
+
+        # Persist scores to leaderboard
+        for row in eligible:
+            try:
+                nb.conn.execute(
+                    "UPDATE leaderboard SET pre_inv_score = ? WHERE result_id = ?",
+                    (row["_pre_inv_score"], row["result_id"]),
+                )
+            except Exception:
+                pass
+        try:
+            nb.conn.commit()
+        except Exception:
+            pass
+
+        logger.info("Pre-inv gate Stage B: top %d scored [%s]",
+                     len(top_n),
+                     ", ".join(f"{r['result_id'][:8]}={r['_pre_inv_score']:.1f}"
+                               for r in top_n))
+
+        # ── Stage C: Optional probe ──
+        if config.pre_inv_probe_enabled:
+            probed = []
+            for row in top_n:
+                probe_lr = self._pre_inv_probe(config, nb, row["result_id"])
+                if probe_lr is not None and probe_lr > config.pre_inv_probe_max_lr:
+                    logger.info("Pre-inv probe rejected %s (lr=%.3f > %.3f)",
+                                row["result_id"][:8], probe_lr,
+                                config.pre_inv_probe_max_lr)
+                    continue
+                probed.append(row)
+            top_n = probed
+
+        return [r["result_id"] for r in top_n if r.get("result_id")]
+
     def _run_continuous_phase(self, phase: str, config: RunConfig,
                                nb: LabNotebook, n_experiments: int,
                                limit_str: str, mode_reasoning: str):
@@ -6430,32 +6974,8 @@ class ExperimentRunner:
                                    leaderboard: list, n_experiments: int,
                                    limit_str: str, mode_reasoning: str):
         """Execute investigation phase inline (not threaded) for continuous mode."""
-        # Find screening survivors with good loss ratios, skipping already-investigated archs
-        investigated_fps = nb.get_investigated_fingerprints()
-        candidates = [
-            e for e in leaderboard
-            if e.get("tier") == "screening"
-            and e.get("screening_loss_ratio") is not None
-            and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
-        ]
-        if investigated_fps:
-            before = len(candidates)
-            candidates = [
-                c for c in candidates
-                if c.get("graph_fingerprint", c.get("architecture_desc", ""))
-                not in investigated_fps
-            ]
-            skipped = before - len(candidates)
-            if skipped:
-                logger.info("Skipped %d already-investigated candidates", skipped)
-        if not candidates:
-            logger.info("No investigation candidates, falling back to synthesis")
-            self._run_continuous_synthesis(
-                config, nb, n_experiments, limit_str, mode_reasoning)
-            return
-
-        result_ids = [c["result_id"] for c in candidates[:config.auto_investigate_top_n]
-                      if c.get("result_id")]
+        # Use pre-investigation gate for candidate selection
+        result_ids = self._pre_investigation_gate(config, nb, leaderboard)
         if not result_ids:
             self._run_continuous_synthesis(
                 config, nb, n_experiments, limit_str, mode_reasoning)
@@ -6672,10 +7192,15 @@ class ExperimentRunner:
                             best_tp_json = json.dumps(tp.to_dict())
                             break
 
+                # Brittle risk override: if the investigation LR is good on
+                # its own merits (< 0.3), don't let the screening→investigation
+                # multiplier veto promotion.  Prevents false positives when
+                # screening LR was unrealistically low (e.g. lucky seed).
                 investigation_passed = (
                     robustness >= 0.5
                     and (best_lr or 1.0) < 0.5
-                    and (not brittle_risk or (best_lr is not None and best_lr < 0.1))
+                    and (not brittle_risk
+                         or (best_lr is not None and best_lr < 0.3))
                 )
 
                 nb.upsert_leaderboard(
@@ -7026,7 +7551,7 @@ class ExperimentRunner:
                             baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
                             baseline_recipe = self._resolve_baseline_recipe(
                                 best_seed, default_lr=config.stage1_lr)
-                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                            bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(config)
                             val_baseline_ratio = baseline.compare(
                                 best_seed["final_loss"],
                                 d_model=config.model_dim,
@@ -7043,7 +7568,34 @@ class ExperimentRunner:
                                 betas=baseline_recipe["betas"],
                                 data_fn=bl_data_fn,
                                 data_tag=bl_data_tag,
+                                cache_data_fn=bl_cache,
                             )
+                            # Optional: Validation baseline comparison (using val split)
+                            v_loss = best_seed.get("validation_loss")
+                            if v_loss is not None:
+                                try:
+                                    v_data_fn, v_data_tag, v_cache = self._make_baseline_data_fn(config, split="val")
+                                    v_baseline_ratio = baseline.compare(
+                                        v_loss,
+                                        d_model=config.model_dim,
+                                        seq_len=min(128, int(getattr(config, "validation_seq_len", 128))),
+                                        n_steps=max(1, baseline_steps),
+                                        vocab_size=config.vocab_size,
+                                        batch_size=int(getattr(config, "validation_batch_size", 4)),
+                                        lr=baseline_recipe["lr"],
+                                        device=dev_str,
+                                        n_layers=config.n_layers,
+                                        optimizer_name=baseline_recipe["optimizer_name"],
+                                        weight_decay=baseline_recipe["weight_decay"],
+                                        momentum=baseline_recipe["momentum"],
+                                        betas=baseline_recipe["betas"],
+                                        data_fn=v_data_fn,
+                                        data_tag=v_data_tag,
+                                        cache_data_fn=v_cache,
+                                    )
+                                    program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
 
@@ -7059,7 +7611,7 @@ class ExperimentRunner:
                         baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
                         baseline_recipe = self._resolve_baseline_recipe(
                             best_seed, default_lr=config.stage1_lr)
-                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(config)
                         norm_result = baseline.compare_normalized(
                             best_seed["final_loss"],
                             program_params=int(source_params),
@@ -7077,6 +7629,7 @@ class ExperimentRunner:
                             betas=baseline_recipe["betas"],
                             data_fn=bl_data_fn,
                             data_tag=bl_data_tag,
+                            cache_data_fn=bl_cache,
                         )
                         val_normalized_ratio = norm_result.get("normalized_ratio")
                         val_param_efficiency = norm_result.get("param_efficiency")
@@ -7203,7 +7756,7 @@ class ExperimentRunner:
                 if is_breakthrough and config.enable_scaling_comparison:
                     try:
                         scaling_mgr = self._get_scaling_reference_manager()
-                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        bl_data_fn, bl_data_tag, _ = self._make_baseline_data_fn(config)
                         candidate_flops = (source.get("flops_forward", 0) or 0)
                         if candidate_flops <= 0:
                             candidate_flops = source_params * 2
@@ -7310,12 +7863,31 @@ class ExperimentRunner:
                                 return compile_model(
                                     [graph_from_json(_gjs_lc)] * _cfg_lc.n_layers,
                                     vocab_size=_cfg_lc.vocab_size, max_seq_len=1024)
+                        from ..eval.long_context import run_long_context_sweep
+                        from ..eval.passkey import evaluate_long_context_retrieval
+                        
                         lc_result = run_long_context_sweep(
                             _make_model_lc, config.vocab_size, dev,
                             base_loss=base_loss_val, seq_lens=(512, 1024),
                             n_steps=200, batch_size=2,
                         )
-                        long_context_score = lc_result.get("long_context_score")
+                        
+                        # Retrieval test (needle-in-a-haystack)
+                        # Use a small validation model for faster retrieval testing
+                        retr_model = _make_model_lc().to(dev)
+                        retr_result = evaluate_long_context_retrieval(
+                            retr_model, config.vocab_size, dev,
+                            lengths=[256, 512, 1024]
+                        )
+                        del retr_model
+                        
+                        # Combine scaling score and retrieval score (50/50)
+                        scaling_score = lc_result.get("long_context_score", 0.0)
+                        retrieval_score = retr_result.get("retrieval_score", 0.0)
+                        long_context_score = (scaling_score * 0.5) + (retrieval_score * 0.5)
+                        
+                        logger.info("Long-context check: scaling=%.2f, retrieval=%.2f, combined=%.2f",
+                                    scaling_score, retrieval_score, long_context_score)
                     except Exception as e:
                         logger.debug("Long-context sweep skipped: %s", e)
 
@@ -7349,6 +7921,181 @@ class ExperimentRunner:
                     except Exception as e:
                         logger.debug("Noise sensitivity skipped: %s", e)
 
+                # Activation sparsity analysis (informational, non-blocking)
+                activation_sparsity_score = None
+                dead_neuron_ratio = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.sparsity import evaluate_activation_sparsity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_as = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_as = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            as_model = build_model(_spec_as, _bc_as).to(dev)
+                        else:
+                            as_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        as_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        as_result = evaluate_activation_sparsity(
+                            as_model, as_batches, dev)
+                        activation_sparsity_score = as_result.get("activation_sparsity_score")
+                        dead_neuron_ratio = as_result.get("dead_neuron_ratio")
+                        del as_model
+                    except Exception as e:
+                        logger.debug("Activation sparsity eval skipped: %s", e)
+
+                # Routing heatmap / collapse detection (informational, non-blocking)
+                routing_collapse_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.routing_heatmap import evaluate_routing_heatmap
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_rh = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_rh = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            rh_model = build_model(_spec_rh, _bc_rh).to(dev)
+                        else:
+                            rh_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        rh_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        rh_result = evaluate_routing_heatmap(
+                            rh_model, rh_batches, dev)
+                        if rh_result.get("has_routing"):
+                            routing_collapse_score = rh_result.get("routing_collapse_score")
+                        del rh_model
+                    except Exception as e:
+                        logger.debug("Routing heatmap eval skipped: %s", e)
+
+                # WikiText perplexity (informational, non-blocking)
+                wikitext_perplexity = None
+                wikitext_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.wikitext_eval import evaluate_wikitext_perplexity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_wt = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_wt = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            wt_model = build_model(_spec_wt, _bc_wt).to(dev)
+                        else:
+                            wt_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        wt_result = evaluate_wikitext_perplexity(
+                            wt_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=min(128, config.validation_seq_len))
+                        wikitext_perplexity = wt_result.get("wikitext_perplexity")
+                        wikitext_score = wt_result.get("wikitext_score")
+                        if wikitext_perplexity is not None:
+                            logger.info("WikiText ppl=%.1f score=%.3f",
+                                        wikitext_perplexity, wikitext_score or 0)
+                        del wt_model
+                    except Exception as e:
+                        logger.debug("WikiText eval skipped: %s", e)
+
+                # TinyStories validation (informational, non-blocking)
+                tinystories_perplexity = None
+                tinystories_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.tinystories_eval import evaluate_tinystories
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_ts = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_ts = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            ts_model = build_model(_spec_ts, _bc_ts).to(dev)
+                        else:
+                            ts_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        ts_result = evaluate_tinystories(
+                            ts_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=min(128, config.validation_seq_len))
+                        tinystories_perplexity = ts_result.get("tinystories_perplexity")
+                        tinystories_score = ts_result.get("tinystories_score")
+                        del ts_model
+                    except Exception as e:
+                        logger.debug("TinyStories eval skipped: %s", e)
+
+                # Cross-task robustness (informational, non-blocking)
+                cross_task_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.cross_task_eval import evaluate_cross_task_robustness
+                        _gjs_ct = graph_json_str
+                        _asjs_ct = arch_spec_json_str
+                        _ms_ct = model_source
+                        _cfg_ct = config
+                        def _make_ct_model():
+                            if _ms_ct == "morphological_box" and _asjs_ct:
+                                _sp = ArchSpec(**json.loads(_asjs_ct))
+                                _bc = BuildConfig(
+                                    dim=_cfg_ct.model_dim, n_layers=_cfg_ct.n_layers,
+                                    vocab_size=_cfg_ct.vocab_size,
+                                    max_seq_len=_cfg_ct.validation_seq_len)
+                                return build_model(_sp, _bc)
+                            return compile_model(
+                                [graph_from_json(_gjs_ct)] * _cfg_ct.n_layers,
+                                vocab_size=_cfg_ct.vocab_size,
+                                max_seq_len=_cfg_ct.validation_seq_len)
+                        ct_result = evaluate_cross_task_robustness(
+                            _make_ct_model, config.vocab_size, dev,
+                            n_train_steps=100, seq_len=min(128, config.validation_seq_len))
+                        cross_task_score = ct_result.get("cross_task_score")
+                    except Exception as e:
+                        logger.debug("Cross-task eval skipped: %s", e)
+
+                # Efficiency wall (informational, non-blocking)
+                efficiency_wall_score = None
+                max_viable_seq_len = None
+                scaling_regime = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.efficiency_wall import evaluate_efficiency_wall
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_ew = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_ew = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=1024)
+                            ew_model = build_model(_spec_ew, _bc_ew).to(dev)
+                        else:
+                            ew_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=1024).to(dev)
+                        ew_result = evaluate_efficiency_wall(
+                            ew_model, config.vocab_size, dev,
+                            seq_lens=(64, 128, 256, 512), batch_size=2)
+                        efficiency_wall_score = ew_result.get("efficiency_wall_score")
+                        max_viable_seq_len = ew_result.get("max_viable_seq_len")
+                        scaling_regime = ew_result.get("scaling_regime")
+                        del ew_model
+                    except Exception as e:
+                        logger.debug("Efficiency wall eval skipped: %s", e)
+
                 tier = "breakthrough" if is_breakthrough else "validation"
 
                 validation_entry = {
@@ -7370,6 +8117,17 @@ class ExperimentRunner:
                     "novelty_confidence": nov_conf,
                     "ood_robustness": ood_result,
                     "sensitivity": sensitivity_result,
+                    "activation_sparsity_score": activation_sparsity_score,
+                    "dead_neuron_ratio": dead_neuron_ratio,
+                    "routing_collapse_score": routing_collapse_score,
+                    "wikitext_perplexity": wikitext_perplexity,
+                    "wikitext_score": wikitext_score,
+                    "tinystories_perplexity": tinystories_perplexity,
+                    "tinystories_score": tinystories_score,
+                    "cross_task_score": cross_task_score,
+                    "efficiency_wall_score": efficiency_wall_score,
+                    "max_viable_seq_len": max_viable_seq_len,
+                    "scaling_regime": scaling_regime,
                 }
                 results["validation_results"].append(validation_entry)
 
@@ -7400,6 +8158,17 @@ class ExperimentRunner:
                             scaling_gate_passed=scaling_gate_passed_val,
                             scaling_best_family=scaling_best_family,
                             scaling_confidence=scaling_confidence,
+                            activation_sparsity_score=activation_sparsity_score,
+                            dead_neuron_ratio=dead_neuron_ratio,
+                            routing_collapse_score=routing_collapse_score,
+                            wikitext_perplexity=wikitext_perplexity,
+                            wikitext_score=wikitext_score,
+                            tinystories_perplexity=tinystories_perplexity,
+                            tinystories_score=tinystories_score,
+                            cross_task_score=cross_task_score,
+                            efficiency_wall_score=efficiency_wall_score,
+                            max_viable_seq_len=max_viable_seq_len,
+                            scaling_regime=scaling_regime,
                         )
                         # Store detailed scaling result in external_benchmarks_json
                         if scaling_result is not None:
@@ -7593,6 +8362,17 @@ class ExperimentRunner:
         metrics["error_type"] = sandbox_result.error_type
         metrics["error_message"] = sandbox_result.error
 
+        # Activation Sparsity & Heatmaps
+        activation_sparsity = getattr(sandbox_result, "activation_sparsity", None)
+        dead_neuron_count = getattr(sandbox_result, "dead_neuron_count", None)
+        sparsity_report = getattr(sandbox_result, "sparsity_report", None)
+        if activation_sparsity is not None:
+            metrics["sparsity_ratio"] = activation_sparsity
+        if dead_neuron_count is not None:
+            metrics["dead_neuron_count"] = dead_neuron_count
+        if sparsity_report:
+            metrics["sparsity_report_json"] = json.dumps(sparsity_report)
+
         # Parse output_range "[min, max]" string
         if sandbox_result.output_range:
             try:
@@ -7610,6 +8390,18 @@ class ExperimentRunner:
             return {}
 
         metrics: Dict[str, Any] = {}
+        try:
+            layers = list(getattr(model, "layers", []) or [])
+        except Exception:
+            layers = []
+        if not layers:
+            try:
+                topo = getattr(model, "topology", None)
+                blocks = getattr(topo, "blocks", None) if topo is not None else None
+                if blocks is not None:
+                    layers = list(blocks)
+            except Exception:
+                pass
         routing_mode = None
         spec = getattr(model, "spec", None)
         if spec is not None:
@@ -7646,7 +8438,6 @@ class ExperimentRunner:
         recursion_count = 0
         recursion_max_depth_sum = 0.0
 
-        layers = getattr(model, "layers", [])
         for layer in layers:
             # Check for routing/adaptive telemetry on the layer/routing itself (arch_builder style)
             routing = getattr(layer, "routing", None)
@@ -7679,7 +8470,16 @@ class ExperimentRunner:
             ops = getattr(layer, "ops", None)
             if ops is None:
                 continue
-            for compiled_op in ops.values():
+            op_values = None
+            if isinstance(ops, dict):
+                op_values = list(ops.values())
+            else:
+                try:
+                    op_values = list(ops)
+                except Exception:
+                    # Guard against non-iterable op containers
+                    continue
+            for compiled_op in op_values:
                 # Sparse
                 sparse_telemetry = getattr(compiled_op, "sparse_telemetry", None)
                 if sparse_telemetry:
@@ -7730,6 +8530,15 @@ class ExperimentRunner:
             metrics["sparse_active_params_estimate"] = int(max(0.0, sparse_active_params_estimate))
             metrics["sparse_telemetry_json"] = json.dumps(telemetry_rows)
             if nm_total > 0: metrics["sparse_nm_compliance"] = nm_compliant / nm_total
+            # Compression ratio = effective params / dense params
+            if sparse_active_params_estimate > 0:
+                total_weight_params = sum(
+                    float(getattr(op, "weight", torch.empty(0)).numel())
+                    for layer_ops in layers for op in layer_ops.values()
+                    if hasattr(op, "weight")
+                )
+                if total_weight_params > 0:
+                    metrics["compression_ratio"] = sparse_active_params_estimate / total_weight_params
 
         # Infer routing_mode from compiled ops if not already set
         if not routing_mode and rt_count > 0:
@@ -7737,7 +8546,14 @@ class ExperimentRunner:
                 ops = getattr(layer, "ops", None)
                 if ops is None:
                     continue
-                for compiled_op in ops.values():
+                if isinstance(ops, dict):
+                    op_values = list(ops.values())
+                else:
+                    try:
+                        op_values = list(ops)
+                    except Exception:
+                        continue
+                for compiled_op in op_values:
                     op_obj = getattr(compiled_op, "op", None)
                     op_name = getattr(op_obj, "name", "") if op_obj else ""
                     if op_name == "moe_2expert":
@@ -7749,10 +8565,20 @@ class ExperimentRunner:
                     elif op_name == "topk_gate":
                         routing_mode = "topk_gate"
                         break
+                    elif op_name in {
+                        "mod_topk", "early_exit", "adaptive_recursion",
+                        "token_merging", "token_merge", "cascade",
+                        "speculative", "route_topk", "route_lanes", "route_recursion",
+                    }:
+                        routing_mode = op_name
+                        break
                 if routing_mode:
                     break
             if routing_mode:
                 metrics["routing_mode"] = routing_mode
+        if rt_count > 0 and not routing_mode:
+            routing_mode = "routed"
+            metrics["routing_mode"] = routing_mode
 
         # Finalize Routing
         if rt_count > 0:
@@ -7761,6 +8587,7 @@ class ExperimentRunner:
             metrics["routing_utilization_entropy"] = rt_entropy_sum / rt_count
             if rt_tokens_total > 0:
                 metrics["routing_drop_rate"] = max(0.0, 1.0 - (rt_tokens_processed / rt_tokens_total))
+                metrics["routing_savings_ratio"] = rt_tokens_processed / rt_tokens_total
             if rt_expert_counts is not None:
                 metrics["routing_expert_count"] = int(len(rt_expert_counts))
                 metrics["routing_expert_utilization_json"] = json.dumps(rt_expert_counts.cpu().tolist())
@@ -7793,6 +8620,8 @@ class ExperimentRunner:
             "routing_confidence_std",
             "routing_expert_utilization_json",
             "routing_expert_count",
+            "routing_savings_ratio",
+            "compression_ratio",
             "depth_savings_ratio",
             "effective_depth_ratio",
             "recursion_savings_ratio",
@@ -7821,7 +8650,10 @@ class ExperimentRunner:
             # Extract S1 and architecture telemetry if available
             if s1_result:
                 # Basic training metrics
-                for k in ("initial_loss", "final_loss", "min_loss", "throughput", "avg_step_time_ms", "total_train_time_ms"):
+                for k in ("initial_loss", "final_loss", "min_loss", "throughput",
+                          "avg_step_time_ms", "total_train_time_ms",
+                          "validation_loss", "validation_loss_ratio", "generalization_gap",
+                          "discovery_loss", "discovery_loss_ratio"):
                     if k in s1_result: graph_metrics[k] = s1_result[k]
                 self._merge_s1_telemetry(graph_metrics, s1_result)
 
@@ -7979,6 +8811,11 @@ class ExperimentRunner:
         program_metrics["grad_norm_std"] = s1_result.get("grad_norm_std")
         program_metrics["n_train_steps"] = s1_result.get("n_train_steps")
         program_metrics["final_lr"] = s1_result.get("final_lr")
+        program_metrics["validation_loss"] = s1_result.get("validation_loss")
+        program_metrics["validation_loss_ratio"] = s1_result.get("validation_loss_ratio")
+        program_metrics["generalization_gap"] = s1_result.get("generalization_gap")
+        program_metrics["discovery_loss"] = s1_result.get("discovery_loss")
+        program_metrics["discovery_loss_ratio"] = s1_result.get("discovery_loss_ratio")
         program_metrics.update({k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")})
         self._merge_s1_telemetry(program_metrics, s1_result)
         
@@ -8013,12 +8850,61 @@ class ExperimentRunner:
                 f"{program_metrics.get('param_count', 0):,}",
             )
 
-            # Compare to baseline (simplified for async - we do it here)
+            # Compare to baseline (dual-metric: discovery vs validation)
             if final_loss is not None:
                 try:
                     baseline = self._get_baseline()
                     baseline_steps = int(s1_result.get("n_train_steps") or config.stage1_steps)
                     baseline_recipe = self._resolve_baseline_recipe(s1_result, default_lr=config.stage1_lr)
+                    
+                    # 1. Discovery Baseline (Random Tokens)
+                    discovery_loss = s1_result.get("discovery_loss")
+                    if discovery_loss is not None:
+                        try:
+                            discovery_steps = min(5, baseline_steps // 10)
+                            discovery_ratio = baseline.compare(
+                                discovery_loss,
+                                d_model=config.model_dim,
+                                seq_len=min(128, config.max_seq_len),
+                                n_steps=max(1, discovery_steps),
+                                vocab_size=config.vocab_size,
+                                batch_size=config.stage1_batch_size,
+                                lr=baseline_recipe["lr"],
+                                device=str(config.device),
+                                n_layers=2,
+                                data_mode="random",
+                                data_tag="discovery_baseline",
+                            )
+                            program_metrics["discovery_loss_ratio"] = discovery_ratio
+                        except Exception as e:
+                            logger.debug("Discovery baseline failed: %s", e)
+
+                    # 2. Validation Baseline (Corpus)
+                    val_loss = s1_result.get("validation_loss")
+                    if val_loss is not None:
+                        try:
+                            v_data_fn, v_data_tag, v_cache = self._make_baseline_data_fn(config, split="val")
+                            v_baseline_ratio = baseline.compare(
+                                val_loss,
+                                d_model=config.model_dim,
+                                seq_len=min(128, config.max_seq_len),
+                                n_steps=max(1, baseline_steps),
+                                vocab_size=config.vocab_size,
+                                batch_size=config.stage1_batch_size,
+                                lr=baseline_recipe["lr"],
+                                device=str(config.device),
+                                n_layers=2,
+                                data_fn=v_data_fn,
+                                data_mode="corpus",
+                                data_tag=v_data_tag,
+                                cache_data_fn=v_cache,
+                            )
+                            program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
+                            program_metrics["validation_loss_ratio"] = v_baseline_ratio
+                        except Exception:
+                            pass
+
+                    # 3. Standard Baseline (for backward compatibility / fallback)
                     baseline_ratio = baseline.compare(
                         final_loss,
                         d_model=config.model_dim,
@@ -8028,7 +8914,9 @@ class ExperimentRunner:
                         batch_size=config.stage1_batch_size,
                         lr=baseline_recipe["lr"],
                         device=str(config.device),
-                        n_layers=config.n_layers,
+                        n_layers=2,
+                        data_mode="corpus" if val_loss is not None else "random",
+                        data_tag="standard_baseline",
                     )
                     program_metrics["baseline_loss_ratio"] = baseline_ratio
                 except Exception:
@@ -8170,6 +9058,8 @@ class ExperimentRunner:
             "stage1_passed": 0, "novel_count": 0,
             "best_loss_ratio": None, "best_novelty_score": None,
             "survivors": [],
+            "skipped_proactive_gating": 0,
+            "proactive_gating_failures": [],
         }
 
         grammar_weights = None
@@ -8348,10 +9238,128 @@ class ExperimentRunner:
         t_start = time.time()
 
         # Generate graphs
+        if config.model_source == "morphological_box":
+            # Morphological box evaluation path (arch_builder models, no graph JSON)
+            candidates = self._generate_candidates(config, config.n_programs, "morphological_box")
+            results["total"] = len(candidates)
+
+            dev_str = config.device if torch.cuda.is_available() else "cpu"
+            dev = torch.device(dev_str)
+
+            for i, cand in enumerate(candidates):
+                if self._stop_event.is_set():
+                    break
+
+                with self._lock:
+                    self._progress.current_program = i + 1
+                    self._progress.current_fingerprint = (cand.fingerprint or "")[:10]
+                    self._progress.elapsed_seconds = time.time() - t_start
+
+                model = cand.model
+                if model is None:
+                    continue
+
+                # Stage 0/0.5
+                try:
+                    sandbox_result = self._safe_eval_for_stage(
+                        model,
+                        stage_tag="morph_candidate_screening",
+                        batch_size=2,
+                        seq_len=min(128, config.max_seq_len),
+                        vocab_size=config.vocab_size,
+                        device=dev_str,
+                    )
+                except Exception as e:
+                    logger.error("Error evaluating morph candidate %d: %s", i, e)
+                    continue
+
+                s0_passed = bool(sandbox_result.passed)
+                s05_passed = (sandbox_result.stability_score >= config.stage05_stability_threshold
+                              and sandbox_result.causality_passed)
+                if s0_passed:
+                    results["stage0_passed"] += 1
+                    with self._lock: self._progress.stage0_passed += 1
+                if s05_passed:
+                    results["stage05_passed"] += 1
+                    with self._lock: self._progress.stage05_passed += 1
+
+                if not s0_passed or not s05_passed:
+                    continue
+
+                # Stage 1 (sync, since we already have a compiled model)
+                s1_result = self._micro_train(
+                    model,
+                    config,
+                    dev,
+                    seed=self._stable_seed(exp_id, i, "morphology"),
+                )
+                s1_passed = bool(s1_result.get("passed", False))
+                if s1_passed:
+                    results["stage1_passed"] += 1
+                    with self._lock: self._progress.stage1_passed += 1
+
+                program_metrics: Dict[str, Any] = {}
+                try:
+                    program_metrics.update(self._extract_sandbox_metrics(sandbox_result))
+                except Exception:
+                    pass
+                try:
+                    program_metrics["param_count"] = sandbox_result.param_count
+                except Exception:
+                    pass
+
+                # Merge S1 metrics
+                for k in ("initial_loss", "final_loss", "min_loss", "loss_ratio",
+                          "throughput", "avg_step_time_ms", "total_train_time_ms",
+                          "validation_loss", "validation_loss_ratio", "generalization_gap",
+                          "discovery_loss", "discovery_loss_ratio"):
+                    if k in s1_result:
+                        program_metrics[k] = s1_result.get(k)
+                self._merge_s1_telemetry(program_metrics, s1_result)
+
+                nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=cand.fingerprint,
+                    graph_json="{}",
+                    stage0_passed=s0_passed,
+                    stage05_passed=s05_passed,
+                    stage1_passed=s1_passed,
+                    loss_ratio=s1_result.get("loss_ratio"),
+                    final_loss=s1_result.get("final_loss"),
+                    model_source="morphological_box",
+                    arch_spec_json=cand.arch_spec_json,
+                    **program_metrics,
+                )
+
+            return results
+
         if config.model_source == "fingerprint_refine":
             graphs = self._generate_refinement_graphs(exp_id, config, nb, grammar)
         else:
-            graphs = batch_generate(config.n_programs, grammar)
+            # Project Hephaestus Phase 4: Adaptive Synthesis
+            prior = None
+            use_adaptive = False
+            if use_learned_grammar and analytics is not None:
+                try:
+                    frontier = analytics.get_efficiency_frontier()
+                    if frontier:
+                        from ..synthesis.grammar import EfficiencyPrior
+                        prior = EfficiencyPrior(frontier)
+                        use_adaptive = True
+                        nb.log_learning_event(
+                            "adaptive_synthesis_enabled",
+                            f"Enabling budget-aware adaptive synthesis for {exp_id}",
+                            frontier_size=len(frontier),
+                        )
+                except Exception as e:
+                    logger.warning("Failed to initialize efficiency prior: %s", e)
+            
+            graphs = batch_generate(
+                config.n_programs, 
+                grammar, 
+                use_adaptive_synthesis=use_adaptive,
+                prior=prior
+            )
         results["total"] = len(graphs)
         op_distribution = self._compute_generated_op_distribution(graphs)
         if op_distribution:
@@ -8552,6 +9560,29 @@ class ExperimentRunner:
             except Exception as e:
                 logger.debug("FLOP estimate failed for %s: %s", graph.fingerprint()[:10], e)
 
+            # Native Proactive Gating (Project Hephaestus)
+            # High-performance stability and toxic motif detection
+            try:
+                native_gating = _native_proactive_gating(graph)
+                if not native_gating.get("passed", True):
+                    results.setdefault("skipped_proactive_gating", 0)
+                    results["skipped_proactive_gating"] += 1
+                    
+                    # Update metrics with native data
+                    program_metrics["proactive_gating_reason"] = native_gating.get("reason")
+                    program_metrics["max_depth"] = native_gating.get("max_depth")
+                    program_metrics["n_toxic_motifs"] = native_gating.get("n_toxic_motifs")
+                    
+                    self._emit_event("program_evaluated", {
+                        "index": i, "fingerprint": fp[:10],
+                        "result": "skipped_proactive",
+                        "reason": native_gating.get("reason"),
+                        "max_depth": native_gating.get("max_depth"),
+                    })
+                    continue
+            except Exception as e:
+                logger.debug("Native proactive gating failed for %s: %s", fp[:10], e)
+
             # Validate
             validation = validate_graph(
                 graph,
@@ -8605,7 +9636,8 @@ class ExperimentRunner:
                 program_metrics["param_count"] = sandbox_result.param_count
                 
                 s0_passed = sandbox_result.passed
-                s05_passed = sandbox_result.stability_score >= config.stage05_stability_threshold
+                s05_passed = (sandbox_result.stability_score >= config.stage05_stability_threshold
+                              and sandbox_result.causality_passed)
                 
                 if s0_passed:
                     results["stage0_passed"] += 1
@@ -8664,6 +9696,19 @@ class ExperimentRunner:
                 
             except Exception as e:
                 logger.error("Error evaluating graph %d: %s", i, e)
+                # Reset CUDA context if this was a fatal CUDA error
+                if torch.cuda.is_available():
+                    from ..eval.sandbox import is_cuda_fatal
+                    if is_cuda_fatal(e):
+                        try:
+                            torch.cuda.empty_cache()
+                            torch.cuda.reset_peak_memory_stats()
+                            _probe = torch.zeros(1, device="cuda")
+                            del _probe
+                            torch.cuda.synchronize()
+                            logger.info("CUDA context recovered after fatal error on graph %d", i)
+                        except Exception:
+                            logger.warning("CUDA context unrecoverable after fatal error on graph %d", i)
                 continue
             
             # Periodically process available results to keep the dashboard updated
@@ -8703,10 +9748,11 @@ class ExperimentRunner:
             dedup_str = f", dedup={results['skipped_dedup']} ({results.get('dedup_rate', 0)*100:.0f}%)"
         logger.info(
             "Experiment %s complete: %d programs → S0=%d → S0.5=%d → S1=%d "
-            "(%.1fs)%s%s",
+            "(%.1fs)%s%s%s",
             exp_id[:8], results["total"],
             results["stage0_passed"], results["stage05_passed"],
             results["stage1_passed"], elapsed, best_str, dedup_str,
+            f", native_gating={results.get('skipped_proactive_gating', 0)}" if results.get('skipped_proactive_gating') else "",
         )
 
         return results
@@ -8806,6 +9852,11 @@ class ExperimentRunner:
                         child = _mutate_graph(parent_graph, grammar, rng)
                     except Exception:
                         continue
+                        
+                    # Z15: Prune dead branches (unreachable nodes) before validation 
+                    # to prevent redundant complexity from bloat mutations.
+                    child.prune_dead_branches()
+                    
                     validation = validate_graph(
                         child,
                         max_ops=max(1, int(config.max_ops)),
@@ -9166,18 +10217,38 @@ class ExperimentRunner:
             _seed_int = int(seed)
 
             def _make_random_batch(step: int) -> torch.Tensor:
-                """Generate a deterministic random batch for a given step.
-
-                Uses per-step seeding so all candidates see the same batch
-                at each step (fair comparison, #56), but each step is
-                independently seeded to prevent cross-batch memorization.
-                """
+                """Generate a deterministic random batch for a given step."""
                 torch.manual_seed(_seed_int * 100_000 + step)
                 return torch.randint(
                     0, int(config.vocab_size),
                     (config.stage1_batch_size, seq_len),
                     device=dev,
                 )
+
+            # --- Part 1: Discovery Evaluation (Fast) ---
+            # Evaluate on a few random batches to get "discovery_loss"
+            discovery_steps = min(5, config.stage1_steps // 10)
+            discovery_losses = []
+            model.eval()
+            with torch.no_grad():
+                for ds in range(discovery_steps):
+                    d_batch = _make_random_batch(ds + 9999) # different offset
+                    with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=True):
+                        d_logits = model(d_batch)
+                        d_loss = F.cross_entropy(d_logits[:, :-1].reshape(-1, config.vocab_size), d_batch[:, 1:].reshape(-1))
+                    discovery_losses.append(d_loss.item())
+            
+            if discovery_losses:
+                result["discovery_loss"] = sum(discovery_losses) / len(discovery_losses)
+                # Note: discovery_loss_ratio needs a baseline; we'll compute it in _execute_experiment
+            
+            model.train()
+            # --- Part 2: Main Training (Validation Channel) ---
+            
+            # Implementation of train/val split for Stage 1
+            train_steps = int(config.stage1_steps * 0.8)
+            val_steps = config.stage1_steps - train_steps
+
             starvation_interval = max(1, int(getattr(config, "starvation_check_interval", 8) or 8))
 
             use_cuda_graph = bool(
@@ -9410,6 +10481,88 @@ class ExperimentRunner:
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
 
+            # Optional validation loss on heldout corpus split
+            validation_loss = None
+            validation_loss_ratio = None
+            generalization_gap = None
+            val_batches = max(1, int(getattr(config, "stage1_val_batches", 0) or 0))
+            compute_val = bool(getattr(config, "stage1_compute_val_loss", True))
+            val_batch_size = int(getattr(config, "stage1_val_batch_size", 0) or config.stage1_batch_size)
+            val_frac = float(getattr(config, "corpus_val_fraction", 0.0) or 0.0)
+            if compute_val and val_batches > 0 and val_frac > 0.0:
+                if str(config.data_mode or "random").strip().lower() == "corpus":
+                    try:
+                        model.eval()
+                        losses = []
+                        with torch.no_grad():
+                            for i in range(val_batches):
+                                input_ids = self._sample_training_input_ids(
+                                    config=config,
+                                    dev=dev,
+                                    batch_size=val_batch_size,
+                                    seq_len=seq_len,
+                                    seed=seed + 10_000 + i,
+                                    split="val",
+                                )
+                                if input_ids is None:
+                                    continue
+                                with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
+                                                        enabled=(dev.type == "cuda")):
+                                    logits = model(input_ids)
+                                    loss = F.cross_entropy(
+                                        logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                        input_ids[:, 1:].reshape(-1),
+                                    )
+                                if loss is not None and torch.isfinite(loss):
+                                    losses.append(float(loss.item()))
+                        if losses:
+                            validation_loss = sum(losses) / len(losses)
+                    except Exception as e:
+                        result["validation_loss_error"] = str(e)
+                    finally:
+                        model.train()
+
+            # Optional discovery loss on random tokens (fast triage signal)
+            discovery_loss = None
+            discovery_loss_ratio = None
+            discovery_batches = max(1, int(getattr(config, "stage1_discovery_batches", 0) or 0))
+            compute_discovery = bool(getattr(config, "stage1_compute_discovery_loss", True))
+            discovery_batch_size = int(getattr(config, "stage1_discovery_batch_size", 0) or config.stage1_batch_size)
+            if compute_discovery and discovery_batches > 0:
+                try:
+                    model.eval()
+                    losses = []
+                    with torch.no_grad():
+                        for i in range(discovery_batches):
+                            torch.manual_seed(int(seed) * 10_000 + 3_000 + i)
+                            input_ids = torch.randint(
+                                0, int(config.vocab_size),
+                                (discovery_batch_size, seq_len),
+                                device=dev,
+                            )
+                            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
+                                                    enabled=(dev.type == "cuda")):
+                                logits = model(input_ids)
+                                loss = F.cross_entropy(
+                                    logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                    input_ids[:, 1:].reshape(-1),
+                                )
+                            if loss is not None and torch.isfinite(loss):
+                                losses.append(float(loss.item()))
+                    if losses:
+                        discovery_loss = sum(losses) / len(losses)
+                except Exception as e:
+                    result["discovery_loss_error"] = str(e)
+                finally:
+                    model.train()
+
+            if validation_loss is not None and initial_loss:
+                validation_loss_ratio = validation_loss / max(initial_loss, 1e-6)
+            if validation_loss is not None and final_loss is not None:
+                generalization_gap = validation_loss - final_loss
+            if discovery_loss is not None and initial_loss:
+                discovery_loss_ratio = discovery_loss / max(initial_loss, 1e-6)
+
             # Collect perf results
             if tracer is not None:
                 result["perf_traces"] = tracer.get_report()
@@ -9431,6 +10584,16 @@ class ExperimentRunner:
                 result["final_loss"] = final_loss
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
+                if validation_loss is not None:
+                    result["validation_loss"] = validation_loss
+                if validation_loss_ratio is not None:
+                    result["validation_loss_ratio"] = validation_loss_ratio
+                if generalization_gap is not None:
+                    result["generalization_gap"] = generalization_gap
+                if discovery_loss is not None:
+                    result["discovery_loss"] = discovery_loss
+                if discovery_loss_ratio is not None:
+                    result["discovery_loss_ratio"] = discovery_loss_ratio
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
                 result["passed"] = result["loss_ratio"] < config.stage1_loss_ratio_threshold
 
@@ -9667,6 +10830,7 @@ class ExperimentRunner:
                 "sparse_coverage": analytics.sparse_coverage(),
                 "top_op_combinations": analytics.top_op_combinations(10),
                 "efficiency_frontier": analytics.efficiency_frontier(),
+                "efficiency_frontier_3d": analytics.efficiency_frontier_3d(),
                 "grammar_weights": analytics.compute_grammar_weights(),
                 "default_weights": analytics.get_current_grammar_weights(),
                 "learning_log": nb.get_learning_log(limit=10),
@@ -9675,6 +10839,7 @@ class ExperimentRunner:
                 "decision_outcomes": analytics.decision_outcome_analysis(),
                 "designer_telemetry": self._gather_designer_telemetry(),
                 "scaling_summary": nb.get_scaling_summary(),
+                "gate_health": analytics.gate_health_daily(n_days=7),
             }
         except Exception:
             return {}
@@ -10143,6 +11308,7 @@ class ExperimentRunner:
                 "failure_patterns": analytics.failure_patterns(),
                 "top_op_combinations": analytics.top_op_combinations(10),
                 "efficiency_frontier": analytics.efficiency_frontier(),
+                "efficiency_frontier_3d": analytics.efficiency_frontier_3d(),
                 "grammar_weights": analytics.compute_grammar_weights() or {},
                 "default_weights": analytics.get_current_grammar_weights(),
             }
@@ -10253,6 +11419,12 @@ class ExperimentRunner:
                                 fixed_choices["weight_storage"] = explicit_sparse
                             else:
                                 fixed_choices["weight_storage"] = sparse_weight_options[i % len(sparse_weight_options)]
+                        fixed_routing = str(getattr(config, "morph_compute_routing", "") or "").strip()
+                        if fixed_routing:
+                            fixed_choices["compute_routing"] = fixed_routing
+                        fixed_channel = str(getattr(config, "morph_channel_mixing", "") or "").strip()
+                        if fixed_channel:
+                            fixed_choices["channel_mixing"] = fixed_channel
 
                         spec = roll(seed=i + int(time.time() * 1000) % 100000,
                                     generation=0,
@@ -10809,8 +11981,15 @@ class ExperimentRunner:
     def start_investigation(self, result_ids: List[str], config: RunConfig,
                             hypothesis: Optional[str] = None,
                             preregistration: Optional[Dict[str, Any]] = None,
-                            exploratory: bool = False) -> str:
-        """Start investigation phase for selected candidates."""
+                            exploratory: bool = False,
+                            force: bool = False) -> str:
+        """Start investigation phase for selected candidates.
+
+        Args:
+            force: Skip tier and already-investigated guards.  Allows
+                   re-investigating candidates with different config
+                   (e.g. longer steps, different data mode).
+        """
         if self.is_running:
             raise RuntimeError("An experiment is already running")
 
@@ -10819,19 +11998,37 @@ class ExperimentRunner:
 
         nb = self._make_notebook()
 
-        # Tier guard: reject result IDs already at investigation tier or beyond
-        tiers = nb.get_tiers_for_result_ids(result_ids)
-        already_done = {
-            rid: tier for rid, tier in tiers.items()
-            if tier in ("investigation", "validation", "breakthrough")
-        }
-        if already_done:
-            nb.close()
-            labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_done.items())
-            raise ValueError(
-                f"Cannot investigate: {len(already_done)} candidate(s) already "
-                f"at or beyond investigation tier: {labels}"
-            )
+        if not force:
+            # Tier guard: reject result IDs already at investigation tier or beyond
+            tiers = nb.get_tiers_for_result_ids(result_ids)
+            already_done = {
+                rid: tier for rid, tier in tiers.items()
+                if tier in ("investigation", "validation", "breakthrough")
+            }
+            if already_done:
+                nb.close()
+                labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_done.items())
+                raise ValueError(
+                    f"Cannot investigate: {len(already_done)} candidate(s) already "
+                    f"at or beyond investigation tier: {labels}"
+                )
+        else:
+            logger.info("Force re-investigation: skipping tier/fingerprint guards for %s",
+                        ", ".join(r[:8] for r in result_ids))
+            # Reset tier to screening so the investigation can re-promote
+            for rid in result_ids:
+                try:
+                    nb.conn.execute(
+                        "UPDATE leaderboard SET tier = 'screening', "
+                        "investigation_passed = NULL, investigation_loss_ratio = NULL, "
+                        "investigation_robustness = NULL, investigation_best_training = NULL "
+                        "WHERE result_id = ?", (rid,))
+                except Exception:
+                    pass
+            try:
+                nb.conn.commit()
+            except Exception:
+                pass
 
         source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
@@ -10887,6 +12084,19 @@ class ExperimentRunner:
         nb = self._make_notebook()
         t_start = time.time()
         ckpt = CheckpointManager(config.checkpoint_dir)
+
+        # Informational: log pre-inv scores for user-triggered investigations
+        if config.pre_inv_gate_enabled:
+            for rid in result_ids:
+                try:
+                    row = nb.conn.execute(
+                        "SELECT pre_inv_score FROM leaderboard WHERE result_id = ?",
+                        (rid,)).fetchone()
+                    if row and row[0] is not None:
+                        logger.info("Investigation candidate %s pre_inv_score=%.1f",
+                                    rid[:8], row[0])
+                except Exception:
+                    pass
 
         # Load phase checkpoint to find where we left off
         resume_from_candidate = 0
@@ -11082,10 +12292,15 @@ class ExperimentRunner:
                             best_tp_json = json.dumps(tp.to_dict())
                             break
 
+                # Brittle risk override: if the investigation LR is good on
+                # its own merits (< 0.3), don't let the screening→investigation
+                # multiplier veto promotion.  Prevents false positives when
+                # screening LR was unrealistically low (e.g. lucky seed).
                 investigation_passed = (
                     robustness >= 0.5
                     and (best_lr or 1.0) < 0.5
-                    and (not brittle_risk or (best_lr is not None and best_lr < 0.1))
+                    and (not brittle_risk
+                         or (best_lr is not None and best_lr < 0.3))
                 )
 
                 nb.upsert_leaderboard(
@@ -11539,7 +12754,7 @@ class ExperimentRunner:
                             baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
                             baseline_recipe = self._resolve_baseline_recipe(
                                 best_seed, default_lr=config.stage1_lr)
-                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                            bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(config)
                             val_baseline_ratio = baseline.compare(
                                 best_seed["final_loss"],
                                 d_model=config.model_dim,
@@ -11556,7 +12771,34 @@ class ExperimentRunner:
                                 betas=baseline_recipe["betas"],
                                 data_fn=bl_data_fn,
                                 data_tag=bl_data_tag,
+                                cache_data_fn=bl_cache,
                             )
+                            # Optional: Validation baseline comparison (using val split)
+                            v_loss = best_seed.get("validation_loss")
+                            if v_loss is not None:
+                                try:
+                                    v_data_fn, v_data_tag, v_cache = self._make_baseline_data_fn(config, split="val")
+                                    v_baseline_ratio = baseline.compare(
+                                        v_loss,
+                                        d_model=config.model_dim,
+                                        seq_len=min(128, int(getattr(config, "validation_seq_len", 128))),
+                                        n_steps=max(1, baseline_steps),
+                                        vocab_size=config.vocab_size,
+                                        batch_size=int(getattr(config, "validation_batch_size", 4)),
+                                        lr=baseline_recipe["lr"],
+                                        device=dev_str,
+                                        n_layers=config.n_layers,
+                                        optimizer_name=baseline_recipe["optimizer_name"],
+                                        weight_decay=baseline_recipe["weight_decay"],
+                                        momentum=baseline_recipe["momentum"],
+                                        betas=baseline_recipe["betas"],
+                                        data_fn=v_data_fn,
+                                        data_tag=v_data_tag,
+                                        cache_data_fn=v_cache,
+                                    )
+                                    program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
 
@@ -11572,7 +12814,7 @@ class ExperimentRunner:
                         baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
                         baseline_recipe = self._resolve_baseline_recipe(
                             best_seed, default_lr=config.stage1_lr)
-                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(config)
                         norm_result = baseline.compare_normalized(
                             best_seed["final_loss"],
                             program_params=int(source_params),
@@ -11590,6 +12832,7 @@ class ExperimentRunner:
                             betas=baseline_recipe["betas"],
                             data_fn=bl_data_fn,
                             data_tag=bl_data_tag,
+                            cache_data_fn=bl_cache,
                         )
                         val_normalized_ratio = norm_result.get("normalized_ratio")
                         val_param_efficiency = norm_result.get("param_efficiency")
@@ -11704,7 +12947,7 @@ class ExperimentRunner:
                 if is_breakthrough and config.enable_scaling_comparison:
                     try:
                         scaling_mgr = self._get_scaling_reference_manager()
-                        bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                        bl_data_fn, bl_data_tag, _ = self._make_baseline_data_fn(config)
                         candidate_flops = (source.get("flops_forward", 0) or 0)
                         if candidate_flops <= 0:
                             candidate_flops = source_params * 2
@@ -11809,12 +13052,30 @@ class ExperimentRunner:
                                 return compile_model(
                                     [graph_from_json(_gjs_lc2)] * _cfg_lc2.n_layers,
                                     vocab_size=_cfg_lc2.vocab_size, max_seq_len=1024)
+                        from ..eval.long_context import run_long_context_sweep
+                        from ..eval.passkey import evaluate_long_context_retrieval
+
                         lc_result = run_long_context_sweep(
                             _make_model_lc2, config.vocab_size, dev,
                             base_loss=base_loss_val, seq_lens=(512, 1024),
                             n_steps=200, batch_size=2,
                         )
-                        long_context_score = lc_result.get("long_context_score")
+                        
+                        # Retrieval test (needle-in-a-haystack)
+                        retr_model = _make_model_lc2().to(dev)
+                        retr_result = evaluate_long_context_retrieval(
+                            retr_model, config.vocab_size, dev,
+                            lengths=[256, 512, 1024]
+                        )
+                        del retr_model
+                        
+                        # Combine scaling score and retrieval score (50/50)
+                        scaling_score = lc_result.get("long_context_score", 0.0)
+                        retrieval_score = retr_result.get("retrieval_score", 0.0)
+                        long_context_score = (scaling_score * 0.5) + (retrieval_score * 0.5)
+                        
+                        logger.info("Long-context check (v2): scaling=%.2f, retrieval=%.2f, combined=%.2f",
+                                    scaling_score, retrieval_score, long_context_score)
                     except Exception as e:
                         logger.debug("Long-context sweep skipped: %s", e)
 
@@ -11850,6 +13111,181 @@ class ExperimentRunner:
                     except Exception as e:
                         logger.debug("Noise sensitivity skipped: %s", e)
 
+                # Activation sparsity analysis (informational, non-blocking)
+                activation_sparsity_score = None
+                dead_neuron_ratio = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.sparsity import evaluate_activation_sparsity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_as = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_as = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            as_model = build_model(_spec_as, _bc_as).to(dev)
+                        else:
+                            as_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        as_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        as_result = evaluate_activation_sparsity(
+                            as_model, as_batches, dev)
+                        activation_sparsity_score = as_result.get("activation_sparsity_score")
+                        dead_neuron_ratio = as_result.get("dead_neuron_ratio")
+                        del as_model
+                    except Exception as e:
+                        logger.debug("Activation sparsity eval skipped: %s", e)
+
+                # Routing heatmap / collapse detection (informational, non-blocking)
+                routing_collapse_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.routing_heatmap import evaluate_routing_heatmap
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_rh = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_rh = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            rh_model = build_model(_spec_rh, _bc_rh).to(dev)
+                        else:
+                            rh_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        rh_batches = [
+                            torch.randint(0, config.vocab_size,
+                                          (2, min(128, config.validation_seq_len)),
+                                          device=dev)
+                            for _ in range(4)
+                        ]
+                        rh_result = evaluate_routing_heatmap(
+                            rh_model, rh_batches, dev)
+                        if rh_result.get("has_routing"):
+                            routing_collapse_score = rh_result.get("routing_collapse_score")
+                        del rh_model
+                    except Exception as e:
+                        logger.debug("Routing heatmap eval skipped: %s", e)
+
+                # WikiText perplexity (informational, non-blocking)
+                wikitext_perplexity = None
+                wikitext_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.wikitext_eval import evaluate_wikitext_perplexity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_wt = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_wt = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            wt_model = build_model(_spec_wt, _bc_wt).to(dev)
+                        else:
+                            wt_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        wt_result = evaluate_wikitext_perplexity(
+                            wt_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=min(128, config.validation_seq_len))
+                        wikitext_perplexity = wt_result.get("wikitext_perplexity")
+                        wikitext_score = wt_result.get("wikitext_score")
+                        if wikitext_perplexity is not None:
+                            logger.info("WikiText ppl=%.1f score=%.3f",
+                                        wikitext_perplexity, wikitext_score or 0)
+                        del wt_model
+                    except Exception as e:
+                        logger.debug("WikiText eval skipped: %s", e)
+
+                # TinyStories validation (informational, non-blocking)
+                tinystories_perplexity = None
+                tinystories_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.tinystories_eval import evaluate_tinystories
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_ts = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_ts = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len)
+                            ts_model = build_model(_spec_ts, _bc_ts).to(dev)
+                        else:
+                            ts_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.validation_seq_len).to(dev)
+                        ts_result = evaluate_tinystories(
+                            ts_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=min(128, config.validation_seq_len))
+                        tinystories_perplexity = ts_result.get("tinystories_perplexity")
+                        tinystories_score = ts_result.get("tinystories_score")
+                        del ts_model
+                    except Exception as e:
+                        logger.debug("TinyStories eval skipped: %s", e)
+
+                # Cross-task robustness (informational, non-blocking)
+                cross_task_score = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.cross_task_eval import evaluate_cross_task_robustness
+                        _gjs_ct = graph_json_str
+                        _asjs_ct = arch_spec_json_str
+                        _ms_ct = model_source
+                        _cfg_ct = config
+                        def _make_ct_model():
+                            if _ms_ct == "morphological_box" and _asjs_ct:
+                                _sp = ArchSpec(**json.loads(_asjs_ct))
+                                _bc = BuildConfig(
+                                    dim=_cfg_ct.model_dim, n_layers=_cfg_ct.n_layers,
+                                    vocab_size=_cfg_ct.vocab_size,
+                                    max_seq_len=_cfg_ct.validation_seq_len)
+                                return build_model(_sp, _bc)
+                            return compile_model(
+                                [graph_from_json(_gjs_ct)] * _cfg_ct.n_layers,
+                                vocab_size=_cfg_ct.vocab_size,
+                                max_seq_len=_cfg_ct.validation_seq_len)
+                        ct_result = evaluate_cross_task_robustness(
+                            _make_ct_model, config.vocab_size, dev,
+                            n_train_steps=100, seq_len=min(128, config.validation_seq_len))
+                        cross_task_score = ct_result.get("cross_task_score")
+                    except Exception as e:
+                        logger.debug("Cross-task eval skipped: %s", e)
+
+                # Efficiency wall (informational, non-blocking)
+                efficiency_wall_score = None
+                max_viable_seq_len = None
+                scaling_regime = None
+                if best_seed is not None:
+                    try:
+                        from ..eval.efficiency_wall import evaluate_efficiency_wall
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            _spec_ew = ArchSpec(**json.loads(arch_spec_json_str))
+                            _bc_ew = BuildConfig(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=1024)
+                            ew_model = build_model(_spec_ew, _bc_ew).to(dev)
+                        else:
+                            ew_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=1024).to(dev)
+                        ew_result = evaluate_efficiency_wall(
+                            ew_model, config.vocab_size, dev,
+                            seq_lens=(64, 128, 256, 512), batch_size=2)
+                        efficiency_wall_score = ew_result.get("efficiency_wall_score")
+                        max_viable_seq_len = ew_result.get("max_viable_seq_len")
+                        scaling_regime = ew_result.get("scaling_regime")
+                        del ew_model
+                    except Exception as e:
+                        logger.debug("Efficiency wall eval skipped: %s", e)
+
                 tier = "breakthrough" if is_breakthrough else "validation"
 
                 validation_entry = {
@@ -11871,6 +13307,17 @@ class ExperimentRunner:
                     "novelty_confidence": nov_conf,
                     "ood_robustness": ood_result,
                     "sensitivity": sensitivity_result,
+                    "activation_sparsity_score": activation_sparsity_score,
+                    "dead_neuron_ratio": dead_neuron_ratio,
+                    "routing_collapse_score": routing_collapse_score,
+                    "wikitext_perplexity": wikitext_perplexity,
+                    "wikitext_score": wikitext_score,
+                    "tinystories_perplexity": tinystories_perplexity,
+                    "tinystories_score": tinystories_score,
+                    "cross_task_score": cross_task_score,
+                    "efficiency_wall_score": efficiency_wall_score,
+                    "max_viable_seq_len": max_viable_seq_len,
+                    "scaling_regime": scaling_regime,
                 }
                 results["validation_results"].append(validation_entry)
 
@@ -11901,6 +13348,17 @@ class ExperimentRunner:
                             scaling_gate_passed=scaling_gate_passed_val,
                             scaling_best_family=scaling_best_family,
                             scaling_confidence=scaling_confidence,
+                            activation_sparsity_score=activation_sparsity_score,
+                            dead_neuron_ratio=dead_neuron_ratio,
+                            routing_collapse_score=routing_collapse_score,
+                            wikitext_perplexity=wikitext_perplexity,
+                            wikitext_score=wikitext_score,
+                            tinystories_perplexity=tinystories_perplexity,
+                            tinystories_score=tinystories_score,
+                            cross_task_score=cross_task_score,
+                            efficiency_wall_score=efficiency_wall_score,
+                            max_viable_seq_len=max_viable_seq_len,
+                            scaling_regime=scaling_regime,
                         )
                         # Store detailed scaling result
                         if scaling_result is not None:
@@ -12064,6 +13522,84 @@ class ExperimentRunner:
         )
         # Apply specialized weights
         grammar.category_weights["math_space"] = config.math_space_weight
+
+        # Apply Bayesian op priors from compressed learning (optional)
+        try:
+            from pathlib import Path
+            import json as _json
+            priors_path = Path("research/runtime/learning/op_priors.json")
+            if priors_path.exists():
+                payload = _json.loads(priors_path.read_text())
+                op_penalties = payload.get("op_penalties", {}) if isinstance(payload, dict) else {}
+                if isinstance(op_penalties, dict):
+                    for op_name, penalty in op_penalties.items():
+                        try:
+                            p = float(penalty)
+                        except Exception:
+                            continue
+                        # Convert penalty (0..1) into weight multiplier (1..0.5)
+                        mult = max(0.5, 1.0 - 0.5 * max(0.0, min(1.0, p)))
+                        grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * mult
+        except Exception:
+            pass
+
+        # Apply cluster-based suggestions (optional)
+        try:
+            from pathlib import Path
+            import json as _json
+            sugg_path = Path("research/runtime/learning/cluster_suggestions.json")
+            if sugg_path.exists():
+                payload = _json.loads(sugg_path.read_text())
+                if isinstance(payload, dict):
+                    op_weight_suggestions = payload.get("op_weight_suggestions") or payload.get("op_weights") or {}
+                    op_penalties = payload.get("op_penalties") or {}
+                    op_promotions = payload.get("op_promotions") or {}
+                    avoid_patterns = payload.get("avoid_patterns") or []
+                    promote_patterns = payload.get("promote_patterns") or []
+
+                    def _apply_mult(op_name: str, mult: float):
+                        if not op_name:
+                            return
+                        m = max(0.2, min(3.0, float(mult)))
+                        grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * m
+
+                    for op_name, mult in op_weight_suggestions.items():
+                        try:
+                            _apply_mult(op_name, float(mult))
+                        except Exception:
+                            continue
+
+                    for op_name, p in op_penalties.items():
+                        try:
+                            penalty = max(0.0, min(1.0, float(p)))
+                        except Exception:
+                            continue
+                        _apply_mult(op_name, 1.0 - 0.4 * penalty)
+
+                    for op_name, p in op_promotions.items():
+                        try:
+                            promo = max(0.0, min(1.0, float(p)))
+                        except Exception:
+                            continue
+                        _apply_mult(op_name, 1.0 + 0.4 * promo)
+
+                    def _ops_from_pattern(pat: str):
+                        if "->" in pat:
+                            parts = [p.strip() for p in pat.split("->", 1)]
+                        elif "," in pat:
+                            parts = [p.strip() for p in pat.split(",", 1)]
+                        else:
+                            parts = [pat.strip()]
+                        return [p for p in parts if p]
+
+                    for pat in avoid_patterns:
+                        for op_name in _ops_from_pattern(str(pat)):
+                            _apply_mult(op_name, 0.85)
+                    for pat in promote_patterns:
+                        for op_name in _ops_from_pattern(str(pat)):
+                            _apply_mult(op_name, 1.1)
+        except Exception:
+            pass
 
         return grammar
 
@@ -13394,7 +14930,9 @@ class ExperimentRunner:
                 for key in ["initial_loss", "min_loss", "loss_improvement_rate",
                             "avg_step_time_ms", "total_train_time_ms",
                             "max_grad_norm", "mean_grad_norm", "grad_norm_std",
-                            "n_train_steps", "final_lr"]:
+                            "n_train_steps", "final_lr",
+                            "validation_loss", "validation_loss_ratio", "generalization_gap",
+                            "discovery_loss", "discovery_loss_ratio"]:
                     program_metrics[key] = s1_result.get(key)
                 self._merge_s1_telemetry(program_metrics, s1_result)
 
@@ -13407,7 +14945,7 @@ class ExperimentRunner:
                             baseline_steps = int(s1_result.get("n_train_steps") or config.scale_up_steps)
                             baseline_recipe = self._resolve_baseline_recipe(
                                 s1_result, default_lr=config.stage1_lr)
-                            bl_data_fn, bl_data_tag = self._make_baseline_data_fn(config)
+                            bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(config)
                             baseline_ratio = baseline.compare(
                                 final_loss,
                                 d_model=config.model_dim,
@@ -13424,8 +14962,33 @@ class ExperimentRunner:
                                 betas=baseline_recipe["betas"],
                                 data_fn=bl_data_fn,
                                 data_tag=bl_data_tag,
+                                cache_data_fn=bl_cache,
                             )
                             program_metrics["baseline_loss_ratio"] = baseline_ratio
+                            
+                            # Optional: Validation baseline comparison (using val split)
+                            val_loss = s1_result.get("validation_loss")
+                            if val_loss is not None:
+                                v_data_fn, v_data_tag, v_cache = self._make_baseline_data_fn(config, split="val")
+                                v_baseline_ratio = baseline.compare(
+                                    val_loss,
+                                    d_model=config.model_dim,
+                                    seq_len=min(128, config.scale_up_seq_len),
+                                    n_steps=max(1, baseline_steps),
+                                    vocab_size=config.vocab_size,
+                                    batch_size=config.scale_up_batch_size,
+                                    lr=baseline_recipe["lr"],
+                                    device=dev_str,
+                                    n_layers=config.n_layers,
+                                    optimizer_name=baseline_recipe["optimizer_name"],
+                                    weight_decay=baseline_recipe["weight_decay"],
+                                    momentum=baseline_recipe["momentum"],
+                                    betas=baseline_recipe["betas"],
+                                    data_fn=v_data_fn,
+                                    data_tag=v_data_tag,
+                                    cache_data_fn=v_cache,
+                                )
+                                program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
                         except Exception:
                             pass
 

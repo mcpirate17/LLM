@@ -1,5 +1,5 @@
 import { apiCall } from "../services/apiService";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { lossColor, noveltyColor } from '../utils/colors';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import apiService from '../services/apiService';
@@ -114,6 +114,97 @@ function RadarChart({ program, size = 240 }) {
         );
       })}
     </svg>
+  );
+}
+
+function RoutingHeatmap({ data, nExperts }) {
+  if (!data || !Array.isArray(data)) return null;
+  // data is [seq_len] or [seq_len, top_k]
+  const seqLen = data.length;
+  const experts = nExperts || 4;
+  
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4 }}>
+        Routing Heatmap (Token x Expert)
+      </div>
+      <div style={{ 
+        display: 'grid', 
+        gridTemplateColumns: `repeat(${experts}, 1fr)`,
+        gap: 1,
+        background: 'var(--border)',
+        border: '1px solid var(--border)',
+        padding: 1
+      }}>
+        {data.map((selected, t) => {
+          const selectedList = Array.isArray(selected) ? selected : [selected];
+          return Array.from({ length: experts }).map((_, e) => {
+            const isActive = selectedList.includes(e);
+            return (
+              <div 
+                key={`${t}-${e}`}
+                title={`Token ${t}, Expert ${e}: ${isActive ? 'Active' : 'Inactive'}`}
+                style={{
+                  height: Math.max(2, 80 / seqLen),
+                  background: isActive ? 'var(--accent-blue)' : 'var(--bg-secondary)',
+                  opacity: isActive ? 0.8 : 1
+                }}
+              />
+            );
+          });
+        })}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-muted)', marginTop: 2 }}>
+        <span>T0 (start)</span>
+        <span>T{seqLen - 1} (end)</span>
+      </div>
+    </div>
+  );
+}
+
+function SparsityDiagnostics({ program }) {
+  const report = program.sparsity_report_json_parsed;
+  const ratio = program.sparsity_ratio;
+  const deadCount = program.dead_neuron_count;
+
+  if (!report && ratio == null) return null;
+
+  return (
+    <div className="card" style={{ padding: 12, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <div className="card-title" style={{ margin: 0 }}>Activation Sparsity</div>
+        {report?.max_layer_collapse > 0.9 && (
+          <span className="badge badge-error">COLLAPSED</span>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Overall Sparsity</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>
+            {ratio != null ? `${(ratio * 100).toFixed(1)}%` : 'N/A'}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Dead Neurons</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: deadCount > 0 ? 'var(--accent-yellow)' : 'var(--text-primary)' }}>
+            {deadCount != null ? deadCount.toLocaleString() : 'N/A'}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Max Collapse</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: (report?.max_layer_collapse > 0.5) ? 'var(--accent-red)' : 'var(--text-primary)' }}>
+            {report?.max_layer_collapse != null ? `${(report.max_layer_collapse * 100).toFixed(1)}%` : 'N/A'}
+          </div>
+        </div>
+      </div>
+
+      {report?.dead_neuron_ratio > 0.1 && (
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', background: 'rgba(210, 153, 34, 0.1)', padding: '6px 10px', borderRadius: 4, border: '1px solid rgba(210, 153, 34, 0.2)' }}>
+          <strong>Aria Note:</strong> High dead neuron ratio ({ (report.dead_neuron_ratio * 100).toFixed(1) }%) suggests architectural bottlenecking or poor initialization.
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -666,6 +757,8 @@ function OutcomesByPhase({ outcomes }) {
           <div key={key} style={{ fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
             <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {data.discovery_loss_ratio != null && <span>D.LR: {Number(data.discovery_loss_ratio).toFixed(4)}</span>}
+              {data.validation_loss_ratio != null && <span>V.LR: {Number(data.validation_loss_ratio).toFixed(4)}</span>}
               {data.loss_ratio != null && <span>LR: {Number(data.loss_ratio).toFixed(4)}</span>}
               {data.novelty != null && <span>Nov: {Number(data.novelty).toFixed(3)}</span>}
               {data.robustness != null && <span>Rob: {Number(data.robustness).toFixed(3)}</span>}
@@ -1122,6 +1215,15 @@ function GatingDiagnostics({ program }) {
             </div>
           </div>
         )}
+
+        {/* Routing Heatmaps (from sparsity report) */}
+        {program.sparsity_report_json_parsed?.routing_heatmaps && (
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4 }}>
+            {Object.entries(program.sparsity_report_json_parsed.routing_heatmaps).map(([name, data]) => (
+              <RoutingHeatmap key={name} data={data} nExperts={nExperts} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1427,13 +1529,20 @@ function RefinementAdvisor({ analysis, loading, error, onLaunchRefinement, actio
   );
 }
 
-function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, onOpenInDesigner, eligibilityByResultId }) {
+function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment, onViewInLeaderboard, onSelectCampaign, onOpenInDesigner, onAddToComparison, eligibilityByResultId }) {
   const [program, setProgram] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [scaleUpOpen, setScaleUpOpen] = useState(false);
   const [scaleUpConfig, setScaleUpConfig] = useState({ steps: 5000, batch_size: 8, seq_len: 512 });
   const [scaleUpStarting, setScaleUpStarting] = useState(false);
+  const [manualRunOpen, setManualRunOpen] = useState(false);
+  const [manualRunStarting, setManualRunStarting] = useState(false);
+  const [manualRunConfig, setManualRunConfig] = useState({
+    steps: 2500, batch_size: 4, n_training_programs: 3, seq_len: 256,
+    data_source: 'corpus',
+    hf_dataset: 'roneneldan/TinyStories', hf_subset: '',
+  });
   const [leaderboardEntry, setLeaderboardEntry] = useState(null);
   const [actionStarting, setActionStarting] = useState(null);
   const [actionError, setActionError] = useState(null);
@@ -1455,6 +1564,10 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
   const [refineAnalysis, setRefineAnalysis] = useState(null);
   const [refineAnalysisLoading, setRefineAnalysisLoading] = useState(false);
   const [refineAnalysisError, setRefineAnalysisError] = useState(null);
+  const [drawerWidthVw, setDrawerWidthVw] = useState(45);
+  const [drawerMaximized, setDrawerMaximized] = useState(false);
+  const [resizingDrawer, setResizingDrawer] = useState(false);
+  const drawerResizeRef = useRef({ startX: 0, startVw: 45 });
 
   const fetchAndCopyManifest = () => {
     if (!resultId) return;
@@ -1665,6 +1778,26 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     };
   }, [latestRefineLaunch, resultId, program?.graph_fingerprint]);
 
+  useEffect(() => {
+    if (!resizingDrawer) return undefined;
+    const onMouseMove = (event) => {
+      const viewportWidth = window.innerWidth || 1;
+      const deltaPx = drawerResizeRef.current.startX - event.clientX;
+      const deltaVw = (deltaPx / viewportWidth) * 100;
+      const nextVw = drawerResizeRef.current.startVw + deltaVw;
+      setDrawerWidthVw(Math.max(35, Math.min(90, nextVw)));
+    };
+    const onMouseUp = () => {
+      setResizingDrawer(false);
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [resizingDrawer]);
+
   if (!resultId) return null;
 
   const fmt = (v, d = 4) => v != null ? Number(v).toFixed(d) : '--';
@@ -1745,11 +1878,52 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
   };
 
   return (
-    <div className="program-drawer-backdrop" onClick={onClose}>
-      <div className="program-drawer" onClick={e => e.stopPropagation()}>
+    <div className="program-drawer-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div
+        className="program-drawer"
+        onClick={e => e.stopPropagation()}
+        onMouseDown={e => e.stopPropagation()}
+        style={drawerMaximized
+          ? { width: '100%', minWidth: 0, maxWidth: '100%' }
+          : { width: `${drawerWidthVw}vw`, minWidth: 460, maxWidth: '95vw' }}
+      >
+        {!drawerMaximized && (
+          <div
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              drawerResizeRef.current = { startX: event.clientX, startVw: drawerWidthVw };
+              setResizingDrawer(true);
+            }}
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              left: 0,
+              width: 8,
+              cursor: 'col-resize',
+              background: resizingDrawer ? 'rgba(88, 166, 255, 0.2)' : 'transparent',
+              borderLeft: '1px solid rgba(88, 166, 255, 0.35)',
+              zIndex: 2,
+            }}
+            title="Drag to resize"
+            aria-hidden="true"
+          />
+        )}
         <div className="program-drawer-header">
           <span>Program Detail</span>
-          <button className="refresh-btn" onClick={onClose} style={{ fontSize: 18, lineHeight: 1, padding: '4px 8px' }}>&times;</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              className="refresh-btn"
+              aria-pressed={drawerMaximized}
+              onClick={() => setDrawerMaximized(v => !v)}
+              style={{ fontSize: 12, padding: '5px 10px' }}
+              title={drawerMaximized ? 'Restore panel size' : 'Maximize panel'}
+            >
+              {drawerMaximized ? 'Restore' : 'Maximize'}
+            </button>
+            <button className="refresh-btn" onClick={onClose} style={{ fontSize: 18, lineHeight: 1, padding: '4px 8px' }}>&times;</button>
+          </div>
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
@@ -1885,6 +2059,24 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                           onClick={() => { onClose(); onSelectExperiment(program.experiment_id); }}
                         >
                           Open Experiment
+                        </button>
+                      )}
+                      {onAddToComparison && (
+                        <button
+                          className="refresh-btn"
+                          title="Add to side-by-side comparison"
+                          onClick={() => onAddToComparison(resultId)}
+                        >
+                          Compare
+                        </button>
+                      )}
+                      {onOpenInDesigner && (
+                        <button
+                          className="refresh-btn"
+                          title="Open this architecture in Aria Designer"
+                          onClick={() => onOpenInDesigner(resultId)}
+                        >
+                          Open in Designer
                         </button>
                       )}
                       {leaderboardEntry && onViewInLeaderboard && (
@@ -2165,6 +2357,11 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       {fmt(program.loss_ratio)}
                     </span> : null} />
                   <MetricRow label="Final Loss" value={fmt(program.final_loss)} />
+                  <MetricRow label="Discovery Loss" value={program.discovery_loss != null ? fmt(program.discovery_loss) : null} />
+                  <MetricRow label="Discovery LR" value={program.discovery_loss_ratio != null ? fmt(program.discovery_loss_ratio) : null} />
+                  <MetricRow label="Validation Loss" value={program.validation_loss != null ? fmt(program.validation_loss) : null} />
+                  <MetricRow label="Validation LR" value={program.validation_loss_ratio != null ? fmt(program.validation_loss_ratio) : null} />
+                  <MetricRow label="Gen Gap" value={program.generalization_gap != null ? fmt(program.generalization_gap) : null} />
                   <MetricRow label="Baseline Ratio" value={program.baseline_loss_ratio != null ?
                     <span style={{
                       color: program.baseline_loss_ratio < 1 ? 'var(--accent-green)' : 'var(--accent-red)',
@@ -2438,6 +2635,170 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
               </div>
             )}
 
+            {/* Manual Training Run (power-user override) */}
+            {program.stage1_passed && (
+              <div style={{
+                padding: 12, background: 'var(--bg-tertiary)', borderRadius: 6,
+                border: '1px solid var(--border)',
+              }}>
+                {!manualRunOpen ? (
+                  <button
+                    className="start-btn"
+                    onClick={() => setManualRunOpen(true)}
+                    style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(210, 153, 34, 0.15)', border: '1px solid rgba(210, 153, 34, 0.4)', color: 'var(--accent-yellow)' }}
+                  >
+                    Manual Training Run
+                  </button>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>
+                      Manual Training Configuration
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Steps</label>
+                        <input type="number" min="500" max="50000" step="500"
+                          value={manualRunConfig.steps}
+                          onChange={e => setManualRunConfig(c => ({ ...c, steps: parseInt(e.target.value) || 2500 }))}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Batch Size</label>
+                        <input type="number" min="1" max="32" step="1"
+                          value={manualRunConfig.batch_size}
+                          onChange={e => setManualRunConfig(c => ({ ...c, batch_size: parseInt(e.target.value) || 4 }))}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Seq Length</label>
+                        <input type="number" min="64" max="2048" step="64"
+                          value={manualRunConfig.seq_len}
+                          onChange={e => setManualRunConfig(c => ({ ...c, seq_len: parseInt(e.target.value) || 256 }))}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Training Programs</label>
+                        <input type="number" min="1" max="10" step="1"
+                          value={manualRunConfig.n_training_programs}
+                          onChange={e => setManualRunConfig(c => ({ ...c, n_training_programs: parseInt(e.target.value) || 3 }))}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                        />
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Data Source</label>
+                        <select
+                          value={manualRunConfig.data_source}
+                          onChange={e => setManualRunConfig(c => ({ ...c, data_source: e.target.value }))}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                        >
+                          <option value="corpus">Corpus</option>
+                          <option value="random">Random</option>
+                          <option value="huggingface">HuggingFace</option>
+                        </select>
+                      </div>
+                      {manualRunConfig.data_source === 'huggingface' && (
+                        <>
+                          <div>
+                            <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>HF Dataset</label>
+                            <input type="text"
+                              value={manualRunConfig.hf_dataset}
+                              onChange={e => setManualRunConfig(c => ({ ...c, hf_dataset: e.target.value }))}
+                              placeholder="roneneldan/TinyStories"
+                              style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>HF Subset</label>
+                            <input type="text"
+                              value={manualRunConfig.hf_subset}
+                              onChange={e => setManualRunConfig(c => ({ ...c, hf_subset: e.target.value }))}
+                              placeholder="(optional)"
+                              style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                      <button className="refresh-btn" style={{ padding: '3px 8px', fontSize: 11 }}
+                        onClick={() => setManualRunConfig(c => ({ ...c, steps: 1000, batch_size: 4, n_training_programs: 1, seq_len: 256 }))}>
+                        Quick
+                      </button>
+                      <button className="refresh-btn" style={{ padding: '3px 8px', fontSize: 11 }}
+                        onClick={() => setManualRunConfig(c => ({ ...c, steps: 2500, batch_size: 4, n_training_programs: 3, seq_len: 256 }))}>
+                        Standard
+                      </button>
+                      <button className="refresh-btn" style={{ padding: '3px 8px', fontSize: 11 }}
+                        onClick={() => setManualRunConfig(c => ({ ...c, steps: 5000, batch_size: 8, n_training_programs: 5, seq_len: 512 }))}>
+                        Deep
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        className="start-btn"
+                        disabled={manualRunStarting}
+                        onClick={async () => {
+                          setManualRunStarting(true);
+                          try {
+                            setActionError(null);
+                            const body = {
+                              mode: 'investigation',
+                              force: true,
+                              result_ids: [resultId],
+                              n_training_programs: manualRunConfig.n_training_programs,
+                              stage2_steps: manualRunConfig.steps,
+                              stage2_batch_size: manualRunConfig.batch_size,
+                              stage2_seq_len: manualRunConfig.seq_len,
+                              data_mode: manualRunConfig.data_source,
+                            };
+                            if (manualRunConfig.data_source === 'huggingface') {
+                              body.hf_dataset = manualRunConfig.hf_dataset;
+                              body.hf_subset = manualRunConfig.hf_subset;
+                            }
+                            const res = await apiCall(`/api/experiments/start`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify(body),
+                            });
+                            if (!res.ok) {
+                              const err = await res.json();
+                              setActionError(err.error || 'Failed to start manual run');
+                            } else {
+                              setManualRunOpen(false);
+                              if (onActionComplete) onActionComplete();
+                              onClose();
+                            }
+                          } catch (e) {
+                            setActionError('Error: ' + e.message);
+                          }
+                          setManualRunStarting(false);
+                        }}
+                        style={{ padding: '6px 16px', fontSize: 12 }}
+                      >
+                        {manualRunStarting ? 'Starting...' : 'Launch Manual Run'}
+                      </button>
+                      <button
+                        className="refresh-btn"
+                        onClick={() => setManualRunOpen(false)}
+                        style={{ padding: '6px 12px', fontSize: 12 }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                      {manualRunConfig.n_training_programs} program(s), {manualRunConfig.steps} steps, batch={manualRunConfig.batch_size}, seq={manualRunConfig.seq_len}, data={manualRunConfig.data_source}
+                      {manualRunConfig.data_source === 'huggingface' && manualRunConfig.hf_dataset && ` (${manualRunConfig.hf_dataset})`}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Investigate / Validate actions */}
             {program.stage1_passed && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -2537,6 +2898,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
 
             <TokenMixingTaxonomy graphJson={program.graph_json_parsed} />
             <GatingDiagnostics program={program} />
+            <SparsityDiagnostics program={program} />
 
             {/* Open in Designer action */}
             {program.graph_json_parsed && onOpenInDesigner && (
