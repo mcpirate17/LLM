@@ -1545,6 +1545,8 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
   });
   const [backfillRunning, setBackfillRunning] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
+  const [lossBackfillRunning, setLossBackfillRunning] = useState(false);
+  const [lossBackfillResult, setLossBackfillResult] = useState(null);
   const [leaderboardEntry, setLeaderboardEntry] = useState(null);
   const [actionStarting, setActionStarting] = useState(null);
   const [actionError, setActionError] = useState(null);
@@ -2870,6 +2872,60 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>Failed</span>
                     )}
                   </div>
+                  {(program.discovery_loss_ratio == null || program.validation_loss_ratio == null) && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                        Missing loss:{' '}
+                        {[
+                          program.discovery_loss_ratio == null && 'Discovery',
+                          program.validation_loss_ratio == null && 'Validation',
+                        ].filter(Boolean).join(', ')}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button
+                          className="start-btn"
+                          disabled={lossBackfillRunning}
+                          onClick={async () => {
+                            setLossBackfillRunning(true);
+                            setLossBackfillResult(null);
+                            try {
+                              setActionError(null);
+                              const res = await apiCall(`/api/programs/${resultId}/backfill-loss`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ device: 'cpu' }),
+                              });
+                              if (!res.ok) {
+                                const err = await res.json();
+                                setActionError(err.error || 'Loss backfill failed');
+                                setLossBackfillResult({ status: 'error' });
+                              } else {
+                                const data = await res.json();
+                                setLossBackfillResult(data.updates || { status: 'ok' });
+                              }
+                            } catch (e) {
+                              setActionError('Error: ' + e.message);
+                              setLossBackfillResult({ status: 'error' });
+                            }
+                            setLossBackfillRunning(false);
+                          }}
+                          style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.4)', color: '#a78bfa' }}
+                        >
+                          {lossBackfillRunning ? 'Evaluating...' : 'Compute Discovery & Validation Loss'}
+                        </button>
+                        {lossBackfillResult && !lossBackfillResult.status && (
+                          <span style={{ fontSize: 11, color: 'var(--accent-green)' }}>
+                            {lossBackfillResult.discovery_loss_ratio != null && `D.LR: ${Number(lossBackfillResult.discovery_loss_ratio).toFixed(4)}`}
+                            {lossBackfillResult.discovery_loss_ratio != null && lossBackfillResult.validation_loss_ratio != null && ' | '}
+                            {lossBackfillResult.validation_loss_ratio != null && `V.LR: ${Number(lossBackfillResult.validation_loss_ratio).toFixed(4)}`}
+                          </span>
+                        )}
+                        {lossBackfillResult && lossBackfillResult.status === 'error' && (
+                          <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>Failed</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}

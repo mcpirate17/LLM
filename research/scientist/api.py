@@ -4675,6 +4675,145 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/programs/<result_id>/backfill-loss", methods=["POST"])
+    def api_program_backfill_loss(result_id):
+        """Recompute discovery_loss and validation_loss for a program by rebuilding + evaluating."""
+        nb = LabNotebook(notebook_path)
+        try:
+            program = nb.get_program_detail(result_id)
+            if not program:
+                return jsonify({"error": "Program not found"}), 404
+            graph_json = program.get("graph_json")
+            if not graph_json:
+                return jsonify({"error": "No graph_json for this program"}), 400
+            initial_loss = program.get("initial_loss")
+            if not initial_loss:
+                return jsonify({"error": "No initial_loss recorded — cannot compute ratios"}), 400
+
+            # Load experiment config for model params
+            exp_id = program.get("experiment_id")
+            config_json = None
+            if exp_id:
+                exp_row = nb.conn.execute(
+                    "SELECT config_json FROM experiments WHERE experiment_id = ?", (exp_id,)
+                ).fetchone()
+                if exp_row:
+                    config_json = exp_row["config_json"]
+
+            import dataclasses as _dc
+            config_dict = json.loads(config_json) if config_json else {}
+            valid_fields = {f.name for f in _dc.fields(RunConfig)}
+            filtered = {k: v for k, v in config_dict.items() if k in valid_fields}
+            config = RunConfig(**filtered)
+
+            import torch
+            import torch.nn.functional as F
+
+            body = request.get_json(silent=True) or {}
+            device = str(body.get("device", "cpu"))
+            dev = torch.device(device)
+
+            from ..synthesis.serializer import graph_from_json as _gfj
+            graph = _gfj(graph_json)
+            graph_dim = getattr(graph, "model_dim", None)
+            if graph_dim and config.model_dim != graph_dim:
+                config.model_dim = int(graph_dim)
+
+            from .native_runner import compile_model_native_first as _compile
+            layer_graphs = [graph] * config.n_layers
+            model = _compile(layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
+            model = model.to(dev).eval()
+
+            seq_len = min(128, config.max_seq_len)
+            updates = {}
+
+            # Discovery loss (random tokens)
+            try:
+                losses = []
+                with torch.no_grad():
+                    for i in range(2):
+                        ids = torch.randint(0, config.vocab_size, (4, seq_len), device=dev)
+                        logits = model(ids)
+                        if isinstance(logits, tuple):
+                            logits = logits[0]
+                        loss = torch.nn.functional.cross_entropy(
+                            logits[:, :-1].reshape(-1, logits.shape[-1]),
+                            ids[:, 1:].reshape(-1),
+                        )
+                        if torch.isfinite(loss):
+                            losses.append(loss.item())
+                if losses:
+                    disc_loss = sum(losses) / len(losses)
+                    disc_ratio = disc_loss / max(float(initial_loss), 1e-6)
+                    updates["discovery_loss"] = disc_loss
+                    updates["discovery_loss_ratio"] = disc_ratio
+            except Exception as e:
+                updates["discovery_loss_error"] = str(e)
+
+            # Validation loss (heldout corpus split, if corpus/HF mode)
+            data_mode = str(config.data_mode or "random").strip().lower()
+            if data_mode in ("corpus", "huggingface"):
+                try:
+                    runner = _get_runner(notebook_path)
+                    if data_mode == "huggingface":
+                        batcher = runner._get_hf_batcher(config)
+                    else:
+                        batcher = runner._get_corpus_batcher(config)
+                    if batcher and batcher.ready:
+                        losses = []
+                        gen = torch.Generator(device=dev)
+                        gen.manual_seed(9999)
+                        with torch.no_grad():
+                            for i in range(2):
+                                batch = batcher.sample_batch(
+                                    batch_size=4, seq_len=seq_len,
+                                    generator=gen, device=dev, split="val",
+                                )
+                                if batch is None:
+                                    continue
+                                logits = model(batch)
+                                if isinstance(logits, tuple):
+                                    logits = logits[0]
+                                loss = torch.nn.functional.cross_entropy(
+                                    logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                    batch[:, 1:].reshape(-1),
+                                )
+                                if torch.isfinite(loss):
+                                    losses.append(loss.item())
+                        if losses:
+                            val_loss = sum(losses) / len(losses)
+                            val_ratio = val_loss / max(float(initial_loss), 1e-6)
+                            updates["validation_loss"] = val_loss
+                            updates["validation_loss_ratio"] = val_ratio
+                            final_loss = program.get("final_loss")
+                            if final_loss:
+                                updates["generalization_gap"] = val_loss - float(final_loss)
+                except Exception as e:
+                    updates["validation_loss_error"] = str(e)
+
+            del model
+            if device != "cpu":
+                torch.cuda.empty_cache()
+
+            # Write updates to DB
+            if updates:
+                db_updates = {k: v for k, v in updates.items() if not k.endswith("_error")}
+                if db_updates:
+                    set_parts = [f"{k} = ?" for k in db_updates]
+                    vals = list(db_updates.values()) + [result_id]
+                    nb.conn.execute(
+                        f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
+                        vals,
+                    )
+                    nb.conn.commit()
+
+            return jsonify({"status": "ok", "result_id": result_id, "updates": updates})
+        except Exception as e:
+            logger.error(f"Error in /api/programs/{result_id}/backfill-loss: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/healer/tasks")
     def api_healer_tasks():
         """List recent Code Healer tasks."""
