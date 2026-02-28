@@ -4639,6 +4639,41 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/programs/<result_id>/backfill-metrics", methods=["POST"])
+    def api_program_backfill_metrics(result_id):
+        """Recompute missing metrics (fingerprint, novelty, spectral, quantization, etc.) for a program."""
+        nb = LabNotebook(notebook_path)
+        try:
+            program = nb.get_program_result(result_id)
+            if not program:
+                return jsonify({"error": "Program not found"}), 404
+
+            # Build the row shape that backfill_entry expects
+            leaderboard = nb.conn.execute(
+                "SELECT entry_id, screening_loss_ratio FROM leaderboard WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if not leaderboard:
+                return jsonify({"error": "No leaderboard entry for this result_id"}), 404
+
+            row = {
+                "result_id": result_id,
+                "graph_json": program.get("graph_json"),
+                "entry_id": leaderboard["entry_id"],
+                "screening_loss_ratio": leaderboard.get("screening_loss_ratio"),
+            }
+
+            from ..tools.backfill_metrics import backfill_entry
+            body = request.get_json(silent=True) or {}
+            device = str(body.get("device", "cpu"))
+            result = backfill_entry(row, device=device)
+            return jsonify({"status": "ok", "result_id": result_id, "backfill": result})
+        except Exception as e:
+            logger.error(f"Error in /api/programs/{result_id}/backfill-metrics: {e}\n{traceback.format_exc()}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/healer/tasks")
     def api_healer_tasks():
         """List recent Code Healer tasks."""

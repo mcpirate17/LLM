@@ -1543,6 +1543,8 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     data_source: 'corpus',
     hf_dataset: 'roneneldan/TinyStories', hf_subset: '',
   });
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const [backfillResult, setBackfillResult] = useState(null);
   const [leaderboardEntry, setLeaderboardEntry] = useState(null);
   const [actionStarting, setActionStarting] = useState(null);
   const [actionError, setActionError] = useState(null);
@@ -2798,6 +2800,79 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                 )}
               </div>
             )}
+
+            {/* Recompute Missing Metrics */}
+            {program.stage1_passed && (() => {
+              const metrics = [
+                { key: 'novelty_score', label: 'Novelty' },
+                { key: 'fp_jacobian_spectral_norm', label: 'Spectral Norm' },
+                { key: 'fp_interaction_locality', label: 'Locality' },
+                { key: 'fp_interaction_sparsity', label: 'Sparsity' },
+                { key: 'fp_isotropy', label: 'Isotropy' },
+                { key: 'fp_rank_ratio', label: 'Rank Ratio' },
+                { key: 'fp_sensitivity_uniformity', label: 'Sensitivity' },
+              ];
+              const missing = metrics.filter(m => program[m.key] == null);
+              const lbMissing = leaderboardEntry ? [
+                { key: 'robustness_noise_score', label: 'Noise Robustness' },
+                { key: 'quant_int8_retention', label: 'INT8 Quantization' },
+                { key: 'init_sensitivity_std', label: 'Init Sensitivity' },
+                { key: 'param_efficiency', label: 'Param Efficiency' },
+              ].filter(m => leaderboardEntry[m.key] == null) : [];
+              const allMissing = [...missing, ...lbMissing];
+              if (allMissing.length === 0 && !backfillResult) return null;
+              return (
+                <div style={{
+                  padding: 12, background: 'var(--bg-tertiary)', borderRadius: 6,
+                  border: '1px solid var(--border)',
+                }}>
+                  {allMissing.length > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                      Missing: {allMissing.map(m => m.label).join(', ')}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <button
+                      className="start-btn"
+                      disabled={backfillRunning}
+                      onClick={async () => {
+                        setBackfillRunning(true);
+                        setBackfillResult(null);
+                        try {
+                          setActionError(null);
+                          const res = await apiCall(`/api/programs/${resultId}/backfill-metrics`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ device: 'cpu' }),
+                          });
+                          if (!res.ok) {
+                            const err = await res.json();
+                            setActionError(err.error || 'Backfill failed');
+                            setBackfillResult({ status: 'error' });
+                          } else {
+                            const data = await res.json();
+                            setBackfillResult(data.backfill || { status: 'ok' });
+                          }
+                        } catch (e) {
+                          setActionError('Error: ' + e.message);
+                          setBackfillResult({ status: 'error' });
+                        }
+                        setBackfillRunning(false);
+                      }}
+                      style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.4)', color: '#a78bfa' }}
+                    >
+                      {backfillRunning ? 'Computing...' : 'Recompute Missing Metrics'}
+                    </button>
+                    {backfillResult && backfillResult.status === 'ok' && (
+                      <span style={{ fontSize: 11, color: 'var(--accent-green)' }}>Done — reload to see updates</span>
+                    )}
+                    {backfillResult && backfillResult.status === 'error' && (
+                      <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>Failed</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Investigate / Validate actions */}
             {program.stage1_passed && (

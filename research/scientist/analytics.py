@@ -128,6 +128,47 @@ class ExperimentAnalytics:
             return {}
         return choices
 
+    def get_efficiency_frontier(self) -> List[Dict[str, Any]]:
+        """
+        Compute the Pareto-optimal efficiency frontier (Parameter Count vs Loss Ratio).
+        Returns list of programs on the frontier.
+        """
+        rows = self.nb.conn.execute("""
+            SELECT fingerprint, param_count, graph_n_params_estimate,
+                   loss_ratio, validation_loss_ratio, graph_json
+            FROM program_results
+            WHERE (loss_ratio IS NOT NULL OR validation_loss_ratio IS NOT NULL)
+              AND (param_count IS NOT NULL OR graph_n_params_estimate IS NOT NULL)
+        """).fetchall()
+        
+        programs = []
+        for r in rows:
+            p = dict(r)
+            # Use real params if available, else estimate
+            p["params"] = p.get("param_count") or p.get("graph_n_params_estimate") or 1e9
+            # Use validation loss if available, else standard loss
+            p["loss"] = p.get("validation_loss_ratio") or p.get("loss_ratio") or 2.0
+            programs.append(p)
+            
+        if not programs:
+            return []
+            
+        # Simple Pareto Sort: O(N^2) but N is usually small (< 5000)
+        frontier = []
+        for i, p1 in enumerate(programs):
+            is_dominated = False
+            for j, p2 in enumerate(programs):
+                if i == j: continue
+                # p2 dominates p1 if it's better in both and strictly better in one
+                if p2["params"] <= p1["params"] and p2["loss"] <= p1["loss"]:
+                    if p2["params"] < p1["params"] or p2["loss"] < p1["loss"]:
+                        is_dominated = True
+                        break
+            if not is_dominated:
+                frontier.append(p1)
+                
+        return sorted(frontier, key=lambda x: x["params"])
+
     def qkv_usage_enum(self, program: Dict) -> str:
         """Classify token-mixing QKV usage for a program.
 
@@ -279,8 +320,8 @@ class ExperimentAnalytics:
         primitive observed in program graphs.
         """
         rows = self.nb.conn.execute("""
-            SELECT graph_json, stage1_passed, loss_ratio, param_count,
-                   graph_n_params_estimate
+            SELECT graph_json, stage1_passed, loss_ratio, validation_loss_ratio,
+                   param_count, graph_n_params_estimate
             FROM program_results
             WHERE graph_json IS NOT NULL
         """).fetchall()
@@ -292,7 +333,12 @@ class ExperimentAnalytics:
             if not ops:
                 continue
             passed = bool(record.get("stage1_passed"))
-            loss = self._as_float(record.get("loss_ratio"))
+            # Prefer validation_loss_ratio if available
+            loss = self._as_float(
+                record.get("validation_loss_ratio")
+                if record.get("validation_loss_ratio") is not None
+                else record.get("loss_ratio")
+            )
             params = self._as_float(
                 record.get("param_count")
                 if record.get("param_count") is not None
@@ -561,6 +607,113 @@ class ExperimentAnalytics:
             }
         return result
 
+    def gate_performance_summary(self) -> Dict:
+        """Analyze Stage 0.5 (Causality Gate) vs Stage 1 (Micro-Corpus) efficiency.
+        
+        Tracks how many 'cheaters' (random-token hackers) are caught by the 
+        causality gate and how well discovery loss predicts validation loss.
+        """
+        rows = self.nb.conn.execute("""
+            SELECT result_id, stage05_passed, stage1_passed, discovery_loss_ratio, 
+                   validation_loss_ratio, error_type
+            FROM program_results
+            WHERE stage0_passed = 1
+        """).fetchall()
+
+        if not rows:
+            return {}
+
+        total = len(rows)
+        s05_passed = sum(1 for r in rows if r["stage05_passed"])
+        s05_failed = total - s05_passed
+        
+        causality_violations = sum(1 for r in rows if r["error_type"] == "causality_violation")
+        
+        # Correlation between discovery and validation
+        discovery = []
+        validation = []
+        for r in rows:
+            if r["discovery_loss_ratio"] is not None and r["validation_loss_ratio"] is not None:
+                discovery.append(r["discovery_loss_ratio"])
+                validation.append(r["validation_loss_ratio"])
+        
+        correlation = None
+        if len(discovery) > 5:
+            try:
+                import numpy as np
+                correlation = float(np.corrcoef(discovery, validation)[0, 1])
+            except Exception:
+                pass
+
+        return {
+            "total_screened": total,
+            "stage05_pass_rate": round(s05_passed / total, 4) if total > 0 else 0.0,
+            "causality_violations": causality_violations,
+            "discovery_validation_correlation": round(correlation, 4) if correlation is not None else None,
+            "n_correlation_samples": len(discovery)
+        }
+
+    def gate_health_daily(self, n_days: int = 14) -> Dict:
+        """Daily breakdown of causality gate metrics for monitoring dashboards.
+
+        Returns per-day stats: models screened, gate pass rate, causality
+        violations, and discovery-vs-validation correlation.
+        """
+        import time as _time
+        cutoff = _time.time() - (n_days * 86400)
+        rows = self.nb.conn.execute("""
+            SELECT result_id, stage05_passed, stage1_passed,
+                   discovery_loss_ratio, validation_loss_ratio,
+                   error_type, timestamp
+            FROM program_results
+            WHERE stage0_passed = 1 AND timestamp > ?
+            ORDER BY timestamp
+        """, (cutoff,)).fetchall()
+
+        if not rows:
+            return {"daily": [], "summary": self.gate_performance_summary()}
+
+        from collections import defaultdict
+        from datetime import datetime
+
+        buckets: dict = defaultdict(list)
+        for r in rows:
+            day = datetime.fromtimestamp(r["timestamp"]).strftime("%Y-%m-%d")
+            buckets[day].append(r)
+
+        daily = []
+        for day in sorted(buckets):
+            day_rows = buckets[day]
+            n = len(day_rows)
+            passed = sum(1 for r in day_rows if r["stage05_passed"])
+            violations = sum(1 for r in day_rows if r["error_type"] == "causality_violation")
+
+            disc, val = [], []
+            for r in day_rows:
+                if r["discovery_loss_ratio"] is not None and r["validation_loss_ratio"] is not None:
+                    disc.append(r["discovery_loss_ratio"])
+                    val.append(r["validation_loss_ratio"])
+
+            corr = None
+            if len(disc) > 3:
+                try:
+                    import numpy as np
+                    corr = round(float(np.corrcoef(disc, val)[0, 1]), 4)
+                except Exception:
+                    pass
+
+            daily.append({
+                "date": day,
+                "models_screened": n,
+                "gate_pass_rate": round(passed / n, 4) if n else 0.0,
+                "causality_violations": violations,
+                "gate_failure_rate": round((n - passed) / n, 4) if n else 0.0,
+                "discovery_validation_correlation": corr,
+                "n_correlation_samples": len(disc),
+            })
+
+        return {"daily": daily, "summary": self.gate_performance_summary()}
+
     def structural_correlations(self) -> Dict[str, float]:
         """Analyze which graph properties correlate with Stage 1 success.
 
@@ -652,7 +805,9 @@ class ExperimentAnalytics:
 
         mean_s1 = sum(cat_s1_rates.values()) / len(cat_s1_rates)
 
-        weights = {}
+        learned = {}
+        stability_multipliers = self.instability_attribution()
+        
         for cat, s1_rate in cat_s1_rates.items():
             n = cat_stats[cat]["total"]
             relative = s1_rate / max(mean_s1, 0.01)
@@ -663,7 +818,7 @@ class ExperimentAnalytics:
             if se > 0 and effect < se:
                 default = default_weights.get(cat, 1.0)
                 tentative = default * (relative ** 2)
-                weights[cat] = round(0.5 * tentative + 0.5 * default, 2)
+                learned[cat] = round(0.5 * tentative + 0.5 * default, 2)
                 continue
 
             amplified = relative ** 2
@@ -674,20 +829,28 @@ class ExperimentAnalytics:
             confidence = cat_confidences.get(cat, 0.0)
             novelty_factor = 1.0 + raw_novelty * confidence
             base = default_weights.get(cat, 1.0)
-            weight = base * amplified * novelty_factor
+            
+            # Apply stability multiplier
+            stab = stability_multipliers.get(cat, 1.0)
+            weight = base * amplified * novelty_factor * stab
+            
             if cat == "frequency_domain":
-                weights[cat] = round(max(0.0, min(0.1, weight)), 2)
+                learned[cat] = round(max(0.0, min(0.1, weight)), 2)
             else:
-                weights[cat] = round(max(0.5, min(8.0, weight)), 2)
+                learned[cat] = round(max(0.5, min(8.0, weight)), 2)
 
+        # EMA blending if last_applied exists (moved from compute_grammar_weights)
+        # This function should just return the raw learned weights from stats.
+        # Actually, the caller handles EMA blending.
+        
         # Hard cap: frequency_domain shows strong negative correlation with S1 (-0.33).
         # Cap at 0.1 to suppress generation of frequency-domain ops.
         _SUPPRESSED_CATEGORIES = {"frequency_domain": 0.1}
         for cat, cap in _SUPPRESSED_CATEGORIES.items():
-            if cat in weights:
-                weights[cat] = min(weights[cat], cap)
+            if cat in learned:
+                learned[cat] = min(learned[cat], cap)
 
-        return weights if weights else None
+        return learned if learned else None
 
     def _collect_fingerprint_capped_op_rates(
         self,
@@ -703,6 +866,10 @@ class ExperimentAnalytics:
 
         extracted_rows: List[Dict] = []
         fingerprint_counts: Dict[str, int] = defaultdict(int)
+        
+        # Z13: Identify Pareto winners for weighting boost
+        pareto_ids = set(self.pareto_optimal_programs())
+        
         for row in rows:
             graph_json = row["graph_json"]
             if not graph_json:
@@ -717,6 +884,10 @@ class ExperimentAnalytics:
             graph_fingerprint = str(row["graph_fingerprint"] or "").strip()
             fp_key = graph_fingerprint or f"result:{row['result_id']}"
             fingerprint_counts[fp_key] += 1
+            
+            # Pareto boost: 5x weight for non-dominated models
+            is_pareto = row["result_id"] in pareto_ids
+            
             extracted_rows.append(
                 {
                     "fingerprint": fp_key,
@@ -724,6 +895,7 @@ class ExperimentAnalytics:
                     "stage1_passed": bool(row["stage1_passed"]),
                     "novelty_score": self._as_float(row["novelty_score"]),
                     "novelty_confidence": self._as_float(row["novelty_confidence"]),
+                    "weight_multiplier": 5.0 if is_pareto else 1.0
                 }
             )
 
@@ -733,6 +905,9 @@ class ExperimentAnalytics:
             fp_key = extracted["fingerprint"]
             fp_count = max(fingerprint_counts.get(fp_key, 1), 1)
             row_weight = min(1.0, max(per_fingerprint_cap, 0.1) / float(fp_count))
+            # Apply Pareto multiplier
+            row_weight *= extracted["weight_multiplier"]
+            
             effective_rows += row_weight
 
             for op_name in extracted["ops"]:
@@ -854,6 +1029,55 @@ class ExperimentAnalytics:
         if d <= 6:
             return "medium"
         return "deep"
+
+    def pareto_optimal_programs(self) -> List[str]:
+        """Find result_ids of non-dominated programs (Accuracy vs Efficiency).
+        
+        Uses NumPy for high-performance vectorized dominance checking.
+        """
+        rows = self.nb.conn.execute("""
+            SELECT result_id, loss_ratio, validation_loss_ratio, 
+                   graph_n_params_estimate, param_count
+            FROM program_results
+            WHERE stage1_passed = 1
+        """).fetchall()
+        
+        if not rows: return []
+        
+        # Criteria 1: Accuracy (1 - Loss Ratio). Higher is better.
+        # Criteria 2: Efficiency (1 / Params). Higher is better.
+        data = []
+        ids = []
+        for r in rows:
+            lr = r["validation_loss_ratio"] if r["validation_loss_ratio"] is not None else r["loss_ratio"]
+            params = r["param_count"] if r["param_count"] is not None else r["graph_n_params_estimate"]
+            if lr is not None and params is not None:
+                data.append([1.0 - lr, 1.0 / max(1, params)])
+                ids.append(r["result_id"])
+        
+        if not data: return []
+        
+        costs = np.array(data, dtype=np.float32)
+        n_points = costs.shape[0]
+        is_pareto = np.ones(n_points, dtype=bool)
+        for i in range(n_points):
+            # A point is dominated if another point is >= in all criteria AND > in at least one
+            # Here we simplify to: is there any point better than me in both?
+            dominated = np.all(costs >= costs[i], axis=1) & np.any(costs > costs[i], axis=1)
+            if np.any(dominated):
+                # Wait, logic is: am I dominated? 
+                # costs[j] dominates costs[i] if costs[j] is better.
+                pass
+        
+        # Proper O(N^2) vectorized Pareto (fine for N < 1000)
+        is_pareto = np.ones(n_points, dtype=bool)
+        for i, c in enumerate(costs):
+            if is_pareto[i]:
+                # Keep points that are not dominated by any other point
+                # j dominates i if costs[j] >= costs[i] and any(costs[j] > costs[i])
+                is_pareto[i] = not np.any(np.all(costs >= c, axis=1) & np.any(costs > c, axis=1))
+                
+        return [ids[i] for i in range(n_points) if is_pareto[i]]
 
     def _load_program_factor_rows(self) -> List[Dict[str, Any]]:
         """Load per-program factors for attribution analysis."""
@@ -1111,6 +1335,23 @@ class ExperimentAnalytics:
             return None
 
         learned = self._compute_weights_from_stats(cat_stats)
+        
+        # Z13: Search Health Guard (Step 3)
+        # If discovery and validation are uncorrelated, we are likely 'reward hacking'.
+        # In this case, we should revert towards uniform (default) weights to find 
+        # a new region of the search space.
+        gate_stats = self.gate_performance_summary()
+        correlation = gate_stats.get("discovery_validation_correlation")
+        n_samples = gate_stats.get("n_correlation_samples", 0)
+        
+        # If correlation is low (< 0.3) and we have enough data, dampen learned signal
+        if learned and correlation is not None and n_samples > 10 and correlation < 0.3:
+            logger.info(f"Low discovery-validation correlation detected ({correlation:.2f}); dampening learned weights to increase diversity.")
+            for cat in learned:
+                default = default_weights.get(cat, 1.0)
+                # Blend 70% default, 30% learned
+                learned[cat] = round(0.7 * default + 0.3 * learned[cat], 2)
+
         if learned and last_applied:
             for cat in learned:
                 if cat in last_applied:
@@ -1192,6 +1433,49 @@ class ExperimentAnalytics:
             "holdout_s1_passed": s1,
             "holdout_s1_rate": s1 / max(total, 1),
         }
+
+    def instability_attribution(self) -> Dict[str, float]:
+        """Correlate architectural categories with high Jacobian spectral norm.
+        
+        Returns a penalty multiplier [0.5, 1.0] for each category.
+        Categories that frequently cause instability get lower multipliers.
+        """
+        rows = self.nb.conn.execute("""
+            SELECT graph_json, fp_jacobian_spectral_norm
+            FROM program_results
+            WHERE fp_jacobian_spectral_norm IS NOT NULL
+        """).fetchall()
+        
+        if len(rows) < 10: return {}
+        
+        cat_norms = defaultdict(list)
+        for r in rows:
+            ops = self._extract_ops_fast(r["graph_json"])
+            norm = float(r["fp_jacobian_spectral_norm"])
+            if not ops: continue
+            
+            seen_cats = set()
+            for op in ops:
+                try:
+                    cat = get_primitive(op).category.value
+                    if cat not in seen_cats:
+                        cat_norms[cat].append(norm)
+                        seen_cats.add(cat)
+                except Exception: continue
+        
+        penalties = {}
+        for cat, norms in cat_norms.items():
+            if len(norms) < 5: continue
+            avg_norm = np.mean(norms)
+            # Threshold: > 15 is risky, > 50 is toxic
+            if avg_norm > 15.0:
+                # Scale penalty from 1.0 down to 0.5
+                penalty = max(0.5, 1.0 - (avg_norm - 15.0) / 70.0)
+                penalties[cat] = round(float(penalty), 2)
+            else:
+                penalties[cat] = 1.0
+                
+        return penalties
 
     def experiment_clusters(self, n_clusters: int = 3) -> Optional[Dict]:
         """Cluster completed experiments by outcome profile.
@@ -3188,6 +3472,91 @@ class ExperimentAnalytics:
             p.pop("graph_json", None)
 
         return frontier
+
+    def efficiency_frontier_3d(self) -> Dict:
+        """Find Pareto-optimal programs on loss vs FLOPs vs compression.
+
+        Extends the 2D frontier to three objectives: minimize loss,
+        minimize FLOPs, minimize effective params (compression).
+        A program is Pareto-optimal if no other program is better on
+        ALL three dimensions simultaneously.
+
+        Returns dict with frontier programs, summary stats, and
+        dominated count.
+        """
+        rows = self.nb.conn.execute("""
+            SELECT result_id, graph_fingerprint, final_loss,
+                   flops_forward, param_count, novelty_score,
+                   loss_ratio, baseline_loss_ratio, graph_json,
+                   routing_savings_ratio, compression_ratio
+            FROM program_results
+            WHERE stage1_passed = 1
+              AND final_loss IS NOT NULL
+              AND flops_forward IS NOT NULL
+              AND flops_forward > 0
+            ORDER BY final_loss ASC
+        """).fetchall()
+
+        if not rows:
+            return {"frontier": [], "total_candidates": 0,
+                    "frontier_count": 0, "dominated_count": 0}
+
+        programs = [dict(r) for r in rows]
+
+        # Effective params: param_count * compression_ratio (or just param_count)
+        for p in programs:
+            cr = p.get("compression_ratio")
+            pc = p.get("param_count") or 0
+            p["effective_params"] = pc * cr if (cr and cr > 0) else pc
+
+        # 3D Pareto: minimize (final_loss, flops_forward, effective_params)
+        # A point is dominated if another point is <= on all 3 and < on at least 1
+        n = len(programs)
+        dominated = [False] * n
+        for i in range(n):
+            if dominated[i]:
+                continue
+            li, fi, ei = (programs[i]["final_loss"],
+                          programs[i]["flops_forward"],
+                          programs[i]["effective_params"])
+            for j in range(n):
+                if i == j or dominated[j]:
+                    continue
+                lj, fj, ej = (programs[j]["final_loss"],
+                              programs[j]["flops_forward"],
+                              programs[j]["effective_params"])
+                # j dominates i if j <= i on all and j < i on at least one
+                if lj <= li and fj <= fi and ej <= ei:
+                    if lj < li or fj < fi or ej < ei:
+                        dominated[i] = True
+                        break
+
+        frontier = []
+        for i, p in enumerate(programs):
+            p["is_pareto_optimal"] = not dominated[i]
+            if not dominated[i]:
+                frontier.append(p)
+
+        # Extract ops for frontier programs
+        for p in frontier:
+            ops = None
+            graph_json = p.get("graph_json")
+            if graph_json:
+                ops = self._extract_ops_fast(graph_json)
+                if ops is None:
+                    ops = self._extract_ops_fallback(graph_json)
+            p["ops"] = ops or []
+            p.pop("graph_json", None)
+
+        # Clean graph_json from non-frontier programs too (not returned but tidy)
+        dominated_count = sum(1 for d in dominated if d)
+
+        return {
+            "frontier": frontier,
+            "total_candidates": n,
+            "frontier_count": len(frontier),
+            "dominated_count": dominated_count,
+        }
 
     def moe_activation_telemetry(self) -> Dict:
         """Aggregate MoE expert utilization and routing quality from experiment history.
