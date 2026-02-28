@@ -4795,7 +4795,7 @@ def create_app(
             if device != "cpu":
                 torch.cuda.empty_cache()
 
-            # Write updates to DB
+            # Write updates to DB (both program_results and leaderboard)
             if updates:
                 db_updates = {k: v for k, v in updates.items() if not k.endswith("_error")}
                 if db_updates:
@@ -4805,6 +4805,16 @@ def create_app(
                         f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
                         vals,
                     )
+                    # Mirror to leaderboard table (only cols that exist there)
+                    lb_cols = {c[1] for c in nb.conn.execute("PRAGMA table_info(leaderboard)").fetchall()}
+                    lb_updates = {k: v for k, v in db_updates.items() if k in lb_cols}
+                    if lb_updates:
+                        lb_set = [f"{k} = ?" for k in lb_updates]
+                        lb_vals = list(lb_updates.values()) + [result_id]
+                        nb.conn.execute(
+                            f"UPDATE leaderboard SET {', '.join(lb_set)} WHERE result_id = ?",
+                            lb_vals,
+                        )
                     nb.conn.commit()
 
             return jsonify({"status": "ok", "result_id": result_id, "updates": updates})
