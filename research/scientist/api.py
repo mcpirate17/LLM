@@ -4644,7 +4644,7 @@ def create_app(
         """Recompute missing metrics (fingerprint, novelty, spectral, quantization, etc.) for a program."""
         nb = LabNotebook(notebook_path)
         try:
-            program = nb.get_program_result(result_id)
+            program = nb.get_program_detail(result_id)
             if not program:
                 return jsonify({"error": "Program not found"}), 404
 
@@ -4656,11 +4656,12 @@ def create_app(
             if not leaderboard:
                 return jsonify({"error": "No leaderboard entry for this result_id"}), 404
 
+            lb = dict(leaderboard)
             row = {
                 "result_id": result_id,
                 "graph_json": program.get("graph_json"),
-                "entry_id": leaderboard["entry_id"],
-                "screening_loss_ratio": leaderboard.get("screening_loss_ratio"),
+                "entry_id": lb["entry_id"],
+                "screening_loss_ratio": lb.get("screening_loss_ratio"),
             }
 
             from ..tools.backfill_metrics import backfill_entry
