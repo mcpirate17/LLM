@@ -2753,9 +2753,9 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                               force: true,
                               result_ids: [resultId],
                               n_training_programs: manualRunConfig.n_training_programs,
-                              stage2_steps: manualRunConfig.steps,
-                              stage2_batch_size: manualRunConfig.batch_size,
-                              stage2_seq_len: manualRunConfig.seq_len,
+                              investigation_steps: manualRunConfig.steps,
+                              investigation_batch_size: manualRunConfig.batch_size,
+                              max_seq_len: manualRunConfig.seq_len,
                               data_mode: manualRunConfig.data_source,
                             };
                             if (manualRunConfig.data_source === 'huggingface') {
