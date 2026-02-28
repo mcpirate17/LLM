@@ -7,9 +7,104 @@ into prompt templates. Handles missing data gracefully.
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional
 
 _OP_REGISTRY_CACHE: Optional[str] = None
+
+
+def _knowledge_canonical(raw: str) -> str:
+    text = " ".join(str(raw or "").split()).strip().lower()
+    text = re.sub(r"\b\d+(?:\.\d+)?%?\b", "#", text)
+    text = re.sub(r"[^a-z0-9#\s]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_KNOWLEDGE_STOPWORDS = {
+    "the", "and", "for", "that", "with", "this", "from", "into", "when", "then", "than", "were", "been",
+    "have", "has", "had", "are", "was", "show", "shows", "showed", "over", "under", "across", "between",
+    "using", "use", "used", "high", "low", "very", "more", "less", "near", "around", "recent", "experiments",
+    "experiment", "result", "results", "indicate", "indicates", "suggest", "suggests", "mode", "patterns",
+    "pattern", "architecture", "architectures",
+}
+
+
+def _knowledge_tokens(raw: str) -> set[str]:
+    canonical = _knowledge_canonical(raw)
+    return {
+        tok for tok in canonical.split()
+        if len(tok) > 3 and tok not in _KNOWLEDGE_STOPWORDS
+    }
+
+
+def _knowledge_low_signal(row: Dict) -> bool:
+    title = " ".join(str(row.get("title") or "").split()).strip().lower()
+    content = " ".join(str(row.get("content") or "").split()).strip().lower()
+    if not title or not content:
+        return True
+    if len(title) < 12 or len(content) < 40:
+        return True
+    if title.startswith("recent experiments show ") or title.startswith("all recent experiments show "):
+        return True
+    if "..." in title or "..." in content:
+        return True
+    if "[principle/" in title or "hybrid? no" in title:
+        return True
+    if "$" in content or "\\approx" in content:
+        return True
+    return False
+
+
+def _knowledge_score(row: Dict) -> float:
+    eff = float(row.get("effective_confidence", row.get("confidence", 0.5)) or 0.5)
+    validated = int(row.get("times_validated") or 0)
+    bonus = min(0.08, (max(validated, 0) ** 0.5) * 0.015)
+    penalty = 0.22 if _knowledge_low_signal(row) else 0.0
+    return eff + bonus - penalty
+
+
+def _select_knowledge_for_llm(knowledge: List[Dict], limit: int = 6) -> List[Dict]:
+    rows = list(knowledge or [])
+    deduped: List[Dict] = []
+    seen = set()
+    semantic_seen: List[set[str]] = []
+    for row in rows:
+        key = (
+            _knowledge_canonical(row.get("title") or ""),
+            _knowledge_canonical(row.get("content") or ""),
+        )
+        if key in seen:
+            continue
+        row_tokens = _knowledge_tokens(f"{row.get('title') or ''} {row.get('content') or ''}")
+        if row_tokens:
+            near_dup = False
+            for tokens in semantic_seen:
+                inter = len(row_tokens & tokens)
+                union = len(row_tokens | tokens)
+                if inter >= 5 and union and (inter / union) >= 0.22:
+                    near_dup = True
+                    break
+            if near_dup:
+                continue
+            semantic_seen.append(row_tokens)
+        seen.add(key)
+        deduped.append(row)
+    deduped.sort(
+        key=lambda row: (
+            _knowledge_score(row),
+            int(row.get("times_validated") or 0),
+            float(row.get("timestamp") or 0.0),
+        ),
+        reverse=True,
+    )
+    selected: List[Dict] = []
+    for row in deduped:
+        if _knowledge_score(row) < 0.55:
+            continue
+        selected.append(row)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def build_op_reference(op_success_rates: Optional[Dict] = None,
@@ -144,7 +239,15 @@ def build_experiment_context(results: Dict, config: Optional[Dict] = None,
                   f"-> {s1} S1 ({_pct(s1, total)})")
     lines.append(f"Novel survivors (novelty > 0.5): {novel}")
 
-    if results.get("best_loss_ratio") is not None:
+    best_val = results.get("best_validation_loss_ratio")
+    best_disc = results.get("best_discovery_loss_ratio")
+    
+    if best_val is not None:
+        lines.append(f"Best validation loss ratio: {best_val:.4f}")
+    if best_disc is not None:
+        lines.append(f"Best discovery loss ratio: {best_disc:.4f}")
+    
+    if best_val is None and best_disc is None and results.get("best_loss_ratio") is not None:
         lines.append(f"Best loss ratio: {results['best_loss_ratio']:.4f}")
     if results.get("best_novelty_score") is not None:
         lines.append(f"Best novelty: {results['best_novelty_score']:.3f}")
@@ -153,9 +256,16 @@ def build_experiment_context(results: Dict, config: Optional[Dict] = None,
     if survivors:
         lines.append(f"\nTop survivors:")
         for s in survivors[:5]:
+            loss = s.get("validation_loss_ratio")
+            loss_label = "val_loss_ratio"
+            if loss is None:
+                loss = s.get("loss_ratio", 0)
+                loss_label = "loss_ratio"
+            ncd = s.get("ncd_score")
+            ncd_str = f", ncd={ncd:.3f}" if ncd is not None else ""
             lines.append(f"  - {s['fingerprint'][:12]}: "
                           f"novelty={s.get('novelty', 0):.3f}, "
-                          f"loss_ratio={s.get('loss_ratio', 0):.4f}")
+                          f"{loss_label}={loss:.4f}{ncd_str}")
 
     return "\n".join(lines)
 
@@ -169,14 +279,22 @@ def build_history_context(experiments: List[Dict], limit: int = 10) -> str:
         s1 = exp.get("n_stage1_passed", 0)
         total = exp.get("n_programs_generated", 0)
         novelty = exp.get("best_novelty_score")
-        loss = exp.get("best_loss_ratio")
+        val_loss = exp.get("best_validation_loss_ratio")
+        disc_loss = exp.get("best_discovery_loss_ratio")
+        legacy_loss = exp.get("best_loss_ratio")
+        
         mood = exp.get("aria_mood", "?")
 
         line = f"  [{status}] {total} programs, {s1} S1 pass"
         if novelty is not None:
             line += f", novelty={novelty:.3f}"
-        if loss is not None:
-            line += f", loss={loss:.4f}"
+        if val_loss is not None:
+            line += f", val_lr={val_loss:.4f}"
+        if disc_loss is not None:
+            line += f", disc_lr={disc_loss:.4f}"
+        if val_loss is None and disc_loss is None and legacy_loss is not None:
+            line += f", lr={legacy_loss:.4f}"
+        
         line += f" (mood: {mood})"
         lines.append(line)
 
@@ -203,8 +321,21 @@ def build_program_context(program: Dict) -> str:
 
     if program.get("param_count"):
         lines.append(f"Parameters: {program['param_count']:,}")
-    if program.get("loss_ratio") is not None:
-        lines.append(f"Loss ratio: {program['loss_ratio']:.4f}")
+    
+    # Priority: Validation > Discovery > Legacy
+    val_lr = program.get("validation_loss_ratio")
+    disc_lr = program.get("discovery_loss_ratio")
+    legacy_lr = program.get("loss_ratio")
+    
+    if val_lr is not None:
+        lines.append(f"Validation loss ratio: {val_lr:.4f} (primary truth)")
+    if disc_lr is not None:
+        lines.append(f"Discovery loss ratio: {disc_lr:.4f} (random tokens)")
+    if val_lr is None and disc_lr is None and legacy_lr is not None:
+        lines.append(f"Loss ratio: {legacy_lr:.4f} (legacy/mixed)")
+        
+    if program.get("generalization_gap") is not None:
+        lines.append(f"Generalization gap: {program['generalization_gap']:.4f}")
     if program.get("novelty_score") is not None:
         lines.append(f"Novelty: {program['novelty_score']:.3f} "
                       f"(structural={program.get('structural_novelty', 0):.3f}, "
@@ -436,6 +567,26 @@ def build_rich_context(
                              f"{entry.get('description', '')[:80]}")
             sections.append("\n".join(lines))
 
+        # Gate health (causality gate + loss correlation)
+        gate_health = analytics_data.get("gate_health", {})
+        gate_summary = gate_health.get("summary", {})
+        if gate_summary:
+            lines = ["Causality Gate Health:"]
+            lines.append(f"  Pass rate: {gate_summary.get('stage05_pass_rate', 0):.1%}")
+            lines.append(f"  Violations: {gate_summary.get('causality_violations', 0)}")
+            corr = gate_summary.get("discovery_validation_correlation")
+            if corr is not None:
+                lines.append(f"  Discovery-Validation correlation: {corr:.3f} "
+                             f"(n={gate_summary.get('n_correlation_samples', 0)})")
+            gate_daily = gate_health.get("daily", [])
+            if gate_daily:
+                recent = gate_daily[-3:]  # last 3 days
+                lines.append("  Recent daily gate failure rates:")
+                for d in recent:
+                    lines.append(f"    {d['date']}: {d['gate_failure_rate']:.1%} "
+                                 f"({d['models_screened']} screened)")
+            sections.append("\n".join(lines))
+
         # Active insights
         insights = analytics_data.get("insights", [])
         if insights:
@@ -534,6 +685,18 @@ def build_rich_context(
         if delta_lines:
             sections.append("\n".join(delta_lines))
 
+    # Hierarchy detection hint for hyperbolic promotion
+    if analytics_data:
+        hf = analytics_data.get("hierarchy_fitness")
+        if hf is not None and hf > 0.6:
+            sections.append(
+                f"HIERARCHY DETECTED (fitness={hf:.3f}): "
+                f"Representations show tree-like structure. "
+                f"Consider hyperbolic ops (poincare_add, exp_map, log_map, "
+                f"hyp_linear, hyp_tangent_nonlinear, hyperbolic_norm) "
+                f"which are geometrically better suited for hierarchical data."
+            )
+
     # Knowledge digest
     if digest is not None:
         inject_digest_context(sections, digest)
@@ -619,6 +782,8 @@ def build_investigation_context(candidates: list, leaderboard: list) -> str:
             lines.append(f"  Architecture: {c['architecture_desc']}")
         if c.get("loss_ratio") is not None:
             lines.append(f"  Screening loss ratio: {c['loss_ratio']:.4f}")
+        if c.get("validation_loss_ratio") is not None:
+            lines.append(f"  Validation loss ratio: {c['validation_loss_ratio']:.4f}")
         if c.get("novelty_score") is not None:
             lines.append(f"  Screening novelty: {c['novelty_score']:.3f}")
         if c.get("most_similar_to"):
@@ -659,6 +824,8 @@ def build_validation_context(candidates: list,
             lines.append(f"  Architecture: {c['architecture_desc']}")
         if c.get("investigation_loss_ratio") is not None:
             lines.append(f"  Investigation loss ratio: {c['investigation_loss_ratio']:.4f}")
+        if c.get("validation_loss_ratio") is not None:
+            lines.append(f"  Validation loss ratio: {c['validation_loss_ratio']:.4f}")
         if c.get("investigation_robustness") is not None:
             lines.append(f"  Robustness: {c['investigation_robustness']:.2f}")
         if c.get("screening_loss_ratio") is not None:
@@ -673,7 +840,7 @@ def build_validation_context(candidates: list,
             lines.append(
                 f"  {r.get('result_id', '?')[:12]}: "
                 f"robustness={r.get('robustness', 0):.2f}, "
-                f"best_lr={r.get('best_loss_ratio', 0):.4f}"
+                f"best_val_lr={r.get('best_validation_loss_ratio', r.get('best_loss_ratio', 0)):.4f}"
             )
         sections.append("\n".join(lines))
 
@@ -726,12 +893,16 @@ def build_mode_selection_context(
             s1 = exp.get("n_stage1_passed", 0)
             total = exp.get("n_programs_generated", 0)
             novelty = exp.get("best_novelty_score")
-            loss = exp.get("best_loss_ratio")
+            loss = exp.get("best_validation_loss_ratio")
+            loss_label = "val_loss"
+            if loss is None:
+                loss = exp.get("best_loss_ratio")
+                loss_label = "loss"
             line = f"  [{exp_type}] {s1}/{total} S1"
             if novelty is not None:
                 line += f", novelty={novelty:.3f}"
             if loss is not None:
-                line += f", loss={loss:.4f}"
+                line += f", {loss_label}={loss:.4f}"
             lines.append(line)
         sections.append("\n".join(lines))
 
@@ -899,12 +1070,14 @@ def build_hypothesis_context(
         sections.append("\n".join(lines))
 
     if knowledge:
+        selected_knowledge = _select_knowledge_for_llm(knowledge, limit=6)
         lines = ["Knowledge Base (relevant insights):"]
-        for k in knowledge[:10]:
+        for k in selected_knowledge:
+            eff = float(k.get("effective_confidence", k.get("confidence", 0.0)) or 0.0)
             lines.append(
                 f"  [{k.get('category', '?')}] {k.get('title', '?')}: "
                 f"{k.get('content', '?')[:80]} "
-                f"(confidence={k.get('confidence', 0):.1f}, "
+                f"(confidence={eff:.2f}, "
                 f"validated {k.get('times_validated', 0)}x)"
             )
         sections.append("\n".join(lines))
@@ -971,7 +1144,9 @@ def build_go_no_go_context(
 
     lines = ["Candidate under review:"]
     lines.append(f"  Result ID: {candidate.get('result_id', '?')[:12]}")
-    if candidate.get("loss_ratio") is not None:
+    if candidate.get("validation_loss_ratio") is not None:
+        lines.append(f"  Validation loss ratio: {candidate['validation_loss_ratio']:.4f}")
+    elif candidate.get("loss_ratio") is not None:
         lines.append(f"  Loss ratio: {candidate['loss_ratio']:.4f}")
     if candidate.get("novelty_score") is not None:
         lines.append(f"  Novelty: {candidate['novelty_score']:.3f}")
@@ -988,7 +1163,7 @@ def build_go_no_go_context(
         for r in investigation_results[:10]:
             lines.append(
                 f"  Program {r.get('result_id', '?')[:8]}: "
-                f"loss_ratio={r.get('loss_ratio', '?')}"
+                f"loss_ratio={r.get('validation_loss_ratio', r.get('loss_ratio', '?'))}"
             )
         sections.append("\n".join(lines))
 
@@ -1049,8 +1224,9 @@ def build_campaign_report_context(
         sections.append("\n".join(lines))
 
     if knowledge:
-        lines = [f"\nKnowledge Extracted ({len(knowledge)} entries):"]
-        for k in knowledge[:10]:
+        selected_knowledge = _select_knowledge_for_llm(knowledge, limit=6)
+        lines = [f"\nKnowledge Extracted ({len(selected_knowledge)} selected from {len(knowledge)} entries):"]
+        for k in selected_knowledge:
             lines.append(
                 f"  [{k.get('category', '?')}] {k.get('title', '?')}: "
                 f"{k.get('content', '?')[:80]}"
@@ -1072,11 +1248,15 @@ def build_knowledge_extraction_context(
         for exp in experiment_results[:10]:
             s1 = exp.get("n_stage1_passed", 0)
             total = exp.get("n_programs_generated", 0)
-            loss = exp.get("best_loss_ratio")
+            loss = exp.get("best_validation_loss_ratio")
+            loss_label = "best val_loss_ratio"
+            if loss is None:
+                loss = exp.get("best_loss_ratio")
+                loss_label = "best loss_ratio"
             exp_type = exp.get("experiment_type", "?")
             line = f"  [{exp_type}] {s1}/{total} S1"
             if loss is not None:
-                line += f", best loss_ratio={loss:.4f}"
+                line += f", {loss_label}={loss:.4f}"
             lines.append(line)
         sections.append("\n".join(lines))
 
@@ -1116,8 +1296,9 @@ def build_campaign_formulation_context(
         sections.append(build_history_context(recent_experiments, limit=10))
 
     if knowledge:
+        selected_knowledge = _select_knowledge_for_llm(knowledge, limit=5)
         lines = ["Knowledge Base:"]
-        for k in knowledge[:10]:
+        for k in selected_knowledge:
             lines.append(
                 f"  [{k.get('category', '?')}] {k.get('title', '?')}: "
                 f"{k.get('content', '?')[:80]}"
@@ -1154,8 +1335,21 @@ def build_briefing_context(
         gen = just_completed.get("n_programs_generated") or 0
         s1 = just_completed.get("n_stage1_passed") or 0
         rate = f"{s1/gen*100:.1f}%" if gen > 0 else "N/A"
-        loss = just_completed.get("best_loss_ratio")
-        loss_str = f", best loss ratio={loss:.4f}" if loss is not None else ""
+        
+        val_loss = just_completed.get("best_validation_loss_ratio")
+        disc_loss = just_completed.get("best_discovery_loss_ratio")
+        legacy_loss = just_completed.get("best_loss_ratio")
+        
+        loss_parts = []
+        if val_loss is not None:
+            loss_parts.append(f"val={val_loss:.4f}")
+        if disc_loss is not None:
+            loss_parts.append(f"disc={disc_loss:.4f}")
+        if not loss_parts and legacy_loss is not None:
+            loss_parts.append(f"lr={legacy_loss:.4f}")
+            
+        loss_str = f", {', '.join(loss_parts)}" if loss_parts else ""
+        
         summary = just_completed.get("aria_summary") or ""
         summary_str = f"\n  Summary: {summary[:120]}" if summary else ""
         sections.append(
@@ -1173,8 +1367,21 @@ def build_briefing_context(
             gen = exp.get("n_programs_generated") or 0
             s1 = exp.get("n_stage1_passed") or 0
             rate = f"{s1/gen*100:.1f}%" if gen > 0 else "N/A"
-            loss = exp.get("best_loss_ratio")
-            loss_str = f", loss={loss:.4f}" if loss is not None else ""
+            
+            val_loss = exp.get("best_validation_loss_ratio")
+            disc_loss = exp.get("best_discovery_loss_ratio")
+            legacy_loss = exp.get("best_loss_ratio")
+            
+            loss_parts = []
+            if val_loss is not None:
+                loss_parts.append(f"val={val_loss:.4f}")
+            if disc_loss is not None:
+                loss_parts.append(f"disc={disc_loss:.4f}")
+            if not loss_parts and legacy_loss is not None:
+                loss_parts.append(f"lr={legacy_loss:.4f}")
+                
+            loss_str = f", {', '.join(loss_parts)}" if loss_parts else ""
+            
             summary = exp.get("aria_summary") or ""
             summary_str = f" — {summary[:60]}" if summary else ""
             lines.append(
@@ -1235,12 +1442,16 @@ def build_briefing_context(
         lines = [f"Top {len(top_programs)} Programs:"]
         for p in top_programs[:3]:
             fp = (p.get("graph_fingerprint") or "?")[:16]
-            loss = p.get("loss_ratio")
+            loss = p.get("validation_loss_ratio")
+            loss_label = "val_loss"
+            if loss is None:
+                loss = p.get("loss_ratio")
+                loss_label = "loss"
             novelty = p.get("novelty_score")
             tier = p.get("tier", "screening")
             parts = [f"{fp} ({tier})"]
             if loss is not None:
-                parts.append(f"loss={loss:.4f}")
+                parts.append(f"{loss_label}={loss:.4f}")
             if novelty is not None:
                 parts.append(f"novelty={novelty:.3f}")
             lines.append(f"  {', '.join(parts)}")

@@ -21,8 +21,12 @@ export function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
 
-function clampScore(score) {
-  return Math.round(Math.max(0, Math.min(100, score)));
+/**
+ * Round a score to the nearest integer.  No upper cap — the score is the score.
+ * Breakdown components are individually normalized to 0-100 by their callers.
+ */
+function roundScore(score) {
+  return Math.round(Math.max(0, score));
 }
 
 /**
@@ -385,6 +389,27 @@ function computeReferenceDeltaBonus(entry) {
   return 0;
 }
 
+/**
+ * Routing overhead penalty: penalize when routing adds overhead without
+ * improving loss. Mirrors Z14 in notebook.py compute_composite_score().
+ * Returns a negative value (penalty) or 0.
+ */
+function computeRoutingOverheadPenalty(entry) {
+  const savings = entry?.routing_savings_ratio;
+  if (savings == null || savings >= 0.05) return 0;
+
+  // Routing present but saves almost no compute
+  const effectiveLR = entry?.validation_baseline_ratio
+    ?? entry?.validation_loss_ratio
+    ?? entry?.investigation_loss_ratio
+    ?? entry?.screening_loss_ratio;
+
+  if (effectiveLR == null || effectiveLR <= 0.95) return 0;
+
+  // Loss barely improved — routing overhead not justified
+  return -3 * (1.0 - savings / 0.05);  // Up to -3 points on 100-point scale
+}
+
 function computeBonusBreakdown(entry) {
   const raw = {
     efficiencyBonus: computeEfficiencyBonus(entry) ?? 0,
@@ -395,6 +420,7 @@ function computeBonusBreakdown(entry) {
     externalComparisonBonus: computeExternalComparisonBonus(entry) ?? 0,
     robustnessBonus: computeRobustnessBonus(entry) ?? 0,
     referenceDeltaBonus: computeReferenceDeltaBonus(entry) ?? 0,
+    routingOverheadPenalty: computeRoutingOverheadPenalty(entry),
   };
 
   // Cap total bonus contribution to prevent score inflation
@@ -428,7 +454,8 @@ function hasTieredFields(entry) {
  * program_results table.
  */
 function tieredBreakdown(entry, tierOrder) {
-  const screeningLoss = normalizeLossRatio(entry.screening_loss_ratio);
+  const sLoss = entry.validation_loss_ratio ?? entry.screening_loss_ratio;
+  const screeningLoss = normalizeLossRatio(sLoss);
   const novelty = entry.screening_novelty != null ? Math.min(entry.screening_novelty, 1.0) : 0;
   const investigationLoss = normalizeLossRatio(entry.investigation_loss_ratio);
   const robustness = entry.investigation_robustness != null ? Math.min(entry.investigation_robustness, 1.0) : 0;
@@ -439,7 +466,7 @@ function tieredBreakdown(entry, tierOrder) {
   const bonus = computeBonusBreakdown(entry);
 
   if (tier === 'breakthrough' || tier === 'validation') {
-    return {
+    const raw = {
       sLoss: screeningLoss * 10,
       novelty: novelty * 10,
       iLoss: investigationLoss * 10,
@@ -449,23 +476,34 @@ function tieredBreakdown(entry, tierOrder) {
       tierBonus: tierBonus * 20,
       ...bonus,
     };
+    // Normalize breakdown components to 0-100 by dividing by each category's max
+    return {
+      ...raw,
+      sLoss: Math.round(screeningLoss * 100),
+      novelty: Math.round(novelty * 100),
+      iLoss: Math.round(investigationLoss * 100),
+      robust: Math.round(robustness * 100),
+      vBase: Math.round(validationBaseline / 1 * 100),
+      consistency: Math.round(consistency * 100),
+      tierBonus: Math.round(tierBonus * 100),
+    };
   }
 
   if (tier === 'investigation') {
     return {
-      sLoss: screeningLoss * 15,
-      novelty: novelty * 15,
-      iLoss: investigationLoss * 20,
-      robust: robustness * 15,
-      tierBonus: tierBonus * 35,
+      sLoss: Math.round(screeningLoss * 100),
+      novelty: Math.round(novelty * 100),
+      iLoss: Math.round(investigationLoss * 100),
+      robust: Math.round(robustness * 100),
+      tierBonus: Math.round(tierBonus * 100),
       ...bonus,
     };
   }
 
   return {
-    sLoss: screeningLoss * 35,
-    novelty: novelty * 25,
-    tierBonus: tierBonus * 40,
+    sLoss: Math.round(screeningLoss * 100),
+    novelty: Math.round(novelty * 100),
+    tierBonus: Math.round(tierBonus * 100),
     ...bonus,
   };
 }
@@ -476,7 +514,8 @@ function tieredBreakdown(entry, tierOrder) {
  * and no stage-prefixed columns.
  */
 function flatBreakdown(program) {
-  const lossScore = normalizeLossRatio(program.loss_ratio);
+  const lossRatio = program.validation_loss_ratio ?? program.loss_ratio;
+  const lossScore = normalizeLossRatio(lossRatio);
   const noveltyScore = program.novelty_score != null ? Math.min(program.novelty_score, 1.0) : 0;
   const baselineScore = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) : 0;
   const throughputScore = program.throughput_tok_s != null ? Math.min(program.throughput_tok_s / 25000, 1.0) : 0;
@@ -485,10 +524,10 @@ function flatBreakdown(program) {
   const s1Penalty = program.stage1_passed === false || program.stage1_passed === 0 ? 0.5 : 1.0;
 
   return {
-    loss: lossScore * 35 * s1Penalty,
-    novelty: noveltyScore * 25,
-    baseline: baselineScore * 25 * s1Penalty,
-    throughput: throughputScore * 15,
+    loss: Math.round(lossScore * 100 * s1Penalty),
+    novelty: Math.round(noveltyScore * 100),
+    baseline: Math.round(baselineScore * 100 * s1Penalty),
+    throughput: Math.round(throughputScore * 100),
     s1Penalty,
     ...bonus,
   };
@@ -506,25 +545,102 @@ export function candidateScoreBreakdown(entry, tierOrder = TIER_ORDER) {
 }
 
 /**
- * Unified candidate score (0-100).
- * This is the canonical score for any individual architecture.
- * Applies scaling gate penalty when real scaling comparison data exists.
+ * Unified candidate utility score (Scientific Utility).
+ * This reflects the absolute merit of an architecture across all dimensions.
  */
-export function candidateScore(entry, tierOrder = TIER_ORDER) {
-  const breakdown = candidateScoreBreakdown(entry, tierOrder);
-  let score = Object.values(breakdown).reduce((sum, v) => sum + v, 0);
+export function candidateScore(entry) {
+  let utility = 0.0;
 
-  // Scaling gate penalty: if real scaling comparison data exists and the
-  // candidate doesn't meet the 3x param efficiency target, penalize the score.
-  // scaling_gate_passed=0 means the gate was evaluated and failed.
-  const scalingEff = entry?.scaling_param_efficiency;
-  if (scalingEff != null && entry?.scaling_gate_passed === 0) {
-    // Scale linearly: 3.0x → 1.0 (no penalty), 1.0x → 0.33, 0.5x → 0.17
-    const scalingPenalty = clamp01(scalingEff / 3.0);
-    score *= Math.max(0.3, scalingPenalty);
+  // 1. Performance Utility (Primary)
+  // Use validation_baseline_ratio if available, otherwise fallback
+  const perfLR = entry.validation_baseline_ratio ?? 
+                 entry.validation_loss_ratio ?? 
+                 entry.investigation_loss_ratio ?? 
+                 entry.screening_loss_ratio ??
+                 entry.loss_ratio;
+
+  if (perfLR != null) {
+    // 1.0 (baseline) -> 0 utility, 0.5 (2x better) -> 50 utility
+    utility += 100.0 * Math.max(0, 1.0 - perfLR);
+  }
+  
+  // Discovery channel (random tokens)
+  const discLR = entry.discovery_loss_ratio;
+  if (discLR != null) {
+    utility += 20.0 * Math.max(0, 1.0 - discLR);
   }
 
-  return clampScore(score);
+  // 2. Novelty Utility
+  const novelty = entry.screening_novelty ?? entry.novelty_score ?? 0;
+  const isRef = Boolean(entry.is_reference);
+  const conf = entry.novelty_confidence ?? 1.0;
+  const effectiveNov = isRef ? 1.0 : novelty;
+  utility += 40.0 * effectiveNov * conf;
+
+  // 3. Efficiency Utility
+  // scaling_param_efficiency is a multiplier (1-5x range) — do NOT fallback
+  // to param_efficiency which is FLOPs/param (100-1000 range, different scale)
+  const scalingEff = entry.scaling_param_efficiency;
+  if (scalingEff != null) {
+    // 3x -> 20 utility, 5x -> 40 utility
+    utility += 10.0 * Math.max(0, scalingEff - 1.0);
+  }
+  
+  const savings = entry.routing_savings_ratio ?? entry.depth_savings_ratio;
+  if (savings != null) {
+    utility += 50.0 * savings;
+  }
+  
+  const compRatio = entry.compression_ratio;
+  if (compRatio != null) {
+    utility += 20.0 * Math.max(0, 1.0 - compRatio);
+  }
+
+  const ncdScore = entry.ncd_score;
+  if (ncdScore != null) {
+    utility += 15.0 * Math.max(0, 1.0 - ncdScore);
+  }
+
+  // 4. Robustness & Stability Utility
+  const spectral = entry.fp_jacobian_spectral_norm ?? entry.jacobian_spectral_norm;
+  if (spectral != null) {
+    // 1.0 -> 10 utility, 20.0 -> 0 utility
+    utility += 10.0 * Math.max(0, 1.0 - (spectral / 20.0));
+  }
+  
+  const noise = entry.robustness_noise_score;
+  if (noise != null) {
+    utility += 15.0 * Math.max(0, 1.0 - noise);
+  }
+  
+  const quant = entry.quant_int8_retention;
+  if (quant != null) {
+    utility += 15.0 * Math.max(0, quant - 0.5) / 0.5;
+  }
+  
+  const longCtx = entry.robustness_long_ctx_score;
+  if (longCtx != null) {
+    utility += 20.0 * longCtx;
+  }
+
+  // 5. Penalties
+  const std = entry.validation_multi_seed_std;
+  if (std != null && std > 0.1) {
+    utility -= 50.0 * Math.min(2.0, std / 0.5);
+  }
+  
+  const entropy = entry.routing_utilization_entropy;
+  if (entropy != null && entropy > 0.8) {
+    utility -= 10.0 * (entropy - 0.8);
+  }
+
+  // Scaling gate penalty (hard constraint)
+  if (scalingEff != null && entry.scaling_gate_passed === 0) {
+    const scalingPenalty = clamp01(scalingEff / 3.0);
+    utility *= Math.max(0.3, scalingPenalty);
+  }
+
+  return Math.round(Math.max(0, utility));
 }
 
 // Backward-compatible aliases
@@ -555,14 +671,15 @@ export function discoveryScoreBreakdown(program) {
     total *= Math.max(0.3, scalingPenalty);
   }
 
+  // Normalize breakdown components to 0-100 by dividing by each category's max
   return {
-    total: clampScore(total),
-    loss,
-    novelty,
-    baseline,
-    id,
-    paramEfficiency: paramEff,
-    learningSpeed,
+    total: roundScore(total),
+    loss: Math.round(loss / 30 * 100),
+    novelty: Math.round(novelty / 20 * 100),
+    baseline: Math.round(baseline / 25 * 100),
+    id: Math.round(id / 5 * 100),
+    paramEfficiency: Math.round(paramEff / 10 * 100),
+    learningSpeed: Math.round(learningSpeed / 10 * 100),
     ...bonus,
   };
 }
@@ -615,7 +732,7 @@ export function experimentScoreBreakdown(exp) {
 
 export function experimentScore(exp) {
   const b = experimentScoreBreakdown(exp);
-  return clampScore(b.total);
+  return roundScore(b.total);
 }
 
 // ── Trend score (TrendCharts) ───────────────────────────────────────
@@ -651,7 +768,7 @@ export function trendScore(d) {
   const raw = (b.passRate + b.loss + b.novelty + b.efficiency + b.learningSpeed) * b.reliabilityMultiplier;
   // Penalize experiments with zero S1 survivors (same logic as experimentScore)
   const score = b.passRate === 0 ? raw * 0.5 : raw;
-  return Number.isFinite(score) ? clampScore(score) : 0;
+  return Number.isFinite(score) ? roundScore(score) : 0;
 }
 
 // ── Op score (LearningPanel) ────────────────────────────────────────
@@ -671,7 +788,7 @@ export function opScoreBreakdown(stats) {
 
 export function opScore(stats) {
   const b = opScoreBreakdown(stats);
-  return clampScore(b.s1 + b.s05 + b.s0 + b.novelty + b.usage);
+  return roundScore(b.s1 + b.s05 + b.s0 + b.novelty + b.usage);
 }
 
 // ── Insight score (InsightsPanel) ───────────────────────────────────
@@ -688,7 +805,7 @@ export function insightScore(insight) {
   const cat = ((CATEGORY_ORDER[insight.category] || 0) / 4) * 30;
   const status = ((STATUS_ORDER[insight.status] || 0) / 3) * 20;
   const evidence = insight.supporting_evidence ? 10 : 0;
-  return clampScore(conf + cat + status + evidence);
+  return roundScore(conf + cat + status + evidence);
 }
 
 // ── Promotion evidence (Leaderboard + ResearchReport) ───────────────

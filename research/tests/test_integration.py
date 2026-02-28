@@ -435,7 +435,8 @@ class TestNotebook(unittest.TestCase):
         )
 
         for sort_by in ["novelty_score", "loss_ratio",
-                        "structural_novelty", "behavioral_novelty"]:
+                        "structural_novelty", "behavioral_novelty",
+                        "validation_loss_ratio", "discovery_loss_ratio"]:
             programs = self.nb.get_top_programs(5, sort_by=sort_by)
             self.assertIsInstance(programs, list)
 
@@ -851,9 +852,12 @@ class TestNoveltyScoring(unittest.TestCase):
 
         nov = novelty_score(graph, fingerprint=fp)
 
-        # Should be weighted: 0.3 * structural + 0.7 * behavioral
-        expected = 0.3 * nov.structural_novelty + 0.7 * 0.9
-        self.assertAlmostEqual(nov.overall_novelty, expected, places=2)
+        # raw_novelty should be weighted: 0.3 * structural + 0.7 * behavioral
+        # overall_novelty = raw_novelty * CKA reference penalty
+        expected_raw = 0.3 * nov.structural_novelty + 0.7 * 0.9
+        self.assertAlmostEqual(nov.raw_novelty, expected_raw, places=2)
+        # overall_novelty should be <= raw_novelty (penalty is <= 1.0)
+        self.assertLessEqual(nov.overall_novelty, expected_raw + 0.01)
 
     def test_duplicate_penalization(self):
         """Exact duplicate fingerprints should be penalized."""
@@ -1301,14 +1305,15 @@ class TestBaselineDataFn(unittest.TestCase):
 
     @unittest.skipUnless(HAS_TORCH, "torch not available")
     def test_make_baseline_data_fn_random_mode(self):
-        """_make_baseline_data_fn returns (None, 'random') for random mode."""
+        """_make_baseline_data_fn returns (None, 'random', False) for random mode."""
         from research.scientist.runner import ExperimentRunner, RunConfig
 
         config = RunConfig(data_mode="random")
         runner = ExperimentRunner.__new__(ExperimentRunner)
-        data_fn, data_tag = runner._make_baseline_data_fn(config)
+        data_fn, data_tag, cache_data_fn = runner._make_baseline_data_fn(config)
         self.assertIsNone(data_fn)
         self.assertEqual(data_tag, "random")
+        self.assertFalse(cache_data_fn)
 
     @unittest.skipUnless(HAS_TORCH, "torch not available")
     def test_make_baseline_data_fn_hydra_mode(self):
@@ -1317,9 +1322,10 @@ class TestBaselineDataFn(unittest.TestCase):
 
         config = RunConfig(data_mode="hydra")
         runner = ExperimentRunner.__new__(ExperimentRunner)
-        data_fn, data_tag = runner._make_baseline_data_fn(config)
+        data_fn, data_tag, cache_data_fn = runner._make_baseline_data_fn(config)
         self.assertIsNotNone(data_fn)
         self.assertEqual(data_tag, "hydra")
+        self.assertFalse(cache_data_fn)
 
 
 class TestCkaReferenceArtifacts(unittest.TestCase):
@@ -4841,6 +4847,21 @@ class TestAPI(unittest.TestCase):
             ):
                 self.assertIn(key, row)
 
+    def test_api_analytics_gate_health_schema(self):
+        """Gate health endpoint returns daily breakdown and summary."""
+        r = self.client.get("/api/analytics/gate-health")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("daily", data)
+        self.assertIn("summary", data)
+        self.assertIsInstance(data["daily"], list)
+        self.assertIsInstance(data["summary"], dict)
+        if data["daily"]:
+            day = data["daily"][0]
+            for key in ("date", "models_screened", "gate_pass_rate",
+                        "causality_violations", "gate_failure_rate"):
+                self.assertIn(key, day, f"Missing '{key}' in daily entry")
+
     def test_api_analytics_math_family_coverage_schema(self):
         """Math family coverage returns stable family/totals structures."""
         r = self.client.get("/api/analytics/math-family-coverage")
@@ -5905,6 +5926,7 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/analytics/mathspace-impact",
             "/api/analytics/routing-comparison",
             "/api/analytics/gating-diagnostics",
+            "/api/analytics/gate-health",
             "/api/analytics/compression-coverage",
             "/api/analytics/learning-summary",
             "/api/analytics/insight-interactions",
@@ -7540,6 +7562,27 @@ class TestDiagnosticTasks(unittest.TestCase):
             ).fetchall()]
             self.assertIn("diagnostic_tasks_json", cols)
             self.assertIn("diagnostic_score", cols)
+        finally:
+            if nb:
+                nb.close()
+
+    def test_notebook_migration_has_dual_loss_columns(self):
+        """Notebook migration map includes discovery/validation loss fields."""
+        nb = None
+        try:
+            tmpdir = tempfile.mkdtemp()
+            db_path = os.path.join(tmpdir, "test_loss_migration.db")
+            from research.scientist.notebook import LabNotebook
+            nb = LabNotebook(db_path)
+            cols = [row[1] for row in nb.conn.execute(
+                "PRAGMA table_info(program_results)"
+            ).fetchall()]
+            for col in (
+                "discovery_loss", "discovery_loss_ratio",
+                "validation_loss", "validation_loss_ratio",
+                "generalization_gap",
+            ):
+                self.assertIn(col, cols)
         finally:
             if nb:
                 nb.close()

@@ -203,6 +203,11 @@ CREATE TABLE IF NOT EXISTS program_results (
     initial_loss REAL,
     min_loss REAL,
     loss_improvement_rate REAL,
+    discovery_loss REAL,
+    discovery_loss_ratio REAL,
+    validation_loss REAL,
+    validation_loss_ratio REAL,
+    generalization_gap REAL,
     avg_step_time_ms REAL,
     total_train_time_ms REAL,
     max_grad_norm REAL,
@@ -410,7 +415,11 @@ CREATE TABLE IF NOT EXISTS leaderboard (
     tags TEXT,
     notes TEXT,
     is_reference INTEGER DEFAULT 0,
-    reference_name TEXT DEFAULT NULL
+    reference_name TEXT DEFAULT NULL,
+    is_pinned INTEGER DEFAULT 0,
+    routing_savings_ratio REAL,
+    compression_ratio REAL,
+    discovery_loss_ratio REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_leaderboard_tier ON leaderboard(tier);
@@ -658,6 +667,11 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "initial_loss": "REAL",
     "min_loss": "REAL",
     "loss_improvement_rate": "REAL",
+    "discovery_loss": "REAL",
+    "discovery_loss_ratio": "REAL",
+    "validation_loss": "REAL",
+    "validation_loss_ratio": "REAL",
+    "generalization_gap": "REAL",
     "avg_step_time_ms": "REAL",
     "total_train_time_ms": "REAL",
     "max_grad_norm": "REAL",
@@ -730,6 +744,8 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "routing_confidence_std": "REAL",
     "routing_expert_utilization_json": "TEXT",
     "routing_expert_count": "INTEGER",
+    "routing_savings_ratio": "REAL",
+    "compression_ratio": "REAL",
     # Novelty calibration
     "novelty_confidence": "REAL",
     "novelty_raw_score": "REAL",
@@ -753,6 +769,29 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "recursion_depth_ratio": "REAL",
     # External benchmarks
     "external_benchmarks_json": "TEXT",
+    # Activation sparsity & routing collapse (interpretability)
+    "activation_sparsity_score": "REAL",
+    "dead_neuron_ratio": "REAL",
+    "routing_collapse_score": "REAL",
+    # WikiText perplexity (domain generalization)
+    "wikitext_perplexity": "REAL",
+    "wikitext_score": "REAL",
+    # TinyStories (domain generalization)
+    "tinystories_perplexity": "REAL",
+    "tinystories_score": "REAL",
+    # Cross-task robustness (code vs NL)
+    "cross_task_score": "REAL",
+    # Efficiency wall (memory/FLOP scaling)
+    "efficiency_wall_score": "REAL",
+    "max_viable_seq_len": "INTEGER",
+    "scaling_regime": "TEXT",
+    # Hierarchy detection (Gromov delta)
+    "fp_hierarchy_fitness": "REAL",
+    "fp_gromov_delta": "REAL",
+    # NCD reward signal
+    "ncd_score": "REAL",
+    "ncd_description_length": "INTEGER",
+    "ncd_description_length_per_param": "REAL",
 }
 
 
@@ -872,9 +911,13 @@ class LabNotebook:
         }
         for col_name, col_type in _PROGRAM_RESULTS_NEW_COLUMNS.items():
             if col_name not in existing:
-                self.conn.execute(
-                    f"ALTER TABLE program_results ADD COLUMN {col_name} {col_type}"
-                )
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE program_results ADD COLUMN {col_name} {col_type}"
+                    )
+                except sqlite3.OperationalError:
+                    # Column may already exist in older DBs with partial migrations.
+                    pass
 
         # Migrate program_results: add arch_spec_json if missing
         if "arch_spec_json" not in existing:
@@ -1000,6 +1043,23 @@ class LabNotebook:
             "scaling_d512_param_efficiency REAL",
             "scaling_confidence TEXT",
             "campaign_id TEXT",
+            "is_pinned INTEGER DEFAULT 0",
+            "routing_savings_ratio REAL",
+            "compression_ratio REAL",
+            "activation_sparsity_score REAL",
+            "dead_neuron_ratio REAL",
+            "routing_collapse_score REAL",
+            "wikitext_perplexity REAL",
+            "wikitext_score REAL",
+            "tinystories_perplexity REAL",
+            "tinystories_score REAL",
+            "cross_task_score REAL",
+            "efficiency_wall_score REAL",
+            "max_viable_seq_len INTEGER",
+            "scaling_regime TEXT",
+            "discovery_loss_ratio REAL",
+            "pre_inv_score REAL",
+            "ncd_score REAL",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:
@@ -2538,7 +2598,8 @@ class LabNotebook:
     def get_top_programs(self, n: int = 20,
                          sort_by: str = "novelty_score") -> List[Dict]:
         valid_sorts = {"novelty_score", "loss_ratio", "structural_novelty",
-                       "behavioral_novelty"}
+                       "behavioral_novelty", "validation_loss_ratio",
+                       "discovery_loss_ratio"}
         if sort_by not in valid_sorts:
             sort_by = "novelty_score"
 
@@ -2572,7 +2633,9 @@ class LabNotebook:
         Returns one representative survivor per fingerprint, enriched with
         repeat-count and run-spread metadata across all stage1 survivors.
         """
-        valid_sorts = {"novelty_score", "loss_ratio", "structural_novelty", "behavioral_novelty"}
+        valid_sorts = {"novelty_score", "loss_ratio", "structural_novelty",
+                       "behavioral_novelty", "validation_loss_ratio",
+                       "discovery_loss_ratio"}
         if sort_by not in valid_sorts:
             sort_by = "loss_ratio"
 
@@ -2847,7 +2910,7 @@ class LabNotebook:
             "graph_json", "fingerprint_json", "training_program_json",
             "graph_category_histogram", "external_benchmarks_json",
             "perf_report_json", "kernel_timings_json", "starvation_report_json",
-            "diagnostic_tasks_json"
+            "diagnostic_tasks_json", "sparsity_report_json"
         )
         for json_field in json_fields:
             val = d.get(json_field)
@@ -3163,6 +3226,9 @@ class LabNotebook:
             _avg("routing_utilization_entropy", "avg_routing_utilization_entropy")
             _avg("routing_confidence_mean", "avg_routing_confidence_mean")
             _avg("routing_capacity_overflow_count", "avg_routing_capacity_overflow_count")
+            _avg("discovery_loss_ratio", "avg_discovery_loss_ratio")
+            _avg("validation_loss_ratio", "avg_validation_loss_ratio")
+            _avg("generalization_gap", "avg_generalization_gap")
             if "routing_tokens_total" in available_cols and "routing_tokens_processed" in available_cols:
                 select_parts.append(
                     "AVG(CASE WHEN routing_tokens_total > 0 "
@@ -3406,80 +3472,119 @@ class LabNotebook:
         novelty_confidence: Optional[float] = None,
         scaling_param_efficiency: Optional[float] = None,
         is_reference: bool = False,
+        routing_savings: Optional[float] = None,
+        compression_ratio: Optional[float] = None,
+        entropy: Optional[float] = None,
+        discovery_lr: Optional[float] = None,
+        spectral_norm: Optional[float] = None,
+        robustness_noise: Optional[float] = None,
+        quant_retention: Optional[float] = None,
+        long_ctx_score: Optional[float] = None,
+        init_std: Optional[float] = None,
+        loss_improvement_rate: Optional[float] = None,
+        quant_quality_per_byte: Optional[float] = None,
+        ncd_score: Optional[float] = None,
+        **kwargs
     ) -> float:
-        """Compute normalized composite score across research phases.
-
-        Each tier produces a score in [0, 1], so programs at different
-        stages are comparable without later stages dominating by
-        construction (#49).
-
-        Validation std uses hard threshold: std > 0.5 caps the
-        validation score at 0.3 to strongly penalize instability (#50).
-
-        Novelty contribution is scaled by novelty_confidence so that
-        low-confidence scores (structural-only, failed fingerprint)
-        don't inflate rankings.
-
-        When scaling_param_efficiency is available (from external scaling
-        law comparison), it's blended into the validation score:
-        1x=0, 3x=0.5, 5x=1.0 normalized efficiency.
-
-        For is_reference=True, the novelty penalty is waived (novelty=1.0)
-        since baseline architectures are used for performance reference,
-        not for their novelty in the search space.
         """
-        # Screening tier: [0, 1]
-        screening_score = 0.0
-        if screening_lr is not None:
-            screening_score += 0.6 * max(0, 1 - screening_lr)
+        Compute "Total Scientific Utility" — an open-ended additive score.
+        ...
+        """
+        score = 0.0
+
+        # 1. Performance Utility (Primary)
+        # Use validation_baseline_ratio if available, otherwise fallback
+        perf_lr = val_baseline if val_baseline is not None else (
+            val_lr if val_lr is not None else (
+                inv_lr if inv_lr is not None else screening_lr
+            )
+        )
+        if perf_lr is not None:
+            score += 100.0 * max(0, 1.0 - perf_lr)
         
-        # Reference models get full credit for novelty component (waived)
-        effective_nov = 1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
+        # Discovery channel (random tokens)
+        if discovery_lr is not None:
+            score += 20.0 * max(0, 1.0 - discovery_lr)
+
+        # Learning Efficiency: How fast did it learn?
+        if loss_improvement_rate is not None:
+            # High improvement rate per step is efficient learning
+            # Up to 20 points
+            score += 20.0 * max(0, min(1.0, loss_improvement_rate))
+
+        # 2. Novelty Utility
+        eff_nov = 1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
         conf = 1.0 if is_reference else (novelty_confidence if novelty_confidence is not None else 1.0)
-        screening_score += 0.4 * effective_nov * conf
+        score += 40.0 * eff_nov * conf
 
-        # Investigation tier: [0, 1]
-        inv_score = 0.0
-        has_inv = inv_lr is not None
-        if inv_lr is not None:
-            inv_score += 0.6 * max(0, 1 - inv_lr)
-        if inv_robust is not None:
-            inv_score += 0.4 * inv_robust
+        # 3. Efficiency & Scaling Utility
+        if scaling_param_efficiency is not None:
+            score += 10.0 * max(0, scaling_param_efficiency - 1.0)
+        
+        if routing_savings is not None:
+            score += 50.0 * routing_savings
+            
+        if compression_ratio is not None:
+            # Reward compression: 4x (0.25) -> 20 utility
+            # Weight compression ratio + maintained quality
+            comp_score = 20.0 * max(0, 1.0 - (compression_ratio / 1.0))
+            if quant_quality_per_byte is not None:
+                # Reward high quality per compressed byte
+                comp_score += 10.0 * max(0, quant_quality_per_byte)
+            score += comp_score
 
-        # Validation tier: [0, 1]
-        val_score = 0.0
-        has_val = val_baseline is not None
-        if val_baseline is not None and scaling_param_efficiency is not None:
-            # With scaling data: blend baseline ratio, efficiency, and stability
-            eff_score = min(1.0, max(0.0, (scaling_param_efficiency - 1.0) / 4.0))
-            val_score += 0.4 * max(0, 1 - val_baseline)
-            val_score += 0.3 * eff_score
-            if val_std is not None:
-                if val_std > 0.5:
-                    val_score = min(val_score, 0.3)
-                else:
-                    val_score += 0.3 * (1 / (1 + val_std))
-        elif val_baseline is not None:
-            # Without scaling data: original formula
-            val_score += 0.6 * max(0, 1 - val_baseline)
-            if val_std is not None:
-                if val_std > 0.5:
-                    val_score = min(val_score, 0.3)
-                else:
-                    val_score += 0.4 * (1 / (1 + val_std))
+        # NCD: reward compact graph descriptions that explain training behavior
+        if ncd_score is not None:
+            # Low NCD = graph structure predicts training dynamics (good)
+            # Max 15 points when NCD = 0
+            score += 15.0 * max(0, 1.0 - ncd_score)
 
-        # Weighted combination — later tiers matter more but are
-        # normalized so a screening-only program isn't artificially low
-        if has_val:
-            total = 0.2 * screening_score + 0.3 * inv_score + 0.5 * val_score
-        elif has_inv:
-            total = 0.4 * screening_score + 0.6 * inv_score
-        else:
-            total = screening_score
+        # 4. Robustness & Stability Utility
+        if spectral_norm is not None:
+            score += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
+            
+        if robustness_noise is not None:
+            score += 15.0 * max(0, 1.0 - robustness_noise)
+            
+        if quant_retention is not None:
+            score += 15.0 * max(0, quant_retention - 0.5) / 0.5
+            
+        if long_ctx_score is not None:
+            score += 20.0 * long_ctx_score
 
-        if not math.isfinite(total):
-            return 0.0
-        return total
+        # 5. Generalization Utility (The "Anti-Cheat")
+        # Wikitext/TinyStories scores are normalized 0-1, where 1 is good (low perplexity)
+        # We also look at raw perplexity for severe penalties.
+        # Note: These values might be in the future, but we add them now.
+        
+        # If we have raw perplexity data, apply severe penalties for "Zombie" models
+        # We assume 10^6 is the cutoff for total failure to generalize.
+        # We use wikitext_perplexity as the primary proxy.
+        # This function signature might need updating or we use kwargs
+        wikitext_perplexity = kwargs.get("wikitext_perplexity")
+        if wikitext_perplexity is not None:
+            if wikitext_perplexity > 1000000:
+                return 0.0 # Instant disqualification for non-generalizing models
+            if wikitext_perplexity > 1000:
+                # Logarithmic penalty for high perplexity
+                score -= 50.0 * math.log10(wikitext_perplexity / 1000.0)
+
+        # 6. Numerical Integrity (Spectral Floor)
+        if spectral_norm is not None and spectral_norm < 0.01:
+            # Gradients are likely not propagating (numerical collapse)
+            score -= 40.0
+
+        # 7. Penalties
+        if val_std is not None and val_std > 0.1:
+            # High variance across seeds is a major red flag
+            score -= 50.0 * min(2.0, val_std / 0.5)
+            
+        if entropy is not None and entropy > 0.8:
+            # Overly complex routing without focus
+            score -= 10.0 * (entropy - 0.8)
+
+        # Sanity floor
+        return max(0.0, score)
 
     @staticmethod
     def _reference_novelty_for_display(novelty: Optional[float]) -> Optional[float]:
@@ -3556,6 +3661,17 @@ class LabNotebook:
             novelty_confidence=nov_conf,
             scaling_param_efficiency=d.get("scaling_param_efficiency"),
             is_reference=bool(is_reference),
+            routing_savings=d.get("routing_savings_ratio"),
+            compression_ratio=d.get("compression_ratio"),
+            discovery_lr=d.get("discovery_loss_ratio"),
+            spectral_norm=d.get("fp_jacobian_spectral_norm"),
+            robustness_noise=d.get("robustness_noise_score"),
+            quant_retention=d.get("quant_int8_retention"),
+            long_ctx_score=d.get("robustness_long_ctx_score"),
+            init_std=d.get("init_sensitivity_std"),
+            loss_improvement_rate=d.get("loss_improvement_rate"),
+            quant_quality_per_byte=d.get("quant_quality_per_byte"),
+            ncd_score=d.get("ncd_score"),
         )
 
         if existing:
@@ -3588,7 +3704,9 @@ class LabNotebook:
                          "init_sensitivity_std", "fp_jacobian_spectral_norm",
                          "scaling_param_efficiency", "scaling_flop_efficiency",
                          "scaling_gate_passed", "scaling_best_family",
-                         "scaling_d512_param_efficiency", "scaling_confidence"):
+                         "scaling_d512_param_efficiency", "scaling_confidence",
+                         "routing_savings_ratio", "compression_ratio",
+                         "discovery_loss_ratio", "ncd_score"):
                 if col in kwargs and kwargs[col] is not None:
                     sets.append(f"{col} = ?")
                     val = kwargs[col]
@@ -3618,7 +3736,9 @@ class LabNotebook:
                          "init_sensitivity_std", "fp_jacobian_spectral_norm",
                          "scaling_param_efficiency", "scaling_flop_efficiency",
                          "scaling_gate_passed", "scaling_best_family",
-                         "scaling_d512_param_efficiency", "scaling_confidence"):
+                         "scaling_d512_param_efficiency", "scaling_confidence",
+                         "routing_savings_ratio", "compression_ratio",
+                         "discovery_loss_ratio", "ncd_score"):
                 if col in kwargs and kwargs[col] is not None:
                     cols.append(col)
                     val = kwargs[col]
@@ -3644,7 +3764,8 @@ class LabNotebook:
                        "investigation_loss_ratio", "validation_loss_ratio",
                        "screening_novelty", "timestamp",
                        "robustness_noise_score", "quant_int8_retention",
-                       "robustness_long_ctx_score"}
+                       "robustness_long_ctx_score",
+                       "discovery_loss_ratio", "generalization_gap"}
         if sort_by not in valid_sorts:
             sort_by = "composite_score"
 
@@ -3661,6 +3782,11 @@ class LabNotebook:
             "pr.fp_jacobian_spectral_norm AS jacobian_spectral_norm, "
             # Fields for client-side candidateScore computation
             "pr.loss_ratio AS loss_ratio, "
+            "pr.discovery_loss AS discovery_loss, "
+            "COALESCE(l.discovery_loss_ratio, pr.discovery_loss_ratio) AS discovery_loss_ratio, "
+            "pr.validation_loss AS validation_loss, "
+            "COALESCE(l.validation_loss_ratio, pr.validation_loss_ratio) AS validation_loss_ratio, "
+            "pr.generalization_gap AS generalization_gap, "
             "pr.novelty_score AS novelty_score, "
             "pr.final_loss AS final_loss, "
             "pr.throughput_tok_s AS throughput_tok_s, "
@@ -3690,9 +3816,13 @@ class LabNotebook:
             query += " AND (l.tier = ? OR COALESCE(l.is_reference, 0) = 1)"
             params.append(tier)
         oversample = max(limit * 6, 200)
+        # Fields sourced from program_results use the SELECT alias directly
+        pr_sort_fields = {"discovery_loss_ratio", "generalization_gap"}
+        sort_col = sort_by if sort_by in pr_sort_fields else f"l.{sort_by}"
         query += (
-            f" ORDER BY COALESCE(l.is_reference, 0) DESC, "
-            f"l.{sort_by} DESC NULLS LAST LIMIT ?"
+            f" ORDER BY COALESCE(l.is_pinned, 0) DESC, "
+            f"COALESCE(l.is_reference, 0) DESC, "
+            f"{sort_col} DESC NULLS LAST LIMIT ?"
         )
         params.append(oversample)
 
@@ -3810,6 +3940,152 @@ class LabNotebook:
             (reference_name, entry_id),
         )
         self._maybe_commit()
+
+    def set_leaderboard_pin(self, entry_id: str, pinned: bool):
+        """Pin or unpin a leaderboard entry for dashboard priority."""
+        self._submit_write(
+            "UPDATE leaderboard SET is_pinned = ? WHERE entry_id = ?",
+            (1 if pinned else 0, entry_id),
+        )
+
+    # ── Pre-investigation gate helpers ──────────────────────────────────
+
+    def get_investigation_eligible(
+        self,
+        max_lr: float,
+        min_stability: float,
+        min_spectral_norm: float,
+        max_spectral_norm: float,
+        min_improvement_rate: float,
+        ref_lr_ceiling: Optional[float] = None,
+    ) -> List[Dict]:
+        """Stage A hard reject: return screening candidates that pass all hard filters.
+
+        Joins program_results with leaderboard to return full metric rows for
+        candidates eligible for investigation.
+        """
+        lr_ceiling = ref_lr_ceiling if ref_lr_ceiling is not None else max_lr
+        rows = self.conn.execute(
+            """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
+                      l.screening_loss_ratio, l.screening_novelty,
+                      l.pre_inv_score, l.is_reference, l.reference_name
+               FROM program_results pr
+               JOIN leaderboard l ON l.result_id = pr.result_id
+               WHERE l.tier = 'screening'
+                 AND COALESCE(l.is_reference, 0) = 0
+                 AND pr.stage1_passed = 1
+                 AND COALESCE(pr.has_nan_grad, 0) = 0
+                 AND COALESCE(pr.has_nan_output, 0) = 0
+                 AND COALESCE(pr.has_inf_output, 0) = 0
+                 AND COALESCE(pr.has_zero_grad, 0) = 0
+                 AND COALESCE(pr.graph_has_gradient_path, 1) = 1
+                 AND COALESCE(pr.stability_score, 0) >= ?
+                 AND (pr.fp_jacobian_spectral_norm IS NULL
+                      OR (pr.fp_jacobian_spectral_norm >= ? AND pr.fp_jacobian_spectral_norm <= ?))
+                 AND COALESCE(pr.loss_improvement_rate, 0) >= ?
+                 AND COALESCE(pr.loss_ratio, 1.0) < ?
+               ORDER BY pr.loss_ratio ASC NULLS LAST""",
+            (min_stability, min_spectral_norm, max_spectral_norm,
+             min_improvement_rate, lr_ceiling),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def compute_pre_investigation_score(row: Dict, best_ref_lr: Optional[float] = None) -> float:
+        """Stage B composite readiness score (0-100 scale).
+
+        Components:
+        - Performance (40pts): loss_ratio, discovery_loss_ratio, loss_improvement_rate
+        - Stability (20pts): stability_score, spectral_norm (Gaussian around 1.0), grad_norm_std
+        - Novelty (20pts): novelty_score * confidence, structural_novelty, behavioral_novelty
+        - Fingerprint quality (10pts): fp_intrinsic_dim, fp_isotropy, fp_rank_ratio
+        - Efficiency (10pts): throughput_tok_s, peak_memory_mb
+        - Reference penalty (-20pts): if loss_ratio > 1.5 * best_reference_lr
+        """
+        import math
+        score = 0.0
+
+        # ── Performance (40 pts) ──
+        lr = row.get("loss_ratio")
+        if lr is not None and lr > 0:
+            # Lower LR is better; LR=0.1 → 40pts, LR=0.8 → ~8pts
+            score += max(0, min(40, 40 * (1.0 - float(lr))))
+
+        dlr = row.get("discovery_loss_ratio")
+        if dlr is not None and dlr > 0:
+            # Bonus: up to 5pts from discovery loss (replaces top of performance)
+            score += max(0, min(5, 5 * (1.0 - float(dlr))))
+
+        lir = row.get("loss_improvement_rate")
+        if lir is not None and float(lir) > 0:
+            # Up to 5pts for improvement rate
+            score += min(5, float(lir) * 10)
+
+        # Cap performance at 40
+        score = min(40, score)
+
+        # ── Stability (20 pts) ──
+        stab = row.get("stability_score")
+        if stab is not None:
+            score += min(10, float(stab) * 10)
+
+        sn = row.get("fp_jacobian_spectral_norm")
+        if sn is not None and float(sn) > 0:
+            # Gaussian centered on 1.0: score = 6 * exp(-(log(sn))^2 / 2)
+            log_sn = math.log(float(sn))
+            score += max(0, min(6, 6 * math.exp(-log_sn * log_sn / 2.0)))
+
+        gns = row.get("grad_norm_std")
+        if gns is not None:
+            # Lower grad_norm_std is better; up to 4pts
+            score += max(0, min(4, 4 * max(0, 1.0 - float(gns))))
+
+        # ── Novelty (20 pts) ──
+        ns = row.get("novelty_score")
+        nc = row.get("novelty_confidence")
+        if ns is not None:
+            conf = float(nc) if nc is not None else 0.5
+            score += min(10, float(ns) * conf * 10)
+
+        sn_nov = row.get("structural_novelty")
+        if sn_nov is not None:
+            score += min(5, float(sn_nov) * 5)
+
+        bn = row.get("behavioral_novelty")
+        if bn is not None:
+            score += min(5, float(bn) * 5)
+
+        # ── Fingerprint quality (10 pts) ──
+        fid = row.get("fp_intrinsic_dim")
+        if fid is not None and float(fid) > 0:
+            # Higher intrinsic dim → better; up to 4pts, cap at dim=20
+            score += min(4, float(fid) / 5.0)
+
+        fiso = row.get("fp_isotropy")
+        if fiso is not None:
+            score += min(3, float(fiso) * 3)
+
+        frr = row.get("fp_rank_ratio")
+        if frr is not None:
+            score += min(3, float(frr) * 3)
+
+        # ── Efficiency (10 pts) ──
+        tp = row.get("throughput_tok_s")
+        if tp is not None and float(tp) > 0:
+            # Higher throughput → better; up to 5pts, 10k tok/s → 5pts
+            score += min(5, float(tp) / 2000.0)
+
+        mem = row.get("peak_memory_mb")
+        if mem is not None and float(mem) > 0:
+            # Lower memory → better; up to 5pts, 100MB → 5pts, 500MB → 1pt
+            score += max(0, min(5, 5 * (1.0 - float(mem) / 600.0)))
+
+        # ── Reference penalty (-20 pts) ──
+        if best_ref_lr is not None and lr is not None:
+            if float(lr) > 1.5 * float(best_ref_lr):
+                score -= 20
+
+        return max(0, min(100, round(score, 2)))
 
     def get_references(self) -> List[Dict]:
         """Get all pinned reference architectures."""
@@ -3969,6 +4245,14 @@ class LabNotebook:
                      "scaling_param_efficiency", "scaling_flop_efficiency",
                      "scaling_gate_passed", "scaling_best_family",
                      "scaling_d512_param_efficiency", "scaling_confidence",
+                     "routing_savings_ratio", "compression_ratio",
+                     "activation_sparsity_score", "dead_neuron_ratio",
+                     "routing_collapse_score",
+                     "wikitext_perplexity", "wikitext_score",
+                     "tinystories_perplexity", "tinystories_score",
+                     "cross_task_score",
+                     "efficiency_wall_score", "max_viable_seq_len",
+                     "scaling_regime",
                      "notes"):
             if col in kwargs and kwargs[col] is not None:
                 sets.append(f"{col} = ?")
@@ -4006,6 +4290,8 @@ class LabNotebook:
                 novelty_confidence=nov_conf,
                 scaling_param_efficiency=d.get("scaling_param_efficiency"),
                 is_reference=bool(d.get("is_reference")),
+                routing_savings=d.get("routing_savings_ratio"),
+                compression_ratio=d.get("compression_ratio"),
             )
             sets.append("composite_score = ?")
             params.append(composite)
@@ -4801,17 +5087,33 @@ class LabNotebook:
         if category:
             query += " AND category = ?"
             params.append(category)
-        query += " ORDER BY confidence DESC, times_validated DESC"
+        query += " ORDER BY timestamp DESC"
         rows = self.conn.execute(query, params).fetchall()
         results = []
         for r in rows:
             d = dict(r)
+            base_conf = float(d.get("confidence") or 0.5)
+            validated = int(d.get("times_validated") or 0)
+            # Validation bonus saturates; repeated confirmations help but are capped.
+            val_bonus = min(0.18, 0.05 * math.log1p(max(validated - 1, 0)))
+            effective_conf = min(0.95, max(0.0, base_conf) + val_bonus)
+            d["effective_confidence"] = round(effective_conf, 4)
+            d["validation_bonus"] = round(val_bonus, 4)
+            d["confidence_capped"] = effective_conf >= 0.95
             if d.get("supporting_evidence"):
                 try:
                     d["supporting_evidence"] = json.loads(d["supporting_evidence"])
                 except (json.JSONDecodeError, TypeError):
                     pass
             results.append(d)
+        results.sort(
+            key=lambda row: (
+                float(row.get("effective_confidence") or 0.0),
+                int(row.get("times_validated") or 0),
+                float(row.get("timestamp") or 0.0),
+            ),
+            reverse=True,
+        )
         return results
 
     def validate_knowledge(self, entry_id: str) -> None:
@@ -4833,18 +5135,33 @@ class LabNotebook:
             """SELECT * FROM knowledge_base
                WHERE status = 'active'
                AND (title LIKE ? OR content LIKE ?)
-               ORDER BY confidence DESC""",
+               ORDER BY timestamp DESC""",
             (pattern, pattern),
         ).fetchall()
         results = []
         for r in rows:
             d = dict(r)
+            base_conf = float(d.get("confidence") or 0.5)
+            validated = int(d.get("times_validated") or 0)
+            val_bonus = min(0.18, 0.05 * math.log1p(max(validated - 1, 0)))
+            effective_conf = min(0.95, max(0.0, base_conf) + val_bonus)
+            d["effective_confidence"] = round(effective_conf, 4)
+            d["validation_bonus"] = round(val_bonus, 4)
+            d["confidence_capped"] = effective_conf >= 0.95
             if d.get("supporting_evidence"):
                 try:
                     d["supporting_evidence"] = json.loads(d["supporting_evidence"])
                 except (json.JSONDecodeError, TypeError):
                     pass
             results.append(d)
+        results.sort(
+            key=lambda row: (
+                float(row.get("effective_confidence") or 0.0),
+                int(row.get("times_validated") or 0),
+                float(row.get("timestamp") or 0.0),
+            ),
+            reverse=True,
+        )
         return results
 
     # ── Report Markdown Export ──

@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import aria_core
 
 logger = logging.getLogger(__name__)
 NOVELTY_REFERENCE_SCHEME_VERSION = "nv1"
@@ -86,6 +87,10 @@ class BehavioralFingerprint:
     cka_vs_transformer: float = 0.0
     cka_vs_ssm: float = 0.0
     cka_vs_conv: float = 0.0
+
+    # Hierarchy detection (Gromov delta-hyperbolicity)
+    hierarchy_fitness: float = 0.0  # 0=flat/Euclidean, 1=very tree-like
+    gromov_delta: float = 0.0      # raw Gromov 4-point delta
 
     # Overall novelty estimate
     novelty_score: float = 0.0
@@ -163,6 +168,15 @@ def compute_fingerprint(
             if geometry.get("_succeeded"):
                 n_succeeded += 1
 
+            # Hierarchy detection (Gromov delta-hyperbolicity)
+            try:
+                from .hierarchy_probe import hierarchy_fitness as _hf
+                hf_result = _hf(reps, max_tokens=100)
+                fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
+                fp.gromov_delta = hf_result["gromov_delta"]
+            except Exception:
+                pass
+
         # Input sensitivity (Jacobian analysis)
         sensitivity = _analyze_sensitivity(model, dev, seq_len, vocab_size)
         fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
@@ -218,6 +232,52 @@ def compute_fingerprint(
         fp.quality = "none"
 
     model.train()
+    return fp
+
+
+def compute_lightning_fingerprint(
+    model: nn.Module,
+    seq_len: int = 64,
+    model_dim: int = 256,
+    device: str = "cpu",
+    n_probes: int = 8,
+) -> BehavioralFingerprint:
+    """
+    Lightning-fast behavioral fingerprint for pre-experiment gating.
+    Uses fixed-seed initialization and minimal probes on CPU to estimate novelty.
+    """
+    dev = torch.device(device)
+    model = model.to(dev).eval()
+    fp = BehavioralFingerprint()
+    
+    with torch.no_grad():
+        # 1. Minimal probe with fixed seed for reproducibility
+        torch.manual_seed(42)
+        probe_ids = torch.randint(0, 32000, (n_probes, seq_len), device=dev)
+        
+        # 2. Forward pass (Lightning reps)
+        reps = _get_representations(model, probe_ids, dev)
+        
+        if reps is not None:
+            # 3. CKA vs Reference (The critical novelty gate)
+            from .cka_references import get_default_store
+            store = get_default_store()
+            ref_activations = store.get_references()
+            
+            # Move to CPU for native aria_core.linear_cka_f32
+            reps_cpu = reps.cpu()
+            
+            cka = _compute_reference_cka(reps_cpu, ref_activations=ref_activations)
+            fp.cka_vs_transformer = cka.get("transformer", 0.0)
+            fp.cka_vs_ssm = cka.get("ssm", 0.0)
+            fp.cka_vs_conv = cka.get("conv", 0.0)
+            
+            max_cka = max(fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv, 0.01)
+            fp.novelty_score = 1.0 - max_cka
+            fp.cka_source = "lightning_dry_run"
+            fp.quality = "partial"
+            fp.analyses_succeeded = 1
+
     return fp
 
 
@@ -516,6 +576,10 @@ def _compute_reference_cka(
 def _linear_cka(X: torch.Tensor, Y: torch.Tensor) -> float:
     """Linear CKA similarity."""
     try:
+        # Optimization: use native aria_core kernel if on CPU
+        if X.device.type == "cpu" and Y.device.type == "cpu":
+            return aria_core.linear_cka_f32(X.contiguous(), Y.contiguous())
+
         X = X - X.mean()
         Y = Y - Y.mean()
         hsic_xy = (X * Y).sum()

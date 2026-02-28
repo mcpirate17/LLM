@@ -9014,6 +9014,29 @@ class ExperimentRunner:
             except Exception:
                 pass
 
+            # Compute NCD (Normalized Compression Distance) reward signal
+            try:
+                from ..eval.ncd import compute_graph_ncd
+                graph_json_str = graph_to_json(graph)
+                ncd_result = compute_graph_ncd(
+                    graph_json_str, training_curve,
+                    n_params=program_metrics.get("param_count"),
+                )
+                program_metrics["ncd_score"] = ncd_result["ncd_score"]
+                program_metrics["ncd_description_length"] = ncd_result["description_length"]
+                program_metrics["ncd_description_length_per_param"] = ncd_result["description_length_per_param"]
+                # Update the stored result
+                if rid:
+                    try:
+                        nb.conn.execute(
+                            "UPDATE program_results SET ncd_score=?, ncd_description_length=?, ncd_description_length_per_param=? WHERE result_id=?",
+                            (ncd_result["ncd_score"], ncd_result["description_length"], ncd_result.get("description_length_per_param"), rid),
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         # Update best metrics in experiment summary
         if loss_ratio is not None:
             if results["best_loss_ratio"] is None or loss_ratio < results["best_loss_ratio"]:
@@ -9234,6 +9257,18 @@ class ExperimentRunner:
             })
         else:
             grammar.category_weights["math_space"] = config.math_space_weight
+
+        # Hyperbolic promotion: query recent hierarchy fitness from fingerprints
+        if analytics is not None:
+            try:
+                hf = analytics.recent_hierarchy_fitness()
+                if hf is not None:
+                    grammar._hierarchy_fitness = hf
+                    if hf > grammar.hyperbolic_promotion_threshold:
+                        logger.info("Hierarchy detected (fitness=%.3f > %.2f): boosting hyperbolic ops",
+                                    hf, grammar.hyperbolic_promotion_threshold)
+            except Exception:
+                pass
 
         t_start = time.time()
 
@@ -10840,6 +10875,7 @@ class ExperimentRunner:
                 "designer_telemetry": self._gather_designer_telemetry(),
                 "scaling_summary": nb.get_scaling_summary(),
                 "gate_health": analytics.gate_health_daily(n_days=7),
+                "hierarchy_fitness": analytics.recent_hierarchy_fitness(),
             }
         except Exception:
             return {}

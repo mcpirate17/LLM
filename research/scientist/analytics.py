@@ -1368,6 +1368,28 @@ class ExperimentAnalytics:
         }
         return learned
 
+    def recent_hierarchy_fitness(self, lookback: int = 50) -> Optional[float]:
+        """Query average hierarchy_fitness from recent program_results.
+
+        Returns the mean fp_hierarchy_fitness across recent results, or None
+        if insufficient data.
+        """
+        try:
+            rows = self.nb.conn.execute(
+                """SELECT fp_hierarchy_fitness FROM program_results
+                   WHERE fp_hierarchy_fitness IS NOT NULL
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (lookback,),
+            ).fetchall()
+            if len(rows) < 5:
+                return None
+            vals = [float(r[0]) for r in rows if r[0] is not None]
+            if not vals:
+                return None
+            return sum(vals) / len(vals)
+        except Exception:
+            return None
+
     def grammar_weight_learning_diagnostics(self) -> Dict:
         """Return diagnostics for grammar-weight learning robustness."""
         if self._last_grammar_weight_diagnostics is None:

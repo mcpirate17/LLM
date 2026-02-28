@@ -64,9 +64,169 @@ class GrammarConfig:
     min_block_density: float = 0.05
     max_block_density: float = 0.5
 
+    # Hyperbolic Promotion (Phase 3)
+    hyperbolic_promotion_threshold: float = 0.6
+    hyperbolic_boost_factor: float = 3.0
+    _hierarchy_fitness: Optional[float] = None  # set by analytics
+
     def update_bias(self, delta: float):
         """Adjust structured sparsity bias."""
         self.structured_sparsity_bias = max(0.0, min(1.0, self.structured_sparsity_bias + delta))
+
+
+class EfficiencyPrior:
+    """
+    Uses historical Pareto frontier data to bias synthesis toward efficient patterns.
+    (Project Hephaestus Phase 4)
+    """
+    def __init__(self, frontier_data: List[Dict]):
+        self.op_biases: Dict[str, float] = {}
+        for p in (frontier_data or []):
+            graph_json = p.get("graph_json", "")
+            if not graph_json: continue
+            # Look for recurring motifs in successful efficient models
+            for motif in ["selective_scan", "tropical", "clifford", "low_rank", "sparse"]:
+                if motif in graph_json:
+                    mult = 1.12 if motif == "tropical" else 1.05
+                    self.op_biases[motif] = self.op_biases.get(motif, 1.0) * mult
+
+    def get_bias(self, op_name: str) -> float:
+        bias = 1.0
+        for motif, multiplier in self.op_biases.items():
+            if motif in op_name:
+                bias *= multiplier
+        return min(2.5, bias)
+
+
+class AdaptiveGenerator:
+    """
+    High-performance recursive generator with look-ahead budget pruning.
+    
+    Instead of generating a full graph and then rejecting it, this builder
+    estimates FLOPs and Params at every step and prunes branches that
+    mathematically cannot fit the budget.
+    """
+    def __init__(self, config: GrammarConfig, prior: Optional[EfficiencyPrior] = None):
+        self.config = config
+        self.prior = prior
+        self.model_dim = config.model_dim
+        self.max_params = int(config.max_params_ratio * self.model_dim * self.model_dim)
+        # 4x Transformer complexity budget for search
+        self.max_flops = 4 * (12 * self.model_dim * self.model_dim * 128)
+
+        # Import Cython fast-path params estimator
+        try:
+            from .adaptive_sampler import c_estimate_op_params
+            self._c_params_estimator = c_estimate_op_params
+        except ImportError:
+            self._c_params_estimator = None
+
+    def generate(self, seed: Optional[int] = None) -> ComputationGraph:
+        rng = random.Random(seed)
+        graph = ComputationGraph(self.model_dim)
+        input_id = graph.add_input()
+        
+        try:
+            self._build_recursive(
+                graph, rng, [input_id],
+                depth=0, params_acc=0, flops_acc=0
+            )
+        except RecursionError:
+            pass # Hard prune on depth
+
+        # Ensure we have a valid output
+        if not graph.nodes:
+            # Emergency fallback: identity
+            input_id = graph.add_input()
+            graph.set_output(input_id)
+            return graph
+            
+        res_id = list(graph.nodes.keys())[-1]
+        try:
+            graph.set_output(res_id)
+        except ValueError:
+            # Fix dimension mismatch at output
+            res_id = graph.add_op("linear_proj", [res_id], 
+                                  config={"out_dim": self.model_dim})
+            graph.set_output(res_id)
+            
+        return graph
+
+    def _build_recursive(self, graph, rng, nodes, depth, params_acc, flops_acc):
+        if depth >= self.config.max_depth or params_acc > self.max_params or flops_acc > self.max_flops:
+            return
+
+        # Adaptive stop probability
+        stop_p = max((depth / self.config.max_depth)**2, 
+                     params_acc / self.max_params,
+                     flops_acc / self.max_flops)
+        if rng.random() < stop_p:
+            return
+
+        # Choose action
+        action = _choose_action(self.config, rng, depth, len(nodes), len(graph.nodes))
+        if action == "stop": return
+
+        # Pick node and op
+        node_id = rng.choice(nodes)
+        d_in = graph.nodes[node_id].output_shape.dim
+        
+        # Budget-safe selection
+        categories = [OpCategory.PARAMETERIZED, OpCategory.MIXING, OpCategory.LINEAR_ALGEBRA, 
+                      OpCategory.SEQUENCE, OpCategory.ELEMENTWISE_UNARY]
+        
+        candidates = []
+        weights = []
+        
+        for cat in categories:
+            cat_w = self.config.category_weights.get(cat.value, 1.0)
+            for op in list_primitives(cat):
+                if op.n_inputs != 1 or op.name in self.config.excluded_ops:
+                    continue
+                
+                # Fast Look-Ahead Estimate
+                op_p = self._estimate_params(op, d_in)
+                if params_acc + op_p > self.max_params: continue
+                
+                op_f = self._estimate_flops(op, d_in)
+                if flops_acc + op_f > self.max_flops: continue
+                
+                # Check shape compatibility
+                if _check_shape_compat(op, [graph.nodes[node_id].output_shape], self.model_dim):
+                    candidates.append((op, op_p, op_f))
+                    
+                    # Apply Biases
+                    op_w = self.config.op_weights.get(op.name, 1.0)
+                    if self.prior:
+                        op_w *= self.prior.get_bias(op.name)
+                    weights.append(cat_w * op_w)
+
+        if not candidates: return
+        
+        choice, op_p, op_f = rng.choices(candidates, weights=weights, k=1)[0]
+        
+        try:
+            new_id = graph.add_op(choice.name, [node_id])
+            self._build_recursive(graph, rng, nodes + [new_id], 
+                                  depth + 1, params_acc + op_p, flops_acc + op_f)
+        except ValueError:
+            return
+
+    def _estimate_params(self, op: PrimitiveOp, d_in: int) -> int:
+        if self._c_params_estimator:
+            # Fast Cython path
+            return self._c_params_estimator(op.name.encode('utf-8'), d_in, d_in)
+        # Fallback
+        formula = op.param_formula.replace("D", str(d_in))
+        try: return safe_eval_formula(formula)
+        except: return d_in * d_in
+
+    def _estimate_flops(self, op: PrimitiveOp, d_in: int) -> int:
+        # Simplified estimate for look-ahead (B=1, S=128)
+        # For most linear-like ops, flops approx 2*S*D_in*D_out
+        if op.category == OpCategory.PARAMETERIZED or op.category == OpCategory.LINEAR_ALGEBRA:
+            return 2 * 128 * d_in * d_in
+        return 128 * d_in # elementwise
 
 
 def generate_layer_graph(
@@ -103,7 +263,7 @@ def generate_layer_graph(
         result_id = graph.add_op("linear_proj", [result_id],
                                   config={"out_dim": config.model_dim})
 
-    if result_shape.is_freq_domain:
+    if result_shape.is_freq_domain and "irfft_seq" in PRIMITIVE_REGISTRY:
         # Return from frequency domain
         result_id = graph.add_op("irfft_seq", [result_id])
 
@@ -112,7 +272,38 @@ def generate_layer_graph(
         result_id = graph.add_op("add", [input_id, result_id])
 
     graph.set_output(result_id)
+
+    # Post-generation validation
+    _validate_graph(graph, config)
+
     return graph
+
+
+def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
+    """Validate a generated graph and raise ValueError if invalid."""
+    n_ops = graph.n_ops()
+    if n_ops > config.max_ops:
+        raise ValueError(f"Too many ops: {n_ops} > {config.max_ops}")
+    depth = graph.depth()
+    if depth > config.max_depth:
+        raise ValueError(f"Too deep: {depth} > {config.max_depth}")
+
+    D = config.model_dim
+    max_params = int(config.max_params_ratio * D * D)
+    total_params = 0
+    for node in graph.nodes.values():
+        if node.op_name in ("input", "graph_input", "graph_output", "output"):
+            continue
+        op = get_primitive(node.op_name)
+        if op.param_formula and op.param_formula != "0":
+            d_in = node.output_shape.dim if node.output_shape else D
+            formula = op.param_formula.replace("D", str(d_in))
+            try:
+                total_params += safe_eval_formula(formula)
+            except Exception:
+                total_params += d_in * d_in
+    if total_params > max_params:
+        raise ValueError(f"Too many params: ~{total_params} > {max_params}")
 
 
 def _build_subgraph(
@@ -252,6 +443,15 @@ def _pick_op(
                         op_w *= (1.0 + config.structured_sparsity_bias * 2.0)
                     elif op.name in {"linear_proj", "linear_proj_down", "linear_proj_up"}:
                         op_w *= (1.0 - config.structured_sparsity_bias * 0.5)
+
+                # Hyperbolic Promotion: boost hyperbolic ops when hierarchy detected
+                if (config._hierarchy_fitness is not None
+                        and config._hierarchy_fitness > config.hyperbolic_promotion_threshold):
+                    _HYP_OPS = {"poincare_add", "exp_map", "log_map",
+                                "hyp_linear", "hyp_distance", "hyp_tangent_nonlinear",
+                                "hyperbolic_norm"}
+                    if op.name in _HYP_OPS:
+                        op_w *= config.hyperbolic_boost_factor
                 
                 weights.append(cat_weight * op_w)
 
@@ -266,13 +466,19 @@ def _check_shape_compat(op: PrimitiveOp, input_shapes: List[ShapeInfo], model_di
     if not input_shapes:
         return False
 
+    # Arity check: op must accept exactly the number of inputs provided
+    if op.n_inputs != len(input_shapes):
+        return False
+
     s0 = input_shapes[0]
 
-    # Split ops need divisible dimensions
-    if op.name == "split2" and s0.dim % 2 != 0:
-        return False
-    if op.name == "split3" and s0.dim % 3 != 0:
-        return False
+    # Split ops need divisible dimensions and minimum output dim
+    if op.name == "split2":
+        if s0.dim % 2 != 0 or s0.dim // 2 < 4:
+            return False
+    if op.name == "split3":
+        if s0.dim % 3 != 0 or s0.dim // 3 < 4:
+            return False
 
     # FFT ops need standard seq dimension
     if op.shape_rule == "rfft" and not s0.is_standard:
@@ -287,8 +493,20 @@ def _check_shape_compat(op: PrimitiveOp, input_shapes: List[ShapeInfo], model_di
         if not s0.is_standard:
             return False
 
-    # multi_head_mix needs D divisible by at least 2
-    if op.name == "multi_head_mix" and s0.dim < 2:
+    # Minimum dimension requirements for complex ops
+    _MIN_DIM_OPS = {
+        "softmax_attention": 16, "linear_attention": 16,
+        "graph_attention": 16, "multi_head_mix": 4,
+        "selective_scan": 8, "state_space": 8,
+        "rwkv_time_mixing": 8, "rwkv_channel": 8,
+        "conv1d_seq": 4, "moe_topk": 8, "moe_2expert": 8,
+        "swiglu_mlp": 4, "topk_gate": 4,
+        "block_sparse_linear": 16, "nm_sparse_linear": 8,
+        "low_rank_proj": 8, "bottleneck_proj": 8,
+        "grouped_linear": 8, "shared_basis_proj": 8,
+    }
+    min_dim = _MIN_DIM_OPS.get(op.name)
+    if min_dim and s0.dim < min_dim:
         return False
 
     # Binary ops need matching seq dims
@@ -360,7 +578,8 @@ def _apply_binary(graph, config, rng, available_nodes,
             s_i = graph.nodes[available_nodes[i]].output_shape
             s_j = graph.nodes[available_nodes[j]].output_shape
 
-            categories = [OpCategory.ELEMENTWISE_BINARY]
+            categories = [OpCategory.ELEMENTWISE_BINARY,
+                          OpCategory.FUNCTIONAL]
             if s_i.dim == s_j.dim:
                 categories.append(OpCategory.LINEAR_ALGEBRA)
 
@@ -389,46 +608,28 @@ def _apply_parameterized(graph, config, rng, available_nodes,
     node_id = rng.choice(available_nodes)
     shape = graph.nodes[node_id].output_shape
 
-    D = config.model_dim
-    max_params = int(config.max_params_ratio * D * D)
+    # Use actual input dim for param estimation, not global model_dim
+    D_actual = shape.dim
+    D_global = config.model_dim
+    max_params = int(config.max_params_ratio * D_global * D_global)
 
     # Pick a parameterized op that doesn't exceed param budget
     candidates = []
-    for op in list_primitives(OpCategory.PARAMETERIZED):
-        if op.name in config.excluded_ops:
-            continue
-        formula = op.param_formula.replace("D", str(D))
-        try:
-            op_params = safe_eval_formula(formula)
-        except Exception:
-            op_params = D * D
-        if params_so_far + op_params <= max_params:
-            if _check_shape_compat(op, [shape], D):
-                candidates.append((op.name, op_params))
-
-    # Also include math space ops
-    for op in list_primitives(OpCategory.MATH_SPACE):
-        if op.name in config.excluded_ops:
-            continue
-        if op.n_inputs == 1 and _check_shape_compat(op, [shape], D):
-            formula = op.param_formula.replace("D", str(D))
+    for cat in (OpCategory.PARAMETERIZED, OpCategory.MATH_SPACE, OpCategory.FUNCTIONAL):
+        for op in list_primitives(cat):
+            if op.name in config.excluded_ops:
+                continue
+            # Only pick 1-input ops here; 2-input ops go through _apply_binary
+            if op.n_inputs != 1:
+                continue
+            if not _check_shape_compat(op, [shape], D_global):
+                continue
+            # Estimate params using actual input dim
+            formula = op.param_formula.replace("D", str(D_actual))
             try:
                 op_params = safe_eval_formula(formula)
             except Exception:
-                op_params = 0
-            if params_so_far + op_params <= max_params:
-                candidates.append((op.name, op_params))
-
-    # Include functional operator-learning primitives
-    for op in list_primitives(OpCategory.FUNCTIONAL):
-        if op.name in config.excluded_ops:
-            continue
-        if op.n_inputs == 1 and _check_shape_compat(op, [shape], D):
-            formula = op.param_formula.replace("D", str(D))
-            try:
-                op_params = safe_eval_formula(formula)
-            except Exception:
-                op_params = D * D
+                op_params = D_actual * D_actual
             if params_so_far + op_params <= max_params:
                 candidates.append((op.name, op_params))
 
@@ -479,7 +680,8 @@ def _split_and_merge(graph, config, rng, available_nodes,
     node_id = available_nodes[-1]
     shape = graph.nodes[node_id].output_shape
 
-    if shape.dim < 4:
+    # Need enough dim for split + useful ops on each half
+    if shape.dim < 16:
         return node_id
 
     # Split into 2 paths
@@ -543,6 +745,11 @@ def _freq_domain_detour(graph, config, rng, available_nodes,
                         depth, n_ops, params_so_far) -> int:
     """Take a detour through frequency domain."""
     node_id = available_nodes[-1]
+
+    # Guard: rfft_seq/irfft_seq may have been removed from primitives
+    if "rfft_seq" not in PRIMITIVE_REGISTRY or "irfft_seq" not in PRIMITIVE_REGISTRY:
+        return node_id
+
     shape = graph.nodes[node_id].output_shape
 
     if not shape.is_standard:
@@ -580,6 +787,8 @@ def batch_generate(
     n: int,
     config: Optional[GrammarConfig] = None,
     base_seed: int = 42,
+    use_adaptive_synthesis: bool = False,
+    prior: Optional[EfficiencyPrior] = None,
 ) -> List[ComputationGraph]:
     """Generate N random computation graphs."""
     if config is None:
@@ -590,12 +799,21 @@ def batch_generate(
 
     attempts = 0
     max_attempts = n * 10
+    
+    # Initialize adaptive generator if requested
+    generator = None
+    if use_adaptive_synthesis:
+        generator = AdaptiveGenerator(config, prior=prior)
 
     while len(graphs) < n and attempts < max_attempts:
         attempts += 1
         seed = base_seed + attempts * 137
         try:
-            g = generate_layer_graph(config, seed=seed)
+            if generator:
+                g = generator.generate(seed=seed)
+            else:
+                g = generate_layer_graph(config, seed=seed)
+                
             fp = g.fingerprint()
             if fp not in fingerprints:
                 fingerprints.add(fp)

@@ -11,6 +11,7 @@ from ..synthesis.primitives import (
     PrimitiveOp, OpCategory, register_external_primitive,
 )
 from . import hyperbolic, tropical, padic, clifford, compression, spiking
+from . import tropical_routing
 
 
 def register_all_mathspaces():
@@ -230,6 +231,30 @@ def register_all_mathspaces():
         description="Shortest-path tropical distances as a gating mechanism",
     )
     op = _with_execute(op, tropical.execute_tropical_gate)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="tropical_router",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D//4",
+        description="Tropical (shortest-path) routing as a gating signal",
+    )
+    op = _with_execute(op, tropical_routing.execute_tropical_router)
+    register_external_primitive(op)
+
+    op = PrimitiveOp(
+        name="tropical_moe",
+        category=OpCategory.MATH_SPACE,
+        n_inputs=1,
+        shape_rule="identity",
+        has_params=True,
+        param_formula="D*D*4",
+        description="Full Mixture-of-Experts with tropical (shortest-path) routing",
+    )
+    op = _with_execute(op, tropical_routing.execute_tropical_moe)
     register_external_primitive(op)
 
     op = PrimitiveOp(
