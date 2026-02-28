@@ -20,8 +20,7 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    # Find results with graph_json that don't have ncd_score yet
-    # and have training curves available
+    # Ensure columns exist
     try:
         conn.execute("SELECT ncd_score FROM program_results LIMIT 1")
     except sqlite3.OperationalError:
@@ -30,14 +29,13 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
         conn.execute("ALTER TABLE program_results ADD COLUMN ncd_description_length_per_param REAL")
         conn.commit()
 
+    # Find results with graph_json and training curves that don't have ncd_score yet
     rows = conn.execute("""
-        SELECT pr.result_id, pr.graph_json, pr.graph_n_params_estimate,
-               tc.curve_json
+        SELECT DISTINCT pr.result_id, pr.graph_json, pr.graph_n_params_estimate
         FROM program_results pr
         JOIN training_curves tc ON tc.result_id = pr.result_id
         WHERE pr.graph_json IS NOT NULL
           AND pr.ncd_score IS NULL
-          AND tc.curve_json IS NOT NULL
     """).fetchall()
 
     print(f"Found {len(rows)} results to backfill")
@@ -46,8 +44,15 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
     errors = 0
     for row in rows:
         try:
-            import json
-            curve = json.loads(row["curve_json"])
+            # Reconstruct training curve from per-step rows
+            steps = conn.execute(
+                "SELECT step, loss, grad_norm, step_time_ms FROM training_curves WHERE result_id=? ORDER BY step",
+                (row["result_id"],),
+            ).fetchall()
+            curve = [
+                {"step": s["step"], "loss": s["loss"], "grad_norm": s["grad_norm"], "step_time_ms": s["step_time_ms"]}
+                for s in steps
+            ]
             if not curve:
                 continue
 
@@ -73,6 +78,7 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
                 )
 
             updated += 1
+            print(f"  {row['result_id'][:8]}.. ncd={result['ncd_score']:.4f} dl={result['description_length']}")
         except Exception as e:
             errors += 1
             if errors <= 5:
