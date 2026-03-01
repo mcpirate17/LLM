@@ -408,6 +408,7 @@ class RunConfig:
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
     auto_validate_max_baseline_ratio: float = 0.60
+    auto_validate_min_composite_score: float = 0.0  # 0 = use best reference as dynamic floor
     breakthrough_raw_threshold: float = 0.70
     breakthrough_normalized_threshold: float = 0.85
     auto_validate_min_novelty_confidence: float = 0.50
@@ -14096,6 +14097,26 @@ class ExperimentRunner:
                 ).fetchall()
                 novelty_meta = {row["result_id"]: dict(row) for row in rows}
 
+            # Determine minimum composite_score for validation promotion
+            min_score = config.auto_validate_min_composite_score
+            if min_score <= 0:
+                # Dynamic floor: must beat the best reference
+                best_ref_row = nb.conn.execute(
+                    "SELECT MAX(composite_score) FROM leaderboard WHERE COALESCE(is_reference, 0) = 1"
+                ).fetchone()
+                min_score = float(best_ref_row[0]) if best_ref_row and best_ref_row[0] else 0.0
+
+            # Look up composite scores for investigation candidates
+            inv_id_list = [r.get("result_id") for r in inv_results if r.get("result_id")]
+            composite_scores: Dict[str, float] = {}
+            if inv_id_list:
+                ph = ",".join("?" for _ in inv_id_list)
+                score_rows = nb.conn.execute(
+                    f"SELECT result_id, composite_score FROM leaderboard WHERE result_id IN ({ph})",
+                    tuple(inv_id_list),
+                ).fetchall()
+                composite_scores = {row["result_id"]: float(row["composite_score"] or 0) for row in score_rows}
+
             strong = []
             for r in inv_results:
                 rid = r.get("result_id")
@@ -14108,6 +14129,12 @@ class ExperimentRunner:
                         novelty_valid = True
                 if not novelty_valid and config.allow_heuristic_novelty_promotion:
                     novelty_valid = bool(str(config.heuristic_novelty_justification or "").strip())
+                # Composite score gate: must beat best reference (or configured minimum)
+                candidate_score = composite_scores.get(rid, 0.0)
+                if min_score > 0 and candidate_score < min_score:
+                    logger.info("Auto-validate: %s rejected (score %.1f < min %.1f)",
+                                (rid or "?")[:12], candidate_score, min_score)
+                    continue
                 if (
                     r.get("robustness", 0) >= config.auto_validate_min_robustness
                     and (r.get("best_loss_ratio") or 1.0) < 0.25
