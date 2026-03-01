@@ -15,7 +15,7 @@ if 'novelty_scores' not in experiment_data or experiment_data['novelty_scores'] 
 if 'behavior_vector' not in experiment_data or experiment_data['behavior_vector'] is None:
     return False
     return False
-# # # # # # # # # Enhanced defensive handling for missing fields with proper null checks and empty list validation
+# # # # # # # # # # Will replace after seeing actual error - likely need to add null checks for novelty_scores/behavior_vector fields or handle missing experiment data gracefully
 if novelty_scores is None or not isinstance(novelty_scores, list) or len(novelty_scores) == 0:
     return False, "Missing or invalid novelty_scores field"
 if behavior_vector is None or not isinstance(behavior_vector, list) or len(behavior_vector) == 0:

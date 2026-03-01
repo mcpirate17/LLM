@@ -68,6 +68,22 @@ export default function ReportDetail({
         include_narrative: '0',
       });
       const res = await apiCall(`/api/report?${qs.toString()}`);
+      if (!res.ok && fast) {
+        // Resilient fallback: keep Reports usable when consolidated fast endpoint errors.
+        const fallbackQs = new URLSearchParams({
+          theme: 'all',
+          trend: 'all',
+          limit: '20',
+          include_narrative: '0',
+        });
+        const fallbackRes = await apiCall(`/api/report/query?${fallbackQs.toString()}`);
+        if (fallbackRes.ok) {
+          const fallbackPayload = await fallbackRes.json();
+          setData(fallbackPayload);
+          setLastUpdated(new Date());
+          return;
+        }
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
       setData(payload);

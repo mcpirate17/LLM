@@ -100,7 +100,15 @@ export function computeStrategy(dashboard, leaderboard, mathCoverage) {
 
   for (const entry of entries) {
     // Skip pinned reference architectures — they are baselines, not discoveries
-    if (entry.is_reference || entry.is_pinned || entry.model_source === 'reference') {
+    const rid = String(entry?.result_id || '').toLowerCase();
+    const refName = String(entry?.reference_name || '').trim();
+    if (
+      entry.is_reference ||
+      entry.is_pinned ||
+      entry.model_source === 'reference' ||
+      refName.length > 0 ||
+      rid.startsWith('ref_')
+    ) {
       continue;
     }
     const tier = normalizeTier(entry);
@@ -715,6 +723,31 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
           <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
             No briefing data available. Run an experiment to get started.
           </span>
+        )}
+        {briefing?.ref_comparison && (
+          <div style={{
+            marginTop: 6, padding: '6px 10px',
+            background: briefing.ref_comparison.beats_all_references
+              ? 'rgba(63, 185, 80, 0.12)' : 'rgba(139, 148, 158, 0.08)',
+            borderRadius: 6,
+            border: briefing.ref_comparison.beats_all_references
+              ? '1px solid var(--accent-green)' : '1px solid var(--border)',
+            fontSize: 12,
+          }}>
+            {briefing.ref_comparison.beats_all_references ? (
+              <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>
+                Synthesized model beats all references by {briefing.ref_comparison.margin_pct}%
+                {' '}(score {briefing.ref_comparison.best_synthesized_score?.toFixed(1)} vs best ref {briefing.ref_comparison.best_reference_score?.toFixed(1)})
+              </span>
+            ) : (
+              <span style={{ color: 'var(--text-muted)' }}>
+                Best reference: {briefing.ref_comparison.best_reference_score?.toFixed(1)}
+                {briefing.ref_comparison.references?.map(r =>
+                  <span key={r.name}> | {r.name}: {r.score?.toFixed(1)}</span>
+                )}
+              </span>
+            )}
+          </div>
         )}
       </div>
 

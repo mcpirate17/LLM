@@ -5344,8 +5344,8 @@ class TestAutoEscalation(unittest.TestCase):
                 {
                     "result_id": "r1",
                     "robustness": 0.7,
-                    "best_loss_ratio": 0.4,
-                    "baseline_loss_ratio": 0.8,
+                    "best_loss_ratio": 0.18,
+                    "baseline_loss_ratio": 0.45,
                     "novelty_confidence": 0.7,
                 },
                 {
@@ -5375,8 +5375,8 @@ class TestAutoEscalation(unittest.TestCase):
                 {
                     "result_id": "stable",
                     "robustness": 0.8,
-                    "best_loss_ratio": 0.35,
-                    "baseline_loss_ratio": 0.82,
+                    "best_loss_ratio": 0.15,
+                    "baseline_loss_ratio": 0.45,
                     "novelty_confidence": 0.75,
                     "loss_ratio_multiplier": 2.0,
                     "brittle_risk": False,
@@ -5384,8 +5384,8 @@ class TestAutoEscalation(unittest.TestCase):
                 {
                     "result_id": "brittle_flag",
                     "robustness": 0.85,
-                    "best_loss_ratio": 0.3,
-                    "baseline_loss_ratio": 0.81,
+                    "best_loss_ratio": 0.12,
+                    "baseline_loss_ratio": 0.40,
                     "novelty_confidence": 0.8,
                     "loss_ratio_multiplier": 20.0,
                     "brittle_risk": True,
@@ -5393,8 +5393,8 @@ class TestAutoEscalation(unittest.TestCase):
                 {
                     "result_id": "brittle_multiplier",
                     "robustness": 0.9,
-                    "best_loss_ratio": 0.25,
-                    "baseline_loss_ratio": 0.8,
+                    "best_loss_ratio": 0.10,
+                    "baseline_loss_ratio": 0.38,
                     "novelty_confidence": 0.8,
                     "loss_ratio_multiplier": self.config.investigation_max_loss_ratio_multiplier + 0.1,
                     "brittle_risk": False,
@@ -5418,21 +5418,21 @@ class TestAutoEscalation(unittest.TestCase):
                 {
                     "result_id": "missing_conf",
                     "robustness": 0.85,
-                    "best_loss_ratio": 0.32,
-                    "baseline_loss_ratio": 0.82,
+                    "best_loss_ratio": 0.12,
+                    "baseline_loss_ratio": 0.42,
                 },
                 {
                     "result_id": "weak_baseline",
                     "robustness": 0.9,
-                    "best_loss_ratio": 0.3,
+                    "best_loss_ratio": 0.10,
                     "baseline_loss_ratio": 0.96,
                     "novelty_confidence": 0.8,
                 },
                 {
                     "result_id": "qualified",
                     "robustness": 0.88,
-                    "best_loss_ratio": 0.31,
-                    "baseline_loss_ratio": 0.82,
+                    "best_loss_ratio": 0.14,
+                    "baseline_loss_ratio": 0.45,
                     "novelty_confidence": 0.72,
                 },
             ]

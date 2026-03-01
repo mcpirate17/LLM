@@ -31,55 +31,53 @@ class DummyModule(nn.Module):
 # ── route_topk ──────────────────────────────────────────────────────
 
 class TestRouteTopk:
-    def test_output_shapes(self):
+    def test_output_shape_matches_input(self):
+        """route_topk now returns (B,S,D) tensor (sparse mask), not a tuple."""
         module = DummyModule()
-        B, S, k = 2, 8, 3
-        scores = torch.randn(B, S)
-        indices, weights = _op_route_topk(module, [scores], {"k": k})
-        assert indices.shape == (B, k), f"Expected ({B},{k}), got {indices.shape}"
-        assert weights.shape == (B, k), f"Expected ({B},{k}), got {weights.shape}"
+        B, S, D, k = 2, 8, 64, 4
+        x = torch.randn(B, S, D)
+        result = _op_route_topk(module, [x], {"k": k})
+        assert isinstance(result, torch.Tensor), f"Expected Tensor, got {type(result)}"
+        assert result.shape == (B, S, D), f"Expected {(B, S, D)}, got {result.shape}"
 
-    def test_weights_are_normalized(self):
+    def test_sparsity(self):
+        """Only top-k values per (B,S) slice should be non-zero."""
         module = DummyModule()
-        scores = torch.randn(2, 8)
-        _, weights = _op_route_topk(module, [scores], {"k": 3})
-        sums = weights.sum(dim=-1)
-        assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
+        B, S, D, k = 2, 8, 64, 4
+        x = torch.randn(B, S, D)
+        result = _op_route_topk(module, [x], {"k": k})
+        non_zero_per_slice = (result != 0).float().sum(dim=-1)  # (B, S)
+        assert (non_zero_per_slice == k).all(), f"Expected {k} non-zero per slice"
 
-    def test_indices_are_valid(self):
+    def test_values_preserved(self):
+        """Non-zero entries should match the original input values."""
         module = DummyModule()
-        B, S, k = 2, 10, 4
-        scores = torch.randn(B, S)
-        indices, _ = _op_route_topk(module, [scores], {"k": k})
-        assert (indices >= 0).all() and (indices < S).all()
+        x = torch.randn(2, 4, 16)
+        result = _op_route_topk(module, [x], {"k": 3})
+        mask = result != 0
+        assert torch.allclose(result[mask], x[mask])
 
     def test_telemetry_recorded(self):
         module = DummyModule()
-        scores = torch.randn(2, 8)
-        _op_route_topk(module, [scores], {"k": 3})
+        x = torch.randn(2, 8, 64)
+        _op_route_topk(module, [x], {"k": 4})
         assert hasattr(module, "routing_telemetry")
         rt = module.routing_telemetry
         assert rt["tokens_total"] > 0
-        assert rt["tokens_processed"] > 0
+
+    def test_gradient_flows(self):
+        module = DummyModule()
+        x = torch.randn(2, 4, 16, requires_grad=True)
+        result = _op_route_topk(module, [x], {"k": 3})
+        result.sum().backward()
+        assert x.grad is not None
 
     def test_k_equals_one(self):
         module = DummyModule()
-        scores = torch.randn(2, 8)
-        indices, weights = _op_route_topk(module, [scores], {"k": 1})
-        assert indices.shape == (2, 1)
-
-    @pytest.mark.skipif(not HAS_ARIA_CORE, reason="aria_core not available")
-    def test_aria_core_path_matches_fallback(self):
-        B, S, k = 2, 8, 3
-        scores = torch.randn(B, S)
-        # aria-core path
-        m1 = DummyModule()
-        idx1, w1 = _op_route_topk(m1, [scores], {"k": k})
-        # fallback path (force by using non-float32)
-        m2 = DummyModule()
-        idx2, w2 = _op_route_topk(m2, [scores.double()], {"k": k})
-        # Should select same top-k indices
-        assert torch.equal(idx1.sort(dim=-1).values, idx2.sort(dim=-1).values)
+        x = torch.randn(2, 4, 16)
+        result = _op_route_topk(module, [x], {"k": 1})
+        non_zero = (result != 0).float().sum(dim=-1)
+        assert (non_zero == 1).all()
 
 
 # ── route_lanes ─────────────────────────────────────────────────────

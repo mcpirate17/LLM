@@ -407,7 +407,7 @@ class RunConfig:
     auto_investigate_top_n: int = 5
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
-    auto_validate_max_baseline_ratio: float = 0.90
+    auto_validate_max_baseline_ratio: float = 0.60
     breakthrough_raw_threshold: float = 0.70
     breakthrough_normalized_threshold: float = 0.85
     auto_validate_min_novelty_confidence: float = 0.50
@@ -1083,6 +1083,7 @@ class ExperimentRunner:
             "last_transition_ts": time.time(),
         }
         self._live_training_context: Optional[Dict[str, str]] = None  # {exp_id, phase}
+        self._live_loss_curve: List[Dict] = []  # rolling buffer for dashboard chart
         self._grammar_weight_overrides: Dict[str, float] = {}
         try:
             row = self.notebook.conn.execute(
@@ -1519,6 +1520,15 @@ class ExperimentRunner:
             })
         except queue.Full:
             pass  # drop oldest if full
+        # Buffer training_step events for REST retrieval (dashboard chart restore)
+        if event_type == "training_step":
+            curve = self._live_loss_curve
+            exp_id = data.get("experiment_id", "")
+            if curve and curve[0].get("experiment_id") != exp_id:
+                curve.clear()
+            curve.append(data)
+            if len(curve) > 200:
+                del curve[:len(curve) - 200]
 
     @staticmethod
     def _aria_phase_label(phase: str) -> str:
@@ -1685,7 +1695,9 @@ class ExperimentRunner:
         confidence_min = float(getattr(config, "switch_epic_breakthrough_confidence_min", 0.75) or 0.75)
         stagnation_cycles = max(3, int(getattr(config, "switch_epic_stagnation_cycles", 6) or 6))
 
-        breakthroughs = nb.get_leaderboard(tier="breakthrough", limit=5, sort_by="composite_score")
+        breakthroughs = nb.get_leaderboard(
+            tier="breakthrough", limit=5, sort_by="composite_score", include_references=False
+        )
         qualified_breakthroughs = []
         for row in breakthroughs:
             conf = float(row.get("novelty_confidence") or 0.0)
@@ -1825,6 +1837,16 @@ class ExperimentRunner:
         if config.max_cost_dollars > 0:
             limit_info.append(f"${self.aria.total_cost:.2f}/${config.max_cost_dollars:.2f}")
         limit_str = " | ".join(limit_info) if limit_info else f"exp {n_experiments}"
+
+        # Check for stale screening candidates that beat references
+        if config.auto_investigate and selected_mode not in ("investigation", "validation"):
+            stale_ids = self._check_stale_screening_candidates(nb, config)
+            if stale_ids:
+                self._pending_investigation = {
+                    "result_ids": stale_ids,
+                    "config": config,
+                    "hypothesis": f"Priority investigation: {len(stale_ids)} screening models beat reference baselines but are uninvestigated.",
+                }
 
         pending_inv = getattr(self, "_pending_investigation", None)
         pending_val = getattr(self, "_pending_validation", None)
@@ -7364,6 +7386,7 @@ class ExperimentRunner:
             ),
             created_by="inline_validation",
         )
+        self._live_training_context = {"exp_id": exp_id, "phase": "validation"}
 
         with self._lock:
             self._progress = LiveProgress(
@@ -8295,6 +8318,8 @@ class ExperimentRunner:
             self._emit_event("validation_completed", {
                 "experiment_id": exp_id, "error": str(e),
             })
+        finally:
+            self._live_training_context = None
 
     # ── Core Execution ──
 
@@ -9114,6 +9139,7 @@ class ExperimentRunner:
                             nb: LabNotebook,
                             use_learned_grammar: bool = True) -> Dict:
         """Core experiment logic shared by single and continuous modes."""
+        self._live_training_context = {"exp_id": exp_id, "phase": "synthesis"}
         with self._lock:
             # Z17: Explicitly reset progress object at start of execution
             self._progress = LiveProgress(
@@ -9122,7 +9148,7 @@ class ExperimentRunner:
                 total_programs=config.n_programs,
                 aria_message=f"{self.aria.NAME}: Initializing experiment {exp_id[:8]}...",
             )
-            
+
         results = {
             "total": 0, "stage0_passed": 0, "stage05_passed": 0,
             "stage1_passed": 0, "novel_count": 0,
@@ -9875,6 +9901,7 @@ class ExperimentRunner:
             f", native_gating={results.get('skipped_proactive_gating', 0)}" if results.get('skipped_proactive_gating') else "",
         )
 
+        self._live_training_context = None
         return results
 
     def _generate_refinement_graphs(
@@ -10578,7 +10605,7 @@ class ExperimentRunner:
 
                     # Emit live training step events for dashboard
                     ctx = getattr(self, "_live_training_context", None)
-                    if ctx and step % 25 == 0:
+                    if ctx and step % 10 == 0:
                         self._emit_event("training_step", {
                             "experiment_id": ctx.get("exp_id", ""),
                             "step": step,
@@ -11787,7 +11814,7 @@ class ExperimentRunner:
 
                 # Emit live training step events for dashboard
                 ctx = getattr(self, "_live_training_context", None)
-                if ctx and step % 25 == 0:
+                if ctx and step % 10 == 0:
                     self._emit_event("training_step", {
                         "experiment_id": ctx.get("exp_id", ""),
                         "step": step,
@@ -13743,6 +13770,32 @@ class ExperimentRunner:
 
         return grammar
 
+    def _check_stale_screening_candidates(self, nb: LabNotebook, config: RunConfig):
+        """Force investigation if top screening models beat references but are uninvestigated."""
+        try:
+            best_ref = nb.conn.execute(
+                "SELECT MAX(composite_score) FROM leaderboard WHERE COALESCE(is_reference, 0) = 1"
+            ).fetchone()[0]
+            if not best_ref:
+                return None
+            stale = nb.conn.execute(
+                """SELECT l.result_id FROM leaderboard l
+                   WHERE l.tier = 'screening' AND l.screening_passed = 1
+                     AND COALESCE(l.is_reference, 0) = 0
+                     AND l.composite_score > ?
+                     AND l.investigation_loss_ratio IS NULL
+                   ORDER BY l.composite_score DESC LIMIT ?""",
+                (best_ref, config.auto_investigate_top_n)
+            ).fetchall()
+            if stale:
+                result_ids = [r["result_id"] for r in stale]
+                logger.info("Stale screening check: %d models beat best reference (%.1f) but are uninvestigated",
+                            len(result_ids), best_ref)
+                return result_ids
+        except Exception as e:
+            logger.warning("Stale screening check failed: %s", e)
+        return None
+
     def _auto_escalate(self, results: Dict, config: RunConfig,
                        nb: LabNotebook, phase: str = "screening"):
         """Auto-escalate candidates through the research pipeline.
@@ -13773,6 +13826,33 @@ class ExperimentRunner:
                 # Fallback for callers that don't set experiment_id in results
                 top = nb.get_top_programs(
                     config.auto_investigate_top_n, sort_by="loss_ratio")
+
+            # Global sweep: also pull top screening candidates from leaderboard
+            # so high-scoring models from past experiments get investigated too
+            try:
+                global_rows = nb.conn.execute(
+                    """SELECT pr.* FROM leaderboard l
+                       JOIN program_results pr ON l.result_id = pr.result_id
+                       WHERE l.tier = 'screening' AND l.screening_passed = 1
+                         AND COALESCE(l.is_reference, 0) = 0
+                         AND l.investigation_loss_ratio IS NULL
+                       ORDER BY l.composite_score DESC
+                       LIMIT ?""",
+                    (config.auto_investigate_top_n,)
+                ).fetchall()
+                seen = {p.get("result_id") for p in top}
+                for r in global_rows:
+                    d = dict(r)
+                    if d.get("result_id") not in seen:
+                        top.append(d)
+                        seen.add(d.get("result_id"))
+                if global_rows:
+                    n_added = sum(1 for r in global_rows if dict(r).get("result_id") not in
+                                  {p.get("result_id") for p in top[:len(top) - len(global_rows)]})
+                    logger.info("Auto-escalate: global sweep found %d leaderboard candidates", len(global_rows))
+            except Exception as e:
+                logger.warning("Auto-escalate global sweep failed: %s", e)
+
             # Filter out architectures already investigated
             investigated_fps = nb.get_investigated_fingerprints()
             if investigated_fps:
@@ -13798,7 +13878,7 @@ class ExperimentRunner:
                     continue
                 if not row.get("stage1_passed"):
                     continue
-                if row.get("loss_ratio") is not None and float(row.get("loss_ratio")) >= 0.75:
+                if row.get("loss_ratio") is not None and float(row.get("loss_ratio")) >= 0.50:
                     continue
                 candidate_ids.append(item["result_id"])
                 if len(candidate_ids) >= config.auto_investigate_top_n:
@@ -14030,7 +14110,7 @@ class ExperimentRunner:
                     novelty_valid = bool(str(config.heuristic_novelty_justification or "").strip())
                 if (
                     r.get("robustness", 0) >= config.auto_validate_min_robustness
-                    and (r.get("best_loss_ratio") or 1.0) < 0.6
+                    and (r.get("best_loss_ratio") or 1.0) < 0.25
                     and r.get("baseline_loss_ratio") is not None
                     and r.get("baseline_loss_ratio") < config.auto_validate_max_baseline_ratio
                     and r.get("novelty_confidence") is not None
@@ -14952,6 +15032,7 @@ class ExperimentRunner:
     def _run_scale_up_thread(self, exp_id: str, result_ids: List[str],
                               config: RunConfig, hypothesis: str):
         """Execute scale-up training in background."""
+        self._live_training_context = {"exp_id": exp_id, "phase": "scale_up"}
         nb = self._make_notebook()
         t_start = time.time()
         try:
@@ -15310,7 +15391,12 @@ class ExperimentRunner:
                 "error": str(e),
             })
         finally:
+            self._live_training_context = None
             nb.close()
+
+    def get_live_loss_curve(self) -> List[Dict]:
+        """Return the in-memory training loss curve for the current/last training run."""
+        return list(self._live_loss_curve)
 
     def get_dashboard_data(self) -> Dict:
         """Get all data needed for the React dashboard."""

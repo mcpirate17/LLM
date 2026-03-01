@@ -3500,8 +3500,10 @@ def _build_reproducibility_workflow(
 
 
 def _compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) -> Dict[str, Any]:
-    leaderboard_entries = nb.get_leaderboard(tier="breakthrough", limit=20, sort_by="composite_score")
-    if not leaderboard_entries:
+    breakthroughs = nb.get_leaderboard(
+        tier="breakthrough", limit=20, sort_by="composite_score", include_references=False
+    )
+    if not breakthroughs:
         return {
             "breakthrough_count": 0,
             "decision_ready_count": 0,
@@ -3949,10 +3951,29 @@ def _compute_action_queue(nb, analytics=None) -> List[Dict[str, Any]]:
     """Aggregate prioritized actions from existing data sources."""
     actions: List[Dict[str, Any]] = []
 
+    def _is_reference_like(entry: Dict[str, Any]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        rid = str(entry.get("result_id") or "").strip().lower()
+        model_source = str(entry.get("model_source") or "").strip().lower()
+        reference_name = str(entry.get("reference_name") or "").strip()
+        return (
+            bool(entry.get("is_reference"))
+            or bool(reference_name)
+            or model_source == "reference"
+            or rid.startswith("ref_")
+        )
+
     # 1. Breakthrough candidates from leaderboard
     try:
-        breakthroughs = nb.get_leaderboard(tier="breakthrough", limit=5, sort_by="composite_score")
+        breakthroughs = nb.get_leaderboard(
+            tier="breakthrough", limit=5, sort_by="composite_score", include_references=False
+        )
         for entry in breakthroughs:
+            # Defensive guard: references should never generate "breakthrough" actions,
+            # even if tier flags drift during concurrent DB updates.
+            if _is_reference_like(entry):
+                continue
             rid = entry.get("result_id", "")
             actions.append({
                 "id": f"breakthrough_{rid[:12]}",
@@ -5181,6 +5202,17 @@ def create_app(
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
+
+    @app.route("/api/live-loss-curve")
+    def api_live_loss_curve():
+        """Return the in-memory training loss curve for the live chart."""
+        if _runner is None:
+            return jsonify([])
+        try:
+            return jsonify(_runner.get_live_loss_curve())
+        except Exception as e:
+            logger.error("Error in /api/live-loss-curve: %s", e)
+            return jsonify([])
 
     @app.route("/api/metrics/<metric_name>")
     def api_metrics(metric_name):
@@ -7541,9 +7573,10 @@ def create_app(
                 if hasattr(aria_inst, "_briefing_cache"):
                     aria_inst._briefing_cache = None
 
-            # --- Pipeline counts ---
+            # --- Pipeline counts (exclude pinned reference architectures) ---
             leaderboard_rows = nb.conn.execute(
-                "SELECT tier, COUNT(*) as cnt FROM leaderboard GROUP BY tier"
+                "SELECT tier, COUNT(*) as cnt FROM leaderboard "
+                "WHERE COALESCE(is_reference, 0) = 0 GROUP BY tier"
             ).fetchall()
             tiers = {r["tier"]: r["cnt"] for r in leaderboard_rows}
             screening = tiers.get("screening", 0)
@@ -7642,6 +7675,7 @@ def create_app(
                     llm_reachable = False
                 if not llm_reachable:
                     fallback_reason = "llm_unreachable"
+            ref_comparison = None
             try:
                 from .llm.context import build_briefing_context
 
@@ -7665,11 +7699,53 @@ def create_app(
                 try:
                     top_programs = nb.conn.execute(
                         "SELECT graph_fingerprint, loss_ratio, novelty_score, tier "
-                        "FROM leaderboard ORDER BY composite_score DESC LIMIT 3"
+                        "FROM leaderboard WHERE COALESCE(is_reference, 0) = 0 "
+                        "ORDER BY composite_score DESC LIMIT 3"
                     ).fetchall()
                     top_progs = [dict(r) for r in top_programs] if top_programs else None
                 except Exception:
                     top_progs = None
+
+                # --- Reference comparison: surface when synthesized models beat references ---
+                try:
+                    ref_rows = nb.conn.execute(
+                        "SELECT reference_name, composite_score, loss_ratio "
+                        "FROM leaderboard WHERE COALESCE(is_reference, 0) = 1 "
+                        "ORDER BY composite_score DESC"
+                    ).fetchall()
+                    best_ref_score = max((r["composite_score"] for r in ref_rows), default=None)
+                    if best_ref_score and top_progs:
+                        best_synth_score = nb.conn.execute(
+                            "SELECT composite_score FROM leaderboard "
+                            "WHERE COALESCE(is_reference, 0) = 0 "
+                            "ORDER BY composite_score DESC LIMIT 1"
+                        ).fetchone()
+                        if best_synth_score and best_synth_score["composite_score"] > best_ref_score:
+                            ref_comparison = {
+                                "beats_all_references": True,
+                                "best_synthesized_score": float(best_synth_score["composite_score"]),
+                                "best_reference_score": float(best_ref_score),
+                                "margin_pct": round(
+                                    100.0 * (best_synth_score["composite_score"] - best_ref_score) / best_ref_score, 1
+                                ),
+                                "references": [
+                                    {"name": r["reference_name"], "score": float(r["composite_score"])}
+                                    for r in ref_rows
+                                ],
+                            }
+                        else:
+                            ref_comparison = {
+                                "beats_all_references": False,
+                                "best_reference_score": float(best_ref_score),
+                                "references": [
+                                    {"name": r["reference_name"], "score": float(r["composite_score"])}
+                                    for r in ref_rows
+                                ],
+                            }
+                    else:
+                        ref_comparison = None
+                except Exception:
+                    ref_comparison = None
 
                 try:
                     scaling_summary_data = None
@@ -7688,6 +7764,7 @@ def create_app(
                         just_completed=just_completed_exp,
                         sparse_coverage=sparse_coverage_data,
                         scaling_summary=scaling_summary_data,
+                        ref_comparison=ref_comparison,
                     )
                 except Exception:
                     briefing_context = {
@@ -7759,6 +7836,7 @@ def create_app(
                         "evidence": recommendation_evidence,
                         "data": data_block,
                         "compression_opportunities": compression_opportunities,
+                        "ref_comparison": ref_comparison,
                     })
                 if fallback_reason is None:
                     fallback_reason = "llm_empty_response"
@@ -7902,6 +7980,23 @@ def create_app(
             except Exception:
                 pass  # Analytics are optional enhancements
 
+            # 7. Reference architecture comparison
+            try:
+                if ref_comparison and ref_comparison.get("beats_all_references"):
+                    margin = ref_comparison.get("margin_pct", 0)
+                    sentences.append(
+                        f"Milestone: a synthesized architecture now beats ALL "
+                        f"reference baselines by {margin}%."
+                    )
+                elif ref_comparison and ref_comparison.get("references"):
+                    best_ref = ref_comparison["best_reference_score"]
+                    sentences.append(
+                        f"Best reference baseline score: {best_ref:.1f}. "
+                        f"No synthesized model has surpassed it yet."
+                    )
+            except Exception:
+                pass
+
             briefing = " ".join(sentences)
 
             # --- Determine recommended action ---
@@ -7951,7 +8046,8 @@ def create_app(
                 screening_rows = nb.conn.execute(
                     "SELECT result_id FROM leaderboard "
                     "WHERE tier = 'screening' AND screening_passed = 1 "
-                    "ORDER BY screening_loss_ratio ASC LIMIT 20"
+                    "AND COALESCE(is_reference, 0) = 0 "
+                    "ORDER BY composite_score DESC LIMIT 20"
                 ).fetchall()
                 screening_candidate_ids = [r["result_id"] for r in screening_rows if r["result_id"]]
                 screening_result_ids = []
@@ -8083,6 +8179,7 @@ def create_app(
                 "evidence": recommendation_evidence,
                 "data": data_block,
                 "compression_opportunities": compression_opportunities,
+                "ref_comparison": ref_comparison,
             })
         except Exception as e:
             logger.error(f"Error in /api/strategy/briefing: {e}")

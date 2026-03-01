@@ -1678,13 +1678,14 @@ function AppContent({ onRunningChange }) {
               </div>
               <div className="card" style={{ padding: 12 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Discovery Frontier</div>
-                {data?.is_running ? (
-                  <LiveFeed
-                    apiBase={API_BASE}
-                    experimentId={data?.progress?.experiment_id || null}
-                  />
-                ) : (
-                  <GlobalParetoChart programs={leaderboardEntries} />
+                <GlobalParetoChart programs={leaderboardEntries} />
+                {data?.is_running && (
+                  <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                    <LiveFeed
+                      apiBase={API_BASE}
+                      experimentId={data?.progress?.experiment_id || null}
+                    />
+                  </div>
                 )}
               </div>
             </div>

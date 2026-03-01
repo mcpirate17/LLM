@@ -1152,17 +1152,20 @@ def _op_token_pool_restore(_, inputs, __):
 
 @register_op("route_topk")
 def _op_route_topk(module, inputs, config):
-    scores = inputs[0]
-    k = int(config.get("k", 1))
-    if HAS_ARIA_CORE and scores.device.type == "cpu" and scores.dtype == torch.float32:
-        indices, weights = aria_core.route_topk_indices_f32(scores, k)
-        _record_routing_telemetry(module, scores.shape[1], indices, logits=scores)
-        return indices, weights
-    # Fallback
-    weights, indices = scores.topk(k, dim=-1)
-    weights = F.softmax(weights, dim=-1)
-    _record_routing_telemetry(module, scores.shape[1], indices, logits=scores)
-    return indices, weights
+    """Top-k routing: zero out all but top-k positions along last dim.
+
+    Input:  (B, S, D)
+    Output: (B, S, D) with only the top-k values per (B, S) slice kept.
+    """
+    x = inputs[0]
+    k = min(int(config.get("k", 1)), x.shape[-1])
+    topk_vals, topk_idx = x.topk(k, dim=-1)  # (B, S, k)
+    _record_routing_telemetry(module, x.shape[-1], topk_idx, logits=x)
+    # Build sparse mask and scatter top-k values back
+    mask = torch.zeros_like(x)
+    mask.scatter_(-1, topk_idx, 1.0)
+    # STE: forward uses hard mask, backward passes through
+    return x * (mask.detach() - x.detach() + x)
 
 @register_op("route_lanes")
 def _op_route_lanes(module, inputs, config):
@@ -1399,12 +1402,14 @@ def _op_routing_conditioned_compression(module, inputs, config):
 
 @register_op("token_type_classifier")
 def _op_token_type_classifier(module, inputs, config):
-    """Learned classifier to produce routing scores from embeddings."""
-    x = inputs[0] # (B, S, D)
-    if not hasattr(module, 'classifier_weight'): return torch.zeros(x.shape[0], x.shape[1], 1, device=x.device)
-    
-    # Output: (B, S, n_classes)
-    return F.linear(x, module.classifier_weight)
+    """Learned classifier: (B,S,D) -> scores -> projected back to (B,S,D)."""
+    x = inputs[0]  # (B, S, D)
+    if not hasattr(module, 'classifier_weight'):
+        return x
+    # (B, S, D) -> (B, S, n_classes)
+    scores = F.linear(x, module.classifier_weight)
+    # Project back to model dim so downstream ops get correct shape
+    return F.linear(scores, module.classifier_proj_back)
 
 @register_op("entropy_router")
 def _op_entropy_router(module, inputs, config):
@@ -1855,6 +1860,7 @@ class CompiledOp(nn.Module):
         elif op.name == "token_type_classifier":
             n_classes = int(config.get("n_classes", 2))
             self.classifier_weight = self._make_param((n_classes, D_in), std=0.02)
+            self.classifier_proj_back = self._make_param((D_in, n_classes), std=0.02)
         elif op.name == "progressive_compression_gate":
             self.weight_full = self._make_param((D_out, D_in), std=0.02)
             self.compress_param = nn.Parameter(torch.zeros(1)) # Initial 50/50

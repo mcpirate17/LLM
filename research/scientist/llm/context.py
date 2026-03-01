@@ -911,6 +911,9 @@ def build_mode_selection_context(
         tier_counts: Dict[str, int] = {}
         tier_best: Dict[str, float] = {}
         for entry in leaderboard:
+            rid = str(entry.get("result_id") or "")
+            if rid.startswith("ref_"):
+                continue
             t = entry.get("tier", "screening")
             tier_counts[t] = tier_counts.get(t, 0) + 1
             score = entry.get("composite_score", 0)
@@ -928,6 +931,7 @@ def build_mode_selection_context(
         screening_candidates = [
             e for e in leaderboard
             if e.get("tier") == "screening"
+            and not str(e.get("result_id", "")).startswith("ref_")
             and e.get("screening_loss_ratio") is not None
             and e["screening_loss_ratio"] < 0.5
         ]
@@ -939,6 +943,7 @@ def build_mode_selection_context(
         investigation_candidates = [
             e for e in leaderboard
             if e.get("tier") == "investigation"
+            and not str(e.get("result_id", "")).startswith("ref_")
             and e.get("investigation_robustness") is not None
             and e["investigation_robustness"] >= 0.5
         ]
@@ -1085,6 +1090,9 @@ def build_hypothesis_context(
     if leaderboard:
         tier_counts: Dict[str, int] = {}
         for entry in leaderboard:
+            rid = str(entry.get("result_id") or "")
+            if rid.startswith("ref_"):
+                continue
             t = entry.get("tier", "screening")
             tier_counts[t] = tier_counts.get(t, 0) + 1
         lines = ["Leaderboard:"]
@@ -1319,6 +1327,7 @@ def build_briefing_context(
     just_completed: Optional[Dict] = None,
     sparse_coverage: Optional[Dict] = None,
     scaling_summary: Optional[Dict] = None,
+    ref_comparison: Optional[Dict] = None,
 ) -> str:
     """Build compact context for the Aria briefing prompt.
 
@@ -1493,6 +1502,21 @@ def build_briefing_context(
             if avg_d is not None:
                 line += f", avg density={avg_d:.2f}"
             sections.append(line)
+
+    # Reference architecture comparison
+    if ref_comparison:
+        refs = ref_comparison.get("references") or []
+        ref_lines = ["Reference Baselines (targets to beat):"]
+        for r in refs:
+            ref_lines.append(f"  {r.get('name', '?')}: score={r.get('score', 0):.1f}")
+        if ref_comparison.get("beats_all_references"):
+            margin = ref_comparison.get("margin_pct", 0)
+            best = ref_comparison.get("best_synthesized_score", 0)
+            ref_lines.append(
+                f"  *** MILESTONE: Best synthesized model (score={best:.1f}) "
+                f"beats ALL references by {margin}%! ***"
+            )
+        sections.append("\n".join(ref_lines))
 
     return "\n\n".join(sections)
 

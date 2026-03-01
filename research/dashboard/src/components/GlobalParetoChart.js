@@ -17,9 +17,9 @@ import {
 function GlobalParetoChart({ programs, title = "Search Frontier: Accuracy vs Efficiency" }) {
   // 1. Filter only S1 survivors and valid metrics
   const survivors = useMemo(() => {
-    return (programs || []).filter(p => 
-      p.stage1_passed && 
-      p.loss_ratio != null && 
+    return (programs || []).filter(p =>
+      (p.stage1_passed || p.screening_passed || p.tier) &&
+      p.loss_ratio != null &&
       p.param_count != null
     ).map(p => ({
       ...p,
@@ -68,24 +68,26 @@ function GlobalParetoChart({ programs, title = "Search Frontier: Accuracy vs Eff
   }
 
   const families = Array.from(new Set(survivors.map(p => p.family)));
-  const familyColors = {
-    'Attention': '#58a6ff',
-    'Mamba-SSM': '#3fb950',
-    'Hybrid-Mixer': '#d29922',
-    'MoE-Attention': '#bc8cff',
-    'Custom': '#8b949e'
-  };
+  const PALETTE = [
+    '#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#f47067',
+    '#39d2c0', '#e3b341', '#db61a2', '#79c0ff', '#7ee787',
+  ];
+  const familyColors = {};
+  families.forEach((fam, i) => {
+    familyColors[fam] = PALETTE[i % PALETTE.length];
+  });
 
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
+      if (!data || data.params_m == null) return null;
       return (
         <div style={{ background: '#161b22', border: '1px solid #30363d', padding: '8px 12px', borderRadius: 6, fontSize: 12 }}>
-          <div style={{ fontWeight: 700, marginBottom: 4, color: 'var(--accent-blue)' }}>{data.name}</div>
-          <div>Family: {data.family}</div>
-          <div>Accuracy: {(data.accuracy * 100).toFixed(1)}%</div>
-          <div>Params: {data.params_m.toFixed(1)}M</div>
-          {data.compression_ratio && <div>Comp: {data.compression_ratio.toFixed(2)}x</div>}
+          <div style={{ fontWeight: 700, marginBottom: 4, color: 'var(--accent-blue)' }}>{data.name || 'Unknown'}</div>
+          <div>Family: {data.family || 'Custom'}</div>
+          <div>Accuracy: {((data.accuracy || 0) * 100).toFixed(1)}%</div>
+          <div>Params: {(data.params_m || 0).toFixed(1)}M</div>
+          {data.compression_ratio != null && <div>Comp: {data.compression_ratio.toFixed(2)}x</div>}
         </div>
       );
     }

@@ -3909,8 +3909,13 @@ class LabNotebook:
         )
         params: List[Any] = []
         if tier:
-            query += " AND (l.tier = ? OR COALESCE(l.is_reference, 0) = 1)"
+            if include_references:
+                query += " AND (l.tier = ? OR COALESCE(l.is_reference, 0) = 1)"
+            else:
+                query += " AND l.tier = ? AND COALESCE(l.is_reference, 0) = 0"
             params.append(tier)
+        elif not include_references:
+            query += " AND COALESCE(l.is_reference, 0) = 0"
         oversample = max(limit * 6, 200)
         # Fields sourced from program_results use the SELECT alias directly
         pr_sort_fields = {"discovery_loss_ratio", "generalization_gap"}

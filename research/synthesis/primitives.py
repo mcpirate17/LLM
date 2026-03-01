@@ -472,9 +472,9 @@ _register(PrimitiveOp("mixed_recursion_gate", OpCategory.PARAMETERIZED, 2, "iden
 _register(PrimitiveOp("routing_conditioned_compression", OpCategory.PARAMETERIZED, 2, "identity",
                        has_params=True,
                        description="Compression level chosen per-token by routing scores"))
-_register(PrimitiveOp("token_type_classifier", OpCategory.PARAMETERIZED, 1, "reduce_last",
-                       has_params=True, param_formula="D*K",
-                       description="Learned classifier to produce routing scores from token embeddings",
+_register(PrimitiveOp("token_type_classifier", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D",
+                       description="Learned classifier to produce routing scores from token embeddings, projected back to model dim",
                        config_keys=("n_classes",), standalone=False))
 _register(PrimitiveOp("entropy_router", OpCategory.FUNCTIONAL, 1, "reduce_last",
                        description="Produces routing signal based on entropy of input scores (B,S,K) -> (B,S,1)",

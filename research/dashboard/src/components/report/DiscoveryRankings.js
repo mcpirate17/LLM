@@ -251,6 +251,8 @@ export default function DiscoveryRankings({
           <tbody>
             {sorted.map((p, i) => {
               const gate = decisionGate(p);
+              const lrRaw = resolveLossRatio(p) ?? p.loss_ratio;
+              const lr = Number.isFinite(Number(lrRaw)) ? Number(lrRaw) : null;
               const eligibility = (p.result_id && eligibilityByResultId?.[p.result_id]) || {
                 investigationEligible: false,
                 validationEligible: false,

@@ -186,7 +186,9 @@ def execute_sparse_threshold(module: nn.Module, *inputs: torch.Tensor) -> torch.
         Sparsified tensor of shape (B, S, D)
     """
     x = inputs[0]  # (B, S, D)
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+    if (_HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3
+            and x.device.type == "cpu" and x.dtype == torch.float32
+            and not x.requires_grad):
         return aria_core.sparse_threshold_f32(x)
     abs_x = x.abs()
     # Per-sample median across all positions (flatten S*D)

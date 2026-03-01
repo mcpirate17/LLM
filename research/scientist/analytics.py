@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from collections import defaultdict
@@ -22,6 +23,8 @@ from ..eval.utils import safe_json_load, safe_parse_float
 from ..synthesis.grammar import GrammarConfig
 from ..synthesis.primitives import get_primitive, PROTECTED_OPS
 from .notebook import LabNotebook
+
+logger = logging.getLogger(__name__)
 
 
 class ExperimentAnalytics:
@@ -398,7 +401,7 @@ class ExperimentAnalytics:
         """Summarize compression-technique coverage across tested and surviving programs."""
         rows = self.nb.conn.execute("""
             SELECT stage1_passed, arch_spec_json, loss_ratio, baseline_loss_ratio,
-                   param_count, graph_n_params_estimate
+                   param_count, graph_n_params_estimate, graph_json
             FROM program_results
             WHERE arch_spec_json IS NOT NULL OR loss_ratio IS NOT NULL
         """).fetchall()
@@ -1343,6 +1346,7 @@ class ExperimentAnalytics:
         gate_stats = self.gate_performance_summary()
         correlation = gate_stats.get("discovery_validation_correlation")
         n_samples = gate_stats.get("n_correlation_samples", 0)
+        default_weights = self.get_current_grammar_weights() or {}
         
         # If correlation is low (< 0.3) and we have enough data, dampen learned signal
         if learned and correlation is not None and n_samples > 10 and correlation < 0.3:

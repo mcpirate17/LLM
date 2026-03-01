@@ -244,6 +244,22 @@ function LiveFeed({ apiBase, experimentId = null }) {
   useEventBus('learning_event', addEvent('learning'));
   useEventBus('training_step', handleTrainingStep);
 
+  // Fetch loss curve on mount (regardless of experimentId)
+  useEffect(() => {
+    fetch(`${apiBase}/api/live-loss-curve`)
+      .then(r => r.json())
+      .then(curve => {
+        if (Array.isArray(curve) && curve.length >= 2) {
+          lossCurveExpRef.current = curve[0]?.experiment_id || '';
+          setLossCurve(curve.map(p => ({
+            step: p.step, loss: p.loss,
+            total_steps: p.total_steps, phase: p.phase,
+          })));
+        }
+      })
+      .catch(() => {});
+  }, [apiBase]);
+
   // Load history from REST when experimentId changes
   useEffect(() => {
     setEvents([]);
@@ -259,6 +275,21 @@ function LiveFeed({ apiBase, experimentId = null }) {
           .filter(Boolean);
         if (normalizedHistory.length === 0) return;
         setEvents((prev) => [...normalizedHistory, ...prev].slice(-100));
+      })
+      .catch(() => {});
+
+    // Restore loss curve from server buffer
+    fetch(`${apiBase}/api/live-loss-curve`)
+      .then(r => r.json())
+      .then(curve => {
+        if (Array.isArray(curve) && curve.length >= 2) {
+          const curveExpId = curve[0]?.experiment_id || '';
+          lossCurveExpRef.current = curveExpId;
+          setLossCurve(curve.map(p => ({
+            step: p.step, loss: p.loss,
+            total_steps: p.total_steps, phase: p.phase,
+          })));
+        }
       })
       .catch(() => {});
   }, [apiBase, experimentId]);
@@ -315,9 +346,24 @@ function LiveFeed({ apiBase, experimentId = null }) {
           });
         })
         .catch((err) => console.error('LiveFeed: Gap heal fetch failed', err));
+
+      // Also restore loss curve on reconnect
+      fetch(`${apiBase}/api/live-loss-curve`)
+        .then(r => r.json())
+        .then(curve => {
+          if (Array.isArray(curve) && curve.length >= 2) {
+            const curveExpId = curve[0]?.experiment_id || '';
+            lossCurveExpRef.current = curveExpId;
+            setLossCurve(curve.map(p => ({
+              step: p.step, loss: p.loss,
+              total_steps: p.total_steps, phase: p.phase,
+            })));
+          }
+        })
+        .catch(() => {});
     }
     prevConnectedRef.current = connected;
-  }, [connected, experimentId]);
+  }, [connected, experimentId, apiBase]);
 
   return (
     <div
