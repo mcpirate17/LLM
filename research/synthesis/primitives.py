@@ -86,36 +86,6 @@ PROTECTED_OPS: frozenset = frozenset({
 })
 
 
-# ── Shape Rules ──────────────────────────────────────────────────────
-# These are symbolic. The actual shape computation happens in graph.py
-# when we know concrete dimensions.
-
-SHAPE_RULES = {
-    "identity": "Input shape passes through unchanged",
-    "binary_broadcast": "Broadcast binary op (shapes must be compatible)",
-    "reduce_last": "Reduce last dimension: (B,S,D) -> (B,S,1)",
-    "reduce_seq": "Reduce sequence dimension: (B,S,D) -> (B,1,D)",
-    "matmul": "Matrix multiply: (B,S,D) x (B,D,K) -> (B,S,K) or similar",
-    "outer": "Elementwise (Hadamard) product: (B,S,D) x (B,S,D) -> (B,S,D)",
-    "transpose_seq_dim": "Swap seq and dim: (B,S,D) -> (B,D,S)",
-    "split": "Split last dim into N parts: (B,S,D) -> N x (B,S,D//N)",
-    "concat": "Concat along last dim: N x (B,S,D_i) -> (B,S,sum(D_i))",
-    "linear": "Linear projection: (B,S,D_in) -> (B,S,D_out)",
-    "roll": "Circular shift along sequence dim: (B,S,D) -> (B,S,D)",
-    "gather": "Gather along dim using indices from argsort",
-    "scatter": "Scatter values back to original positions",
-    "rfft": "Real FFT along sequence dim: (B,S,D) -> (B,S//2+1,D) complex",
-    "irfft": "Inverse real FFT: (B,S//2+1,D) -> (B,S,D)",
-    "sort": "Sort along sequence dim, returns sorted + indices",
-    "unsort": "Inverse permutation to undo a sort",
-    "cumulative": "Cumulative op along sequence dim: shape unchanged",
-    "softmax": "Softmax along specified dim: shape unchanged",
-    "causal_mask": "Apply causal mask: shape unchanged",
-    "scale": "Learnable per-dim scale: shape unchanged",
-    "bias": "Learnable per-dim bias: shape unchanged",
-}
-
-
 # ── Safe arithmetic evaluation ────────────────────────────────────────
 
 _SAFE_OPS = {
@@ -237,11 +207,6 @@ _register(PrimitiveOp("max_last", OpCategory.REDUCTION, 1, "reduce_last",
                        description="Max along last dimension"))
 _register(PrimitiveOp("norm_last", OpCategory.REDUCTION, 1, "reduce_last",
                        description="L2 norm along last dimension"))
-# Removed sum_seq and mean_seq as they reduce over the entire sequence, breaking causality.
-# _register(PrimitiveOp("sum_seq", OpCategory.REDUCTION, 1, "reduce_seq",
-#                        description="Sum along sequence dimension"))
-# _register(PrimitiveOp("mean_seq", OpCategory.REDUCTION, 1, "reduce_seq",
-#                        description="Mean along sequence dimension"))
 _register(PrimitiveOp("cumsum", OpCategory.REDUCTION, 1, "cumulative",
                        description="Cumulative sum along sequence dim"))
 _register(PrimitiveOp("cumprod_safe", OpCategory.REDUCTION, 1, "cumulative",
@@ -257,6 +222,12 @@ _register(PrimitiveOp("outer_product", OpCategory.LINEAR_ALGEBRA, 2, "outer",
 _register(PrimitiveOp("transpose_sd", OpCategory.LINEAR_ALGEBRA, 1, "transpose_seq_dim",
                        description="Transpose sequence and feature dims"))
 
+# ── Identity (pass-through, used by workflow_converter for uniform routing) ──
+
+_register(PrimitiveOp("identity", OpCategory.STRUCTURAL, 1, "identity",
+                       description="Pass-through (no-op)",
+                       standalone=False))
+
 # ── Structural ────────────────────────────────────────────────────────
 
 _register(PrimitiveOp("split2", OpCategory.STRUCTURAL, 1, "split",
@@ -267,16 +238,6 @@ _register(PrimitiveOp("split3", OpCategory.STRUCTURAL, 1, "split",
                        config_keys=("n_splits",)))
 _register(PrimitiveOp("concat", OpCategory.STRUCTURAL, 2, "concat",
                        description="Concatenate along last dimension"))
-# Removed roll_seq and roll_neg as they inherently break causality in an autoregressive context.
-# _register(PrimitiveOp("roll_seq", OpCategory.STRUCTURAL, 1, "roll",
-#                        description="Circular shift by 1 along sequence dim"))
-# _register(PrimitiveOp("roll_neg", OpCategory.STRUCTURAL, 1, "roll",
-#                        description="Circular shift by -1 along sequence dim"))
-# Removed gather_sorted and scatter_unsort as they can gather from future tokens.
-# _register(PrimitiveOp("gather_sorted", OpCategory.STRUCTURAL, 2, "gather",
-#                        description="Gather elements using sort indices"))
-# _register(PrimitiveOp("scatter_unsort", OpCategory.STRUCTURAL, 2, "scatter",
-#                        description="Scatter elements back using unsort indices"))
 _register(PrimitiveOp("multi_head_mix", OpCategory.STRUCTURAL, 1, "identity",
                        description="Multi-head reshape + per-head L2 normalize",
                        config_keys=("n_heads",)))
@@ -333,34 +294,14 @@ _register(PrimitiveOp("semi_structured_2_4_linear", OpCategory.PARAMETERIZED, 1,
 
 _register(PrimitiveOp("softmax_last", OpCategory.SEQUENCE, 1, "softmax",
                        description="Softmax along last dimension"))
-# Removed softmax_seq as it inherently breaks causality in an autoregressive context.
-# _register(PrimitiveOp("softmax_seq", OpCategory.SEQUENCE, 1, "softmax",
-#                        description="Softmax along sequence dimension"))
 _register(PrimitiveOp("causal_mask", OpCategory.SEQUENCE, 1, "causal_mask",
                        description="Apply causal (lower-triangular) mask"))
-# Removed sort_seq and argsort_seq as they inherently break causality in an autoregressive context.
-# _register(PrimitiveOp("sort_seq", OpCategory.SEQUENCE, 1, "sort",
-#                        description="Sort along sequence dim by learned key"))
-# _register(PrimitiveOp("argsort_seq", OpCategory.SEQUENCE, 1, "sort",
-#                        description="Argsort along sequence dim"))
 _register(PrimitiveOp("local_window_attn", OpCategory.SEQUENCE, 1, "identity",
                        description="Local windowed causal self-attention (Q=K=V)",
                        config_keys=("window_size",)))
 _register(PrimitiveOp("sliding_window_mask", OpCategory.SEQUENCE, 1, "causal_mask",
                        description="Exponential distance decay mask for windowed composition",
                        config_keys=("window_size",)))
-# Removed token_pool_restore as it inherently breaks causality in an autoregressive context.
-# _register(PrimitiveOp("token_pool_restore", OpCategory.SEQUENCE, 1, "identity",
-#                        description="Pool adjacent token pairs then restore via repeat"))
-
-# ── Frequency Domain ──────────────────────────────────────────────────
-
-# Removed rfft_seq and irfft_seq as they inherently break causality in an autoregressive context.
-# _register(PrimitiveOp("rfft_seq", OpCategory.FREQUENCY, 1, "rfft",
-#                        description="Real FFT along sequence dimension"))
-# _register(PrimitiveOp("irfft_seq", OpCategory.FREQUENCY, 1, "irfft",
-#                        description="Inverse real FFT along sequence dim"))
-
 # ── Mixing Operations ─────────────────────────────────────────────────
 
 _register(PrimitiveOp("softmax_attention", OpCategory.MIXING, 1, "identity",
@@ -514,6 +455,88 @@ _register(PrimitiveOp("fixed_point_iter", OpCategory.FUNCTIONAL, 1, "identity",
                        config_keys=("n_iters", "damping")))
 
 
+# ── Manifest Loading (Single Source of Truth) ─────────────────────────
+
+def load_primitives_from_designer(components_root: Path) -> int:
+    """Scan Designer components/ and register primitives from manifests."""
+    import yaml
+    count = 0
+    # Map Designer categories to Research categories
+    CAT_MAP = {
+        "math": OpCategory.ELEMENTWISE_UNARY,
+        "math_space": OpCategory.MATH_SPACE,
+        "mixing": OpCategory.MIXING,
+        "routing": OpCategory.FUNCTIONAL,
+        "structural": OpCategory.STRUCTURAL,
+        "reduction": OpCategory.REDUCTION,
+        "linear_algebra": OpCategory.LINEAR_ALGEBRA,
+        "sequence": OpCategory.SEQUENCE,
+        "frequency": OpCategory.FREQUENCY,
+        "parameterized": OpCategory.PARAMETERIZED,
+        "functional": OpCategory.FUNCTIONAL,
+        "blocks": OpCategory.STRUCTURAL,
+        "channel_mixing": OpCategory.MIXING,
+    }
+
+    for manifest_path in components_root.glob("*/*/manifest.yaml"):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = yaml.safe_load(f)
+
+            op_id = manifest.get("id")
+            if not op_id or op_id in PRIMITIVE_REGISTRY:
+                continue
+
+            perf = manifest.get("performance", {})
+            desc = manifest.get("description", "")
+            cat_name = manifest_path.parent.parent.name
+
+            # Skip non-graph categories: these are morphological box concepts
+            # (normalization variants, positional encodings, representations,
+            # data I/O, control flow) that have no _OP_DISPATCH handler and
+            # would raise ValueError("Unknown op") at execution time.
+            if cat_name not in CAT_MAP:
+                continue
+
+            # Skip manifest ops that have no compiler dispatch handler.
+            # Many aria-designer components (blocks, mixing variants, etc.)
+            # have manifests but no _execute_op implementation — registering
+            # them lets the grammar sample them, only to crash at runtime.
+            from .compiler import _OP_DISPATCH
+            if op_id not in _OP_DISPATCH:
+                continue
+
+            # Create PrimitiveOp from manifest
+            op = PrimitiveOp(
+                name=op_id,
+                category=CAT_MAP.get(cat_name, OpCategory.ELEMENTWISE_UNARY),
+                n_inputs=len(manifest.get("inputs", [])),
+                shape_rule=manifest.get("shape_rule", "identity"), # Default to identity if missing
+                has_params=perf.get("has_params", False),
+                param_formula=perf.get("param_formula", "0"),
+                preserves_gradient=perf.get("preserves_gradient", True),
+                numerically_risky=perf.get("numerically_risky", False),
+                description=desc,
+                config_keys=tuple(manifest.get("params", {}).keys()),
+                standalone=manifest.get("standalone", True)
+            )
+            _register(op)
+            count += 1
+        except Exception:
+            continue
+    return count
+
+
+# Load Designer primitives if available
+try:
+    from pathlib import Path
+    _DESIGNER_COMPONENTS = Path(__file__).resolve().parents[2] / "aria_designer" / "components"
+    if _DESIGNER_COMPONENTS.exists():
+        load_primitives_from_designer(_DESIGNER_COMPONENTS)
+except Exception:
+    pass
+
+
 # ── Helper Functions ──────────────────────────────────────────────────
 
 def get_primitive(name: str) -> PrimitiveOp:
@@ -529,11 +552,6 @@ def list_primitives(category: Optional[OpCategory] = None) -> List[PrimitiveOp]:
     if category is not None:
         ops = [op for op in ops if op.category == category]
     return ops
-
-
-def list_by_n_inputs(n: int) -> List[PrimitiveOp]:
-    """List primitives by number of inputs."""
-    return [op for op in PRIMITIVE_REGISTRY.values() if op.n_inputs == n]
 
 
 def register_external_primitive(op: PrimitiveOp) -> None:
