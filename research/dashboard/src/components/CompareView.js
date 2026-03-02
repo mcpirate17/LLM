@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { apiCall } from "../services/apiService";
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Legend, Tooltip } from 'recharts';
+import ChartActions from './ChartActions';
 
 function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
   const [details, setDetails] = useState([]);
@@ -60,6 +61,64 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
 
   const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff'];
 
+  // Contextual comparison actions
+  const comparisonActions = useMemo(() => {
+    if (details.length < 2) return [];
+    const result = [];
+
+    // Check if one model dominates another on most metrics
+    for (let i = 0; i < details.length; i++) {
+      for (let j = i + 1; j < details.length; j++) {
+        const a = details[i], b = details[j];
+        let aWins = 0, bWins = 0;
+        const metricKeys = ['loss_ratio', 'novelty_score', 'baseline_loss_ratio'];
+        for (const m of metricKeys) {
+          const va = a.outcomes?.[m] ?? a.program?.[m] ?? null;
+          const vb = b.outcomes?.[m] ?? b.program?.[m] ?? null;
+          if (va == null || vb == null) continue;
+          const lower = m !== 'novelty_score'; // lower is better for loss metrics
+          if (lower ? va < vb : va > vb) aWins++;
+          else if (lower ? vb < va : vb > va) bWins++;
+        }
+        if (aWins >= 3 && bWins === 0) {
+          result.push({
+            id: `dom-${i}-${j}`,
+            label: `${a.result_id?.slice(0, 8)} dominates ${b.result_id?.slice(0, 8)} on ${aWins}/${metricKeys.length} metrics`,
+            detail: `Consider dropping ${b.result_id?.slice(0, 8)}`,
+            color: colors[i % colors.length],
+            onClick: () => onSelectProgram?.(a.result_id),
+          });
+        } else if (bWins >= 3 && aWins === 0) {
+          result.push({
+            id: `dom-${j}-${i}`,
+            label: `${b.result_id?.slice(0, 8)} dominates ${a.result_id?.slice(0, 8)} on ${bWins}/${metricKeys.length} metrics`,
+            detail: `Consider dropping ${a.result_id?.slice(0, 8)}`,
+            color: colors[j % colors.length],
+            onClick: () => onSelectProgram?.(b.result_id),
+          });
+        }
+      }
+    }
+
+    // Highest novelty but worst loss
+    if (details.length >= 2) {
+      const byNovelty = [...details].sort((a, b) => (b.outcomes?.novelty_score || 0) - (a.outcomes?.novelty_score || 0));
+      const byLoss = [...details].sort((a, b) => (a.outcomes?.loss_ratio || 1) - (b.outcomes?.loss_ratio || 1));
+      const highestNovelty = byNovelty[0];
+      const bestLoss = byLoss[0];
+      if (highestNovelty.result_id !== bestLoss.result_id && (highestNovelty.outcomes?.novelty_score || 0) > 0) {
+        result.push({
+          id: 'novelty-vs-loss',
+          label: `${highestNovelty.result_id?.slice(0, 8)} highest novelty but not best loss \u2014 investigate hybrid?`,
+          color: 'var(--accent-purple)',
+          onClick: () => onSelectProgram?.(highestNovelty.result_id),
+        });
+      }
+    }
+
+    return result.slice(0, 3);
+  }, [details, onSelectProgram]);
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 3fr', gap: 16 }}>
       <div className="card" style={{ padding: 12 }}>
@@ -105,6 +164,7 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
             </RadarChart>
           </ResponsiveContainer>
         </div>
+        <ChartActions actions={comparisonActions} />
 
         <div style={{ marginTop: 24, overflowX: 'auto' }}>
           <table className="data-table table-compact">

@@ -2,7 +2,7 @@
 Tests for designer endpoint proxy-first mode.
 
 Verifies that /api/designer/* endpoints:
-1. Forward to aria-designer API when proxy is enabled and available
+1. Forward to aria_designer API when proxy is enabled and available
 2. Fall back to legacy local implementation when proxy is unavailable
 3. Return clear error semantics for proxy timeouts
 4. Preserve backward-compatible response shapes

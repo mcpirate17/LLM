@@ -204,22 +204,31 @@ function LabNotebook({ entries, onSelectExperiment }) {
 
   return (
     <div className="card">
-      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <span>Lab Notebook — Recent Entries</span>
-        <input
-          value={filterQuery}
-          onChange={(e) => setFilterQuery(e.target.value)}
-          placeholder="Filter entries"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
-        />
+      <div className="table-toolbar">
+        <div className="card-title" style={{ marginBottom: 0 }}>
+          <span>Lab Notebook — Recent Entries</span>
+        </div>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {latestTimestamp && (
+            <span className="last-updated-chip">
+              Updated {formatTime(latestTimestamp)}
+            </span>
+          )}
+          <input
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="Filter entries"
+            style={{
+              fontSize: 11,
+              padding: '4px 8px',
+              borderRadius: 4,
+              border: '1px solid var(--border)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              minWidth: 160,
+            }}
+          />
+        </div>
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
         Latest entry: {latestTimestamp ? formatTime(latestTimestamp) : 'not available'}

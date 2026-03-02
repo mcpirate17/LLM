@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 try:
     import aria_core
-    _HAS_ARIA_CORE = True
+    _HAS_ARIA_CORE = hasattr(aria_core, 'hyperbolic_mobius_add_f32')
 except ImportError:
     _HAS_ARIA_CORE = False
 
@@ -42,7 +42,7 @@ def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float = DEFAULT_C) -> torch.
 
     The hyperbolic analog of vector addition. Non-commutative!
     """
-    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous():
+    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous() and x.device.type == "cpu":
         shape = x.shape
         x_flat = x.view(-1, shape[-1])
         y_flat = y.view(-1, shape[-1])
@@ -89,7 +89,7 @@ def hyperbolic_distance(x: torch.Tensor, y: torch.Tensor,
 
     Returns per-element distances: (B, S, 1)
     """
-    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous():
+    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous() and x.device.type == "cpu":
         shape = x.shape
         x_flat = x.view(-1, shape[-1])
         y_flat = y.view(-1, shape[-1])

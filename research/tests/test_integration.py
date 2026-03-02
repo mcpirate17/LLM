@@ -144,7 +144,7 @@ class TestNotebook(unittest.TestCase):
             workflow_version=3,
             graph_fingerprint="fp_lineage_test",
             status="success",
-            source="aria-designer",
+            source="aria_designer",
             total_time_ms=123.4,
             metrics={"overall_novelty": 0.42},
             payload={"status": "success"},
@@ -2186,7 +2186,7 @@ class TestAPI(unittest.TestCase):
             "workflow_version": 7,
             "graph_fingerprint": "fp_api_lineage",
             "status": "success",
-            "source": "aria-designer",
+            "source": "aria_designer",
             "total_time_ms": 98.6,
             "metrics": {"overall_novelty": 0.51},
             "payload": {"result": {"status": "success"}},
@@ -6033,7 +6033,7 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("/api/designer/touch", content)
         self.assertIn("/api/designer/lineage?limit=20", content)
         self.assertIn("Starting Aria Designer", content)
-        self.assertNotIn("Run: cd aria-designer/ui && npm run dev", content)
+        self.assertNotIn("Run: cd aria_designer/ui && npm run dev", content)
 
     def test_architecture_drawer_embedded_bridge_handshake(self):
         drawer_path = os.path.join(self.component_dir, "ArchitectureDrawer.js")
@@ -7143,8 +7143,8 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         hardened, report = runner.prescreen_run_config(config, mode="evolve", auto_harden=True)
 
-        self.assertEqual(hardened.max_depth, 3)
-        self.assertEqual(hardened.max_ops, 5)
+        self.assertEqual(hardened.max_depth, 8)
+        self.assertEqual(hardened.max_ops, 12)
         self.assertEqual(hardened.n_generations, 1)
         self.assertGreater(report.get("risk_score", 0), 0)
         self.assertIn(report.get("risk_level"), {"medium", "high"})

@@ -26,6 +26,6 @@ The primary gap is the transition from **Differentiable Search** to **Pure Discr
 
 To move toward nearly computationally free routing:
 
-1.  **Bitwise Tropical Routing:** Implement bit-shifted $(\max, +)$ kernels in `aria-core` that operate on quantized embeddings. This would allow MoE routing to happen in the integer domain, completely bypassing the floating-point unit.
+1.  **Bitwise Tropical Routing:** Implement bit-shifted $(\max, +)$ kernels in `aria_core` that operate on quantized embeddings. This would allow MoE routing to happen in the integer domain, completely bypassing the floating-point unit.
 2.  **Topological Expert Growth:** Allow the AI Scientist to dynamically "spawn" micro-experts during training when it detects that a specific tropical centroid is overloaded (too many tokens mapped to one "shortest path").
 3.  **Combinatorial Synthesis:** Expand the `research/synthesis/` grammar to explicitly include "Tropical Blocks" as high-level motifs, ensuring the AI Scientist prioritizes these low-tax structures in the efficiency frontier search.

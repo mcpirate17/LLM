@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from scipy.spatial.distance import cdist
 
-from ..eval.utils import safe_json_load, safe_parse_float
+from ..eval.utils import safe_parse_float
 from ..synthesis.grammar import GrammarConfig
 from ..synthesis.primitives import get_primitive, PROTECTED_OPS
 from .notebook import LabNotebook
@@ -599,11 +599,19 @@ class ExperimentAnalytics:
         for row in rows:
             op = row["op_name"]
             n_used = row["n_used"] or 1
+            n_s0 = row.get("n_stage0_passed") or 0
+            
+            # S1 success rate should be relative to things that actually
+            # passed compilation. If it didn't compile, it's a code issue,
+            # not a failure of the architecture's scientific utility.
+            s1_rate = (row.get("n_stage1_passed") or 0) / n_s0 if n_s0 > 0 else 0.0
+
             result[op] = {
                 "n_used": n_used,
-                "s0_rate": (row.get("n_stage0_passed") or 0) / n_used,
+                "n_s0": n_s0,
+                "s0_rate": n_s0 / n_used,
                 "s05_rate": (row.get("n_stage05_passed") or 0) / n_used,
-                "s1_rate": (row.get("n_stage1_passed") or 0) / n_used,
+                "s1_rate": s1_rate,
                 "avg_loss_ratio": row.get("avg_loss_ratio"),
                 "avg_novelty": row.get("avg_novelty"),
                 "avg_novelty_confidence": row.get("avg_novelty_confidence"),
@@ -2858,6 +2866,9 @@ class ExperimentAnalytics:
                         ),
                         "category": "success_factor",
                         "confidence": round(conf, 2),
+                        "insight_type": "top_ops",
+                        "subject_key": "+".join(sorted({op for op, _, _ in best_ops})),
+                        "semantic_key": "top_ops:" + "+".join(sorted({op for op, _, _ in best_ops})),
                     })
 
                 if worst_ops and worst_ops[-1][1] == 0 and worst_ops[-1][2] >= 10:
@@ -2873,6 +2884,9 @@ class ExperimentAnalytics:
                             ),
                             "category": "failure_mode",
                             "confidence": round(conf, 2),
+                            "insight_type": "failing_ops",
+                            "subject_key": "+".join(sorted({op for op, _ in failing})),
+                            "semantic_key": "failing_ops:" + "+".join(sorted({op for op, _ in failing})),
                         })
 
         # 2. Structural correlation insights
@@ -2892,6 +2906,9 @@ class ExperimentAnalytics:
                         ),
                         "category": "hypothesis",
                         "confidence": round(conf, 2),
+                        "insight_type": "graph_correlation",
+                        "subject_key": metric,
+                        "semantic_key": f"graph_correlation:{metric}",
                     })
                     break  # just the strongest
 
@@ -2910,6 +2927,9 @@ class ExperimentAnalytics:
                     ),
                     "category": "failure_mode",
                     "confidence": round(conf, 2),
+                    "insight_type": "common_failure",
+                    "subject_key": str(top_failure[0]),
+                    "semantic_key": f"common_failure:{top_failure[0]}",
                 })
 
         # 4. Op combination insights
@@ -2925,6 +2945,9 @@ class ExperimentAnalytics:
                 ),
                 "category": "success_factor",
                 "confidence": round(conf, 2),
+                "insight_type": "winning_combo",
+                "subject_key": "+".join(sorted({str(op) for op in top["ops"]})),
+                "semantic_key": "winning_combo:" + "+".join(sorted({str(op) for op in top["ops"]})),
             })
 
         # 5. Overall progress insight
@@ -2942,6 +2965,9 @@ class ExperimentAnalytics:
                 ),
                 "category": "pattern",
                 "confidence": round(conf, 2),
+                "insight_type": "overall_survival_rate",
+                "subject_key": "global",
+                "semantic_key": "overall_survival_rate:global",
             })
 
         return insights
@@ -3170,19 +3196,24 @@ class ExperimentAnalytics:
             op_rates.items(), key=lambda x: -(x[1].get("n_used", 0))
         ):
             n_used = stats.get("n_used", 0)
+            n_s0 = stats.get("n_s0", 0)
             s1_rate = stats.get("s1_rate", 0)
-            if n_used >= min_usage and s1_rate == 0:
-                s0_rate = stats.get("s0_rate", 0)
+            s0_rate = stats.get("s0_rate", 0)
+            
+            # CRITICAL FIX: Only label as 'failed' if it ACTUALLY compiled (S0)
+            # but failed to learn (S1). We need at least some successful 
+            # compilations to make a scientific judgment on utility.
+            # If s0_rate is low, it's a code/integration bug to fix, 
+            # not a scientific reason to stop pursuing the component.
+            if n_s0 >= 3 and s1_rate == 0 and s0_rate >= 0.8:
                 entry = {
                     "op_name": op_name,
                     "n_used": n_used,
+                    "n_s0": n_s0,
                     "s0_rate": round(s0_rate, 3),
                     "s1_rate": 0.0,
-                    "failure_stage": (
-                        "compilation" if s0_rate < 0.5
-                        else "learning"
-                    ),
-                    "confidence": round(min(0.95, 0.4 + n_used / 100), 2),
+                    "failure_stage": "learning",
+                    "confidence": round(min(0.95, 0.4 + n_s0 / 100), 2),
                 }
                 if op_name in PROTECTED_OPS:
                     # Protected ops go to weak_ops with soft penalty, never failed
@@ -4317,4 +4348,82 @@ class RefinementAnalyzer:
                 "mean_s1_rate": 0.0,
             },
             "analysis_quality": quality,
+        }
+
+    def strategy_backtest(self) -> Dict[str, Any]:
+        """Aggregate cross-experiment outcomes by search intent."""
+        rows = self.nb.conn.execute(
+            """
+            SELECT
+                config_json,
+                n_programs_generated,
+                n_stage1_passed,
+                n_stable_passed,
+                best_loss_ratio,
+                best_novelty_score,
+                avg_throughput_tok_s,
+                avg_routing_token_retention,
+                duration_seconds
+            FROM experiments
+            WHERE status = 'completed'
+            """
+        ).fetchall()
+
+        by_intent = defaultdict(lambda: {
+            "n_experiments": 0,
+            "n_programs": 0,
+            "n_s1_passed": 0,
+            "n_stable_passed": 0,
+            "total_loss": 0.0,
+            "loss_count": 0,
+            "total_novelty": 0.0,
+            "novelty_count": 0,
+            "total_throughput": 0.0,
+            "throughput_count": 0,
+            "total_duration": 0.0,
+        })
+
+        for row in rows:
+            config = json.loads(row["config_json"]) if row["config_json"] else {}
+            intent = config.get("refine_intent") or config.get("mode")
+            if not intent or intent not in ("quality", "compression", "sparsity", "novelty", "balanced"):
+                # Map some common modes to intents if not explicitly set
+                if config.get("mode") == "novelty": intent = "novelty"
+                elif config.get("mode") == "scale_up": intent = "quality"
+                else: intent = "balanced"
+            
+            d = by_intent[intent]
+            d["n_experiments"] += 1
+            d["n_programs"] += (row["n_programs_generated"] or 0)
+            d["n_s1_passed"] += (row["n_stage1_passed"] or 0)
+            d["n_stable_passed"] += (row["n_stable_passed"] or 0)
+            d["total_duration"] += (row["duration_seconds"] or 0)
+            
+            if row["best_loss_ratio"] is not None:
+                d["total_loss"] += row["best_loss_ratio"]
+                d["loss_count"] += 1
+            if row["best_novelty_score"] is not None:
+                d["total_novelty"] += row["best_novelty_score"]
+                d["novelty_count"] += 1
+            if row["avg_throughput_tok_s"] is not None:
+                d["total_throughput"] += row["avg_throughput_tok_s"]
+                d["throughput_count"] += 1
+
+        results = []
+        for intent, d in by_intent.items():
+            results.append({
+                "intent": intent,
+                "n_experiments": d["n_experiments"],
+                "n_programs": d["n_programs"],
+                "s1_pass_rate": d["n_s1_passed"] / d["n_programs"] if d["n_programs"] > 0 else 0.0,
+                "stable_pass_rate": d["n_stable_passed"] / d["n_programs"] if d["n_programs"] > 0 else 0.0,
+                "avg_best_loss": d["total_loss"] / d["loss_count"] if d["loss_count"] > 0 else None,
+                "avg_best_novelty": d["total_novelty"] / d["novelty_count"] if d["novelty_count"] > 0 else None,
+                "avg_throughput": d["total_throughput"] / d["throughput_count"] if d["throughput_count"] > 0 else None,
+                "avg_duration": d["total_duration"] / d["n_experiments"] if d["n_experiments"] > 0 else 0.0,
+            })
+
+        return {
+            "intents": sorted(results, key=lambda x: -x["n_experiments"]),
+            "total_experiments": len(rows)
         }

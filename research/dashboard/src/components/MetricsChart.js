@@ -1,18 +1,19 @@
 import React, { useMemo, useState } from 'react';
-import { 
-  ComposedChart, 
-  Bar, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  Legend 
+import {
+  ComposedChart,
+  Bar,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Legend
 } from 'recharts';
 import { CHART_DEFAULTS, getFixedScale } from '../utils/chartScales';
+import ChartActions from './ChartActions';
 
-function MetricsChart({ experiments }) {
+function MetricsChart({ experiments, onSelectExperiment }) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [outcomeFilter, setOutcomeFilter] = useState('all');
@@ -58,9 +59,10 @@ function MetricsChart({ experiments }) {
     const s1 = exp.n_stage1_passed || 0;
     const yield_rate = n > 0 ? (s1 / n) * 100 : 0;
     const novelty = (exp.best_novelty_score || 0) * 100;
-    
+
     return {
       name: exp.experiment_id?.slice(0, 6) || `E${i}`,
+      experiment_id: exp.experiment_id,
       survivors: s1,
       yield: Number(yield_rate.toFixed(1)),
       novelty: Number(novelty.toFixed(1)),
@@ -68,11 +70,66 @@ function MetricsChart({ experiments }) {
     };
   });
 
+  // Contextual actions
+  const chartActions = useMemo(() => {
+    if (chartData.length < 3) return [];
+    const result = [];
+
+    // Yield declining 3+ experiments
+    const lastN = chartData.slice(-3);
+    const yieldDecline = lastN.every((d, i) => i === 0 || d.yield <= lastN[i - 1].yield) && lastN[0].yield > lastN[2].yield;
+    if (yieldDecline) {
+      result.push({
+        id: 'yield-decline',
+        label: 'Yield declining \u2014 try novelty or exotic mode',
+        detail: `Yield dropped from ${lastN[0].yield}% to ${lastN[2].yield}%`,
+        color: 'var(--accent-orange)',
+        onClick: () => {},
+      });
+    }
+
+    // Zero-survivor streak
+    const tailZeros = [];
+    for (let i = chartData.length - 1; i >= 0; i--) {
+      if (chartData[i].survivors === 0) tailZeros.push(chartData[i]);
+      else break;
+    }
+    if (tailZeros.length >= 3) {
+      result.push({
+        id: 'zero-streak',
+        label: `${tailZeros.length} zero-survivor runs \u2014 consider grammar pivot`,
+        detail: 'No survivors in recent experiments',
+        color: 'var(--accent-red)',
+        onClick: () => {},
+      });
+    }
+
+    // Best novelty spike
+    const maxNovelty = chartData.reduce((best, d) => d.novelty > (best?.novelty || 0) ? d : best, null);
+    if (maxNovelty && maxNovelty.novelty > 0 && onSelectExperiment) {
+      result.push({
+        id: 'best-novelty',
+        label: `Best novelty: ${maxNovelty.novelty.toFixed(0)}% \u2014 click to inspect`,
+        detail: `Experiment ${maxNovelty.name}`,
+        color: 'var(--accent-purple)',
+        onClick: () => onSelectExperiment(maxNovelty.experiment_id),
+      });
+    }
+
+    return result;
+  }, [chartData, onSelectExperiment]);
+
   const survivorsValues = chartData.map(d => d.survivors);
   const survivorScale = getFixedScale('metrics.survivors', survivorsValues, {
     defaultMin: 0,
     defaultMax: 20,
   });
+
+  const handleBarClick = (data) => {
+    if (onSelectExperiment && data?.experiment_id) {
+      onSelectExperiment(data.experiment_id);
+    }
+  };
 
   if (!experiments || experiments.length === 0) {
     return (
@@ -199,21 +256,22 @@ function MetricsChart({ experiments }) {
         </div>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.5 }}>
-        Tracks search efficiency over time. 
-        <strong> Survivors</strong> (bars) show raw counts. 
+        Tracks search efficiency over time.
+        <strong> Survivors</strong> (bars) show raw counts.
         <strong style={{ color: '#3fb950' }}> Yield</strong> (line) is the % of programs that successfully learned.
         <strong style={{ color: '#bc8cff' }}> Novelty</strong> (line) tracks architectural innovation.
       </p>
       <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
         Showing {chartData.length} of {filteredExperiments.length} filtered experiments.
+        {onSelectExperiment && ' Click a bar to view experiment details.'}
       </p>
       <div className="chart-container" style={{ height: 220 }}>
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#30363d" vertical={false} />
-            <XAxis 
-              dataKey="name" 
-              tick={{ fontSize: 10, fill: '#8b949e' }} 
+            <XAxis
+              dataKey="name"
+              tick={{ fontSize: 10, fill: '#8b949e' }}
               axisLine={{ stroke: '#30363d' }}
               tickLine={false}
             />
@@ -243,41 +301,44 @@ function MetricsChart({ experiments }) {
               }}
               cursor={{ fill: 'rgba(255,255,255,0.05)' }}
             />
-            <Legend 
+            <Legend
               wrapperStyle={{ fontSize: 11, paddingTop: 10 }}
               iconType="circle"
             />
-            <Bar 
+            <Bar
               yAxisId="left"
-              dataKey="survivors" 
-              fill="#58a6ff" 
-              name="Survivors" 
+              dataKey="survivors"
+              fill="#58a6ff"
+              name="Survivors"
               radius={[4, 4, 0, 0]}
               barSize={20}
+              cursor={onSelectExperiment ? 'pointer' : 'default'}
+              onClick={handleBarClick}
             />
-            <Line 
+            <Line
               yAxisId="right"
-              type="monotone" 
-              dataKey="yield" 
-              stroke="#3fb950" 
-              name="Yield Rate (%)" 
+              type="monotone"
+              dataKey="yield"
+              stroke="#3fb950"
+              name="Yield Rate (%)"
               strokeWidth={2}
               dot={{ r: 3 }}
-              activeDot={{ r: 5 }}
+              activeDot={{ r: 5, cursor: onSelectExperiment ? 'pointer' : 'default', onClick: (_, payload) => handleBarClick(payload?.payload) }}
             />
-            <Line 
+            <Line
               yAxisId="right"
-              type="monotone" 
-              dataKey="novelty" 
-              stroke="#bc8cff" 
-              name="Peak Novelty" 
+              type="monotone"
+              dataKey="novelty"
+              stroke="#bc8cff"
+              name="Peak Novelty"
               strokeWidth={2}
               dot={{ r: 3 }}
-              activeDot={{ r: 5 }}
+              activeDot={{ r: 5, cursor: onSelectExperiment ? 'pointer' : 'default', onClick: (_, payload) => handleBarClick(payload?.payload) }}
             />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
+      <ChartActions actions={chartActions} />
     </div>
   );
 }

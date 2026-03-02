@@ -1,6 +1,6 @@
-"""Live integration test for research -> aria-designer proxy path.
+"""Live integration test for research -> aria_designer proxy path.
 
-This test is intentionally lightweight and only runs when aria-designer API is
+This test is intentionally lightweight and only runs when aria_designer API is
 reachable at http://127.0.0.1:8091.
 """
 
@@ -30,7 +30,7 @@ def _designer_is_up() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _designer_is_up(),
-    reason="aria-designer backend is not running on 127.0.0.1:8091",
+    reason="aria_designer backend is not running on 127.0.0.1:8091",
 )
 
 

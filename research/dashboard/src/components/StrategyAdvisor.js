@@ -3,15 +3,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
 import { useAriaData } from '../hooks/useAriaData';
 import useRenderPerf from '../hooks/useRenderPerf';
+import { TIER_COLORS } from '../utils/scoringEngine';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
-
-const TIER_COLORS = {
-  screening: 'var(--accent-blue)',
-  investigation: 'var(--accent-yellow)',
-  validation: 'var(--accent-purple)',
-  breakthrough: 'var(--accent-green)',
-};
 
 /**
  * Map briefing action types to experiment start configs.

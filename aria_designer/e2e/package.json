@@ -1,0 +1,13 @@
+{
+  "name": "aria_designer-e2e",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.58.0"
+  },
+  "scripts": {
+    "test": "npx playwright test --config=playwright.config.js",
+    "test:headed": "npx playwright test --config=playwright.config.js --headed",
+    "test:debug": "npx playwright test --config=playwright.config.js --debug"
+  }
+}

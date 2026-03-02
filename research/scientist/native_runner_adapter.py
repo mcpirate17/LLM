@@ -26,7 +26,7 @@ def _env_flag(name: str, default: bool) -> bool:
 
 def _designer_runtime_lib_path() -> Path:
     root = Path(__file__).resolve().parents[2]
-    return root / "aria-designer" / "runtime" / "lib" / "libaria_runtime.so"
+    return root / "aria_designer" / "runtime" / "lib" / "libaria_runtime.so"
 
 
 def detect_adapter_state() -> DesignerRuntimeAdapterState:
@@ -67,7 +67,7 @@ def capability_handshake() -> Dict[str, Any]:
     approximate_mappings: Dict[str, str] = {}
     semantic_warnings: List[Dict[str, str]] = []
 
-    mapping_path = Path(__file__).resolve().parents[2] / "aria-designer" / "runtime" / "component_mapping.yaml"
+    mapping_path = Path(__file__).resolve().parents[2] / "aria_designer" / "runtime" / "component_mapping.yaml"
 
     if mapping_path.exists():
         approximate_mappings = _load_approximate_alias_notes(mapping_path)
@@ -135,8 +135,40 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
         roundtrip_graph = bridge_mod.workflow_to_graph(workflow, model_dim=model_dim)
         parity_ok = bool(roundtrip_graph.n_ops() == first_graph.n_ops())
 
-        components_dir = Path(__file__).resolve().parents[2] / "aria-designer" / "components"
-        compiled = compiler_mod.compile_workflow(workflow, str(components_dir))
+        components_dir = Path(__file__).resolve().parents[2] / "aria_designer" / "components"
+        try:
+            compiled = compiler_mod.compile_workflow(workflow, str(components_dir))
+        except ValueError as compile_exc:
+            # If the only missing components are ops with direct C kernel support,
+            # the probe should still succeed — those ops bypass the designer runtime
+            # and dispatch through aria_core C kernels directly.
+            exc_msg = str(compile_exc)
+            if "Missing runtime kernel_fallback.py" in exc_msg:
+                from .native_runner import (
+                    _NATIVE_C_KERNEL_OPS, _CYTHON_WRAPPER_OPS, _SOFT_BRIDGE_OPS,
+                )
+                from ..synthesis.primitives import PRIMITIVE_REGISTRY
+                all_native = _NATIVE_C_KERNEL_OPS | _CYTHON_WRAPPER_OPS | _SOFT_BRIDGE_OPS
+                # Also accept any op known to the research primitive registry
+                # (they have execute functions and don't need designer fallbacks)
+                all_known = all_native | set(PRIMITIVE_REGISTRY.keys())
+                # Extract component types from error: "node_3 (math_space/tropical_gate)"
+                missing_ops = re.findall(r'node_\w+\s+\(([^)]+)\)', exc_msg)
+                # Convert component paths to op names: "math_space/tropical_gate" -> "tropical_gate"
+                missing_op_names = [op.split("/")[-1] for op in missing_ops]
+                all_covered = all(op in all_known for op in missing_op_names)
+                if all_covered:
+                    compiled = None  # designer compile not needed
+                    report.update({
+                        "succeeded": True,
+                        "parity_ok": parity_ok,
+                        "reason": "ok_native_kernel_bypass",
+                        "workflow_id": workflow.get("workflow_id"),
+                        "workflow_node_count": len(workflow.get("nodes") or []),
+                        "native_bypass_ops": missing_op_names,
+                    })
+                    return report
+            raise  # re-raise if not handled
 
         report.update(
             {
@@ -186,7 +218,7 @@ def build_designer_layer_modules(layer_graphs: List[Any]) -> Dict[str, Any]:
     result["attempted"] = True
     try:
         importer_mod, _bridge_mod, compiler_mod = _load_designer_runtime_modules()
-        components_dir = Path(__file__).resolve().parents[2] / "aria-designer" / "components"
+        components_dir = Path(__file__).resolve().parents[2] / "aria_designer" / "components"
 
         for idx, graph in enumerate(layer_graphs):
             try:
@@ -215,7 +247,7 @@ def build_designer_layer_modules(layer_graphs: List[Any]) -> Dict[str, Any]:
 
 
 def _load_designer_runtime_modules() -> Tuple[Any, Any, Any]:
-    runtime_dir = Path(__file__).resolve().parents[2] / "aria-designer" / "runtime"
+    runtime_dir = Path(__file__).resolve().parents[2] / "aria_designer" / "runtime"
     package_name = "aria_designer_runtime"
     _ensure_package_loaded(package_name, runtime_dir)
     importer_mod = _load_module_from_path(f"{package_name}.importer", runtime_dir / "importer.py")

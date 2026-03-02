@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 

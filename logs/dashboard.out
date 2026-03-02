@@ -1,0 +1,81 @@
+2026-03-01 21:52:10 INFO     [research.scientist.api] Logging to /home/tim/Projects/LLM/research/aria_dashboard.log
+2026-03-01 21:52:10 INFO     [research.scientist.llm.anthropic] Using default Anthropic model alias: claude-sonnet-4-5-20250929
+2026-03-01 21:52:11 INFO     [research.scientist.persona] Aria LLM reconfigured: anthropic
+2026-03-01 21:52:11 INFO     [research.scientist.api] Loaded persisted LLM config: anthropic
+2026-03-01 21:52:11 INFO     [research.scientist.api] Starting Aria's Dashboard API on http://0.0.0.0:5000
+Starting Aria's Dashboard API on http://0.0.0.0:5000
+ * Serving Flask app 'research.scientist.api'
+ * Debug mode: off
+2026-03-01 21:52:11 INFO     [werkzeug] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.50.191:5000
+2026-03-01 21:52:11 INFO     [werkzeug] [33mPress CTRL+C to quit[0m
+2026-03-01 21:52:12 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:52:12] "GET /api/status HTTP/1.1" 200 -
+2026-03-01 21:52:30 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:52:30] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 21:52:58 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:52:58] "GET / HTTP/1.1" 200 -
+2026-03-01 21:53:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:00] "GET /api/programs?n=50&sort=novelty_score HTTP/1.1" 200 -
+2026-03-01 21:53:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 21:53:15 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:15] "GET /api/programs/aa451ba9-9f8 HTTP/1.1" 200 -
+2026-03-01 21:53:15 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:15] "GET /api/references HTTP/1.1" 200 -
+2026-03-01 21:53:15 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:15] "GET /api/programs/aa451ba9-9f8/refine-analysis HTTP/1.1" 200 -
+2026-03-01 21:53:16 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:16] "GET /api/experiments/1dda3b43-5b1 HTTP/1.1" 200 -
+2026-03-01 21:53:53 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:53] "GET /api/programs/aa451ba9-9f8 HTTP/1.1" 200 -
+2026-03-01 21:53:53 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:53] "GET /api/references HTTP/1.1" 200 -
+2026-03-01 21:53:53 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:53] "GET /api/programs/aa451ba9-9f8/refine-analysis HTTP/1.1" 200 -
+2026-03-01 21:53:53 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:53:53] "GET /api/experiments/1dda3b43-5b1 HTTP/1.1" 200 -
+2026-03-01 21:54:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:54:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 21:55:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:55:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 21:56:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:56:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 21:57:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:57:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 21:58:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:58:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 21:59:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 21:59:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:00:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:00:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:01:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:01:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:02:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:02:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:03:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:03:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:04:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:04:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:05:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:05:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:06:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:06:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:07:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:07:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:08:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:08:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:09:00 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:00] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:09:21 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:21] "GET / HTTP/1.1" 200 -
+2026-03-01 22:09:24 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:24] "GET /api/programs?n=50&sort=novelty_score HTTP/1.1" 200 -
+2026-03-01 22:09:24 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:24] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:09:33 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:33] "GET /api/programs/aa451ba9-9f8 HTTP/1.1" 200 -
+2026-03-01 22:09:33 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:33] "GET /api/references HTTP/1.1" 200 -
+2026-03-01 22:09:33 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:33] "GET /api/programs/aa451ba9-9f8/refine-analysis HTTP/1.1" 200 -
+2026-03-01 22:09:33 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:33] "GET /api/experiments/1dda3b43-5b1 HTTP/1.1" 200 -
+2026-03-01 22:09:35 WARNING  [research.scientist.api] GET /api/programs/${resultId} -> 404
+2026-03-01 22:09:35 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:35] "[33mGET /api/programs/${resultId} HTTP/1.1[0m" 404 -
+2026-03-01 22:09:35 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:09:35] "GET /${base}/?${params.toString()} HTTP/1.1" 200 -
+2026-03-01 22:10:24 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:10:24] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:10:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:10:25] "GET / HTTP/1.1" 200 -
+2026-03-01 22:10:31 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:10:31] "GET /api/programs?n=50&sort=novelty_score HTTP/1.1" 200 -
+2026-03-01 22:10:31 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:10:31] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-01 22:10:46 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:10:46] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=investigation HTTP/1.1" 200 -
+2026-03-01 22:11:31 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:31] "GET /api/programs/165cb714-685 HTTP/1.1" 200 -
+2026-03-01 22:11:31 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:31] "GET /api/experiments/b3c3a1b9-d3a HTTP/1.1" 200 -
+2026-03-01 22:11:31 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:31] "GET /api/references HTTP/1.1" 200 -
+2026-03-01 22:11:31 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:31] "GET /api/programs/165cb714-685/training-curve HTTP/1.1" 200 -
+2026-03-01 22:11:31 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:31] "GET /api/programs/165cb714-685/refine-analysis HTTP/1.1" 200 -
+2026-03-01 22:11:33 WARNING  [research.scientist.api] GET /api/programs/${resultId} -> 404
+2026-03-01 22:11:33 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:33] "[33mGET /api/programs/${resultId} HTTP/1.1[0m" 404 -
+2026-03-01 22:11:33 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:33] "[36mGET /${base}/?${params.toString()} HTTP/1.1[0m" 304 -
+2026-03-01 22:11:46 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:11:46] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=investigation HTTP/1.1" 200 -
+2026-03-01 22:12:46 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:12:46] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=investigation HTTP/1.1" 200 -
+2026-03-01 22:13:46 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:13:46] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=investigation HTTP/1.1" 200 -
+2026-03-01 22:14:17 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:17] "GET / HTTP/1.1" 200 -
+2026-03-01 22:14:20 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:20] "GET /api/programs?n=50&sort=novelty_score HTTP/1.1" 200 -
+2026-03-01 22:14:20 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:20] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=investigation HTTP/1.1" 200 -
+2026-03-01 22:14:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:25] "GET /api/programs/ref_rwkv_61754c8e HTTP/1.1" 200 -
+2026-03-01 22:14:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:25] "GET /api/experiments/reference_registration_1772244675 HTTP/1.1" 200 -
+2026-03-01 22:14:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:25] "GET /api/programs/ref_rwkv_61754c8e/training-curve HTTP/1.1" 200 -
+2026-03-01 22:14:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:25] "GET /api/references HTTP/1.1" 200 -
+2026-03-01 22:14:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:25] "GET /api/campaigns/3faa3af4-26e/hypotheses HTTP/1.1" 200 -
+2026-03-01 22:14:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:25] "GET /api/campaigns/3faa3af4-26e/decisions HTTP/1.1" 200 -
+2026-03-01 22:14:25 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:25] "GET /api/programs/ref_rwkv_61754c8e/refine-analysis HTTP/1.1" 200 -
+2026-03-01 22:14:28 WARNING  [research.scientist.api] GET /api/programs/${resultId} -> 404
+2026-03-01 22:14:28 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:28] "[33mGET /api/programs/${resultId} HTTP/1.1[0m" 404 -
+2026-03-01 22:14:28 INFO     [werkzeug] 127.0.0.1 - - [01/Mar/2026 22:14:28] "[36mGET /${base}/?${params.toString()} HTTP/1.1[0m" 304 -

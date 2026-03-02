@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .primitives import get_primitive, PrimitiveOp, OpCategory
+from .primitives import get_primitive, PrimitiveOp
 from .graph import ComputationGraph, OpNode, ShapeInfo
 
 try:
@@ -49,6 +49,12 @@ def register_op(name: str):
         _OP_DISPATCH[name] = fn
         return fn
     return decorator
+
+
+@register_op("identity")
+def _op_identity(_, inputs, __):
+    """Pass-through op — used by workflow_converter for uniform routing."""
+    return inputs[0]
 
 
 def _record_sparse_telemetry(module: nn.Module, op_name: str, density: float,
@@ -365,16 +371,28 @@ def _op_cumprod_safe(_, inputs, __): return torch.cumprod(torch.clamp(inputs[0],
 @register_op("matmul")
 def _op_matmul(_, inputs, __):
     a, b = inputs
+    if a.dim() != 3 or b.dim() != 3:
+        return a # Fallback for safety
+    
+    # CASE 1: Standard Attention Pattern [B, S, D] @ [B, S, D]
     if a.shape[-1] == b.shape[-1]:
-        scale = math.sqrt(a.shape[-1])
+        scale = math.sqrt(float(a.shape[-1]))
+        # (B, S, D) @ (B, D, S) -> (B, S, S)
         scores = torch.bmm(a, b.transpose(-2, -1)) / scale
         S = a.shape[1]
         if S > 1:
-            mask = torch.triu(torch.ones(S, S, device=a.device), diagonal=1).bool()
+            mask = torch.triu(torch.ones(S, S, device=a.device, dtype=torch.bool), diagonal=1)
             scores.masked_fill_(mask, float('-inf'))
+        # (B, S, S) @ (B, S, D) -> (B, S, D)
         return torch.bmm(F.softmax(scores, dim=-1), b)
-    if _c(a): return aria_core.matmul_f32(a, b)
-    return torch.bmm(a, b)
+    
+    # CASE 2: Linear Algebra Pattern [B, S, D] @ [B, D, K]
+    if a.shape[2] == b.shape[1]:
+        if _c(a): return aria_core.matmul_f32(a, b)
+        return torch.bmm(a, b)
+        
+    # CASE 3: Incompatible fallback
+    return a
 
 @register_op("outer_product")
 def _op_outer_product(_, inputs, __):
@@ -440,11 +458,9 @@ def _op_linear_common(module, inputs, _):
     if _c(x):
         xf, orig_shape = _flatten_for_kernel(x)
         bias = getattr(module, 'bias', None)
-        if bias is None:
-            bias = torch.zeros(module.weight.shape[0], device=x.device, dtype=x.dtype)
         out = aria_core.linear_f32(xf, module.weight, bias)
         return _unflatten_from_kernel(out, orig_shape)
-    return F.linear(x, module.weight)
+    return F.linear(x, module.weight, getattr(module, 'bias', None))
 
 @register_op("fused_linear_gelu")
 def _op_fused_linear_gelu(module, inputs, _):
@@ -1551,6 +1567,126 @@ def _op_ultrametric_attention(module, inputs, config):
     """Attention using p-adic distances. Dispatched to mathspace implementation."""
     from ..mathspaces.padic import execute_ultrametric_attn
     return execute_ultrametric_attn(module, inputs[0])
+
+# ── Clifford algebra ops ──
+
+@register_op("clifford_attention")
+def _op_clifford_attention(module, inputs, config):
+    from ..mathspaces.clifford import execute_clifford_attention
+    return execute_clifford_attention(module, inputs[0])
+
+@register_op("geometric_product")
+def _op_geometric_product(module, inputs, config):
+    from ..mathspaces.clifford import execute_geometric_product
+    return execute_geometric_product(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("rotor_transform")
+def _op_rotor_transform(module, inputs, config):
+    from ..mathspaces.clifford import execute_rotor_transform
+    return execute_rotor_transform(module, inputs[0])
+
+@register_op("grade_select")
+def _op_grade_select(module, inputs, config):
+    from ..mathspaces.clifford import execute_grade_select
+    return execute_grade_select(module, inputs[0])
+
+@register_op("grade_mix")
+def _op_grade_mix(module, inputs, config):
+    from ..mathspaces.clifford import execute_grade_mix
+    return execute_grade_mix(module, inputs[0])
+
+# ── Hyperbolic ops ──
+
+@register_op("poincare_add")
+def _op_poincare_add(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_poincare_add
+    return execute_poincare_add(module, inputs[0])
+
+@register_op("exp_map")
+def _op_exp_map(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_exp_map
+    return execute_exp_map(module, inputs[0])
+
+@register_op("log_map")
+def _op_log_map(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_log_map
+    return execute_log_map(module, inputs[0])
+
+@register_op("hyp_distance")
+def _op_hyp_distance(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyp_distance
+    return execute_hyp_distance(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("hyp_linear")
+def _op_hyp_linear(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyp_linear
+    return execute_hyp_linear(module, inputs[0])
+
+@register_op("hyp_tangent_nonlinear")
+def _op_hyp_tangent_nonlinear(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyp_tangent_nonlinear
+    return execute_hyp_tangent_nonlinear(module, inputs[0])
+
+@register_op("hyperbolic_norm")
+def _op_hyperbolic_norm(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyperbolic_norm
+    return execute_hyperbolic_norm(module, inputs[0])
+
+# ── Tropical ops ──
+
+@register_op("tropical_add")
+def _op_tropical_add(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_add
+    return execute_tropical_add(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("tropical_matmul")
+def _op_tropical_matmul(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_matmul
+    return execute_tropical_matmul(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("tropical_attention")
+def _op_tropical_attention(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_attention
+    return execute_tropical_attention(module, inputs[0])
+
+@register_op("tropical_gate")
+def _op_tropical_gate(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_gate
+    return execute_tropical_gate(module, inputs[0])
+
+# ── p-adic ops ──
+
+@register_op("padic_expand")
+def _op_padic_expand(module, inputs, config):
+    from ..mathspaces.padic import execute_padic_expand
+    return execute_padic_expand(module, inputs[0])
+
+@register_op("padic_gate")
+def _op_padic_gate(module, inputs, config):
+    from ..mathspaces.padic import execute_padic_gate
+    return execute_padic_gate(module, inputs[0])
+
+# ── Spiking ops ──
+
+@register_op("lif_neuron")
+def _op_lif_neuron(module, inputs, config):
+    from ..mathspaces.spiking import execute_lif
+    return execute_lif(module, inputs[0])
+
+@register_op("spike_rate_code")
+def _op_spike_rate_code(module, inputs, config):
+    from ..mathspaces.spiking import execute_spike_rate_code
+    return execute_spike_rate_code(module, inputs[0])
+
+@register_op("stdp_attention")
+def _op_stdp_attention(module, inputs, config):
+    from ..mathspaces.spiking import execute_stdp_attention
+    return execute_stdp_attention(module, inputs[0])
+
+@register_op("sparse_threshold")
+def _op_sparse_threshold(module, inputs, config):
+    from ..mathspaces.spiking import execute_sparse_threshold
+    return execute_sparse_threshold(module, inputs[0])
 
 
 def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...],

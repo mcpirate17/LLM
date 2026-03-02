@@ -280,34 +280,6 @@ def fit_power_law(params: Sequence[int], losses: Sequence[float]
 # Graph rescaling for multi-scale evaluation
 # ---------------------------------------------------------------------------
 
-def rescale_graph(graph_json_str: str, new_d_model: int) -> Any:
-    """Create a ComputationGraph with different model_dim from serialized JSON.
-
-    The graph stores model_dim and infers all shapes from it during
-    reconstruction.  Parameterized ops with hardcoded out_dim values
-    matching the old model_dim are updated to the new one.
-    """
-    from ..synthesis.graph import ComputationGraph
-
-    d = json.loads(graph_json_str)
-    old_d_model = d.get("model_dim", 256)
-    d["model_dim"] = new_d_model
-
-    # Update node configs that reference the old model_dim
-    for node_data in d.get("nodes", {}).values():
-        config = node_data.get("config")
-        if not config:
-            continue
-        for key in ("out_dim", "d_model", "in_dim", "hidden_dim"):
-            if key in config and config[key] == old_d_model:
-                config[key] = new_d_model
-            # Also handle 4x expansion (FFN hidden dim)
-            if key == "hidden_dim" and config.get(key) == old_d_model * 4:
-                config[key] = new_d_model * 4
-
-    return ComputationGraph.from_dict(d)
-
-
 # ---------------------------------------------------------------------------
 # ScalingReferenceManager
 # ---------------------------------------------------------------------------

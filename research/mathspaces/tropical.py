@@ -20,7 +20,7 @@ import math
 
 try:
     import aria_core
-    _HAS_ARIA_CORE = True
+    _HAS_ARIA_CORE = hasattr(aria_core, 'tropical_add_f32')
 except ImportError:
     _HAS_ARIA_CORE = False
 

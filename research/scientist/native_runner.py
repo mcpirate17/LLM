@@ -5,7 +5,7 @@ Phase-1 adapter-first reuse
 import logging
 logger = logging.getLogger(__name__)
 logger.info("Native runner validation enabled - logging all S1 failures") policy:
-- Prefer aria-designer runtime when enabled and compatible.
+- Prefer aria_designer runtime when enabled and compatible.
 - Fall back to legacy research compiler unless strict mode is enabled.
 
 Phase-3 native kernel dispatch:
@@ -144,6 +144,9 @@ _SOFT_BRIDGE_OPS: Set[str] = {
     "tropical_matmul",
     "geometric_product",
     "hyp_distance",
+    # Math space composite ops (pure PyTorch, use tropical primitives internally)
+    "tropical_router",
+    "tropical_moe",
 }
 
 # Ops with real C kernel implementations (Tier 1-4).
@@ -300,7 +303,7 @@ class NativeRunnerState:
 
 
 class DesignerWorkflowLayerAdapter:
-    """Adapt aria-designer WorkflowModule to the layer(x)->y interface."""
+    """Adapt aria_designer WorkflowModule to the layer(x)->y interface."""
 
     def __init__(self, workflow_module: Any, input_node_id: str):
         import torch.nn as nn  # lazy import keeps module import light for non-runtime tests
@@ -438,7 +441,7 @@ def _try_load_native_lib() -> Any:
 
     lib_paths = [
         Path(__file__).resolve().parents[1] / "runtime" / "native" / "build" / "libaria_native_runtime.so",
-        Path(__file__).resolve().parents[2] / "aria-designer" / "runtime" / "lib" / "libaria_runtime.so",
+        Path(__file__).resolve().parents[2] / "aria_designer" / "runtime" / "lib" / "libaria_runtime.so",
     ]
     for p in lib_paths:
         if p.exists():
@@ -1059,9 +1062,6 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
 
 _CYTHON_UNARY_BACKWARD_OPS = frozenset({"relu", "gelu", "silu", "sigmoid", "tanh"})
 _CYTHON_BINARY_BACKWARD_OPS = frozenset({"add", "mul", "sub", "maximum", "minimum", "div_safe"})
-_CYTHON_NORM_BACKWARD_OPS = frozenset({"softmax", "layernorm", "rmsnorm"})
-
-
 def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> Any:
     """Dispatch a backward (gradient) op through the native Cython bridge.
 

@@ -948,7 +948,7 @@ export default function ReportDetail({
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
             Choose candidates on this curve when you need better learning with limited compute budget.
           </p>
-          <EfficiencyChart frontier={frontier} showLabels labelCount={6} />
+          <EfficiencyChart frontier={frontier} showLabels labelCount={6} onSelectProgram={onSelectProgram} />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
             {frontier.length} Pareto-optimal programs (lower loss, fewer FLOPs = better)
           </div>

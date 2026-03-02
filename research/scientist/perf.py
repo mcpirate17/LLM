@@ -192,34 +192,6 @@ class OpKernelProfiler:
         }
 
 
-def audit_memory_fragmentation(device: str = "cuda") -> Dict[str, Any]:
-    """Audit GPU memory fragmentation and usage.
-    Useful for detecting leaks in long-horizon runs.
-    """
-    if not torch.cuda.is_available() or device != "cuda":
-        return {"available": False}
-    
-    dev = torch.device(device)
-    stats = torch.cuda.memory_stats(dev)
-    
-    allocated = stats.get("active_bytes.all.current", 0)
-    reserved = stats.get("reserved_bytes.all.current", 0)
-    inactive = reserved - allocated
-    
-    fragmentation_ratio = inactive / max(reserved, 1)
-    
-    return {
-        "available": True,
-        "device": device,
-        "allocated_mb": allocated / (1024 * 1024),
-        "reserved_mb": reserved / (1024 * 1024),
-        "inactive_mb": inactive / (1024 * 1024),
-        "fragmentation_ratio": fragmentation_ratio,
-        "peak_allocated_mb": stats.get("active_bytes.all.peak", 0) / (1024 * 1024),
-        "num_alloc_retries": stats.get("num_alloc_retries", 0),
-    }
-
-
 class GPUStarvationDetector:
     """Detects if the GPU is starving due to CPU or data-loader bottlenecks."""
     def __init__(self, threshold_ms: float = 5.0):

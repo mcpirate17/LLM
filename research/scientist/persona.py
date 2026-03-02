@@ -1183,89 +1183,73 @@ class Aria:
 
         sections = []
 
-        # Header with key metrics
-        sections.append("# Research Report")
+        # 1. Executive Summary
+        sections.append("# Research Report: Discovery Session")
         sections.append("")
-        sections.append("## Key Metrics")
+        sections.append("## Executive Summary")
         sections.append("")
-        sections.append(f"| Metric | Value |")
-        sections.append(f"|--------|-------|")
-        sections.append(f"| Experiments | {completed_exp}/{total_exp} completed |")
-        sections.append(f"| Programs evaluated | {total_prog} |")
-        sections.append(f"| Stage 1 survivors | {s1_passed} ({s1_rate:.1f}%) |")
-        sections.append(f"| Best loss ratio | {best_lr} |")
-        sections.append(f"| Avg novelty | {avg_novelty:.3f} |")
-        sections.append(f"| Top novelty | {best_novelty:.3f} |")
+        sections.append(f"| Metric | Status | Value |")
+        sections.append(f"|:-------|:-------|:------|")
+        sections.append(f"| Evaluation Depth | {completed_exp}/{total_exp} experiments | {total_prog} candidates tested |")
+        sections.append(f"| Search Yield | {'✅' if s1_rate > 5 else '⚠️'} | {s1_passed} S1 survivors ({s1_rate:.1f}%) |")
+        sections.append(f"| Best Performance | {'⭐' if (best_lr != 'N/A' and float(best_lr) < 0.5) else '📉'} | {best_lr} loss ratio |")
+        sections.append(f"| Structural Novelty | {'🚀' if avg_novelty > 0.5 else '🧱'} | {avg_novelty:.3f} avg / {best_novelty:.3f} peak |")
         sections.append("")
 
-        # Recommendation
-        sections.append("## Assessment")
-        sections.append("")
-        if s1_rate > 15:
+        if s1_passed > 0:
             sections.append(
-                "The grammar is producing learnable architectures at a strong rate. "
-                "Focus on exploitation of top performers and scale-up validation."
-            )
-        elif s1_rate > 5:
-            sections.append(
-                "Moderate S1 pass rate. Grammar weight learning should be actively "
-                "steering toward productive categories. Consider more experiments."
-            )
-        elif s1_rate > 0:
-            sections.append(
-                "Low S1 pass rate — most generated architectures fail to learn. "
-                "Grammar weight adjustments should help concentrate on productive ops."
+                "Aria's Note: The search yield is healthy. We've identified several candidates that "
+                "surpassed the Stage 1 learning threshold. Grammar weight adjustments are actively "
+                "concentrating search on these productive operators."
             )
         else:
             sections.append(
-                "No programs have passed Stage 1. The search space may need "
-                "significant restructuring, or more experiments are needed."
+                "**⚠️ WARNING: ZERO YIELD** — No programs have passed Stage 1. The search space may be "
+                "fundamentally unstable or the mutation operators are too aggressive. Consider "
+                "restructuring the base grammar or increasing Stage 0.5 stability tolerances."
             )
         sections.append("")
 
-        # Recent experiments breakdown
-        recent = report_data.get("recent_experiments", [])
-        if recent:
-            sections.append("## Recent Experiments")
-            sections.append("")
-            sections.append("| Experiment | Type | Programs | S1 Passed | Best LR | Status |")
-            sections.append("|-----------|------|----------|-----------|---------|--------|")
-            for exp in recent[:15]:
-                exp_id = (exp.get("experiment_id") or "?")[:8]
-                exp_type = exp.get("experiment_type", "?")
-                n_gen = exp.get("n_programs_generated", 0) or 0
-                n_s1 = exp.get("n_stage1_passed", 0) or 0
-                blr = exp.get("best_loss_ratio")
-                blr_str = f"{blr:.4f}" if blr is not None else "—"
-                status = exp.get("status", "?")
-                sections.append(f"| {exp_id} | {exp_type} | {n_gen} | {n_s1} | {blr_str} | {status} |")
-            sections.append("")
-
-        # Top programs table
+        # 2. Pareto Frontier / Top Performers
         if top:
-            sections.append("## Top 10 Programs (by loss ratio)")
+            sections.append("## Discovery Pareto Frontier")
+            sections.append("The most promising non-dominated architectures found in this session.")
             sections.append("")
-            sections.append("| Fingerprint | Loss Ratio | Novelty | Confidence | Experiment |")
-            sections.append("|------------|------------|---------|------------|------------|")
+            sections.append("| Fingerprint | Loss Ratio | Novelty | Confidence | Source |")
+            sections.append("|:------------|:-----------|:--------|:-----------|:-------|")
             for prog in top[:10]:
                 fp = (prog.get("graph_fingerprint") or "?")[:12]
                 lr = prog.get("loss_ratio")
-                lr_str = f"{lr:.4f}" if lr is not None else "?"
+                lr_str = f"**{lr:.4f}**" if lr is not None else "?"
                 nov = prog.get("novelty_score")
                 nov_str = f"{nov:.3f}" if nov is not None else "—"
                 nc = prog.get("novelty_confidence")
                 nc_str = f"{nc:.2f}" if nc is not None else "—"
                 exp_id = (prog.get("experiment_id") or "?")[:8]
-                sections.append(f"| {fp} | {lr_str} | {nov_str} | {nc_str} | {exp_id} |")
+                sections.append(f"| `{fp}` | {lr_str} | {nov_str} | {nc_str} | {exp_id} |")
             sections.append("")
 
-        # Op success rates
+        # 3. Failure Mode Synthesis
+        failures = report_data.get("failure_patterns", {})
+        if failures:
+            sections.append("## Negative Result Synthesis")
+            sections.append("What's preventing architectures from learning.")
+            sections.append("")
+            sections.append("| Stage | Common Failure Mode | Count |")
+            sections.append("|:------|:--------------------|:------|")
+            if isinstance(failures, dict):
+                sorted_f = sorted(failures.items(), key=lambda x: x[1], reverse=True)
+                for mode, count in sorted_f[:5]:
+                    sections.append(f"| Evaluation | {mode} | {count} |")
+            sections.append("")
+
+        # 4. Op Success Table
         op_rates = report_data.get("op_success_rates", {})
         if op_rates:
-            sections.append("## Op Success Rates (top 15 by usage)")
+            sections.append("## Component Utility (Top 15)")
             sections.append("")
-            sections.append("| Op | Used | S0% | S0.5% | S1% | Avg Novelty |")
-            sections.append("|----|------|-----|-------|-----|-------------|")
+            sections.append("| Op | Usage | S0% | S0.5% | S1% | Avg Novelty |")
+            sections.append("|:---|:------|:----|:------|:----|:------------|")
             sorted_ops = sorted(op_rates.items(),
                                 key=lambda x: x[1]["n_used"], reverse=True)
             for op_name, stats in sorted_ops[:15]:
@@ -1275,38 +1259,10 @@ class Aria:
                 s1 = stats.get("s1_rate", 0) * 100
                 nov = stats.get("avg_novelty")
                 nov_str = f"{nov:.3f}" if nov else "—"
-                sections.append(f"| {op_name} | {n} | {s0:.0f} | {s05:.0f} | {s1:.0f} | {nov_str} |")
+                sections.append(f"| {op_name} | {n} | {s0:.0f}% | {s05:.0f}% | {s1:.0f}% | {nov_str} |")
             sections.append("")
 
-        # Control experiment comparison (#41)
-        gw_data = report_data.get("grammar_weights", {})
-        control_cmp = gw_data.get("control_comparison") if isinstance(gw_data, dict) else None
-        if control_cmp:
-            sections.append("## Control Experiment Analysis")
-            sections.append("")
-            ctrl = control_cmp["control"]
-            lrn = control_cmp["learned"]
-            sections.append(f"| Group | Experiments | Programs | S1 Passed | S1 Rate |")
-            sections.append(f"|-------|-----------|----------|-----------|---------|")
-            sections.append(
-                f"| Control (default weights) | {ctrl['experiments']} | "
-                f"{ctrl['programs']} | {ctrl['s1_passed']} | "
-                f"{ctrl['s1_rate']:.1%} |")
-            sections.append(
-                f"| Learned weights | {lrn['experiments']} | "
-                f"{lrn['programs']} | {lrn['s1_passed']} | "
-                f"{lrn['s1_rate']:.1%} |")
-            sections.append("")
-            sections.append(
-                f"**Difference**: {control_cmp['s1_rate_difference']:+.1%} "
-                f"(z={control_cmp['z_score']:.2f}, "
-                f"{'significant' if control_cmp['significant_at_p05'] else 'not significant'} "
-                f"at p<0.05)")
-            sections.append("")
-            sections.append(f"**Interpretation**: {control_cmp['interpretation']}")
-            sections.append("")
-
-        # Grammar weight evolution
+        # 5. Grammar Evolution
         gw_raw = report_data.get("grammar_weights", {})
         if isinstance(gw_raw, dict) and "learned" in gw_raw:
             grammar_weights = gw_raw.get("learned") or {}
@@ -1315,22 +1271,32 @@ class Aria:
             grammar_weights = gw_raw or {}
             default_weights = report_data.get("default_weights", {})
         if grammar_weights:
-            sections.append("## Grammar Weights (learned vs default)")
+            sections.append("## Search Strategy Drift")
+            sections.append("How Aria's internal grammar has evolved vs the initial baseline.")
             sections.append("")
-            sections.append("| Category | Default | Learned | Change |")
-            sections.append("|----------|---------|---------|--------|")
+            sections.append("| Category | Initial | Current | Change |")
+            sections.append("|:---------|:--------|:--------|:-------|")
             all_cats = sorted(set(list(grammar_weights.keys()) +
                                   list(default_weights.keys())))
             for cat in all_cats:
                 default = default_weights.get(cat, 1.0)
                 learned = grammar_weights.get(cat)
-                if learned is not None:
-                    delta = learned - default
-                    arrow = "+" if delta > 0 else ""
-                    sections.append(
-                        f"| {cat} | {default:.2f} | {learned:.2f} | {arrow}{delta:.2f} |")
-                else:
-                    sections.append(f"| {cat} | {default:.2f} | — | — |")
+                if learned is None:
+                    continue
+                diff = learned - default
+                diff_str = f"{diff:+.2f}" if abs(diff) > 0.01 else "—"
+                change_emoji = "📈" if diff > 0.3 else "📉" if diff < -0.3 else ""
+                sections.append(f"| {cat.replace('_', ' ')} | {default:.2f} | {learned:.2f} | {diff_str} {change_emoji} |")
+            sections.append("")
+
+        # 6. Reproducibility
+        if top and top[0].get("config_json"):
+            sections.append("## Reproducibility")
+            sections.append("Configuration to replicate the champion program's evaluation context.")
+            sections.append("")
+            sections.append("```json")
+            sections.append(top[0]["config_json"])
+            sections.append("```")
             sections.append("")
 
         return "\n".join(sections)
@@ -3140,9 +3106,17 @@ class Aria:
         decision = "go"
         rationale_parts = []
 
-        if loss_ratio is not None and loss_ratio > 0.5:
+        # High novelty (>0.6) relaxes loss_ratio gate — novel architectures
+        # are scientifically valuable even with moderate performance.
+        high_novelty = novelty is not None and novelty > 0.6
+
+        if loss_ratio is not None and loss_ratio > 0.5 and not high_novelty:
             decision = "no_go"
             rationale_parts.append(f"loss_ratio={loss_ratio:.3f} > 0.5 (too weak)")
+        elif loss_ratio is not None and loss_ratio > 0.7:
+            # Even high novelty can't save very poor performance
+            decision = "no_go"
+            rationale_parts.append(f"loss_ratio={loss_ratio:.3f} > 0.7 (too weak even for high novelty)")
         elif novelty is not None and novelty < 0.3:
             decision = "no_go"
             rationale_parts.append(f"novelty={novelty:.3f} < 0.3 (not novel enough)")

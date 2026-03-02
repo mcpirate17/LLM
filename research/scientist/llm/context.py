@@ -346,44 +346,6 @@ def build_program_context(program: Dict) -> str:
     return "\n".join(lines)
 
 
-def build_failure_context(programs: List[Dict]) -> str:
-    """Build context about failure patterns from a list of programs."""
-    total = len(programs)
-    if total == 0:
-        return "No programs to analyze."
-
-    s0_fail = sum(1 for p in programs if not p.get("stage0_passed"))
-    s05_fail = sum(1 for p in programs
-                   if p.get("stage0_passed") and not p.get("stage05_passed"))
-    s1_fail = sum(1 for p in programs
-                  if p.get("stage05_passed") and not p.get("stage1_passed"))
-    s1_pass = sum(1 for p in programs if p.get("stage1_passed"))
-
-    lines = [
-        f"Total programs: {total}",
-        f"Stage 0 failures: {s0_fail} ({_pct(s0_fail, total)})",
-        f"Stage 0.5 failures: {s05_fail} ({_pct(s05_fail, total)})",
-        f"Stage 1 failures: {s1_fail} ({_pct(s1_fail, total)})",
-        f"Stage 1 passes: {s1_pass} ({_pct(s1_pass, total)})",
-    ]
-
-    # Error distribution
-    errors: Dict[str, int] = {}
-    for p in programs:
-        err = p.get("stage0_error", "")
-        if err:
-            # Normalize error to first 60 chars
-            key = err[:60].strip()
-            errors[key] = errors.get(key, 0) + 1
-
-    if errors:
-        lines.append("\nTop error types:")
-        for err, count in sorted(errors.items(), key=lambda x: -x[1])[:5]:
-            lines.append(f"  [{count}x] {err}")
-
-    return "\n".join(lines)
-
-
 def build_rich_context(
     results: Dict,
     config: Optional[Dict] = None,
@@ -1177,6 +1139,14 @@ def build_go_no_go_context(
 
     if campaign_criteria:
         sections.append(f"Campaign success criteria: {campaign_criteria}")
+
+    # Include pipeline thresholds so the LLM has a concrete reference
+    sections.append(
+        "Pipeline thresholds (for reference):\n"
+        "  S1 pass: loss_ratio < 0.80\n"
+        "  Investigation candidate: loss_ratio < 0.50\n"
+        "  Validation gate: loss_ratio < 0.60"
+    )
 
     return "\n\n".join(sections)
 

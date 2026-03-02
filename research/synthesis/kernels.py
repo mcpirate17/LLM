@@ -488,15 +488,6 @@ def fused_linear_cross_entropy(x: torch.Tensor, weight: torch.Tensor, labels: to
 
 # ── Dispatch Table ────────────────────────────────────────────────────
 
-KERNEL_DISPATCH = {
-    "fused_linear_gelu": fused_linear_gelu,
-    "triton_rmsnorm": triton_rmsnorm,
-    "triton_block_sparse_linear": triton_block_sparse_linear,
-    "triton_local_attn": triton_local_attn,
-    "fused_linear_cross_entropy": fused_linear_cross_entropy,
-}
-
-
 def _dtype_tolerances(dtype: torch.dtype) -> Tuple[float, float]:
     if dtype == torch.float16:
         return (5e-2, 5e-2)

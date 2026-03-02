@@ -4,7 +4,7 @@
 {
     "distutils": {
         "depends": [
-            "/home/tim/Projects/LLM/aria-designer/runtime/src/kernels.h",
+            "/home/tim/Projects/LLM/aria_designer/runtime/src/kernels.h",
             "/home/tim/venvs/llm/lib/python3.12/site-packages/numpy/_core/include/numpy/arrayobject.h",
             "/home/tim/venvs/llm/lib/python3.12/site-packages/numpy/_core/include/numpy/arrayscalars.h",
             "/home/tim/venvs/llm/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarrayobject.h",
@@ -24,7 +24,7 @@
         ],
         "include_dirs": [
             "/home/tim/venvs/llm/lib/python3.12/site-packages/numpy/_core/include",
-            "/home/tim/Projects/LLM/aria-designer/runtime/src",
+            "/home/tim/Projects/LLM/aria_designer/runtime/src",
             "/home/tim/Projects/LLM/research/runtime/native/include",
             "/home/tim/Projects/LLM/research/runtime/native/src"
         ],

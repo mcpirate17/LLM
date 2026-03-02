@@ -2,24 +2,10 @@ import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
-import { candidateScore, candidateScoreBreakdown, promotionEvidence, TIER_ORDER } from '../utils/scoringEngine';
+import { candidateScore, candidateScoreBreakdown, promotionEvidence, TIER_ORDER, TIER_COLORS, TIER_LABELS, bestLoss, percentOfReference } from '../utils/scoringEngine';
 
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
 const QUALITY_FLOOR_BEST_LOSS_MAX = 0.8;
-
-const TIER_COLORS = {
-  screening: 'var(--accent-blue)',
-  investigation: 'var(--accent-yellow)',
-  validation: 'var(--accent-purple)',
-  breakthrough: 'var(--accent-green)',
-};
-
-const TIER_LABELS = {
-  screening: 'Screening',
-  investigation: 'Investigation',
-  validation: 'Validation',
-  breakthrough: 'Breakthrough',
-};
 
 const STATUS_LABELS = {
   screening: 'Screened',
@@ -34,14 +20,6 @@ const STATUS_OPTIONS = [
   { value: 'validation', label: 'Validated' },
   { value: 'breakthrough', label: 'Breakthrough' },
 ];
-
-function bestLoss(entry) {
-  if (entry?.validation_loss_ratio != null) return Number(entry.validation_loss_ratio);
-  if (entry?.investigation_loss_ratio != null) return Number(entry.investigation_loss_ratio);
-  if (entry?.screening_loss_ratio != null) return Number(entry.screening_loss_ratio);
-  if (entry?.loss_ratio != null) return Number(entry.loss_ratio);
-  return null;
-}
 
 function discoveryLossDisplay(entry) {
   if (entry?.discovery_loss_ratio != null) return Number(entry.discovery_loss_ratio);
@@ -64,13 +42,6 @@ function finitePositiveOrNull(value) {
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return null;
   return num;
-}
-
-function percentOfReference(entryLoss, refLoss) {
-  const e = Number(entryLoss);
-  const r = Number(refLoss);
-  if (!Number.isFinite(e) || !Number.isFinite(r) || r <= 0) return null;
-  return (e / r) * 100;
 }
 
 // ── Summary Bar ────────────────────────────────────────────────────
@@ -344,19 +315,32 @@ function ExpandedDetail({
           <div>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Actions</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {eligibility?.investigationEligible && (
-                <button onClick={() => onInvestigate([entry.result_id])} style={{ ...actionBtnStyle, background: 'rgba(63, 185, 80, 0.12)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}>
-                  Investigate
-                </button>
-              )}
-              {eligibility?.validationEligible && (
-                <button
-                  onClick={() => onValidate([entry.result_id])}
-                  style={{ ...actionBtnStyle, background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
-                >
-                  Validate
-                </button>
-              )}
+              <button
+                onClick={() => onInvestigate([entry.result_id])}
+                style={{
+                  ...actionBtnStyle,
+                  background: 'rgba(63, 185, 80, 0.12)',
+                  border: '1px solid rgba(63, 185, 80, 0.4)',
+                  color: 'var(--accent-green)',
+                  opacity: eligibility?.investigationEligible ? 1 : 0.85,
+                }}
+                title={eligibility?.investigationEligible ? 'Start investigation' : 'Currently ineligible; click to force override'}
+              >
+                {eligibility?.investigationEligible ? 'Investigate' : 'Force Investigate'}
+              </button>
+              <button
+                onClick={() => onValidate([entry.result_id])}
+                style={{
+                  ...actionBtnStyle,
+                  background: 'rgba(188, 140, 255, 0.12)',
+                  border: '1px solid rgba(188, 140, 255, 0.4)',
+                  color: 'var(--accent-purple)',
+                  opacity: eligibility?.validationEligible ? 1 : 0.85,
+                }}
+                title={eligibility?.validationEligible ? 'Start validation' : 'Currently ineligible; click to force override'}
+              >
+                {eligibility?.validationEligible ? 'Validate' : 'Force Validate'}
+              </button>
               {entry.result_id && (onQueueAdd || onQueueRemove) && (
                 <button
                   onClick={() => {
@@ -483,6 +467,13 @@ const COLUMNS = [
   { key: '_vs_ref', label: 'vs Ref', title: 'How this model compares to the GPT-2 baseline (lower % is better).' },
   { key: '_novelty', label: 'Novelty', title: 'Measures how unique this model is compared to existing designs.' },
   { key: 'investigation_robustness', label: 'Robustness', title: 'Consistency across different training recipes (higher is more stable).' },
+  { key: 'robustness_long_ctx_score', label: 'LongCtx', title: 'Combined long-context score used in final evaluation.' },
+  { key: 'robustness_long_ctx_scaling_score', label: 'LC-Scale', title: 'Long-context scaling component score.' },
+  { key: 'robustness_long_ctx_assoc_score', label: 'LC-Assoc', title: 'Associative retrieval benchmark score.' },
+  { key: 'robustness_long_ctx_multi_hop_score', label: 'LC-MHop', title: 'Multi-hop retrieval benchmark score.' },
+  { key: 'robustness_long_ctx_passkey_score', label: 'LC-Passkey', title: 'Zero-shot passkey retrieval benchmark score.' },
+  { key: 'robustness_long_ctx_retrieval_aggregate', label: 'LC-Retr', title: 'Aggregate retrieval score across long-context benchmarks.' },
+  { key: 'max_viable_seq_len', label: 'LC-MaxLen', title: 'Maximum viable sequence length from long-context scaling sweep.' },
   { key: 'jacobian_spectral_norm', label: 'Spectral', title: 'Jacobian Spectral Norm: stability of gradient propagation (lower is better).' },
   { key: 'init_sensitivity_std', label: 'InitStd', title: 'Sensitivity to weight initialization (lower means more predictable).' },
   { key: 'tier', label: 'Status', width: 96, title: 'Current research phase of this architecture.' },
@@ -538,7 +529,23 @@ function Discoveries({
     typeof prefs?.qualityFloorEnabled === 'boolean' ? prefs.qualityFloorEnabled : true
   );
   const [visibleColumns, setVisibleColumns] = useState(() =>
-    Array.isArray(prefs?.visibleColumns) ? prefs.visibleColumns : COLUMNS.map(c => c.key)
+    {
+      const requiredLongCtx = [
+        'robustness_long_ctx_score',
+        'robustness_long_ctx_scaling_score',
+        'robustness_long_ctx_assoc_score',
+        'robustness_long_ctx_multi_hop_score',
+        'robustness_long_ctx_passkey_score',
+        'robustness_long_ctx_retrieval_aggregate',
+        'max_viable_seq_len',
+      ];
+      const saved = Array.isArray(prefs?.visibleColumns) ? prefs.visibleColumns : COLUMNS.map(c => c.key);
+      const merged = [...saved];
+      for (const key of requiredLongCtx) {
+        if (!merged.includes(key)) merged.push(key);
+      }
+      return merged;
+    }
   );
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
@@ -689,7 +696,8 @@ function Discoveries({
 
       return {
         ...e,
-        _score: candidateScore(e, TIER_ORDER),
+        // Keep Discoveries score aligned with backend leaderboard composite when present.
+        _score: (e.composite_score != null ? Number(e.composite_score) : candidateScore(e, TIER_ORDER)),
         _best_loss: entryBestLoss,
         _vs_ref: vsRef,
         _novelty: e.screening_novelty ?? e.novelty_score ?? null,
@@ -1103,6 +1111,20 @@ function Discoveries({
                                   : '--'}
                               </td>
                             );
+                          case 'robustness_long_ctx_score':
+                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_score != null ? Number(entry.robustness_long_ctx_score).toFixed(3) : '--'}</td>;
+                          case 'robustness_long_ctx_scaling_score':
+                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_scaling_score != null ? Number(entry.robustness_long_ctx_scaling_score).toFixed(3) : '--'}</td>;
+                          case 'robustness_long_ctx_assoc_score':
+                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_assoc_score != null ? Number(entry.robustness_long_ctx_assoc_score).toFixed(3) : '--'}</td>;
+                          case 'robustness_long_ctx_multi_hop_score':
+                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_multi_hop_score != null ? Number(entry.robustness_long_ctx_multi_hop_score).toFixed(3) : '--'}</td>;
+                          case 'robustness_long_ctx_passkey_score':
+                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_passkey_score != null ? Number(entry.robustness_long_ctx_passkey_score).toFixed(3) : '--'}</td>;
+                          case 'robustness_long_ctx_retrieval_aggregate':
+                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_retrieval_aggregate != null ? Number(entry.robustness_long_ctx_retrieval_aggregate).toFixed(3) : '--'}</td>;
+                          case 'max_viable_seq_len':
+                            return <td key={col.key} style={tdStyle}>{entry.max_viable_seq_len != null ? Number(entry.max_viable_seq_len).toFixed(0) : '--'}</td>;
                           case 'jacobian_spectral_norm':
                             const specVal = finitePositiveOrNull(entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm);
                             return <td key={col.key} style={tdStyle}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;

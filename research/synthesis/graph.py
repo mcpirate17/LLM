@@ -12,7 +12,6 @@ at construction time, so invalid graphs are rejected before compilation.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
@@ -330,8 +329,11 @@ class ComputationGraph:
             if len(input_shapes) != 2:
                 raise ValueError("Matmul needs 2 inputs")
             s1 = input_shapes[1]
-            # (B, S, D) x (B, D, K) -> (B, S, K)
-            # or (B, S, D) x (B, S, D) -> (B, S, D) for batched
+            # Match compiler.py logic:
+            # - If dims match, it's an attention-style [B,S,D] @ [B,S,D] -> [B,S,D]
+            # - Otherwise, it's a projection [B,S,D] @ [B,D,K] -> [B,S,K]
+            if s0.dim == s1.dim:
+                return ShapeInfo(dim=s0.dim, seq=s0.seq)
             return ShapeInfo(dim=s1.dim, seq=s0.seq)
 
         elif rule == "outer":

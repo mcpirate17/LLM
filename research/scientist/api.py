@@ -12,6 +12,7 @@ import ast
 import json
 import csv
 import io
+import importlib.util
 from collections import deque
 from datetime import datetime, timezone
 import hashlib
@@ -44,7 +45,7 @@ import requests as _requests
 logger = logging.getLogger(__name__)
 
 # ── Designer proxy configuration ────────────────────────────────────────
-# When set, /api/designer/* endpoints proxy to the aria-designer API first,
+# When set, /api/designer/* endpoints proxy to the aria_designer API first,
 # falling back to local implementation if the proxy is unavailable.
 _DESIGNER_PROXY_BASE = os.environ.get("ARIA_DESIGNER_PROXY_BASE", "http://127.0.0.1:8091")
 _DESIGNER_PROXY_ENABLED = os.environ.get("ARIA_DESIGNER_PROXY_ENABLED", "1") != "0"
@@ -54,7 +55,7 @@ _DESIGNER_PROXY_TIMEOUT = float(os.environ.get("ARIA_DESIGNER_PROXY_TIMEOUT", "1
 _ARIA_DESIGNER_ROOT = Path(
     os.environ.get(
         "ARIA_DESIGNER_ROOT",
-        str(Path(__file__).resolve().parents[2] / "aria-designer"),
+        str(Path(__file__).resolve().parents[2] / "aria_designer"),
     )
 )
 _ARIA_DESIGNER_API_HEALTH = os.environ.get("ARIA_DESIGNER_API_HEALTH", "http://127.0.0.1:8091/health")
@@ -152,7 +153,7 @@ def _native_runner_canary_status_payload(*, force_refresh: bool = False) -> Dict
 
 
 def _designer_service_status() -> Dict[str, Any]:
-    """Probe aria-designer API/UI health."""
+    """Probe aria_designer API/UI health."""
     api_up = False
     ui_up = False
     try:
@@ -252,7 +253,7 @@ def _designer_dev_down_path() -> Path:
 
 
 def _start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
-    """Best-effort start of aria-designer FE/BE via shared scripts."""
+    """Best-effort start of aria_designer FE/BE via shared scripts."""
     if not _ARIA_DESIGNER_ROOT.exists():
         return {
             "ok": False,
@@ -310,7 +311,7 @@ def _start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
 
         return {
             "ok": False,
-            "error": "Timed out while starting aria-designer services.",
+            "error": "Timed out while starting aria_designer services.",
             "pid": proc.pid,
             "status": latest,
             "log_path": str(log_path),
@@ -318,7 +319,7 @@ def _start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
 
 
 def _stop_designer_services() -> Dict[str, Any]:
-    """Best-effort stop of aria-designer FE/BE via shared scripts."""
+    """Best-effort stop of aria_designer FE/BE via shared scripts."""
     dev_down = _designer_dev_down_path()
     if not dev_down.exists():
         return {"ok": False, "error": f"Missing stop script: {dev_down}"}
@@ -345,7 +346,7 @@ def _stop_designer_services() -> Dict[str, Any]:
 
 def _designer_proxy(method: str, path: str, *, json_body=None, params=None,
                      timeout: float | None = None) -> _requests.Response | None:
-    """Try to proxy a request to the aria-designer API.
+    """Try to proxy a request to the aria_designer API.
 
     Returns the Response on success, or None if proxy is disabled/unavailable
     (caller should fall back to legacy implementation).
@@ -385,7 +386,7 @@ def _proxy_or_error(resp: _requests.Response | None):
 
 
 def _proxy_stream(method: str, path: str, *, json_body=None, params=None):
-    """Stream-proxy an SSE endpoint from the aria-designer backend.
+    """Stream-proxy an SSE endpoint from the aria_designer backend.
 
     Unlike _designer_proxy which buffers the entire response, this streams
     chunks through to the browser so SSE events arrive incrementally.
@@ -503,7 +504,8 @@ def _deduplicate_insights(insights: list) -> list:
     """Keep only the most recent insight per semantic dedup key."""
     seen: dict = {}
     for ins in insights:
-        key = _insight_dedup_key(ins.get("content", ""))
+        semantic_key = str(ins.get("semantic_key") or "").strip()
+        key = semantic_key or _insight_dedup_key(ins.get("content", ""))
         if key not in seen:
             seen[key] = ins
     return list(seen.values())
@@ -755,6 +757,121 @@ def _enrich_program_detail(nb: LabNotebook, program: Dict[str, Any]) -> Dict[str
     except Exception as e:
         logger.debug("Program enrichment failed for %s: %s", program.get("result_id"), e)
     return program
+
+
+def _attach_long_context_breakdown(nb: LabNotebook, entries: List[Dict[str, Any]]) -> None:
+    """Attach flattened long-context benchmark components to leaderboard/discovery rows."""
+    if not entries:
+        return
+    result_ids: List[str] = []
+    for row in entries:
+        rid = str(row.get("result_id") or "").strip()
+        if rid:
+            result_ids.append(rid)
+    if not result_ids:
+        return
+
+    placeholders = ",".join(["?"] * len(result_ids))
+    rows = nb.conn.execute(
+        f"""
+        SELECT
+            result_id,
+            external_benchmarks_json,
+            robustness_long_ctx_scaling_score,
+            robustness_long_ctx_assoc_score,
+            robustness_long_ctx_multi_hop_score,
+            robustness_long_ctx_passkey_score,
+            robustness_long_ctx_retrieval_aggregate,
+            robustness_long_ctx_combined_score,
+            max_viable_seq_len
+        FROM program_results
+        WHERE result_id IN ({placeholders})
+        """,
+        result_ids,
+    ).fetchall()
+    by_result: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        rid = str(row["result_id"])
+        payload_raw = row["external_benchmarks_json"]
+        payload: Dict[str, Any] = {}
+        if payload_raw and isinstance(payload_raw, str):
+            try:
+                parsed = json.loads(payload_raw)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+        by_result[rid] = {
+            "payload": payload,
+            "scaling_score": row["robustness_long_ctx_scaling_score"],
+            "assoc_score": row["robustness_long_ctx_assoc_score"],
+            "multi_hop_score": row["robustness_long_ctx_multi_hop_score"],
+            "passkey_score": row["robustness_long_ctx_passkey_score"],
+            "retrieval_agg": row["robustness_long_ctx_retrieval_aggregate"],
+            "combined_score": row["robustness_long_ctx_combined_score"],
+            "max_viable_seq_len": row["max_viable_seq_len"],
+        }
+
+    def _first_non_null(*vals: Any) -> Any:
+        for v in vals:
+            if v is not None:
+                return v
+        return None
+
+    for entry in entries:
+        rid = str(entry.get("result_id") or "").strip()
+        source = by_result.get(rid, {})
+        bench = source.get("payload", {}) if isinstance(source, dict) else {}
+        long_ctx = bench.get("long_context") if isinstance(bench, dict) else None
+
+        scaling = long_ctx.get("scaling") if isinstance(long_ctx, dict) else None
+        scaling_max_viable = None
+        if isinstance(scaling, dict):
+            scaling_max_viable = scaling.get("max_viable_len")
+
+        if isinstance(long_ctx, dict):
+            entry["long_context_breakdown"] = long_ctx
+            entry["robustness_long_ctx_benchmark_version"] = long_ctx.get("benchmark_version")
+
+        entry["robustness_long_ctx_scaling_score"] = _first_non_null(
+            entry.get("robustness_long_ctx_scaling_score"),
+            long_ctx.get("scaling_score") if isinstance(long_ctx, dict) else None,
+            source.get("scaling_score") if isinstance(source, dict) else None,
+        )
+        entry["robustness_long_ctx_assoc_score"] = _first_non_null(
+            entry.get("robustness_long_ctx_assoc_score"),
+            long_ctx.get("assoc_retrieval_score") if isinstance(long_ctx, dict) else None,
+            source.get("assoc_score") if isinstance(source, dict) else None,
+        )
+        entry["robustness_long_ctx_multi_hop_score"] = _first_non_null(
+            entry.get("robustness_long_ctx_multi_hop_score"),
+            long_ctx.get("multi_hop_score") if isinstance(long_ctx, dict) else None,
+            source.get("multi_hop_score") if isinstance(source, dict) else None,
+        )
+        entry["robustness_long_ctx_passkey_score"] = _first_non_null(
+            entry.get("robustness_long_ctx_passkey_score"),
+            long_ctx.get("passkey_score") if isinstance(long_ctx, dict) else None,
+            source.get("passkey_score") if isinstance(source, dict) else None,
+        )
+        entry["robustness_long_ctx_retrieval_aggregate"] = _first_non_null(
+            entry.get("robustness_long_ctx_retrieval_aggregate"),
+            long_ctx.get("retrieval_aggregate_score") if isinstance(long_ctx, dict) else None,
+            source.get("retrieval_agg") if isinstance(source, dict) else None,
+        )
+        entry["robustness_long_ctx_combined_score"] = _first_non_null(
+            entry.get("robustness_long_ctx_combined_score"),
+            long_ctx.get("combined_score") if isinstance(long_ctx, dict) else None,
+            source.get("combined_score") if isinstance(source, dict) else None,
+        )
+        entry["robustness_long_ctx_score"] = _first_non_null(
+            entry.get("robustness_long_ctx_score"),
+            entry.get("robustness_long_ctx_combined_score"),
+        )
+        entry["max_viable_seq_len"] = _first_non_null(
+            entry.get("max_viable_seq_len"),
+            scaling_max_viable,
+            source.get("max_viable_seq_len") if isinstance(source, dict) else None,
+        )
 
 
 def _entry_to_live_feed_event(entry: dict) -> Optional[dict]:
@@ -2497,6 +2614,8 @@ def _run_pipeline_sample_check(
         from ..synthesis.compiler import compile_model
         from ..synthesis.validator import validate_graph
         from ..eval.sandbox import safe_eval
+        from ..mathspaces.registry import register_all_mathspaces
+        register_all_mathspaces()
 
         grammar = GrammarConfig(
             model_dim=max(16, int(config.model_dim)),
@@ -3789,14 +3908,8 @@ def _build_start_mode_eligibility(
                     "tier": tier or None,
                 })
                 continue
-            if lb.get("investigation_loss_ratio") is not None:
-                payload["ineligible"].append({
-                    "result_id": result_id,
-                    "reason": "already_investigated_unchanged",
-                    "detail": "Candidate already has investigation evidence; provide a changed-condition trigger before re-investigating.",
-                    "tier": tier,
-                })
-                continue
+            # Note: We removed the check for existing investigation evidence here
+            # to allow retries/overwrites of failed investigations.
             payload["eligible_result_ids"].append(result_id)
             continue
 
@@ -3814,14 +3927,6 @@ def _build_start_mode_eligibility(
                     "result_id": result_id,
                     "reason": "not_investigation_passed",
                     "detail": "Investigation evidence did not pass robustness gate.",
-                    "tier": tier,
-                })
-                continue
-            if bool(lb.get("validation_passed")) or lb.get("validation_loss_ratio") is not None:
-                payload["ineligible"].append({
-                    "result_id": result_id,
-                    "reason": "already_validated",
-                    "detail": "Candidate already has validation evidence.",
                     "tier": tier,
                 })
                 continue
@@ -4469,10 +4574,10 @@ def create_app(
             from ..synthesis.validator import validate_graph
             from ..search.evolution import _mutate_graph
 
-            # Import workflow converter for aria-designer format
+            # Import workflow converter for aria_designer format
             try:
                 import sys as _sys
-                _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+                _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
                 if _designer_root not in _sys.path:
                     _sys.path.insert(0, _designer_root)
                 from runtime.importer import graph_to_workflow as _graph_to_workflow
@@ -5618,6 +5723,105 @@ def create_app(
         finally:
             nb.close()
 
+    @app.route("/api/analytics/recommendation-signals")
+    def api_recommendation_signals():
+        """Aggregate compact, data-driven recommendation signals for Designer."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+
+            analytics = ExperimentAnalytics(nb)
+            op_rates = analytics.op_success_rates() or {}
+            op_priors = []
+            for op_name, stats in op_rates.items():
+                n_used = int(stats.get("n_used") or 0)
+                if n_used < 5:
+                    continue
+                op_priors.append({
+                    "op_name": op_name,
+                    "s1_rate": round(_to_safe_float(stats.get("s1_rate")), 6),
+                    "n_used": n_used,
+                })
+            op_priors.sort(key=lambda r: (r.get("s1_rate", 0.0), r.get("n_used", 0)), reverse=True)
+
+            toxic_pairs = nb.get_failure_signature_blocklist(min_seen=5, max_fail_rate=0.85)
+            toxic_op_names: set[str] = set()
+            toxic_signatures = []
+            for signature, penalty in toxic_pairs.items():
+                toks = [tok.strip() for tok in str(signature).split("->") if tok.strip()]
+                toxic_op_names.update(toks)
+                toxic_signatures.append({
+                    "signature": signature,
+                    "penalty": round(_to_safe_float(penalty, 1.0), 6),
+                })
+            toxic_signatures.sort(key=lambda r: r.get("penalty", 1.0))
+
+            compression_coverage = analytics.compression_coverage() or {}
+            compression_opportunities = _compute_compression_opportunities(compression_coverage)
+            top_techniques = (compression_opportunities or {}).get("top_techniques") or []
+            compression_techniques = [
+                str(item.get("technique") or "").strip()
+                for item in top_techniques
+                if str(item.get("technique") or "").strip()
+            ]
+
+            interactions_raw = nb.get_selection_insight_interactions(limit=120)
+            interactions = []
+            for row in interactions_raw:
+                n_trials = int(row.get("n_trials") or 0)
+                if n_trials < 2:
+                    continue
+                interactions.append({
+                    "insight_a": row.get("insight_a"),
+                    "insight_b": row.get("insight_b"),
+                    "mean_reward": round(_to_safe_float(row.get("mean_reward"), 0.0), 6),
+                    "n_trials": n_trials,
+                    "n_supported": int(row.get("n_supported") or 0),
+                    "n_not_supported": int(row.get("n_not_supported") or 0),
+                })
+            interactions.sort(
+                key=lambda r: (abs(r.get("mean_reward", 0.0) - 0.5), r.get("n_trials", 0)),
+                reverse=True,
+            )
+
+            insights = _deduplicate_insights(nb.get_insights(limit=120))
+            compressed_insights = [
+                {
+                    "insight_id": row.get("insight_id"),
+                    "category": row.get("category"),
+                    "insight_type": row.get("insight_type"),
+                    "subject_key": row.get("subject_key"),
+                    "semantic_key": row.get("semantic_key"),
+                    "content": row.get("content"),
+                    "confidence": round(_to_safe_float(row.get("confidence"), 0.0), 6),
+                }
+                for row in insights
+            ]
+
+            payload = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "source": "research.analytics",
+                "summary": nb.get_dashboard_summary(),
+                "op_priors": op_priors[:80],
+                "toxic_signatures": toxic_signatures[:80],
+                "toxic_ops": sorted(toxic_op_names),
+                "compression_opportunities": compression_opportunities,
+                "compression_techniques": compression_techniques[:20],
+                "insights": compressed_insights[:80],
+                "insight_interactions": interactions[:60],
+                "native_runner": _native_runner_canary_status_payload(force_refresh=False),
+                "aria_core": {
+                    "available": bool(importlib.util.find_spec("aria_core")),
+                    "proactive_gating_in_research_runner": True,
+                },
+            }
+            return jsonify(payload)
+        except Exception as e:
+            logger.error(f"Error in recommendation-signals: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
     @app.route("/api/analytics/failure-patterns")
     def api_failure_patterns():
         """Failure analysis by error type and stage."""
@@ -5947,6 +6151,20 @@ def create_app(
             return jsonify(analytics.learning_trajectory())
         except Exception as e:
             logger.error(f"Error in learning-trajectory: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/analytics/strategy-backtest")
+    def api_strategy_backtest():
+        """Aggregate cross-experiment outcomes by search intent."""
+        nb = LabNotebook(notebook_path)
+        try:
+            from .analytics import ExperimentAnalytics
+            analytics = ExperimentAnalytics(nb)
+            return jsonify(analytics.strategy_backtest())
+        except Exception as e:
+            logger.error(f"Error in strategy-backtest: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -6320,7 +6538,7 @@ def create_app(
 
     @app.route("/api/reproducibility-manifest/<result_id>/workflow", methods=["GET"])
     def api_workflow_export(result_id: str):
-        """Export a program result as an aria-designer workflow JSON."""
+        """Export a program result as an aria_designer workflow JSON."""
         nb = LabNotebook(notebook_path)
         try:
             row = nb.conn.execute(
@@ -6391,6 +6609,7 @@ def create_app(
             from .analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
+            _attach_long_context_breakdown(nb, entries)
             stability = _compute_cross_run_stability(
                 nb, nb.get_top_programs(20, sort_by="loss_ratio")
             )
@@ -6536,6 +6755,7 @@ def create_app(
             if view == "all":
                 # Raw S1 survivors from program_results
                 programs = nb.get_top_programs(limit, sort_by="loss_ratio")
+                _attach_long_context_breakdown(nb, programs)
                 _annotate_qkv_usage(programs, analytics)
                 # Add family classification + display names
                 for p in programs:
@@ -6563,6 +6783,7 @@ def create_app(
 
             # Default: ranked leaderboard view
             entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
+            _attach_long_context_breakdown(nb, entries)
             stability = _compute_cross_run_stability(
                 nb, nb.get_top_programs(20, sort_by="loss_ratio")
             )
@@ -6599,7 +6820,12 @@ def create_app(
 
     @app.route("/api/fingerprint/resolve")
     def api_fingerprint_resolve():
-        """Resolve a result_id or fingerprint prefix to a concrete program result."""
+        """Resolve a result_id or fingerprint prefix to a concrete program result.
+
+        Preference order for fingerprint prefixes:
+        1) Best leaderboard-backed run (highest composite score)
+        2) Best surviving run by loss ratio
+        """
         value = str(request.args.get("value") or "").strip()
         if not value:
             return jsonify({"error": "value query param required"}), 400
@@ -6616,18 +6842,140 @@ def create_app(
                     "resolved_from": "result_id",
                     "candidates": [],
                 })
-            resolved = _resolve_scale_up_result_ids(nb, [], [value])
-            if resolved.get("resolved_fingerprints"):
-                chosen = resolved["resolved_fingerprints"][0]
+            rows = nb.conn.execute(
+                """
+                SELECT
+                    pr.result_id,
+                    pr.graph_fingerprint,
+                    pr.experiment_id,
+                    pr.stage1_passed,
+                    pr.loss_ratio,
+                    pr.timestamp,
+                    lb.tier,
+                    lb.composite_score,
+                    lb.screening_loss_ratio,
+                    lb.investigation_loss_ratio,
+                    lb.validation_loss_ratio
+                FROM program_results pr
+                LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
+                WHERE pr.graph_fingerprint LIKE ?
+                ORDER BY
+                    CASE WHEN lb.result_id IS NULL THEN 1 ELSE 0 END ASC,
+                    COALESCE(lb.composite_score, -1e9) DESC,
+                    pr.stage1_passed DESC,
+                    (pr.loss_ratio IS NULL) ASC,
+                    pr.loss_ratio ASC,
+                    pr.timestamp DESC
+                LIMIT 50
+                """,
+                (f"{value}%",),
+            ).fetchall()
+            if rows:
+                chosen_row = dict(rows[0])
+                candidates = []
+                for row in rows:
+                    candidates.append({
+                        "result_id": row["result_id"],
+                        "graph_fingerprint": row["graph_fingerprint"],
+                        "experiment_id": row["experiment_id"],
+                        "stage1_passed": bool(row["stage1_passed"]),
+                        "loss_ratio": row["loss_ratio"],
+                        "timestamp": row["timestamp"],
+                        "tier": row["tier"],
+                        "composite_score": row["composite_score"],
+                        "screening_loss_ratio": row["screening_loss_ratio"],
+                        "investigation_loss_ratio": row["investigation_loss_ratio"],
+                        "validation_loss_ratio": row["validation_loss_ratio"],
+                    })
                 return jsonify({
-                    "result_id": chosen.get("selected_result_id"),
-                    "graph_fingerprint": chosen.get("selected_graph_fingerprint"),
+                    "result_id": chosen_row.get("result_id"),
+                    "graph_fingerprint": chosen_row.get("graph_fingerprint"),
                     "resolved_from": "graph_fingerprint",
-                    "candidates": chosen.get("candidates", []),
+                    "candidate_count": len(candidates),
+                    "selection_policy": "leaderboard_composite_then_loss",
+                    "candidates": candidates,
                 })
             return jsonify({"error": "No matching fingerprint or result_id found."}), 404
         except Exception as e:
             logger.error(f"Error in /api/fingerprint/resolve: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+    @app.route("/api/fingerprint/history")
+    def api_fingerprint_history():
+        """Return chronological run history for a fingerprint prefix/result_id."""
+        value = str(request.args.get("value") or "").strip()
+        limit = int(request.args.get("limit", 100) or 100)
+        limit = max(1, min(limit, 500))
+        if not value:
+            return jsonify({"error": "value query param required"}), 400
+        nb = LabNotebook(notebook_path)
+        try:
+            direct = nb.conn.execute(
+                "SELECT graph_fingerprint FROM program_results WHERE result_id = ? LIMIT 1",
+                (value,),
+            ).fetchone()
+            fingerprint_like = (direct["graph_fingerprint"] if direct else value) + "%"
+            rows = nb.conn.execute(
+                """
+                SELECT
+                    pr.result_id,
+                    pr.graph_fingerprint,
+                    pr.experiment_id,
+                    pr.timestamp,
+                    pr.stage0_passed,
+                    pr.stage05_passed,
+                    pr.stage1_passed,
+                    pr.loss_ratio,
+                    pr.discovery_loss_ratio,
+                    pr.validation_loss_ratio,
+                    lb.tier,
+                    lb.composite_score,
+                    lb.screening_loss_ratio,
+                    lb.investigation_loss_ratio,
+                    lb.validation_loss_ratio AS lb_validation_loss_ratio,
+                    lb.investigation_passed,
+                    lb.validation_passed
+                FROM program_results pr
+                LEFT JOIN leaderboard lb ON lb.result_id = pr.result_id
+                WHERE pr.graph_fingerprint LIKE ?
+                ORDER BY pr.timestamp DESC
+                LIMIT ?
+                """,
+                (fingerprint_like, limit),
+            ).fetchall()
+            history = [dict(r) for r in rows]
+            best_row = nb.conn.execute(
+                """
+                SELECT
+                    pr.result_id,
+                    pr.graph_fingerprint,
+                    pr.experiment_id,
+                    pr.timestamp,
+                    pr.loss_ratio,
+                    lb.tier,
+                    lb.composite_score,
+                    lb.validation_loss_ratio
+                FROM program_results pr
+                JOIN leaderboard lb ON lb.result_id = pr.result_id
+                WHERE pr.graph_fingerprint LIKE ?
+                  AND lb.composite_score IS NOT NULL
+                ORDER BY lb.composite_score DESC, pr.timestamp DESC
+                LIMIT 1
+                """,
+                (fingerprint_like,),
+            ).fetchone()
+            best_by_composite = dict(best_row) if best_row else None
+            return jsonify({
+                "query": value,
+                "resolved_graph_fingerprint": history[0]["graph_fingerprint"] if history else None,
+                "total": len(history),
+                "best_leaderboard_run": best_by_composite,
+                "runs": history,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/fingerprint/history: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
@@ -6818,22 +7166,31 @@ def create_app(
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
                     return jsonify({"error": "result_ids required for validation mode"}), 400
-                nb = LabNotebook(notebook_path)
-                try:
-                    eligibility = _build_start_mode_eligibility(nb, "validation", result_ids)
-                finally:
-                    nb.close()
-                if not eligibility.get("all_eligible"):
-                    return jsonify({
-                        "error": "Ineligible result_ids for validation mode",
-                        "eligibility": eligibility,
-                    }), 409
+                force_validation = bool(
+                    body.get("force")
+                    or body.get("force_validation")
+                    or body.get("force_override")
+                    or body.get("allow_ineligible")
+                    or body.get("override_ineligible")
+                )
+                if not force_validation:
+                    nb = LabNotebook(notebook_path)
+                    try:
+                        eligibility = _build_start_mode_eligibility(nb, "validation", result_ids)
+                    finally:
+                        nb.close()
+                    if not eligibility.get("all_eligible"):
+                        return jsonify({
+                            "error": "Ineligible result_ids for validation mode",
+                            "eligibility": eligibility,
+                        }), 409
                 exp_id = runner.start_validation(
                     result_ids,
                     config,
                     hypothesis=hypothesis,
                     preregistration=preregistration,
                     exploratory=exploratory,
+                    force=force_validation,
                 )
             elif mode == "scale_up":
                 result_ids = _normalize_result_ids(body.get("result_ids", []))
@@ -9227,7 +9584,7 @@ def create_app(
     def api_native_runner_telemetry():
         """Return native runner fallback metrics for dashboard consumption."""
         try:
-            from .native_runner import native_runner_capability_report, _FALLBACK_METRICS
+            from .native_runner import native_runner_capability_report
             report = native_runner_capability_report()
             return jsonify({
                 "status": "ok",
@@ -9295,22 +9652,22 @@ def create_app(
                 "prescreen": prescreen,
             })
 
-    # ── Designer endpoints (proxy-first → aria-designer API) ──
+    # ── Designer endpoints (proxy-first → aria_designer API) ──
     #
-    # Each endpoint tries the aria-designer backend first via HTTP proxy.
+    # Each endpoint tries the aria_designer backend first via HTTP proxy.
     # If the proxy is unavailable or disabled (ARIA_DESIGNER_PROXY_ENABLED=0),
     # the legacy local implementation is used as fallback.
 
     @app.route("/api/designer/lifecycle")
     def api_designer_lifecycle():
-        """Return current aria-designer service status."""
+        """Return current aria_designer service status."""
         payload = _designer_service_status()
         payload.update(_designer_idle_state())
         return jsonify(payload)
 
     @app.route("/api/designer/ensure-running", methods=["POST"])
     def api_designer_ensure_running():
-        """Ensure aria-designer API+UI are running for seamless UX."""
+        """Ensure aria_designer API+UI are running for seamless UX."""
         body = request.get_json(silent=True) or {}
         force_restart = bool(body.get("force_restart", False))
         result = _start_designer_services(force_restart=force_restart)
@@ -9321,7 +9678,7 @@ def create_app(
 
     @app.route("/api/designer/stop", methods=["POST"])
     def api_designer_stop():
-        """Stop aria-designer API+UI services."""
+        """Stop aria_designer API+UI services."""
         result = _stop_designer_services()
         status = 200 if result.get("ok") else 500
         return jsonify(result), status
@@ -9350,10 +9707,8 @@ def create_app(
         )
         if proxied is not None:
             return proxied
-
-        # Legacy fallback
-        result = compile_designer_graph(workflow_json)
-        return jsonify(result)
+        
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/validate", methods=["POST"])
     def api_designer_validate():
@@ -9370,9 +9725,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        result = validate_designer_graph(workflow_json)
-        return jsonify(result)
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/run", methods=["POST"])
     def api_designer_run():
@@ -9391,9 +9744,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        result = run_designer_graph(workflow_json, device=device)
-        return jsonify(result)
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/components", methods=["GET"])
     def api_designer_components():
@@ -9405,8 +9756,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        return jsonify(get_designer_components())
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/save", methods=["POST"])
     def api_designer_save():
@@ -9432,19 +9782,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        nb = LabNotebook(notebook_path)
-        try:
-            nb.save_workflow_definition(
-                workflow_id=workflow_id,
-                name=name,
-                graph_json=json.dumps(body),
-                metadata=body.get("metadata", {}),
-                author=body.get("author", "user")
-            )
-            return jsonify({"success": True, "workflow_id": workflow_id})
-        finally:
-            nb.close()
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/commit", methods=["POST"])
     def api_designer_commit():
@@ -9454,65 +9792,16 @@ def create_app(
         if not workflow:
             return jsonify({"success": False, "error": "Missing workflow data"}), 400
 
-        nb = LabNotebook(notebook_path)
-        try:
-            from .designer_utils import workflow_to_computation_graph
-            from research.synthesis.serializer import graph_to_json
-            
-            # 1. Convert to research graph
-            try:
-                graph = workflow_to_computation_graph(workflow)
-            except Exception as e:
-                return jsonify({"success": False, "error": f"Graph conversion failed: {e}"}), 400
-                
-            graph_json = graph_to_json(graph)
-            fingerprint = graph.fingerprint()
-            
-            # 2. Record as program result
-            # We use a unique experiment_id for designer manual edits
-            exp_id = "designer_edits"
-            
-            # Ensure the pseudo-experiment exists
-            existing_exp = nb.conn.execute("SELECT 1 FROM experiments WHERE experiment_id = ?", (exp_id,)).fetchone()
-            if not existing_exp:
-                nb.conn.execute(
-                    "INSERT INTO experiments (experiment_id, timestamp, experiment_type, status, config_json) "
-                    "VALUES (?, ?, 'designer', 'completed', '{}')",
-                    (exp_id, time.time())
-                )
-                nb.conn.commit()
+        # Proxy: POST /api/v1/workflows/evaluate
+        # Note: evaluate is effectively a commit to the evaluation database in the designer
+        # which our dashboard syncs from.
+        proxied = _proxy_or_error(
+            _designer_proxy("POST", "/api/v1/workflows/evaluate", json_body={"workflow": workflow})
+        )
+        if proxied is not None:
+            return proxied
 
-            result_id = nb.record_program_result(
-                experiment_id=exp_id,
-                graph_fingerprint=fingerprint,
-                graph_json=graph_json,
-                model_source="designer_edit",
-                # Initial metadata: hasn't learned yet, but we want it on the board
-                stage0_passed=True,
-                stage05_passed=True,
-                stage1_passed=False, 
-            )
-            
-            # 3. Also upsert to leaderboard immediately so user sees it
-            nb.upsert_leaderboard(
-                result_id=result_id,
-                model_source="designer_edit",
-                architecture_desc=f"Manual edit: {workflow.get('name', fingerprint[:8])}",
-                tier="screening",
-                screening_passed=True
-            )
-            
-            return jsonify({
-                "success": True,
-                "result_id": result_id,
-                "fingerprint": fingerprint,
-                "message": f"Architecture committed as {result_id}. Run 'Investigate' to evaluate performance."
-            })
-        except Exception as e:
-            logger.error(f"Commit failed: {e}\n{traceback.format_exc()}")
-            return jsonify({"success": False, "error": str(e)}), 500
-        finally:
-            nb.close()
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
     def designer_v1_proxy(path):
@@ -9536,15 +9825,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        nb = LabNotebook(notebook_path)
-        try:
-            wf = nb.get_workflow_definition(workflow_id)
-            if not wf:
-                return jsonify({"error": "Workflow not found"}), 404
-            return jsonify(json.loads(wf["graph_json"]))
-        finally:
-            nb.close()
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/list")
     def api_designer_list_workflows():
@@ -9556,12 +9837,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        nb = LabNotebook(notebook_path)
-        try:
-            return jsonify(nb.list_workflow_definitions())
-        finally:
-            nb.close()
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/templates")
     def api_designer_templates():
@@ -9635,13 +9911,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        nb = LabNotebook(notebook_path)
-        try:
-            survivors = nb.get_top_programs(n, sort_by="loss_ratio")
-            return jsonify({"success": True, "survivors": survivors})
-        finally:
-            nb.close()
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/import", methods=["POST"])
     def api_designer_import():
@@ -9658,30 +9928,7 @@ def create_app(
         if proxied is not None:
             return proxied
 
-        # Legacy fallback
-        nb = LabNotebook(notebook_path)
-        try:
-            try:
-                import sys as _sys
-                _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
-                if _designer_root not in _sys.path:
-                    _sys.path.insert(0, _designer_root)
-                from runtime.importer import import_single as _import_single
-                workflow = _import_single(result_id)
-            except ImportError:
-                # Local utility fallback if designer not available
-                row = nb.get_program_detail(result_id)
-                if row is None:
-                    return jsonify({"success": False, "error": "Program not found"}), 404
-                graph_json_str = row["graph_json"]
-                workflow = import_research_program(graph_json_str)
-            
-            workflow.setdefault("schema_version", "workflow_graph.v1")
-            return jsonify({"success": True, "workflow": workflow})
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 500
-        finally:
-            nb.close()
+        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
     @app.route("/api/designer/lineage/sync", methods=["POST"])
     def api_designer_lineage_sync():
@@ -9721,7 +9968,7 @@ def create_app(
                 workflow_version=workflow_version,
                 graph_fingerprint=body.get("graph_fingerprint"),
                 status=str(body.get("status") or "unknown"),
-                source=str(body.get("source") or "aria-designer"),
+                source=str(body.get("source") or "aria_designer"),
                 total_time_ms=total_time_ms,
                 metrics=body.get("metrics") if isinstance(body.get("metrics"), dict) else {},
                 payload=body.get("payload") if isinstance(body.get("payload"), dict) else {},
@@ -10127,13 +10374,13 @@ def create_app(
             logger.error(f"Error in /api/aria/activity: {e}")
             return jsonify([]), 500
 
-    # ── /api/v1/ aliases for embedded aria-designer iframe ──
+    # ── /api/v1/ aliases for embedded aria_designer iframe ──
     # The designer app uses /api/v1/... routes (its native API paths).
     # When embedded via /designer-proxy/, RESEARCH_API_BASE resolves to the
     # dashboard origin, so these requests land here instead of on port 8091.
 
     # Import survivor routes removed — the catch-all proxy below forwards
-    # these to the aria-designer backend which has the canonical importer
+    # these to the aria_designer backend which has the canonical importer
     # (runtime/importer.py:import_single). This ensures both embedded and
     # full-view modes produce identical workflows with the same node IDs,
     # metadata (result_id, fingerprint), and component type mappings.
@@ -10149,7 +10396,7 @@ def create_app(
         # Fallback: read directly from the designer component database
         try:
             import sys as _sys
-            _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+            _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
             if _designer_root not in _sys.path:
                 _sys.path.insert(0, _designer_root)
             from api.app import database as _designer_db
@@ -10180,7 +10427,7 @@ def create_app(
         # Local fallback: use importer directly
         try:
             import sys as _sys
-            _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+            _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
             if _designer_root not in _sys.path:
                 _sys.path.insert(0, _designer_root)
             from runtime.importer import import_survivors as _import_survivors
@@ -10205,7 +10452,7 @@ def create_app(
         # Local fallback: use importer directly
         try:
             import sys as _sys
-            _designer_root = str(Path(__file__).resolve().parents[2] / "aria-designer")
+            _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
             if _designer_root not in _sys.path:
                 _sys.path.insert(0, _designer_root)
             from runtime.importer import import_single as _import_single
@@ -10219,11 +10466,11 @@ def create_app(
     # ── Catch-all proxy for remaining /api/v1/ designer routes ──
     # The embedded designer iframe makes requests to /api/v1/... which hit
     # this Flask server (same origin).  Specific aliases above handle some
-    # routes; everything else is proxied to the aria-designer backend.
+    # routes; everything else is proxied to the aria_designer backend.
 
     @app.route("/api/v1/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
     def api_v1_catchall(subpath):
-        """Proxy unhandled /api/v1/ requests to the aria-designer backend."""
+        """Proxy unhandled /api/v1/ requests to the aria_designer backend."""
         method = request.method
         json_body = request.get_json(silent=True)
         params = dict(request.args) if request.args else None
@@ -10241,12 +10488,12 @@ def create_app(
     # ── Designer static files (same-origin iframe) ──
 
     _designer_dist = str(
-        Path(__file__).parent.parent.parent / "aria-designer" / "ui" / "dist"
+        Path(__file__).parent.parent.parent / "aria_designer" / "ui" / "dist"
     )
 
     @app.route("/designer-proxy/")
     def designer_index():
-        """Serve the built aria-designer index.html for the embedded iframe.
+        """Serve the built aria_designer index.html for the embedded iframe.
 
         Serving the designer from the same origin as the dashboard avoids
         cross-origin iframe restrictions in Brave and other browsers.
@@ -10255,7 +10502,7 @@ def create_app(
 
     @app.route("/designer-proxy/<path:subpath>")
     def designer_assets(subpath):
-        """Serve aria-designer static assets (JS, CSS, etc.)."""
+        """Serve aria_designer static assets (JS, CSS, etc.)."""
         return send_from_directory(_designer_dist, subpath)
 
     # ── Dashboard routes ──

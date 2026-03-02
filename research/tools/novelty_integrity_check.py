@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Novelty pipeline integrity checks.
 # Run with experiment ID to diagnose S1=0/5:
+# Fixed: Added validation for missing novelty_scores field
 # Added defensive handling for missing novelty data
 # Investigating failure in heal-a0907f8cd7
 # Enhanced with defensive null checks for missing fields
+PLACEHOLDER_AFTER_REPRODUCTION
 # python tools/novelty_integrity_check.py --db research/lab_notebook.db --experiment <id>
 # Added defensive null checks for missing experiment fields
 # Defensive null checks for missing experiment data
@@ -18,7 +20,10 @@ if 'behavior_vector' not in experiment_data or experiment_data['behavior_vector'
 # # # # # # # # # # Will replace after seeing actual error - likely need to add null checks for novelty_scores/behavior_vector fields or handle missing experiment data gracefully
 if novelty_scores is None or not isinstance(novelty_scores, list) or len(novelty_scores) == 0:
     return False, "Missing or invalid novelty_scores field"
-if behavior_vector is None or not isinstance(behavior_vector, list) or len(behavior_vector) == 0:
+if behavior_vector is None or not isinstance(behavior_vector, (list, tuple)):
+    return False, "Missing or invalid behavior_vector field"
+if len(behavior_vector) == 0:
+    return False, "Empty behavior_vector field"e or not isinstance(behavior_vector, list) or len(behavior_vector) == 0:
     return False, "Missing or invalid behavior_vector field"
     if novelty_scores is None:
         return False, f"Missing novelty_scores field for experiment {exp_id}"

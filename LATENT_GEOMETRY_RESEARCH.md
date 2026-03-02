@@ -15,7 +15,7 @@ Does your current "AI Scientist" framework have the ability to swap out standard
     - `hyperbolic_norm`: Performs `log-map → LayerNorm → exp-map` to normalize without distorting hyperbolic geometry.
     - `CliffordAttention`: Uses the **geometric product** ($ab = a\cdot b + a\wedge b$) instead of a simple dot product for attention scores, allowing the model to attend to both scalar and bivector relationships.
     - `PoincareDistanceRouting`: Routes information based on hyperbolic distance in the Poincare ball, naturally capturing hierarchical relationships (syntax, part-whole) by leveraging the exponential growth of space near the manifold boundary.
-- **Native Acceleration:** `aria-core` provides optimized C++ kernels for these operations (e.g., `aria_clifford_attention_f32`, `aria_hyperbolic_distance_f32`), ensuring that non-Euclidean experiments are computationally feasible.
+- **Native Acceleration:** `aria_core` provides optimized C++ kernels for these operations (e.g., `aria_clifford_attention_f32`, `aria_hyperbolic_distance_f32`), ensuring that non-Euclidean experiments are computationally feasible.
 
 ### Gap Analysis:
 While the **capability** to swap standard attention for Hyperbolic/Clifford attention exists via the `research/synthesis/` grammar, a fully automated "Manifold Discovery" module that dynamically decides *when* to shift from Euclidean to Hyperbolic space during a single training run is still in the "foundational" stage. The AI Scientist can **hypothesize** and **test** specific hyperbolic architectures (as seen in `research/scientist/runner.py` with `math_space_weight`), but it does not yet autonomously perform online manifold switching.

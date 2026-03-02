@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 designer_src = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), '..', '..', '..', '..', 'aria-designer', 'runtime', 'src'
+    os.path.dirname(__file__), '..', '..', '..', '..', 'aria_designer', 'runtime', 'src'
 ))
 native_src = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
 native_include = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'include'))

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Aria Designer (API+UI)
+Comment=Start Aria Designer API and UI servers
+Exec=/bin/bash -lc "/home/tim/Projects/LLM/aria_designer/tools/run_all.sh"
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;

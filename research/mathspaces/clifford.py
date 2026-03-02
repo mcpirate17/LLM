@@ -25,7 +25,7 @@ import torch.nn.functional as F
 
 try:
     import aria_core
-    _HAS_ARIA_CORE = True
+    _HAS_ARIA_CORE = hasattr(aria_core, 'clifford_geometric_product_cl30_f32')
 except ImportError:
     _HAS_ARIA_CORE = False
 
@@ -57,7 +57,7 @@ def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Input: a, b of shape (B, S, K, 8)
     Output: (B, S, K, 8)
     """
-    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous():
+    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.device.type == "cpu":
         y = torch.empty_like(a)
         aria_core.clifford_geometric_product_cl30_f32(a, b, y)
         return y
@@ -135,7 +135,7 @@ def rotor_transform(x: torch.Tensor, rotor: torch.Tensor) -> torch.Tensor:
     Much more parameter-efficient: a rotor in Cl(3,0) uses 4 numbers
     to encode a 3D rotation (like quaternions).
     """
-    if _HAS_ARIA_CORE and x.is_contiguous() and rotor.is_contiguous():
+    if _HAS_ARIA_CORE and x.is_contiguous() and rotor.is_contiguous() and x.device.type == "cpu":
         try:
             return aria_core.clifford_rotor_transform_cl30_f32(x, rotor)
         except TypeError:

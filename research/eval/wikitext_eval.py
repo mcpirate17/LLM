@@ -13,14 +13,10 @@ from __future__ import annotations
 import logging
 import math
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 from .utils import (
     tokenize_file,
@@ -81,6 +77,24 @@ def _download_wikitext(
     logger.info("WikiText cached at %s", cache_dir)
     return train_path, val_path
 
+
+def evaluate_wikitext_perplexity(
+    model, vocab_size, device,
+    variant="wikitext-2-raw-v1",
+    n_train_steps=200, seq_len=128,
+    n_train_batches=32, n_eval_batches=8,
+    train_batch_size=4, eval_batch_size=4,
+    lr=3e-4,
+    max_chars_train=_DEFAULT_MAX_CHARS_TRAIN,
+    max_chars_val=_DEFAULT_MAX_CHARS_VAL,
+) -> Dict[str, Any]:
+    """Micro-train on WikiText and evaluate perplexity."""
+    t0 = time.perf_counter()
+    try:
+        train_path, val_path = _download_wikitext(variant, max_chars_train, max_chars_val)
+    except Exception as e:
+        logger.warning("WikiText download failed: %s", e)
+        return {"wikitext_perplexity": None, "error": f"download_failed: {e}"}
 
     # Tokenize
     train_tokens = tokenize_file(train_path, vocab_size)

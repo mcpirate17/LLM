@@ -2,7 +2,7 @@
 
 ## Ownership Model
 
-### aria-designer/runtime/ (Primary Owner)
+### aria_designer/runtime/ (Primary Owner)
 - **C kernels** (`runtime/src/kernels.c`, `kernels.h`): All shared tensor ops live here.
 - **Bridge** (`runtime/bridge.py`): Workflow-to-graph conversion and evaluation.
 - **Dispatch** (`runtime/dispatch.py`): C kernel vs Python fallback selection.
@@ -16,25 +16,25 @@
 
 ## Rules
 
-1. **No kernel duplication**: If aria-designer already has a C kernel for an op, research MUST use it via linking, not copy it.
-2. **New kernels land in Designer first**: If a new kernel is needed, implement it in `aria-designer/runtime/src/` and expose via `kernels.h`. Research links against it.
+1. **No kernel duplication**: If aria_designer already has a C kernel for an op, research MUST use it via linking, not copy it.
+2. **New kernels land in Designer first**: If a new kernel is needed, implement it in `aria_designer/runtime/src/` and expose via `kernels.h`. Research links against it.
 3. **Temporary exceptions**: If a runner-specific kernel is urgently needed and cannot land in Designer immediately, it may live in `research/runtime/native/src/` with:
    - A tracking issue or TODO in this file
    - A retirement deadline (max 2 sprints)
    - A migration plan to move it into Designer
 4. **ABI stability**: Headers in `include/` are the contract between Python/Rust and C. Changes require version bump in `native_ir.v1` schema.
-5. **Build integration**: `CMakeLists.txt` links against aria-designer kernel sources directly. No vendored copies.
+5. **Build integration**: `CMakeLists.txt` links against aria_designer kernel sources directly. No vendored copies.
 
 ## Current State
 
 | Component | Location | Owner | Status |
 |-----------|----------|-------|--------|
-| Elementwise ops (relu, gelu, silu, etc.) | aria-designer/runtime/src/kernels.c | Designer | Active, 8+ ops |
-| Binary ops (add, mul, sub) | aria-designer/runtime/src/kernels.c | Designer | Active |
-| Matmul (tiled) | aria-designer/runtime/src/kernels.c | Designer | Active |
-| Linear projection | aria-designer/runtime/src/kernels.c | Designer | Active |
-| RMSNorm | aria-designer/runtime/src/kernels.c | Designer | Active |
-| Reductions (sum, mean) | aria-designer/runtime/src/kernels.c | Designer | Active |
+| Elementwise ops (relu, gelu, silu, etc.) | aria_designer/runtime/src/kernels.c | Designer | Active, 8+ ops |
+| Binary ops (add, mul, sub) | aria_designer/runtime/src/kernels.c | Designer | Active |
+| Matmul (tiled) | aria_designer/runtime/src/kernels.c | Designer | Active |
+| Linear projection | aria_designer/runtime/src/kernels.c | Designer | Active |
+| RMSNorm | aria_designer/runtime/src/kernels.c | Designer | Active |
+| Reductions (sum, mean) | aria_designer/runtime/src/kernels.c | Designer | Active |
 | Graph scheduler | research/runtime/native/rust/ | Research | New (scaffold) |
 | Memory arena | research/runtime/native/rust/ | Research | New (scaffold) |
 | Kernel registry + dispatch | research/runtime/native/src/ | Research | New (scaffold) |

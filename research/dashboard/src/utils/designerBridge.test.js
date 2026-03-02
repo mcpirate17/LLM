@@ -8,7 +8,7 @@ describe('parseDesignerBridgeMessage', () => {
 
   test('maps graph-loaded payload', () => {
     const msg = {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-loaded',
       name: 'Imported graph',
       nodeCount: 12,
@@ -22,7 +22,7 @@ describe('parseDesignerBridgeMessage', () => {
 
   test('maps graph-load-error payload with fallback message', () => {
     const explicit = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-load-error',
       error: 'Import failed: 404',
     });
@@ -30,7 +30,7 @@ describe('parseDesignerBridgeMessage', () => {
     expect(explicit.error).toBe('Import failed: 404');
 
     const fallback = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-load-error',
     });
     expect(fallback.kind).toBe('graph-load-error');
@@ -39,7 +39,7 @@ describe('parseDesignerBridgeMessage', () => {
 
   test('maps graph-changed payload', () => {
     const parsed = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-changed',
       nodeCount: 7,
       edgeCount: 9,
@@ -50,7 +50,7 @@ describe('parseDesignerBridgeMessage', () => {
 
   test('maps graph-data passthrough', () => {
     const msg = {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-data',
       workflow: { nodes: [] },
     };
@@ -61,7 +61,7 @@ describe('parseDesignerBridgeMessage', () => {
 
   test('maps embedded-ready signal', () => {
     const msg = {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'embedded-ready',
       readOnly: true,
     };
@@ -73,7 +73,7 @@ describe('parseDesignerBridgeMessage', () => {
 
 /**
  * Integration test: simulates the full embedded bridge handshake sequence
- * that occurs when ArchitectureDrawer opens an iframe of aria-designer.
+ * that occurs when ArchitectureDrawer opens an iframe of aria_designer.
  *
  * Sequence:
  *   1. iframe loads and posts `embedded-ready`
@@ -84,22 +84,22 @@ describe('embedded bridge handshake roundtrip', () => {
   test('embedded-ready → load-result → graph-loaded', () => {
     // Step 1: iframe signals readiness
     const ready = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'embedded-ready',
       readOnly: true,
     });
     expect(ready.kind).toBe('embedded-ready');
 
-    // Step 2: parent would send { target: 'aria-designer', type: 'load-result', resultId }
+    // Step 2: parent would send { target: 'aria_designer', type: 'load-result', resultId }
     // (this is a postMessage to the iframe — not parsed by the bridge, just validated structurally)
-    const loadCmd = { target: 'aria-designer', type: 'load-result', resultId: 'res_abc123' };
-    expect(loadCmd.target).toBe('aria-designer');
+    const loadCmd = { target: 'aria_designer', type: 'load-result', resultId: 'res_abc123' };
+    expect(loadCmd.target).toBe('aria_designer');
     expect(loadCmd.type).toBe('load-result');
     expect(loadCmd.resultId).toBeTruthy();
 
     // Step 3: iframe responds with graph-loaded
     const loaded = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-loaded',
       resultId: 'res_abc123',
       name: 'Imported arch',
@@ -112,14 +112,14 @@ describe('embedded bridge handshake roundtrip', () => {
 
   test('embedded-ready → load-result → graph-load-error', () => {
     const ready = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'embedded-ready',
     });
     expect(ready.kind).toBe('embedded-ready');
 
     // iframe fails to import
     const errMsg = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-load-error',
       resultId: 'res_bad',
       error: 'Import failed: 404',
@@ -132,7 +132,7 @@ describe('embedded bridge handshake roundtrip', () => {
     // If a stray graph-data arrives before embedded-ready, it should still parse
     // but the handshake contract says parent should wait for embedded-ready first
     const stray = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-data',
       workflow: {},
     });
@@ -208,7 +208,7 @@ describe('ArchitectureDrawer state machine', () => {
 
     // Step 2: iframe sends embedded-ready
     state = processMessage(state, {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'embedded-ready',
       readOnly: true,
     });
@@ -217,7 +217,7 @@ describe('ArchitectureDrawer state machine', () => {
 
     // Step 3: iframe successfully loads and responds
     state = processMessage(state, {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-loaded',
       resultId: 'res_happy',
       name: 'Test Architecture',
@@ -240,14 +240,14 @@ describe('ArchitectureDrawer state machine', () => {
 
     // iframe ready
     state = processMessage(state, {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'embedded-ready',
     });
     expect(state.bridgeReady).toBe(true);
 
     // import fails
     state = processMessage(state, {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-load-error',
       resultId: 'res_fail',
       error: 'Failed to import res_fail: Import failed: 404',
@@ -273,7 +273,7 @@ describe('ArchitectureDrawer state machine', () => {
     let state = createDrawerState('res_early');
     // Still booting, embedded-ready arrives (shouldn't happen, but defend)
     state = processMessage(state, {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'embedded-ready',
     });
     expect(state.bridgeReady).toBe(true);
@@ -287,11 +287,11 @@ describe('ArchitectureDrawer state machine', () => {
     state.designerReady = true;
 
     state = processMessage(state, {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'embedded-ready',
     });
     state = processMessage(state, {
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-loaded',
       name: 'Original',
       nodeCount: 10,
@@ -301,7 +301,7 @@ describe('ArchitectureDrawer state machine', () => {
 
     // User edits in designer → graph-changed
     const changed = parseDesignerBridgeMessage({
-      source: 'aria-designer',
+      source: 'aria_designer',
       type: 'graph-changed',
       nodeCount: 11,
       edgeCount: 14,

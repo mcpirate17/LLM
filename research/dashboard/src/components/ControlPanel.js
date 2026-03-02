@@ -1,5 +1,5 @@
 import { apiCall } from "../services/apiService";
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
 import {
   TELEMETRY_PRESET_KEYS,
@@ -9,265 +9,20 @@ import {
   applyTelemetryPresetSettings,
 } from './controlPanelTelemetryPresets';
 
-const CANARY_PREFS_STORAGE_KEY = 'aria.controlpanel.canaryPrefs.v1';
+import { DEFAULT_CONFIG, readCanaryPrefs, writeCanaryPrefs, clearCanaryPrefs } from '../utils/configDefaults';
 
-const readCanaryPrefs = () => {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return {};
-    const raw = window.localStorage.getItem(CANARY_PREFS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-};
+// Control Components
+import HypothesisCritique from './control/HypothesisCritique';
+import RunStatusPanel from './control/RunStatusPanel';
+import ModeSelector from './control/ModeSelector';
+import AriaRecommendationPanel from './control/AriaRecommendationPanel';
+import CategoryWeightsControl from './control/CategoryWeightsControl';
+import ConfigField from './control/ConfigField';
 
-const writeCanaryPrefs = (prefs) => {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(CANARY_PREFS_STORAGE_KEY, JSON.stringify(prefs || {}));
-  } catch {
-    // Ignore persistence failures (private mode / storage limits)
-  }
-};
-
-const clearCanaryPrefs = () => {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.removeItem(CANARY_PREFS_STORAGE_KEY);
-  } catch {
-    // Ignore storage clear failures
-  }
-};
-
-const DEFAULT_CONFIG = {
-  n_programs: 50,
-  model_dim: 256,
-  n_layers: 4,
-  vocab_size: 32000,
-  max_seq_len: 256,
-  device: 'cuda',
-  stage1_steps: 500,
-  stage1_lr: 0.0003,
-  max_depth: 10,
-  max_ops: 16,
-  math_space_weight: 2.0,
-  residual_prob: 0.7,
-  max_experiments: 100,
-  max_time_minutes: 0,
-  max_cost_dollars: 0,
-  // Evolution/novelty
-  population_size: 50,
-  n_generations: 20,
-  tournament_size: 5,
-  mutation_rate: 0.7,
-  crossover_rate: 0.3,
-  elitism: 5,
-  novelty_weight: 0.5,
-  fitness_weight: 0.5,
-  archive_size: 200,
-  k_nearest: 15,
-  archive_threshold: 0.3,
-  // Automation
-  auto_scale_up: true,
-  auto_scale_up_min_survivors: 3,
-  auto_scale_up_top_n: 5,
-  auto_report: true,
-  auto_report_every_n: 5,
-  // Model source
-  model_source: 'mixed',
-  morph_ratio: 0.5,
-  // Grammar probabilities
-  grammar_split_prob: 0.2,
-  grammar_merge_prob: 0.1,
-  grammar_risky_op_prob: 0.05,
-  grammar_freq_domain_prob: 0.05,
-  structured_sparsity_bias: 0.0,
-  // Category weights (higher = more likely to be sampled)
-  category_weights: {
-    elementwise_unary: 1.0,
-    elementwise_binary: 1.0,
-    reduction: 1.0,
-    linear_algebra: 1.0,
-    structural: 1.0,
-    parameterized: 1.0,
-    mixing: 1.0,
-    sequence: 1.0,
-    frequency: 1.0,
-    math_space: 1.0,
-    functional: 1.0,
-  },
-  // Op control
-  excluded_ops: '',
-  op_weights: '',
-  // Training programs
-  use_synthesized_training: false,
-  n_training_programs: 3,
-  // Auto-escalation
-  auto_investigate: true,
-  auto_investigate_min_survivors: 1,
-  auto_investigate_top_n: 5,
-  auto_validate: true,
-  auto_validate_min_robustness: 0.5,
-  auto_validate_top_n: 3,
-  // Investigation/validation
-  investigation_steps: 2500,
-  investigation_batch_size: 4,
-  validation_steps: 10000,
-  validation_batch_size: 8,
-  validation_seq_len: 512,
-  validation_n_seeds: 3,
-};
-
-const CRITIQUE_VERDICT_STYLES = {
-  proceed: { color: 'var(--accent-green)', label: 'Proceed', icon: '\u2714' },
-  caution: { color: 'var(--accent-yellow)', label: 'Caution', icon: '\u26A0' },
-  revise: { color: 'var(--accent-red)', label: 'Revise', icon: '\u2718' },
-};
-
-const CRITIQUE_GATE_STYLES = {
-  pass: { color: 'var(--accent-green)', bg: 'rgba(63, 185, 80, 0.18)', label: 'Pass' },
-  warn: { color: 'var(--accent-yellow)', bg: 'rgba(210, 153, 34, 0.18)', label: 'Warn' },
-  fail: { color: 'var(--accent-red)', bg: 'rgba(248, 81, 73, 0.18)', label: 'Fail' },
-};
-
-function HypothesisCritique({ critique }) {
-  const style = CRITIQUE_VERDICT_STYLES[critique.verdict] || CRITIQUE_VERDICT_STYLES.caution;
-  const gate = typeof critique.gate === 'string' ? critique.gate : (critique.verdict === 'proceed' ? 'pass' : critique.verdict === 'revise' ? 'fail' : 'warn');
-  const gateStyle = CRITIQUE_GATE_STYLES[gate] || CRITIQUE_GATE_STYLES.warn;
-  const checks = Array.isArray(critique.checks) ? critique.checks : [];
-  const missingFields = Array.isArray(critique.missing_fields)
-    ? critique.missing_fields.filter(Boolean)
-    : [];
-  const missingFieldLabels = {
-    source_selection_rule: 'source_selection_rule',
-    mutation_mechanism: 'mutation_mechanism',
-    intent_weights: 'intent_weights',
-    primary_metric: 'primary_metric',
-    success_criteria: 'success_criteria',
-    confounders_checklist: 'confounders_checklist',
-    fallback_plan: 'fallback_plan',
-  };
-  const hasConcerns = critique.concerns && critique.concerns.length > 0;
-  const hasSuggestions = critique.suggestions && critique.suggestions.length > 0;
-
-  return (
-    <div style={{
-      marginBottom: 10,
-      padding: '8px 10px',
-      borderRadius: 6,
-      border: `1px solid ${style.color}`,
-      background: `${style.color}11`,
-      fontSize: 12,
-      lineHeight: 1.5,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: hasConcerns || hasSuggestions ? 6 : 0 }}>
-        <span style={{ fontSize: 14 }}>{style.icon}</span>
-        <strong style={{ color: style.color }}>Hypothesis Review: {style.label}</strong>
-        <span style={{
-          marginLeft: 8,
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: 0.3,
-          textTransform: 'uppercase',
-          color: gateStyle.color,
-          background: gateStyle.bg,
-          border: `1px solid ${gateStyle.color}`,
-          borderRadius: 4,
-          padding: '1px 6px',
-        }}>
-          Gate: {gateStyle.label}
-        </span>
-        {critique.confidence != null && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
-            confidence {(critique.confidence * 100).toFixed(0)}%
-          </span>
-        )}
-      </div>
-      {checks.length > 0 && (
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 6,
-          marginBottom: hasConcerns || hasSuggestions ? 6 : 0,
-          paddingLeft: 20,
-        }}>
-          {checks.map((check, idx) => {
-            const checkStyle = CRITIQUE_GATE_STYLES[check?.status] || CRITIQUE_GATE_STYLES.warn;
-            const label = check?.label || check?.key || `Check ${idx + 1}`;
-            return (
-              <span
-                key={`${label}-${idx}`}
-                style={{
-                  fontSize: 10,
-                  color: checkStyle.color,
-                  background: checkStyle.bg,
-                  border: `1px solid ${checkStyle.color}`,
-                  borderRadius: 4,
-                  padding: '1px 6px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 4,
-                }}
-              >
-                <strong>{checkStyle.label}</strong>
-                <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
-              </span>
-            );
-          })}
-        </div>
-      )}
-      {missingFields.length > 0 && (
-        <div style={{
-          marginBottom: hasConcerns || hasSuggestions ? 6 : 0,
-          paddingLeft: 20,
-        }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
-            Missing fields:
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {missingFields.map((field) => (
-              <span
-                key={field}
-                style={{
-                  fontSize: 10,
-                  color: 'var(--accent-yellow)',
-                  background: 'rgba(210, 153, 34, 0.18)',
-                  border: '1px solid var(--accent-yellow)',
-                  borderRadius: 4,
-                  padding: '1px 6px',
-                  fontFamily: 'monospace',
-                }}
-              >
-                {missingFieldLabels[field] || field}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {hasConcerns && (
-        <div style={{ marginBottom: hasSuggestions ? 4 : 0 }}>
-          {critique.concerns.map((c, i) => (
-            <div key={i} style={{ color: 'var(--text-secondary)', paddingLeft: 20 }}>
-              &bull; {c}
-            </div>
-          ))}
-        </div>
-      )}
-      {hasSuggestions && (
-        <div>
-          {critique.suggestions.map((s, i) => (
-            <div key={i} style={{ color: 'var(--text-muted)', paddingLeft: 20, fontStyle: 'italic' }}>
-              &rarr; {s}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
+/**
+ * ControlPanel — Orchestrates experiment launching, configuration,
+ * and real-time monitoring of running experiments.
+ */
 function ControlPanel({
   isRunning,
   progress,
@@ -286,7 +41,6 @@ function ControlPanel({
   const [hypothesis, setHypothesis] = useState('');
   const [mode, setMode] = useState('single');
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showOpRef, setShowOpRef] = useState(false);
   const { summary: liveSummary } = useAriaData() || {};
   const [systemStatus, setSystemStatus] = useState(null);
   const [validating, setValidating] = useState(false);
@@ -301,6 +55,7 @@ function ControlPanel({
   const [actionError, setActionError] = useState('');
   const [blockedConfig, setBlockedConfig] = useState(null);
   const [showCutoverDetails, setShowCutoverDetails] = useState(false);
+  
   // Scale-up state
   const [scaleUpUseTop, setScaleUpUseTop] = useState(true);
   const [scaleUpTopN, setScaleUpTopN] = useState(5);
@@ -309,6 +64,7 @@ function ControlPanel({
   const [scaleUpBatchSize, setScaleUpBatchSize] = useState(8);
   const [scaleUpSeqLen, setScaleUpSeqLen] = useState(512);
   const [prefillSummary, setPrefillSummary] = useState(null);
+  
   const [showCanarySummary, setShowCanarySummary] = useState(() => {
     const prefs = readCanaryPrefs();
     return typeof prefs.showCanarySummary === 'boolean' ? prefs.showCanarySummary : true;
@@ -412,8 +168,8 @@ function ControlPanel({
     const objectiveText = typeof prefillRequest.objective === 'string' ? prefillRequest.objective.trim() : '';
     const hypothesisText = typeof prefillRequest.hypothesis === 'string' ? prefillRequest.hypothesis.trim() : '';
     const mergedHypothesis = [
-      objectiveText ? `Objective: ${objectiveText}` : '',
-      hypothesisText ? `Hypothesis: ${hypothesisText}` : '',
+      objectiveText ? `Objective: \${objectiveText}` : '',
+      hypothesisText ? `Hypothesis: \${hypothesisText}` : '',
     ].filter(Boolean).join(' | ');
     if (mergedHypothesis) {
       setHypothesis(mergedHypothesis);
@@ -472,13 +228,9 @@ function ControlPanel({
     const processStart = async (fullPayload) => {
       try {
         const result = await onStart(fullPayload);
-        // Note: we expect onStart to handle its own error reporting to the global app,
-        // but if it returns an error object, we can handle it locally too.
         if (result && !result.ok) {
           if (result.preflight_blocked) {
             setBlockedConfig(fullPayload);
-            // Error message is likely already set by onStart in the global banner, 
-            // but we'll set it here too for the local UI.
             setActionError('Preflight gate blocked launch. You can Force Start to override.');
           }
         }
@@ -490,7 +242,7 @@ function ControlPanel({
     if (mode === 'investigation') {
       if (investUseTop) {
         try {
-          const r = await apiCall(`/api/programs?n=${investTopN}&sort=loss_ratio`);
+          const r = await apiCall(`/api/programs?n=\${investTopN}&sort=loss_ratio`);
           const programs = await r.json();
           const ids = programs
             .filter(p => p.stage1_passed)
@@ -517,7 +269,7 @@ function ControlPanel({
     if (mode === 'validation') {
       if (investUseTop) {
         try {
-          const r = await apiCall(`/api/leaderboard?tier=investigation&sort=composite_score&limit=${investTopN}`);
+          const r = await apiCall(`/api/leaderboard?tier=investigation&sort=composite_score&limit=\${investTopN}`);
           const data = await r.json();
           const ids = (data.entries || [])
             .filter(e => e.investigation_passed)
@@ -550,7 +302,7 @@ function ControlPanel({
       };
       if (scaleUpUseTop) {
         try {
-          const r = await apiCall(`/api/programs?n=${scaleUpTopN}&sort=loss_ratio`);
+          const r = await apiCall(`/api/programs?n=\${scaleUpTopN}&sort=loss_ratio`);
           const programs = await r.json();
           const ids = programs
             .filter(p => p.stage1_passed)
@@ -618,17 +370,14 @@ function ControlPanel({
     if (recommendation?.config) {
       setConfig(prev => {
         const next = { ...prev, ...recommendation.config };
-        // Deep-merge category_weights so partial updates don't wipe existing values
         if (recommendation.config.category_weights && prev.category_weights) {
           next.category_weights = { ...prev.category_weights, ...recommendation.config.category_weights };
         }
-        // Convert excluded_ops array to comma-separated string for the text input
         if (Array.isArray(next.excluded_ops)) {
           next.excluded_ops = next.excluded_ops.join(', ');
         }
-        // Convert op_weights dict to op:weight string for the text input
         if (typeof next.op_weights === 'object' && next.op_weights !== null && !Array.isArray(next.op_weights)) {
-          next.op_weights = Object.entries(next.op_weights).map(([k, v]) => `${k}:${v}`).join(', ');
+          next.op_weights = Object.entries(next.op_weights).map(([k, v]) => `\${k}:\${v}`).join(', ');
         }
         return next;
       });
@@ -649,19 +398,10 @@ function ControlPanel({
       const data = await res.json();
       if (res.ok) {
         setLlmConfig(data.config);
-        if (data.warning) {
-          setLlmMessage(`Warning: ${data.warning}`);
-        } else {
-          setLlmMessage('LLM configured and verified successfully');
-        }
+        setLlmMessage(data.warning ? `Warning: \${data.warning}` : 'LLM configured and verified successfully');
         setLlmForm({ backend: '', api_key: '', model: '', host: '' });
-        // Notify other components (e.g. StrategyAdvisor) that LLM is now available
         window.dispatchEvent(new CustomEvent('llm-configured'));
-        // Refresh system status
-        apiCall(`/api/system/status`)
-          .then(r => r.ok ? r.json() : null)
-          .then(d => { if (d) setSystemStatus(d); })
-          .catch(() => {});
+        apiCall(`/api/system/status`).then(r => r.ok ? r.json() : null).then(d => { if (d) setSystemStatus(d); }).catch(() => {});
       } else {
         setLlmMessage(data.error || 'Configuration failed');
       }
@@ -679,10 +419,7 @@ function ControlPanel({
       const res = await apiCall(`/api/native-runner/canary/refresh`, { method: 'POST' });
       const data = await (res.ok ? res.json() : null);
       if (data?.native_runner_canary) {
-        setSystemStatus((prev) => ({
-          ...(prev || {}),
-          native_runner_canary: data.native_runner_canary,
-        }));
+        setSystemStatus((prev) => ({ ...(prev || {}), native_runner_canary: data.native_runner_canary }));
       } else {
         setActionError('Canary refresh returned no payload.');
       }
@@ -693,18 +430,6 @@ function ControlPanel({
       setCanaryRefreshCooldownS(clampCanaryCooldown(canaryCooldownSeconds));
     }
   }, [canaryRefreshing, canaryRefreshCooldownS, canaryCooldownSeconds]);
-
-  const handleResetCanaryPrefs = useCallback(() => {
-    clearCanaryPrefs();
-    setShowCanarySummary(true);
-    setShowCanaryRefreshHint(true);
-    setCanaryCooldownSeconds(8);
-    setCanaryRefreshCooldownS(0);
-    setNativeTelemetryExpanded(true);
-    setCanaryTelemetryPreset('default');
-    setActionError('');
-    setCanaryPrefsNotice('Canary preferences reset to defaults.');
-  }, []);
 
   const handleTelemetryPresetChange = useCallback((preset) => {
     const next = applyTelemetryPresetSettings(preset);
@@ -720,1728 +445,180 @@ function ControlPanel({
 
   const isEvolutionMode = mode === 'evolve' || mode === 'novelty';
   const isScaleUpMode = mode === 'scale_up';
-  const generationTotal = progress?.total_generations || 0;
-  const generationCurrent = progress?.current_generation || 0;
+  
   const programTotal = progress?.total_programs || 0;
   const programCurrent = progress?.current_program || 0;
-  const progressStatus = String(progress?.status || '').toLowerCase();
+  const generationTotal = progress?.total_generations || 0;
+  const generationCurrent = progress?.current_generation || 0;
   const isGenerationProgress = generationTotal > 0;
-  const nativeRunner = progress?.native_runner || systemStatus?.native_runner || null;
-  const nativeFallback = nativeRunner?.fallback_metrics || {};
-  const nativeFallbackRateValue = Number(nativeFallback.fallback_rate);
-  const nativeFallbackRate = Number.isFinite(nativeFallbackRateValue)
-    ? `${(nativeFallbackRateValue * 100).toFixed(1)}%`
-    : null;
-  const nativeFallbackLimitRaw = nativeFallback.max_allowed_fallback_rate;
-  const nativeFallbackLimit = nativeFallbackLimitRaw != null ? Number(nativeFallbackLimitRaw) : null;
-  const nativeFallbackLimitText = Number.isFinite(nativeFallbackLimit)
-    ? `${(nativeFallbackLimit * 100).toFixed(1)}%`
-    : null;
-  const nativeProbeSuccesses = Number(nativeFallback.probe_successes || 0);
-  const nativeProbeFailures = Number(nativeFallback.probe_failures || 0);
-  const nativeLegacyCompiles = Number(nativeFallback.legacy_compile_invocations || 0);
-  const nativeLegacyCompileLimitRaw = nativeFallback.max_allowed_legacy_compile_invocations;
-  const nativeLegacyCompileLimit = nativeLegacyCompileLimitRaw != null ? Number(nativeLegacyCompileLimitRaw) : null;
-  const nativeLegacyCompileLimitText = Number.isFinite(nativeLegacyCompileLimit) ? String(nativeLegacyCompileLimit) : null;
-  const nativeProbeSummary = `${nativeProbeSuccesses} ok / ${nativeProbeFailures} fail`;
-  const nativeGuardrail = nativeRunner?.selective_guardrail || {};
-  const guardrailTriggered = Boolean(nativeGuardrail.triggered);
-  const guardrailThreshold = Number(nativeGuardrail.threshold || 0);
-  const guardrailConsecutive = Number(nativeGuardrail.consecutive_requested_not_candidate || 0);
-  const guardrailTriggerCount = Number(nativeGuardrail.trigger_count || 0);
-  const guardrailReason = nativeGuardrail.last_reason || null;
-  const guardrailHistory = Array.isArray(nativeGuardrail.history) ? nativeGuardrail.history.slice(-5).reverse() : [];
-  const guardrailTimelineEvents = Array.isArray(nativeGuardrail.history) ? nativeGuardrail.history.slice(-12) : [];
-  const guardrailSparkline = guardrailTimelineEvents
-    .map((entry) => {
-      const event = String(entry?.event || '').toLowerCase();
-      if (event === 'triggered') return '█';
-      if (event === 'cleared') return '░';
-      return '·';
-    })
-    .join('');
-  const guardrailSparklineTitle = guardrailTimelineEvents
-    .map((entry) => `${entry?.event || 'event'}${entry?.timestamp ? ` @ ${String(entry.timestamp)}` : ''}`)
-    .join(' | ');
-  const guardrailSparklineLegend = 'Legend: █ triggered, ░ cleared, · other';
-  const selectiveExec = nativeRunner?.selective_execution || {};
-  const selectiveLayerBuild = selectiveExec.layer_build || {};
-  const selectiveLayerResults = Array.isArray(selectiveLayerBuild.layer_results)
-    ? selectiveLayerBuild.layer_results.slice(0, 5)
-    : [];
-  const selectiveApplied = Number(selectiveLayerBuild.applied_layers || 0);
-  const selectiveSkipped = Number(selectiveLayerBuild.skipped_layers || 0);
-  const selectiveTotal = Number(selectiveLayerBuild.total_layers || 0);
-  const selectiveExecPath = nativeRunner?.execution_path || null;
-  const nativeCanary = systemStatus?.native_runner_canary || null;
-  const canaryEnabled = Boolean(nativeCanary?.enabled);
-  const canaryStatus = nativeCanary?.status || 'disabled';
-  const canaryProbeLatency = Number(nativeCanary?.probe_avg_latency_ms);
-  const canarySelectiveLatency = Number(nativeCanary?.selective_avg_latency_ms);
-  const canaryDeltaLatency = Number(nativeCanary?.latency_delta_ms);
-  const canaryProbeLatencyText = Number.isFinite(canaryProbeLatency) ? `${canaryProbeLatency.toFixed(3)}ms` : null;
-  const canarySelectiveLatencyText = Number.isFinite(canarySelectiveLatency) ? `${canarySelectiveLatency.toFixed(3)}ms` : null;
-  const canaryDeltaText = Number.isFinite(canaryDeltaLatency) ? `${canaryDeltaLatency >= 0 ? '+' : ''}${canaryDeltaLatency.toFixed(3)}ms` : null;
-  const canaryIterations = Number(nativeCanary?.iterations || 0);
-  const canarySeed = nativeCanary?.seed;
-  const canaryAgeSeconds = Number(nativeCanary?.age_s);
-  const canaryAgeText = Number.isFinite(canaryAgeSeconds) ? `${Math.round(canaryAgeSeconds)}s ago` : null;
-  const canaryCached = Boolean(nativeCanary?.cached);
-  const canaryPresetIsCustom = canaryTelemetryPreset === 'custom';
-  const abiLastProbe = nativeRunner?.abi_last_probe || null;
-  const abiLastStage = nativeRunner?.abi_last_stage || null;
-  const abiParityAttempted = Boolean(abiLastProbe?.parity_attempted);
-  const abiParityPass = abiLastProbe?.parity_pass;
-  const abiParityMaxAbs = Number(abiLastProbe?.parity_max_abs_diff);
-  const abiParityMaxAbsText = Number.isFinite(abiParityMaxAbs) ? abiParityMaxAbs.toExponential(2) : null;
-  const abiParitySampleRate = Number(abiLastProbe?.parity_sample_rate);
-  const abiParitySampleRateText = Number.isFinite(abiParitySampleRate) ? `${Math.round(abiParitySampleRate * 100)}%` : null;
-  const abiParityThreshold = Number(abiLastProbe?.parity_max_abs_threshold);
-  const abiParityThresholdText = Number.isFinite(abiParityThreshold) ? abiParityThreshold.toExponential(2) : null;
-  const abiParityStrict = Boolean(abiLastProbe?.parity_strict);
-  const abiPrimaryUsed = Boolean(abiLastProbe?.primary_used);
-  const abiProbeBadgeClass = !abiLastProbe
-    ? 'info'
-    : abiParityAttempted
-      ? (abiParityPass ? 'pass' : 'fail')
-      : (abiPrimaryUsed ? 'info' : 'warn');
-  const abiProbeSummary = !abiLastProbe
-    ? 'ABI: no probe'
-    : abiParityAttempted
-      ? `ABI parity: ${abiParityPass ? 'pass' : 'fail'}${abiParityMaxAbsText ? ` · max ${abiParityMaxAbsText}` : ''}`
-      : `ABI: ${abiPrimaryUsed ? 'primary' : 'probe-only'}${abiLastStage ? ` · ${abiLastStage}` : ''}`;
-  const backendCutover = nativeRunner?.cutover_gate || null;
-  const backendCutoverStatus = String(backendCutover?.status || '').toLowerCase();
-  const backendCutoverReady = typeof backendCutover?.ready === 'boolean' ? backendCutover.ready : null;
-  const cutoverChecks = [];
-  if (nativeLegacyCompileLimitText) {
-    cutoverChecks.push(nativeLegacyCompiles <= nativeLegacyCompileLimit);
-  }
-  if (nativeFallbackLimitText && Number.isFinite(nativeFallbackRateValue)) {
-    cutoverChecks.push(nativeFallbackRateValue <= nativeFallbackLimit);
-  }
-  if (abiParityAttempted && abiParityPass != null) {
-    cutoverChecks.push(Boolean(abiParityPass));
-  }
-  const localCutoverReady = cutoverChecks.length > 0 ? cutoverChecks.every(Boolean) : null;
-  const cutoverReady = backendCutoverReady != null ? backendCutoverReady : localCutoverReady;
-  const cutoverState = backendCutoverStatus || (
-    cutoverReady == null ? 'waiting' : (cutoverReady ? 'ready' : 'blocked')
-  );
-  const cutoverSummary = cutoverState === 'waiting'
-    ? 'Cutover: waiting for gates'
-    : `Cutover: ${cutoverState}`;
-  const backendCutoverChecks = Array.isArray(backendCutover?.checks) ? backendCutover.checks : [];
-  const cutoverRows = (backendCutoverChecks.length > 0
-    ? backendCutoverChecks
-    : [
-        nativeFallbackLimitText && Number.isFinite(nativeFallbackRateValue)
-          ? {
-              name: 'fallback_rate',
-              active: true,
-              pass: nativeFallbackRateValue <= nativeFallbackLimit,
-              actual: nativeFallbackRateValue,
-              limit: nativeFallbackLimit,
-            }
-          : null,
-        nativeLegacyCompileLimitText
-          ? {
-              name: 'legacy_compile_invocations',
-              active: true,
-              pass: nativeLegacyCompiles <= nativeLegacyCompileLimit,
-              actual: nativeLegacyCompiles,
-              limit: nativeLegacyCompileLimit,
-            }
-          : null,
-        abiParityAttempted && abiParityPass != null
-          ? {
-              name: 'parity',
-              active: true,
-              pass: Boolean(abiParityPass),
-              actual: Boolean(abiParityPass) ? 0 : 1,
-              limit: 0,
-            }
-          : null,
-      ].filter(Boolean)
-  ).map((check) => {
-    const key = String(check?.name || 'unknown');
-    const passState = check?.pass === true ? 'pass' : (check?.pass === false ? 'fail' : 'waiting');
-    const label = key === 'fallback_rate'
-      ? 'Fallback Rate'
-      : key === 'legacy_compile_invocations'
-        ? 'Legacy Compile Invocations'
-        : key === 'parity'
-          ? 'ABI Parity'
-          : key.replaceAll('_', ' ');
-    const formatValue = (value, metricName) => {
-      if (value == null) return 'n/a';
-      if (metricName === 'fallback_rate' && Number.isFinite(Number(value))) {
-        return `${(Number(value) * 100).toFixed(1)}%`;
-      }
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return Number.isInteger(value) ? String(value) : value.toFixed(4);
-      }
-      return String(value);
-    };
-    return {
-      key,
-      label,
-      passState,
-      actualText: formatValue(check?.actual, key),
-      limitText: formatValue(check?.limit, key),
-    };
-  });
-  const formatGuardrailTimestamp = (value) => {
-    if (!value) return null;
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) {
-      return String(value);
-    }
-    return parsed.toLocaleTimeString();
-  };
 
   const pct = isGenerationProgress
-    ? (generationTotal > 0
-        ? Math.round((generationCurrent / generationTotal) * 100)
-        : 0)
-    : (programTotal > 0
-        ? Math.round((programCurrent / programTotal) * 100)
-        : 0);
+    ? (generationTotal > 0 ? Math.round((generationCurrent / generationTotal) * 100) : 0)
+    : (programTotal > 0 ? Math.round((programCurrent / programTotal) * 100) : 0);
 
-  const programProgressText = (() => {
-    if (programTotal > 0) {
-      return `${programCurrent} / ${programTotal} programs (${pct}%)`;
-    }
-    if (programCurrent > 0) {
-      return `${programCurrent} / ? programs (in progress)`;
-    }
-
-    if (['investigating', 'validating', 'scale_up'].includes(progressStatus)) {
-      return '0 / ? programs (initializing)';
-    }
-
-    if (progressStatus === 'resuming') {
-      return 'Resuming experiment state...';
-    }
-
+  const programProgressText = useMemo(() => {
+    if (programTotal > 0) return `\${programCurrent} / \${programTotal} programs (\${pct}%)`;
+    if (programCurrent > 0) return `\${programCurrent} / ? programs (in progress)`;
+    if (['investigating', 'validating', 'scale_up'].includes(String(progress?.status || '').toLowerCase())) return '0 / ? programs (initializing)';
+    if (String(progress?.status || '').toLowerCase() === 'resuming') return 'Resuming experiment state...';
     return 'Initializing experiment...';
-  })();
+  }, [programTotal, programCurrent, pct, progress?.status]);
 
   return (
     <div className="card control-panel">
       <div className="card-title">Experiment Control</div>
+      
       {!isRunning && (
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-          Generate and test random computation graphs as potential replacements for transformer
-          attention layers. Single mode runs one batch. Continuous mode keeps running and adapts
-          strategy between experiments. Evolution and Novelty modes use population-based search
-          to breed better architectures over generations.
+          Generate and test random computation graphs as potential replacements for transformer attention layers.
         </p>
       )}
+
       {actionError && (
-        <div style={{
-          marginBottom: 12,
-          padding: '8px 10px',
-          borderRadius: 6,
-          border: '1px solid var(--accent-red)',
-          background: 'rgba(248, 81, 73, 0.1)',
-          color: 'var(--accent-red)',
-          fontSize: 12,
-        }}>
+        <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--accent-red)', background: 'rgba(248, 81, 73, 0.1)', color: 'var(--accent-red)', fontSize: 12 }}>
           {actionError}
         </div>
       )}
 
       {prefillSummary && !isRunning && (
-        <div style={{
-          marginBottom: 12,
-          padding: '8px 10px',
-          borderRadius: 6,
-          border: '1px solid var(--accent-blue)',
-          background: 'rgba(88, 166, 255, 0.12)',
-          color: 'var(--text-secondary)',
-          fontSize: 12,
-          lineHeight: 1.5,
-        }}>
-          <div>
-            Prefill applied from {prefillSummary.source.replace('_', ' ')}
-            {prefillSummary.campaignTitle ? ` (${prefillSummary.campaignTitle})` : ''}
-            : mode set to <strong>{prefillSummary.mode}</strong>.
-          </div>
-          {prefillSummary.objective && (
-            <div><strong>Objective:</strong> {prefillSummary.objective}</div>
-          )}
-          {prefillSummary.hypothesis && (
-            <div><strong>Hypothesis:</strong> {prefillSummary.hypothesis}</div>
-          )}
-          <button
-            className="refresh-btn"
-            style={{ fontSize: 10, padding: '2px 8px', marginTop: 6 }}
-            onClick={() => setPrefillSummary(null)}
-          >
-            Dismiss
-          </button>
+        <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--accent-blue)', background: 'rgba(88, 166, 255, 0.12)', color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.5 }}>
+          <div>Prefill applied from \${prefillSummary.source.replace('_', ' ')}: mode set to <strong>\${prefillSummary.mode}</strong>.</div>
+          {prefillSummary.objective && <div><strong>Objective:</strong> \${prefillSummary.objective}</div>}
+          <button className="refresh-btn" style={{ fontSize: 10, padding: '2px 8px', marginTop: 6 }} onClick={() => setPrefillSummary(null)}>Dismiss</button>
         </div>
       )}
 
-      {/* System Status */}
-      {systemStatus && !isRunning && (
-        <div className="system-status-badges">
-          <span className={`sys-badge ${systemStatus.cuda?.available ? 'pass' : 'fail'}`}>
-            {systemStatus.cuda?.available
-              ? `CUDA: ${systemStatus.cuda.device_name || 'GPU'}`
-              : 'CPU Only'}
-          </span>
-          <span className={`sys-badge ${systemStatus.llm?.available ? 'pass' : 'warn'}`}>
-            {systemStatus.llm?.available
-              ? `LLM: ${systemStatus.llm.backend}`
-              : 'No LLM'}
-          </span>
-          <span className="sys-badge info">
-            DB: {liveSummary?.total_experiments || systemStatus.database?.total_experiments || 0} exp
-          </span>
-          {nativeRunner && (
-            <span className={`sys-badge ${nativeRunner.enabled ? 'info' : 'warn'}`}>
-              Native: {nativeRunner.status || (nativeRunner.enabled ? 'enabled' : 'disabled')}
-              {nativeRunner.strict ? ' · strict' : ''}
-              {nativeFallbackRate ? ` · fb ${nativeFallbackRate}` : ''}
-            </span>
-          )}
-          {nativeRunner?.selective_guardrail && (
-            <span
-              className={`sys-badge ${guardrailTriggered ? 'warn' : 'pass'}`}
-              title={guardrailSparkline ? `${guardrailSparklineLegend}${guardrailSparklineTitle ? ` | ${guardrailSparklineTitle}` : ''}` : guardrailSparklineLegend}
-            >
-              Guardrail: {guardrailTriggered ? 'active' : 'ok'}
-              {guardrailThreshold > 0 ? ` · ${guardrailConsecutive}/${guardrailThreshold}` : ''}
-              {guardrailSparkline ? ` · ${guardrailSparkline}` : ''}
-            </span>
-          )}
-          {nativeRunner && (
-            <span
-              className={`sys-badge ${abiProbeBadgeClass}`}
-              title={abiLastProbe ? JSON.stringify(abiLastProbe) : 'No ABI probe telemetry yet.'}
-            >
-              {abiProbeSummary}
-            </span>
-          )}
-          {nativeRunner && (
-            <span className={`sys-badge ${
-              cutoverState === 'waiting' ? 'info' : (cutoverState === 'ready' ? 'pass' : 'fail')
-            }`}>
-              {cutoverSummary}
-            </span>
-          )}
-          {nativeRunner && (
-            <button
-              type="button"
-              className="refresh-btn"
-              style={{ fontSize: 10, padding: '2px 8px' }}
-              onClick={() => setShowCutoverDetails((prev) => !prev)}
-              title="Show explicit cutover gate checks"
-            >
-              {showCutoverDetails ? 'Hide gate details' : 'Gate details'}
-            </button>
-          )}
-          {canaryEnabled && showCanarySummary && (
-            <span className={`sys-badge ${canaryStatus === 'ok' ? 'pass' : 'warn'}`}>
-              Canary: {canaryStatus}
-              {canaryDeltaText ? ` · ${canaryDeltaText}` : ''}
-              {canaryIterations > 0 ? ` · n=${canaryIterations}` : ''}
-            </span>
-          )}
-        </div>
-      )}
-
-      {systemStatus && !isRunning && canaryEnabled && (
-        <div style={{ marginTop: 6, marginBottom: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 12 }}>
-            Telemetry preset
-            <select
-              value={canaryTelemetryPreset}
-              onChange={(e) => handleTelemetryPresetChange(e.target.value)}
-              style={{ padding: '1px 4px', fontSize: 10 }}
-            >
-              <option value="compact">compact</option>
-              <option value="default">default</option>
-              <option value="debug">debug</option>
-              {canaryTelemetryPreset === 'custom' && <option value="custom">custom</option>}
-            </select>
-          </label>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 12 }}>
-            <input
-              type="checkbox"
-              checked={showCanarySummary}
-              onChange={(e) => setShowCanarySummary(e.target.checked)}
-            />
-            Show canary summary
-          </label>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <input
-              type="checkbox"
-              checked={showCanaryRefreshHint}
-              onChange={(e) => setShowCanaryRefreshHint(e.target.checked)}
-            />
-            Show refresh hint
-          </label>
-          <label
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 12 }}
-            title="Manual canary refresh cooldown in seconds (0 to 60)."
-          >
-            Cooldown (s)
-            <input
-              type="number"
-              min={0}
-              max={60}
-              step={1}
-              value={canaryCooldownSeconds}
-              onChange={(e) => {
-                const next = Number(e.target.value);
-                const clamped = clampCanaryCooldown(next);
-                setCanaryCooldownSeconds(clamped);
-              }}
-              style={{ width: 56, padding: '1px 4px', fontSize: 10 }}
-              title="How long to wait before allowing another manual canary refresh."
-            />
-          </label>
-          <button
-            className="refresh-btn"
-            style={{ marginLeft: 12, fontSize: 10, padding: '2px 8px' }}
-            onClick={handleRefreshCanaryNow}
-            disabled={canaryRefreshing || canaryRefreshCooldownS > 0}
-          >
-            {canaryRefreshing
-              ? 'Refreshing canary...'
-              : canaryRefreshCooldownS > 0
-                ? `Refresh in ${canaryRefreshCooldownS}s`
-                : 'Refresh canary now'}
-          </button>
-          <button
-            className="refresh-btn"
-            style={{ marginLeft: 6, fontSize: 10, padding: '2px 8px' }}
-            onClick={handleResetCanaryPrefs}
-            title="Reset canary controls and telemetry preset to default values"
-          >
-            Reset canary prefs
-          </button>
-          {nativeRunner && (
-            <button
-              className="refresh-btn"
-              style={{ marginLeft: 6, fontSize: 10, padding: '2px 8px' }}
-              onClick={() => setNativeTelemetryExpanded(prev => !prev)}
-              title="Toggle compact or expanded native telemetry details"
-            >
-              {nativeTelemetryExpanded ? 'Compact native telemetry' : 'Expand native telemetry'}
-            </button>
-          )}
-          {showCanaryRefreshHint && (
-            <div style={{ marginTop: 4 }}>
-              Canary data updates via `/api/system/status`{canaryAgeText ? ` · ${canaryCached ? 'cached' : 'fresh'} ${canaryAgeText}` : ''}.
-              {canaryRefreshCooldownS > 0 ? ` Cooldown ${canaryRefreshCooldownS}s.` : ''}
-            </div>
-          )}
-          {canaryPresetIsCustom && (
-            <div style={{ marginTop: 4 }}>
-              Custom telemetry settings active. Choose compact/default/debug to restore a preset profile.
-            </div>
-          )}
-          {canaryPrefsNotice && (
-            <div style={{ marginTop: 4, color: 'var(--accent-green)' }}>
-              {canaryPrefsNotice}
-            </div>
-          )}
-        </div>
-      )}
+      <RunStatusPanel 
+        isRunning={isRunning} 
+        progress={progress} 
+        onStop={onStop} 
+        programProgressText={programProgressText} 
+        pct={pct} 
+        isGenerationProgress={isGenerationProgress} 
+      />
 
       {!isRunning ? (
         <>
-          {onRestart && (
-            <div style={{ marginBottom: 10 }}>
-              <button
-                className="refresh-btn"
-                onClick={() => onRestart()}
-                disabled={!restartExperimentId}
-                title={restartExperimentId ? `Restart ${restartExperimentId}` : 'No recent experiment to restart'}
-              >
-                Restart Last Experiment
-              </button>
-            </div>
-          )}
-
-          {/* LLM Configuration */}
-          <button
-            className="advanced-toggle"
-            onClick={() => setShowLlmConfig(!showLlmConfig)}
-          >
-            {showLlmConfig ? '\u25BC' : '\u25B6'} LLM Configuration
-            {llmConfig?.available && (
-              <span className="llm-active-indicator"> ({llmConfig.backend})</span>
-            )}
-          </button>
+          <div className="system-status-badges">
+            <span className={`sys-badge \${systemStatus?.cuda?.available ? 'pass' : 'fail'}`}>
+              {systemStatus?.cuda?.available ? `CUDA: \${systemStatus.cuda.device_name || 'GPU'}` : 'CPU Only'}
+            </span>
+            <span className={`sys-badge \${systemStatus?.llm?.available ? 'pass' : 'warn'}`}>
+              {systemStatus?.llm?.available ? `LLM: \${systemStatus.llm.backend}` : 'No LLM'}
+            </span>
+            <button className="sys-badge info" onClick={() => setShowLlmConfig(!showLlmConfig)}>
+              {showLlmConfig ? 'Hide Config' : 'Configure LLM'}
+            </button>
+          </div>
 
           {showLlmConfig && (
             <div className="llm-config-section">
-              {llmConfig?.available && (
-                <div className="llm-current">
-                  <span className="sys-badge pass">Active: {llmConfig.backend}</span>
-                  {llmConfig.model && <span className="sys-badge info">{llmConfig.model}</span>}
-                  {llmConfig.api_key_set && <span className="sys-badge info">Key: {llmConfig.api_key_hint}</span>}
-                </div>
-              )}
               <div className="config-grid">
-                <div className="config-item">
-                  <label>Backend</label>
-                  <select
-                    value={llmForm.backend}
-                    onChange={(e) => setLlmForm(prev => ({ ...prev, backend: e.target.value }))}
-                  >
+                <ConfigField label="Backend">
+                  <select value={llmForm.backend} onChange={(e) => setLlmForm(prev => ({ ...prev, backend: e.target.value }))}>
                     <option value="">Select...</option>
                     <option value="anthropic">Anthropic (Claude)</option>
                     <option value="openai">OpenAI</option>
                     <option value="ollama">Ollama (Local)</option>
                   </select>
-                </div>
+                </ConfigField>
                 {(llmForm.backend === 'anthropic' || llmForm.backend === 'openai') && (
-                  <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                    <label>API Key</label>
-                    <input
-                      type="password"
-                      value={llmForm.api_key}
-                      onChange={(e) => setLlmForm(prev => ({ ...prev, api_key: e.target.value }))}
-                      placeholder={llmForm.backend === 'anthropic' ? 'sk-ant-...' : 'sk-...'}
-                    />
-                  </div>
-                )}
-                {llmForm.backend === 'ollama' && (
-                  <div className="config-item">
-                    <label>Host URL</label>
-                    <input
-                      type="text"
-                      value={llmForm.host}
-                      onChange={(e) => setLlmForm(prev => ({ ...prev, host: e.target.value }))}
-                      placeholder="http://localhost:11434"
-                    />
-                  </div>
-                )}
-                {llmForm.backend && (
-                  <div className="config-item">
-                    <label>Model (optional)</label>
-                    <input
-                      type="text"
-                      value={llmForm.model}
-                      onChange={(e) => setLlmForm(prev => ({ ...prev, model: e.target.value }))}
-                      placeholder={
-                        llmForm.backend === 'anthropic' ? 'claude-sonnet-4-5-20250929'
-                        : llmForm.backend === 'openai' ? 'gpt-4o'
-                        : 'llama3'
-                      }
-                    />
-                  </div>
+                  <ConfigField label="API Key">
+                    <input type="password" value={llmForm.api_key} onChange={(e) => setLlmForm(prev => ({ ...prev, api_key: e.target.value }))} />
+                  </ConfigField>
                 )}
               </div>
               {llmForm.backend && (
-                <button
-                  className="validate-btn"
-                  onClick={handleLlmSave}
-                  disabled={llmSaving || (!llmForm.api_key && llmForm.backend !== 'ollama')}
-                  style={{ marginTop: 8 }}
-                >
+                <button className="validate-btn" onClick={handleLlmSave} disabled={llmSaving} style={{ marginTop: 8 }}>
                   {llmSaving ? 'Configuring...' : 'Configure LLM'}
                 </button>
               )}
-              {llmMessage && (
-                <div className={`llm-message ${llmMessage.includes('success') ? 'pass' : 'fail'}`}>
-                  {llmMessage}
-                </div>
-              )}
+              {llmMessage && <div className={`llm-message \${llmMessage.includes('success') ? 'pass' : 'fail'}`}>{llmMessage}</div>}
             </div>
           )}
 
-          {/* Mode selector — primary modes */}
+          <ModeSelector selectedMode={mode} onModeChange={setMode} disabled={isRunning} />
+
           <div className="control-row">
-            <label className="control-label">Mode</label>
-            <div className="mode-selector">
-              <button
-                className={`mode-btn ${mode === 'single' ? 'active' : ''}`}
-                onClick={() => setMode('single')}
-              >
-                Single Experiment
-              </button>
-              <button
-                className={`mode-btn ${mode === 'continuous' ? 'active' : ''}`}
-                onClick={() => setMode('continuous')}
-              >
-                Continuous Research
-              </button>
-            </div>
+            <label className="control-label">Hypothesis (optional)</label>
+            <input 
+              className="control-input" 
+              type="text" 
+              value={hypothesis} 
+              onChange={(e) => setHypothesis(e.target.value)} 
+              placeholder="Let Aria formulate one automatically..." 
+            />
           </div>
-          {/* Pipeline modes — collapsed by default */}
-          <details style={{ marginTop: -4 }}>
-            <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer', padding: '2px 0' }}>
-              Pipeline modes{['evolve','novelty','scale_up','investigation','validation'].includes(mode) ? ` (${mode.replace('_',' ')})` : ''}
-            </summary>
-            <div className="mode-selector" style={{ marginTop: 4 }}>
-              <button
-                className={`mode-btn ${mode === 'evolve' ? 'active' : ''}`}
-                onClick={() => setMode('evolve')}
-              >
-                Evolution
-              </button>
-              <button
-                className={`mode-btn ${mode === 'novelty' ? 'active' : ''}`}
-                onClick={() => setMode('novelty')}
-              >
-                Novelty
-              </button>
-              <button
-                className={`mode-btn ${mode === 'scale_up' ? 'active' : ''}`}
-                onClick={() => setMode('scale_up')}
-              >
-                Scale Up
-              </button>
-              <button
-                className={`mode-btn ${mode === 'investigation' ? 'active' : ''}`}
-                onClick={() => setMode('investigation')}
-              >
-                Investigation
-              </button>
-              <button
-                className={`mode-btn ${mode === 'validation' ? 'active' : ''}`}
-                onClick={() => setMode('validation')}
-              >
-                Validation
-              </button>
+
+          <div className="config-grid">
+            {!isEvolutionMode && (
+              <ConfigField label="Programs">
+                <input type="number" min="5" max="500" value={config.n_programs} onChange={(e) => updateConfig('n_programs', parseInt(e.target.value))} />
+              </ConfigField>
+            )}
+            <ConfigField label="Dimension">
+              <select value={config.model_dim} onChange={(e) => updateConfig('model_dim', parseInt(e.target.value))}>
+                {[64, 128, 256, 512].map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </ConfigField>
+            <ConfigField label="Layers">
+              <input type="number" min="1" max="12" value={config.n_layers} onChange={(e) => updateConfig('n_layers', parseInt(e.target.value))} />
+            </ConfigField>
+          </div>
+
+          {isEvolutionMode && (
+            <div className="config-grid">
+              <ConfigField label="Population">
+                <input type="number" value={config.population_size} onChange={(e) => updateConfig('population_size', parseInt(e.target.value))} />
+              </ConfigField>
+              <ConfigField label="Generations">
+                <input type="number" value={config.n_generations} onChange={(e) => updateConfig('n_generations', parseInt(e.target.value))} />
+              </ConfigField>
+            </div>
+          )}
+
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>Advanced Parameters</summary>
+            <div style={{ marginTop: 8 }}>
+              <div className="config-grid">
+                <ConfigField label="Steps">
+                  <input type="number" value={config.stage1_steps} onChange={(e) => updateConfig('stage1_steps', parseInt(e.target.value))} />
+                </ConfigField>
+                <ConfigField label="LR">
+                  <input type="number" step="0.0001" value={config.stage1_lr} onChange={(e) => updateConfig('stage1_lr', parseFloat(e.target.value))} />
+                </ConfigField>
+              </div>
+              <CategoryWeightsControl 
+                weights={config.category_weights} 
+                onChange={(cat, val) => setConfig(prev => ({ ...prev, category_weights: { ...prev.category_weights, [cat]: val } }))} 
+              />
             </div>
           </details>
 
-          {/* Model Source selector (for single/continuous modes) */}
-          {(mode === 'single' || mode === 'continuous') && (
-            <div className="control-row">
-              <label className="control-label">Model Source</label>
-              <div className="mode-selector">
-                <button
-                  className={`mode-btn ${config.model_source === 'graph_synthesis' ? 'active' : ''}`}
-                  onClick={() => updateConfig('model_source', 'graph_synthesis')}
-                >
-                  Graph Synthesis
-                </button>
-                <button
-                  className={`mode-btn ${config.model_source === 'morphological_box' ? 'active' : ''}`}
-                  onClick={() => updateConfig('model_source', 'morphological_box')}
-                >
-                  Morphological Box
-                </button>
-                <button
-                  className={`mode-btn ${config.model_source === 'mixed' ? 'active' : ''}`}
-                  onClick={() => updateConfig('model_source', 'mixed')}
-                >
-                  Mixed
-                </button>
-              </div>
-              {config.model_source === 'mixed' && (
-                <div className="config-grid" style={{ marginTop: 4 }}>
-                  <div className="config-item">
-                    <label>Morph Ratio</label>
-                    <input
-                      type="number" min="0" max="1" step="0.1"
-                      value={config.morph_ratio}
-                      onChange={(e) => updateConfig('morph_ratio', parseFloat(e.target.value) || 0.5)}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          <AriaRecommendationPanel recommendation={recommendation} onApply={applyRecommendation} />
 
-          {/* Use Synthesized Training toggle */}
-          {(mode === 'single' || mode === 'continuous') && (
-            <div className="control-row">
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  checked={config.use_synthesized_training}
-                  onChange={(e) => updateConfig('use_synthesized_training', e.target.checked)}
-                />
-                Use Synthesized Training Programs
-              </label>
-              {config.use_synthesized_training && (
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>
-                  Candidates trained with random loss/optimizer/curriculum instead of AdamW + cross-entropy
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Hypothesis input */}
-          {(mode === 'single' || isEvolutionMode || isScaleUpMode) && (
-            <div className="control-row">
-              <label className="control-label">Hypothesis (optional)</label>
-              <input
-                className="control-input"
-                type="text"
-                value={hypothesis}
-                onChange={(e) => setHypothesis(e.target.value)}
-                placeholder="Let Aria formulate one automatically..."
-              />
-            </div>
-          )}
-
-          {/* Core config */}
-          <div className="config-grid">
-            {!isEvolutionMode && (
-              <div className="config-item">
-                <label>Programs</label>
-                <input
-                  type="number" min="5" max="500" step="5"
-                  value={config.n_programs}
-                  onChange={(e) => updateConfig('n_programs', parseInt(e.target.value) || 50)}
-                />
-              </div>
-            )}
-            <div className="config-item">
-              <label>Dimension</label>
-              <select
-                value={config.model_dim}
-                onChange={(e) => updateConfig('model_dim', parseInt(e.target.value))}
-              >
-                <option value={64}>64</option>
-                <option value={128}>128</option>
-                <option value={256}>256</option>
-                <option value={512}>512</option>
-              </select>
-            </div>
-            <div className="config-item">
-              <label>Layers</label>
-              <input
-                type="number" min="1" max="12" step="1"
-                value={config.n_layers}
-                onChange={(e) => updateConfig('n_layers', parseInt(e.target.value) || 4)}
-              />
-            </div>
-            <div className="config-item">
-              <label>Device</label>
-              <select
-                value={config.device}
-                onChange={(e) => updateConfig('device', e.target.value)}
-              >
-                <option value="cuda">CUDA (GPU)</option>
-                <option value="cpu">CPU</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Evolution/Novelty config */}
-          {isEvolutionMode && (
-            <div className="config-grid">
-              <div className="config-item">
-                <label>Population Size</label>
-                <input
-                  type="number" min="10" max="200" step="10"
-                  value={config.population_size}
-                  onChange={(e) => updateConfig('population_size', parseInt(e.target.value) || 50)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Generations</label>
-                <input
-                  type="number" min="5" max="100" step="5"
-                  value={config.n_generations}
-                  onChange={(e) => updateConfig('n_generations', parseInt(e.target.value) || 20)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Tournament Size</label>
-                <input
-                  type="number" min="2" max="10" step="1"
-                  value={config.tournament_size}
-                  onChange={(e) => updateConfig('tournament_size', parseInt(e.target.value) || 5)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Mutation Rate</label>
-                <input
-                  type="number" min="0" max="1" step="0.1"
-                  value={config.mutation_rate}
-                  onChange={(e) => updateConfig('mutation_rate', parseFloat(e.target.value) || 0.7)}
-                />
-              </div>
-              {mode === 'novelty' && (
-                <>
-                  <div className="config-item">
-                    <label>Archive Size</label>
-                    <input
-                      type="number" min="50" max="1000" step="50"
-                      value={config.archive_size}
-                      onChange={(e) => updateConfig('archive_size', parseInt(e.target.value) || 200)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>K-Nearest</label>
-                    <input
-                      type="number" min="5" max="50" step="5"
-                      value={config.k_nearest}
-                      onChange={(e) => updateConfig('k_nearest', parseInt(e.target.value) || 15)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Novelty Weight</label>
-                    <input
-                      type="number" min="0" max="1" step="0.1"
-                      value={config.novelty_weight}
-                      onChange={(e) => updateConfig('novelty_weight', parseFloat(e.target.value) || 0.5)}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Scale-up config */}
-          {mode === 'scale_up' && (
-            <div className="config-grid" style={{ marginTop: 8 }}>
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={scaleUpUseTop}
-                    onChange={(e) => setScaleUpUseTop(e.target.checked)}
-                  />
-                  Use top N survivors (by loss ratio)
-                </label>
-              </div>
-              {scaleUpUseTop ? (
-                <div className="config-item">
-                  <label>Top N</label>
-                  <input
-                    type="number" min="1" max="20" step="1"
-                    value={scaleUpTopN}
-                    onChange={(e) => setScaleUpTopN(parseInt(e.target.value) || 5)}
-                  />
-                </div>
-              ) : (
-                <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                  <label>Result IDs (comma-separated)</label>
-                  <input
-                    type="text"
-                    value={scaleUpIds}
-                    onChange={(e) => setScaleUpIds(e.target.value)}
-                    placeholder="result-id-1, result-id-2, ..."
-                    className="control-input"
-                  />
-                </div>
-              )}
-              <div className="config-item">
-                <label>Steps</label>
-                <input
-                  type="number" min="1000" max="50000" step="1000"
-                  value={scaleUpSteps}
-                  onChange={(e) => setScaleUpSteps(parseInt(e.target.value) || 5000)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Batch Size</label>
-                <input
-                  type="number" min="4" max="16" step="1"
-                  value={scaleUpBatchSize}
-                  onChange={(e) => setScaleUpBatchSize(parseInt(e.target.value) || 8)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Seq Length</label>
-                <input
-                  type="number" min="256" max="1024" step="128"
-                  value={scaleUpSeqLen}
-                  onChange={(e) => setScaleUpSeqLen(parseInt(e.target.value) || 512)}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Investigation/Validation config */}
-          {(mode === 'investigation' || mode === 'validation') && (
-            <div className="config-grid" style={{ marginTop: 8 }}>
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={investUseTop}
-                    onChange={(e) => setInvestUseTop(e.target.checked)}
-                  />
-                  Use top N {mode === 'investigation' ? 'S1 survivors' : 'investigation survivors'}
-                </label>
-              </div>
-              {investUseTop ? (
-                <div className="config-item">
-                  <label>Top N</label>
-                  <input
-                    type="number" min="1" max="20" step="1"
-                    value={investTopN}
-                    onChange={(e) => setInvestTopN(parseInt(e.target.value) || 5)}
-                  />
-                </div>
-              ) : (
-                <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                  <label>Result IDs (comma-separated)</label>
-                  <input
-                    type="text"
-                    value={investIds}
-                    onChange={(e) => setInvestIds(e.target.value)}
-                    placeholder="result-id-1, result-id-2, ..."
-                    className="control-input"
-                  />
-                </div>
-              )}
-              {mode === 'investigation' && (
-                <>
-                  <div className="config-item">
-                    <label>Steps</label>
-                    <input
-                      type="number" min="500" max="10000" step="500"
-                      value={config.investigation_steps}
-                      onChange={(e) => updateConfig('investigation_steps', parseInt(e.target.value) || 2500)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Training Programs</label>
-                    <input
-                      type="number" min="1" max="10" step="1"
-                      value={config.n_training_programs}
-                      onChange={(e) => updateConfig('n_training_programs', parseInt(e.target.value) || 3)}
-                    />
-                  </div>
-                </>
-              )}
-              {mode === 'validation' && (
-                <>
-                  <div className="config-item">
-                    <label>Steps</label>
-                    <input
-                      type="number" min="1000" max="50000" step="1000"
-                      value={config.validation_steps}
-                      onChange={(e) => updateConfig('validation_steps', parseInt(e.target.value) || 10000)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Seeds</label>
-                    <input
-                      type="number" min="1" max="10" step="1"
-                      value={config.validation_n_seeds}
-                      onChange={(e) => updateConfig('validation_n_seeds', parseInt(e.target.value) || 3)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Batch Size</label>
-                    <input
-                      type="number" min="4" max="16" step="1"
-                      value={config.validation_batch_size}
-                      onChange={(e) => updateConfig('validation_batch_size', parseInt(e.target.value) || 8)}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Advanced toggle */}
-          <button
-            className="advanced-toggle"
-            onClick={() => setShowAdvanced(!showAdvanced)}
-          >
-            {showAdvanced ? '\u25BC' : '\u25B6'} Advanced Settings
-          </button>
-
-          {showAdvanced && (
-            <>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 8, marginBottom: 4 }}>Training &amp; Scale</div>
-            <div className="config-grid">
-              <div className="config-item">
-                <label>Stage 1 Steps</label>
-                <input
-                  type="number" min="50" max="2000" step="50"
-                  value={config.stage1_steps}
-                  onChange={(e) => updateConfig('stage1_steps', parseInt(e.target.value) || 500)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Max Depth</label>
-                <input
-                  type="number" min="4" max="20" step="1"
-                  value={config.max_depth}
-                  onChange={(e) => updateConfig('max_depth', parseInt(e.target.value) || 10)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Max Ops</label>
-                <input
-                  type="number" min="4" max="32" step="1"
-                  value={config.max_ops}
-                  onChange={(e) => updateConfig('max_ops', parseInt(e.target.value) || 16)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Math Weight</label>
-                <input
-                  type="number" min="0" max="10" step="0.5"
-                  value={config.math_space_weight}
-                  onChange={(e) => updateConfig('math_space_weight', parseFloat(e.target.value) || 2.0)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Residual Prob</label>
-                <input
-                  type="number" min="0" max="1" step="0.1"
-                  value={config.residual_prob}
-                  onChange={(e) => updateConfig('residual_prob', parseFloat(e.target.value) || 0.7)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Vocab Size</label>
-                <select
-                  value={config.vocab_size}
-                  onChange={(e) => updateConfig('vocab_size', parseInt(e.target.value))}
-                >
-                  <option value={1000}>1K (fast)</option>
-                  <option value={8000}>8K</option>
-                  <option value={32000}>32K</option>
-                </select>
-              </div>
-              {mode === 'continuous' && (
-                <>
-                  <div className="config-item">
-                    <label>Max Experiments</label>
-                    <input
-                      type="number" min="1" max="1000" step="1"
-                      value={config.max_experiments}
-                      onChange={(e) => updateConfig('max_experiments', parseInt(e.target.value) || 100)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Time Limit (min)</label>
-                    <input
-                      type="number" min="0" max="1440" step="5"
-                      value={config.max_time_minutes}
-                      onChange={(e) => updateConfig('max_time_minutes', parseInt(e.target.value) || 0)}
-                      placeholder="0 = no limit"
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Cost Limit ($)</label>
-                    <input
-                      type="number" min="0" max="100" step="0.5"
-                      value={config.max_cost_dollars}
-                      onChange={(e) => updateConfig('max_cost_dollars', parseFloat(e.target.value) || 0)}
-                      placeholder="0 = no limit"
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Grammar Control</div>
-            <div className="config-grid">
-              <div className="config-item">
-                <label>Split Prob</label>
-                <input
-                  type="number" min="0" max="1" step="0.05"
-                  value={config.grammar_split_prob}
-                  onChange={(e) => updateConfig('grammar_split_prob', parseFloat(e.target.value) || 0)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Merge Prob</label>
-                <input
-                  type="number" min="0" max="1" step="0.05"
-                  value={config.grammar_merge_prob}
-                  onChange={(e) => updateConfig('grammar_merge_prob', parseFloat(e.target.value) || 0)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Risky Op Prob</label>
-                <input
-                  type="number" min="0" max="1" step="0.05"
-                  value={config.grammar_risky_op_prob}
-                  onChange={(e) => updateConfig('grammar_risky_op_prob', parseFloat(e.target.value) || 0)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Freq Domain Prob</label>
-                <input
-                  type="number" min="0" max="1" step="0.05"
-                  value={config.grammar_freq_domain_prob}
-                  onChange={(e) => updateConfig('grammar_freq_domain_prob', parseFloat(e.target.value) || 0)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Sparsity Bias</label>
-                <input
-                  type="number" min="0" max="1" step="0.1"
-                  value={config.structured_sparsity_bias}
-                  onChange={(e) => updateConfig('structured_sparsity_bias', parseFloat(e.target.value) || 0)}
-                />
-              </div>
-              <div className="config-item">
-                <label>Model Source</label>
-                <select
-                  value={config.model_source}
-                  onChange={(e) => updateConfig('model_source', e.target.value)}
-                >
-                  <option value="mixed">Mixed</option>
-                  <option value="graph_synthesis">Graph Synthesis</option>
-                  <option value="morphological_box">Morphological Box</option>
-                </select>
-              </div>
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label>Excluded Ops <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(comma-separated)</span></label>
-                <input
-                  type="text"
-                  value={typeof config.excluded_ops === 'string' ? config.excluded_ops : (Array.isArray(config.excluded_ops) ? config.excluded_ops.join(', ') : '')}
-                  onChange={(e) => updateConfig('excluded_ops', e.target.value)}
-                  placeholder="e.g. rwkv_channel, swiglu_mlp"
-                />
-              </div>
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label>Op Weights <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(op:weight, comma-separated)</span></label>
-                <input
-                  type="text"
-                  value={typeof config.op_weights === 'string' ? config.op_weights : (typeof config.op_weights === 'object' && config.op_weights !== null ? Object.entries(config.op_weights).map(([k,v]) => `${k}:${v}`).join(', ') : '')}
-                  onChange={(e) => updateConfig('op_weights', e.target.value)}
-                  placeholder="e.g. selective_scan:2.0, exp:1.5"
-                />
-              </div>
-            </div>
-
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Category Weights <span style={{ fontWeight: 'normal', textTransform: 'none' }}>(1.0 = default, higher = more likely)</span></div>
-            <div className="config-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
-              {Object.keys(config.category_weights || {}).map(cat => (
-                <div className="config-item" key={cat}>
-                  <label style={{ fontSize: 11 }}>{cat.replace(/_/g, ' ')}</label>
-                  <input
-                    type="number" min="0.1" max="10" step="0.5"
-                    value={(config.category_weights || {})[cat] ?? 1.0}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value) || 1.0;
-                      setConfig(prev => ({
-                        ...prev,
-                        category_weights: { ...prev.category_weights, [cat]: val },
-                      }));
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
-
-            <button
-              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: '8px 0 4px', textAlign: 'left' }}
-              onClick={() => setShowOpRef(!showOpRef)}
-            >
-              {showOpRef ? '\u25BC' : '\u25B6'} Available Ops Reference ({Object.values(config.category_weights || {}).length} categories)
-            </button>
-            {showOpRef && (
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--bg-secondary)', borderRadius: 4, padding: 8, maxHeight: 200, overflowY: 'auto', lineHeight: 1.6 }}>
-                <div><b>elementwise_unary:</b> abs, cos, exp, gelu, log, neg, reciprocal, relu, sigmoid, sign_ste, silu, sin, sqrt, square, tanh</div>
-                <div><b>elementwise_binary:</b> add, div_safe, maximum, minimum, mul, sub</div>
-                <div><b>reduction:</b> cumprod_safe, cumsum, max_last, mean_last, mean_seq, norm_last, sum_last, sum_seq</div>
-                <div><b>linear_algebra:</b> matmul, outer_product, transpose_sd</div>
-                <div><b>structural:</b> concat, gather_sorted, multi_head_mix, roll_neg, roll_seq, scatter_unsort, split2, split3</div>
-                <div><b>parameterized:</b> block_sparse_linear, conv1d_seq, fused_linear_gelu, learnable_bias, learnable_scale, linear_proj, linear_proj_down, linear_proj_up, moe_topk, nm_sparse_linear, rmsnorm, rwkv_channel, selective_scan, semi_structured_2_4_linear, swiglu_mlp, topk_gate</div>
-                <div><b>mixing:</b> conv_only, fourier_mixing, graph_attention, linear_attention, softmax_attention, state_space</div>
-                <div><b>sequence:</b> argsort_seq, causal_mask, local_window_attn, sliding_window_mask, softmax_last, softmax_seq, sort_seq, token_pool_restore</div>
-                <div><b>frequency:</b> irfft_seq, rfft_seq</div>
-                <div><b>math_space:</b> <i>(loaded dynamically from math space modules)</i></div>
-                <div><b>functional:</b> basis_expansion, fixed_point_iter, integral_kernel</div>
-              </div>
-            )}
-
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Automation</div>
-            <div className="config-grid">
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.auto_scale_up}
-                    onChange={(e) => updateConfig('auto_scale_up', e.target.checked)}
-                  />
-                  Auto scale-up when S1 survivors found
-                </label>
-              </div>
-              {config.auto_scale_up && (
-                <>
-                  <div className="config-item">
-                    <label>Min Survivors</label>
-                    <input
-                      type="number" min="1" max="20" step="1"
-                      value={config.auto_scale_up_min_survivors}
-                      onChange={(e) => updateConfig('auto_scale_up_min_survivors', parseInt(e.target.value) || 3)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Top N to Scale</label>
-                    <input
-                      type="number" min="1" max="20" step="1"
-                      value={config.auto_scale_up_top_n}
-                      onChange={(e) => updateConfig('auto_scale_up_top_n', parseInt(e.target.value) || 5)}
-                    />
-                  </div>
-                </>
-              )}
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.auto_report}
-                    onChange={(e) => updateConfig('auto_report', e.target.checked)}
-                  />
-                  Auto-generate research reports
-                </label>
-              </div>
-              {config.auto_report && mode === 'continuous' && (
-                <div className="config-item">
-                  <label>Report Every N Exp</label>
-                  <input
-                    type="number" min="1" max="50" step="1"
-                    value={config.auto_report_every_n}
-                    onChange={(e) => updateConfig('auto_report_every_n', parseInt(e.target.value) || 5)}
-                  />
-                </div>
-              )}
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginTop: 12, marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 8 }}>Auto-Escalation Pipeline</div>
-            <div className="config-grid">
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.auto_investigate}
-                    onChange={(e) => updateConfig('auto_investigate', e.target.checked)}
-                  />
-                  Auto-investigate when screening survivors found
-                </label>
-              </div>
-              {config.auto_investigate && (
-                <>
-                  <div className="config-item">
-                    <label>Min Survivors</label>
-                    <input
-                      type="number" min="1" max="20" step="1"
-                      value={config.auto_investigate_min_survivors}
-                      onChange={(e) => updateConfig('auto_investigate_min_survivors', parseInt(e.target.value) || 2)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Top N to Investigate</label>
-                    <input
-                      type="number" min="1" max="20" step="1"
-                      value={config.auto_investigate_top_n}
-                      onChange={(e) => updateConfig('auto_investigate_top_n', parseInt(e.target.value) || 5)}
-                    />
-                  </div>
-                </>
-              )}
-              <div className="config-item" style={{ gridColumn: '1 / -1' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.auto_validate}
-                    onChange={(e) => updateConfig('auto_validate', e.target.checked)}
-                  />
-                  Auto-validate when investigation passes
-                </label>
-              </div>
-              {config.auto_validate && (
-                <>
-                  <div className="config-item">
-                    <label>Min Robustness</label>
-                    <input
-                      type="number" min="0" max="1" step="0.1"
-                      value={config.auto_validate_min_robustness}
-                      onChange={(e) => updateConfig('auto_validate_min_robustness', parseFloat(e.target.value) || 0.5)}
-                    />
-                  </div>
-                  <div className="config-item">
-                    <label>Top N to Validate</label>
-                    <input
-                      type="number" min="1" max="10" step="1"
-                      value={config.auto_validate_top_n}
-                      onChange={(e) => updateConfig('auto_validate_top_n', parseInt(e.target.value) || 3)}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-            </>
-          )}
-
-          {/* Validate + Ask Aria row */}
-          <div className="control-actions-row">
-            <button
-              className="validate-btn"
-              onClick={handleValidate}
-              disabled={validating}
-            >
-              {validating ? 'Validating...' : 'Validate Pipeline'}
-            </button>
-            <button
-              className="ask-aria-btn"
-              onClick={handleAskAria}
-              disabled={loadingRec}
-            >
-              {loadingRec ? 'Thinking...' : 'Ask Aria'}
-            </button>
-          </div>
-
-          {/* Validation result */}
-          {validationResult && (
-            <div className={`validation-result ${validationResult.healthy ? 'pass' : 'fail'}`}>
-              <strong>{validationResult.healthy ? 'Pipeline Healthy' : 'Pipeline Issues'}</strong>
-              <span> — Generated: {validationResult.generated}, Compiled: {validationResult.compiled}, S0: {validationResult.passed_s0}</span>
-              {validationResult.errors?.length > 0 && (
-                <div className="validation-errors">
-                  {validationResult.errors.slice(0, 3).map((err, i) => (
-                    <div key={i} className="validation-error">{err}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Aria recommendation */}
-          {recommendation && (
-            <div className="recommendation-section">
-              <div className="recommendation-header">
-                <strong>Aria's Recommendation</strong>
-                {recommendation.confidence != null && (
-                  <span className="rec-confidence">
-                    Confidence: {(recommendation.confidence * 100).toFixed(0)}%
-                  </span>
-                )}
-              </div>
-              <p className="recommendation-reasoning">{recommendation.reasoning}</p>
-              {recommendation.config && Object.keys(recommendation.config).length > 0 && (
-                <>
-                  <div className="recommendation-config">
-                    {Object.entries(recommendation.config).map(([k, v]) => (
-                      <span key={k} className="rec-param">{k}: {typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}</span>
-                    ))}
-                  </div>
-                  <button className="apply-rec-btn" onClick={applyRecommendation}>
-                    Apply Suggestion
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Start button */}
-          {startLocked && (
-            <div style={{
-              marginTop: 6,
-              marginBottom: 8,
-              padding: '8px 10px',
-              borderRadius: 6,
-              border: '1px solid var(--accent-yellow)',
-              background: 'rgba(210, 153, 34, 0.12)',
-              color: 'var(--text-secondary)',
-              fontSize: 12,
-              lineHeight: 1.5,
-            }}>
-              {startLockReason || 'Start is locked by Strategy Advisor. Use the primary recommendation or override from Overview advanced setup.'}
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
             <button className="start-btn" onClick={() => handleStart()} disabled={startLocked} style={{ flex: 1 }}>
-              {mode === 'continuous' ? 'Start Continuous Research'
-                : mode === 'evolve' ? 'Start Evolution Search'
-                : mode === 'novelty' ? 'Start Novelty Search'
-                : mode === 'scale_up' ? 'Start Scale-Up Validation'
-                : mode === 'investigation' ? 'Start Investigation'
-                : mode === 'validation' ? 'Start Validation'
-                : 'Run Experiment'}
+              {mode === 'continuous' ? 'Start Continuous Research' : 'Run Experiment'}
             </button>
             {blockedConfig && (
-              <button 
-                className="start-btn" 
-                onClick={() => handleStart({ preflight_override: true })}
-                style={{ 
-                  flex: '0 0 auto', 
-                  width: 'auto', 
-                  padding: '0 15px', 
-                  background: 'rgba(248, 81, 73, 0.1)', 
-                  borderColor: 'var(--accent-red)',
-                  color: 'var(--accent-red)'
-                }}
-              >
+              <button className="start-btn" onClick={() => handleStart({ preflight_override: true })} style={{ background: 'rgba(248, 81, 73, 0.1)', color: 'var(--accent-red)' }}>
                 Force Start
               </button>
             )}
           </div>
         </>
       ) : (
-        /* Running state - show progress */
         <div className="experiment-progress">
           <div className="progress-header">
-            <span className="progress-status">
-              <span className="pulse-dot"></span>
-              {progress?.status || 'Running'}
-            </span>
-            <span className="progress-id">{progress?.experiment_id?.slice(0, 8)}</span>
+            <span>{progress?.status || 'Running'}</span>
+            <span style={{ opacity: 0.6 }}>{progress?.experiment_id?.slice(0, 8)}</span>
           </div>
-
-          {/* Hypothesis critique */}
-          {progress?.hypothesis_critique && (
-            <HypothesisCritique critique={progress.hypothesis_critique} />
-          )}
-
-          {/* Progress bar */}
-          <div className="progress-bar-container">
-            <div className="progress-bar" style={{ width: `${pct}%` }}></div>
-            <span className="progress-text">
-              {isGenerationProgress
-                ? `Gen ${progress?.current_generation || 0} / ${progress?.total_generations || 0} (${pct}%)`
-                : programProgressText
-              }
-            </span>
-          </div>
-
-          {nativeRunner && (
-            <div className="native-runner-card">
-              <div className="native-runner-header">
-                <span className={`badge ${nativeRunner.enabled ? 'running' : 'fail'}`}>
-                  Native runner
-                </span>
-                <span className="native-runner-status">{nativeRunner.status || 'unknown'}</span>
-                <button
-                  className="refresh-btn"
-                  style={{ marginLeft: 8, fontSize: 10, padding: '1px 6px' }}
-                  onClick={() => setNativeTelemetryExpanded(prev => !prev)}
-                  title="Toggle compact or expanded native telemetry details"
-                >
-                  {nativeTelemetryExpanded ? 'Compact' : 'Expand'}
-                </button>
-                <button
-                  className="refresh-btn"
-                  style={{ marginLeft: 6, fontSize: 10, padding: '1px 6px', opacity: canaryTelemetryPreset === 'compact' ? 1 : 0.75 }}
-                  onClick={() => handleTelemetryPresetChange('compact')}
-                  title="Apply compact telemetry preset"
-                >
-                  compact
-                </button>
-                <button
-                  className="refresh-btn"
-                  style={{ marginLeft: 4, fontSize: 10, padding: '1px 6px', opacity: canaryTelemetryPreset === 'default' ? 1 : 0.75 }}
-                  onClick={() => handleTelemetryPresetChange('default')}
-                  title="Apply default telemetry preset"
-                >
-                  default
-                </button>
-                <button
-                  className="refresh-btn"
-                  style={{ marginLeft: 4, fontSize: 10, padding: '1px 6px', opacity: canaryTelemetryPreset === 'debug' ? 1 : 0.75 }}
-                  onClick={() => handleTelemetryPresetChange('debug')}
-                  title="Apply debug telemetry preset"
-                >
-                  debug
-                </button>
-              </div>
-              <div className="native-runner-stats">
-                <span>Mode: <strong>{nativeRunner.strict ? 'strict' : 'non-strict'}</strong></span>
-                <span>Runtime: <strong>{nativeRunner.designer_runtime_available ? 'available' : 'missing'}</strong></span>
-                <span>Fallback: <strong>{nativeFallbackRate || 'n/a'}</strong></span>
-                {nativeFallbackLimitText && (
-                  <span>Fallback limit: <strong>{nativeFallbackLimitText}</strong></span>
-                )}
-                <span>Legacy compile: <strong>{nativeLegacyCompiles}</strong></span>
-                {nativeLegacyCompileLimitText && (
-                  <span>Legacy limit: <strong>{nativeLegacyCompileLimitText}</strong></span>
-                )}
-                <span>Probe: <strong>{nativeProbeSummary}</strong></span>
-                {nativeTelemetryExpanded && selectiveExecPath && (
-                  <span>Path: <strong>{selectiveExecPath}</strong></span>
-                )}
-                {nativeTelemetryExpanded && selectiveExec?.requested && (
-                  <span>
-                    Selective: <strong>{selectiveExec?.candidate ? 'candidate' : 'not-candidate'}</strong>
-                    {selectiveExec?.reason ? ` (${selectiveExec.reason})` : ''}
-                  </span>
-                )}
-                {nativeTelemetryExpanded && selectiveExec?.layer_exec_enabled && (
-                  <span>
-                    Layer exec: <strong>{selectiveExec?.layer_exec_strict ? 'strict' : 'non-strict'}</strong>
-                    {selectiveTotal > 0 ? ` · ${selectiveApplied} applied / ${selectiveSkipped} skipped / ${selectiveTotal} total` : ''}
-                  </span>
-                )}
-                {nativeRunner?.selective_guardrail && (
-                  <span>
-                    Guardrail: <strong>{guardrailTriggered ? 'active' : 'ok'}</strong>
-                    {guardrailThreshold > 0 ? ` (${guardrailConsecutive}/${guardrailThreshold})` : ''}
-                    {guardrailTriggerCount > 0 ? ` · trips ${guardrailTriggerCount}` : ''}
-                    {guardrailSparkline ? ` · ${guardrailSparkline}` : ''}
-                  </span>
-                )}
-                {nativeTelemetryExpanded && canaryEnabled && (
-                  <span>
-                    Canary: <strong>{canaryStatus}</strong>
-                    {canaryProbeLatencyText && canarySelectiveLatencyText
-                      ? ` · ${canaryProbeLatencyText} → ${canarySelectiveLatencyText}`
-                      : ''}
-                    {canaryDeltaText ? ` (${canaryDeltaText})` : ''}
-                    {canaryIterations > 0 ? ` · n=${canaryIterations}` : ''}
-                    {canarySeed != null ? ` · seed=${canarySeed}` : ''}
-                  </span>
-                )}
-                {nativeRunner && (
-                  <span>
-                    ABI: <strong>{abiParityAttempted ? (abiParityPass ? 'parity-pass' : 'parity-fail') : (abiPrimaryUsed ? 'primary' : 'probe-only')}</strong>
-                    {abiParityMaxAbsText ? ` · max ${abiParityMaxAbsText}` : ''}
-                    {abiLastStage ? ` · ${abiLastStage}` : ''}
-                  </span>
-                )}
-                {nativeRunner && nativeTelemetryExpanded && (
-                  <span>
-                    ABI gate: <strong>{abiParityStrict ? 'strict' : 'observe'}</strong>
-                    {abiParitySampleRateText ? ` · sample ${abiParitySampleRateText}` : ''}
-                    {abiParityThresholdText ? ` · max_abs≤${abiParityThresholdText}` : ''}
-                  </span>
-                )}
-                {nativeRunner && nativeTelemetryExpanded && (
-                  <span>
-                    Cutover gate: <strong>{cutoverState}</strong>
-                    {abiParityAttempted ? ` · parity ${abiParityPass ? 'pass' : 'fail'}` : ''}
-                    {nativeFallbackLimitText && nativeFallbackRate ? ` · fb ${nativeFallbackRate} / ${nativeFallbackLimitText}` : ''}
-                    {nativeLegacyCompileLimitText ? ` · legacy ${nativeLegacyCompiles}/${nativeLegacyCompileLimitText}` : ''}
-                  </span>
-                )}
-              </div>
-              {nativeTelemetryExpanded && guardrailTriggered && guardrailReason && (
-                <div className="native-runner-stats" style={{ marginTop: 4 }}>
-                  <span>Guardrail reason: <strong>{guardrailReason}</strong></span>
-                </div>
-              )}
-              {nativeTelemetryExpanded && showCutoverDetails && cutoverRows.length > 0 && (
-                <div className="native-cutover-details">
-                  <div className="native-cutover-details-title">Cutover Gate Checks</div>
-                  {cutoverRows.map((row) => (
-                    <div key={`cutover-check-${row.key}`} className="native-cutover-check-row">
-                      <span>{row.label}</span>
-                      <span className={`native-cutover-check-state ${row.passState}`}>
-                        {row.passState}
-                      </span>
-                      <span>actual: <strong>{row.actualText}</strong></span>
-                      <span>limit: <strong>{row.limitText}</strong></span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {nativeTelemetryExpanded && guardrailHistory.length > 0 && (
-                <div className="native-runner-stats" style={{ marginTop: 6, display: 'block' }}>
-                  <div style={{ marginBottom: 4 }}>
-                    <span>Guardrail history:</span>
-                    {guardrailSparkline && (
-                      <span
-                        style={{ marginLeft: 8, fontFamily: 'monospace' }}
-                        title={`${guardrailSparklineLegend}${guardrailSparklineTitle ? ` | ${guardrailSparklineTitle}` : ''}`}
-                      >
-                        {guardrailSparkline}
-                      </span>
-                    )}
-                  </div>
-                  {guardrailSparkline && (
-                    <div style={{ marginBottom: 2, color: 'var(--text-muted)' }}>
-                      {guardrailSparklineLegend}
-                    </div>
-                  )}
-                  {guardrailHistory.map((entry, index) => (
-                    <div key={`guardrail-history-${index}`} style={{ marginTop: 2 }}>
-                      <span>
-                        {entry?.event || 'event'}
-                        {entry?.timestamp ? ` @ ${formatGuardrailTimestamp(entry.timestamp)}` : ''}
-                        {entry?.source ? ` · ${entry.source}` : ''}
-                        {entry?.reason ? ` · ${entry.reason}` : ''}
-                        {entry?.consecutive_requested_not_candidate != null && entry?.threshold != null
-                          ? ` · ${entry.consecutive_requested_not_candidate}/${entry.threshold}`
-                          : ''}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {nativeTelemetryExpanded && selectiveLayerResults.length > 0 && (
-                <div className="native-runner-stats" style={{ marginTop: 6, display: 'block' }}>
-                  <div style={{ marginBottom: 4 }}>
-                    <span>Selective layers:</span>
-                  </div>
-                  {selectiveLayerResults.map((entry, index) => (
-                    <div key={`selective-layer-${index}`} style={{ marginTop: 2 }}>
-                      <span>
-                        L{entry?.layer_index ?? '?'}
-                        {entry?.workflow_id ? ` · ${entry.workflow_id}` : ''}
-                        {entry?.input_node_id ? ` · in=${entry.input_node_id}` : ''}
-                        {entry?.applied ? ' · applied' : ' · skipped'}
-                        {!entry?.applied && entry?.skip_reason ? ` · ${entry.skip_reason}` : ''}
-                        {entry?.error ? ` · err=${entry.error}` : ''}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Evolution-specific stats */}
-          {isGenerationProgress ? (
-            <div className="live-stats">
-              <div className="live-stat">
-                <span className="live-stat-label">Best Fitness</span>
-                <span className="live-stat-value green">
-                  {progress?.best_fitness != null ? progress.best_fitness.toFixed(3) : '—'}
-                </span>
-              </div>
-              <div className="live-stat">
-                <span className="live-stat-label">Avg Fitness</span>
-                <span className="live-stat-value blue">
-                  {progress?.avg_fitness != null ? progress.avg_fitness.toFixed(3) : '—'}
-                </span>
-              </div>
-              <div className="live-stat">
-                <span className="live-stat-label">Stage 1</span>
-                <span className="live-stat-value purple">{progress?.stage1_passed || 0}</span>
-              </div>
-              {progress?.archive_size > 0 && (
-                <div className="live-stat">
-                  <span className="live-stat-label">Archive</span>
-                  <span className="live-stat-value yellow">{progress.archive_size}</span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              {/* Stage indicator */}
-              <div className="stage-indicator">
-                <span className="stage-label">Current stage:</span>
-                <span className="badge running">{progress?.current_stage || '...'}</span>
-                {progress?.current_fingerprint && (
-                  <span className="fingerprint-label">{progress.current_fingerprint}</span>
-                )}
-              </div>
-
-              {/* Live stats */}
-              <div className="live-stats">
-                <div className="live-stat">
-                  <span className="live-stat-label">Stage 0</span>
-                  <span className="live-stat-value green">{progress?.stage0_passed || 0}</span>
-                </div>
-                <div className="live-stat">
-                  <span className="live-stat-label">Stage 0.5</span>
-                  <span className="live-stat-value blue">{progress?.stage05_passed || 0}</span>
-                </div>
-                <div className="live-stat">
-                  <span className="live-stat-label">Stage 1</span>
-                  <span className="live-stat-value purple">{progress?.stage1_passed || 0}</span>
-                </div>
-                <div className="live-stat">
-                  <span className="live-stat-label">Novel</span>
-                  <span className="live-stat-value yellow">{progress?.novel_count || 0}</span>
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Best scores */}
-          {(progress?.best_loss_ratio || progress?.best_novelty) && (
-            <div className="best-scores">
-              {progress.best_loss_ratio && (
-                <span>Best loss ratio: <strong>{progress.best_loss_ratio.toFixed(4)}</strong></span>
-              )}
-              {progress.best_novelty && (
-                <span>Best novelty: <strong>{progress.best_novelty.toFixed(3)}</strong></span>
-              )}
-            </div>
-          )}
-
-          {/* Elapsed time + cost */}
-          <div className="elapsed-time">
-            Elapsed: {formatElapsed(progress?.elapsed_seconds || 0)}
-            {progress?.estimated_cost > 0 && (
-              <span style={{ marginLeft: 12 }}>
-                Est. cost: <strong>${progress.estimated_cost.toFixed(2)}</strong>
-              </span>
-            )}
-            {progress?.total_tokens > 0 && (
-              <span style={{ marginLeft: 12, color: 'var(--text-muted)' }}>
-                ({(progress.total_tokens / 1000).toFixed(0)}K tokens)
-              </span>
-            )}
-          </div>
-
-          {nativeRunner && (
-            <div className="best-scores" style={{ marginTop: 8 }}>
-              <span>
-                Native: <strong>{nativeRunner.status || 'unknown'}</strong>
-              </span>
-              <span>
-                Fallback rate: <strong>{nativeFallbackRate || '—'}</strong>
-              </span>
-              <span>
-                Probe ok/fail: <strong>{nativeProbeSummary}</strong>
-              </span>
-              {selectiveExecPath && (
-                <span>
-                  Path: <strong>{selectiveExecPath}</strong>
-                </span>
-              )}
-              {selectiveExec?.layer_exec_enabled && (
-                <span>
-                  Layers: <strong>{selectiveApplied} applied / {selectiveSkipped} skipped</strong>
-                </span>
-              )}
-              <span>
-                Fallbacks: <strong>{nativeFallback.fallback_compiles || 0}</strong>
-              </span>
-              <span>
-                Legacy compile: <strong>{nativeLegacyCompiles}</strong>
-              </span>
-              {nativeLegacyCompileLimitText && (
-                <span>
-                  Legacy limit: <strong>{nativeLegacyCompileLimitText}</strong>
-                </span>
-              )}
-              {nativeRunner?.selective_guardrail && (
-                <span>
-                  Guardrail: <strong>{guardrailTriggered ? 'active' : 'ok'}</strong>
-                  {guardrailTriggerCount > 0 ? ` (${guardrailTriggerCount} trips)` : ''}
-                </span>
-              )}
-              {canaryEnabled && (
-                <span>
-                  Canary: <strong>{canaryStatus}</strong>
-                  {canaryDeltaText ? ` (${canaryDeltaText})` : ''}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Aria's message */}
-          {progress?.aria_message && (
-            <div className="aria-live-message">
-              "{progress.aria_message}"
-            </div>
-          )}
-
-          {/* Stop button */}
-          <button className="stop-btn" onClick={() => onStop && onStop()}>
-            Stop Experiment
-          </button>
+          {progress?.hypothesis_critique && <HypothesisCritique critique={progress.hypothesis_critique} />}
         </div>
       )}
     </div>
   );
-}
-
-function formatElapsed(seconds) {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  if (mins < 60) return `${mins}m ${secs}s`;
-  const hrs = Math.floor(mins / 60);
-  return `${hrs}h ${mins % 60}m`;
 }
 
 export default ControlPanel;

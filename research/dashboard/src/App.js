@@ -38,6 +38,7 @@ const API_BASE = process.env.REACT_APP_API_URL || '';
 const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
 const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
 const AUTO_REPAIR_SHOW_COMPLETED_KEY = 'aria_auto_repair_show_completed_v1';
+const OVERRIDE_INELIGIBLE_ALWAYS_KEY = 'aria_override_ineligible_always_v1';
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -95,10 +96,8 @@ function buildCandidateEligibility(entry) {
 
   const tier = typeof entry.tier === 'string' ? entry.tier.toLowerCase() : '';
   const hasInvestigationEvidence = entry.investigation_loss_ratio != null || entry.investigation_robustness != null;
-  const hasValidationEvidence = entry.validation_loss_ratio != null || Boolean(entry.validation_passed);
-
-  const investigationEligible = tier === 'screening' && !hasInvestigationEvidence;
-  const validationEligible = tier === 'investigation' && Boolean(entry.investigation_passed) && !hasValidationEvidence;
+  const investigationEligible = tier === 'screening';
+  const validationEligible = tier === 'investigation' && Boolean(entry.investigation_passed);
 
   let queueReason = null;
   if (!investigationEligible && !validationEligible) {
@@ -477,6 +476,7 @@ function AppContent({ onRunningChange }) {
   const [initialLoading, setInitialLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('command');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [dashboardUpdatedAt, setDashboardUpdatedAt] = useState(null);
   const [overviewActivityTab, setOverviewActivityTab] = useState('recent');
   const [showHelp, setShowHelp] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -508,6 +508,13 @@ function AppContent({ onRunningChange }) {
   const [showCompletedAutoRepairTasks, setShowCompletedAutoRepairTasks] = useState(() => {
     try {
       return window.localStorage.getItem(AUTO_REPAIR_SHOW_COMPLETED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [overrideIneligibleAlways, setOverrideIneligibleAlways] = useState(() => {
+    try {
+      return window.localStorage.getItem(OVERRIDE_INELIGIBLE_ALWAYS_KEY) === '1';
     } catch {
       return false;
     }
@@ -573,6 +580,15 @@ function AppContent({ onRunningChange }) {
     } catch {}
   }, [showCompletedAutoRepairTasks]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        OVERRIDE_INELIGIBLE_ALWAYS_KEY,
+        overrideIneligibleAlways ? '1' : '0',
+      );
+    } catch {}
+  }, [overrideIneligibleAlways]);
+
   const fetchDashboard = useCallback(async () => {
     try {
       const [json, cycleJson, healerJson] = await Promise.all([
@@ -582,6 +598,7 @@ function AppContent({ onRunningChange }) {
       ]);
       
       setData(json);
+      setDashboardUpdatedAt(Date.now());
       if (setSummary && json?.summary) setSummary(json.summary);
       setError(null);
       
@@ -1129,9 +1146,79 @@ function AppContent({ onRunningChange }) {
 
   const handleInvestigate = async (resultIds) => {
     const eligibility = filterEligibleResultIds('investigation', resultIds);
+    const rawIds = Array.isArray(resultIds) ? resultIds.filter(Boolean) : [];
+    const hasIneligible = rawIds.length > (eligibility.eligibleIds || []).length;
+    const shouldForceAll = overrideIneligibleAlways && rawIds.length > 0;
     if (!eligibility.ok) {
-      setActionError(eligibility.message);
+      if (!rawIds.length) {
+        setActionError(eligibility.message);
+        return;
+      }
+      if (!shouldForceAll) {
+        const confirmOverride = window.confirm(
+          `${eligibility.message}\n\nForce override and start investigation anyway?`
+        );
+        if (!confirmOverride) {
+          setActionError(eligibility.message);
+          return;
+        }
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/experiments/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'investigation',
+            result_ids: rawIds,
+            force: true,
+            override_ineligible: true,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          setActionError(err.error || 'Failed to start forced investigation');
+          return;
+        }
+        setActionError('Investigation started with override.');
+        fetchDashboard();
+      } catch (err) {
+        setActionError('Failed to start forced investigation: ' + err.message);
+      }
       return;
+    }
+    if (hasIneligible && rawIds.length) {
+      let confirmOverride = false;
+      if (shouldForceAll) {
+        confirmOverride = true;
+      } else {
+        confirmOverride = window.confirm(
+          `${eligibility.message}\n\nForce override and include the ineligible fingerprint(s) too?`
+        );
+      }
+      if (confirmOverride) {
+        try {
+          const res = await fetch(`${API_BASE}/api/experiments/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'investigation',
+              result_ids: rawIds,
+              force: true,
+              override_ineligible: true,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            setActionError(err.error || 'Failed to start forced investigation');
+            return;
+          }
+          setActionError('Investigation started with override.');
+          fetchDashboard();
+        } catch (err) {
+          setActionError('Failed to start forced investigation: ' + err.message);
+        }
+        return;
+      }
     }
     try {
       const res = await fetch(`${API_BASE}/api/experiments/start`, {
@@ -1159,9 +1246,79 @@ function AppContent({ onRunningChange }) {
 
   const handleValidate = async (resultIds) => {
     const eligibility = filterEligibleResultIds('validation', resultIds);
+    const rawIds = Array.isArray(resultIds) ? resultIds.filter(Boolean) : [];
+    const hasIneligible = rawIds.length > (eligibility.eligibleIds || []).length;
+    const shouldForceAll = overrideIneligibleAlways && rawIds.length > 0;
     if (!eligibility.ok) {
-      setActionError(eligibility.message);
+      if (!rawIds.length) {
+        setActionError(eligibility.message);
+        return;
+      }
+      if (!shouldForceAll) {
+        const confirmOverride = window.confirm(
+          `${eligibility.message}\n\nForce override and start validation anyway?`
+        );
+        if (!confirmOverride) {
+          setActionError(eligibility.message);
+          return;
+        }
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/experiments/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'validation',
+            result_ids: rawIds,
+            force: true,
+            override_ineligible: true,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          setActionError(err.error || 'Failed to start forced validation');
+          return;
+        }
+        setActionError('Validation started with override.');
+        fetchDashboard();
+      } catch (err) {
+        setActionError('Failed to start forced validation: ' + err.message);
+      }
       return;
+    }
+    if (hasIneligible && rawIds.length) {
+      let confirmOverride = false;
+      if (shouldForceAll) {
+        confirmOverride = true;
+      } else {
+        confirmOverride = window.confirm(
+          `${eligibility.message}\n\nForce override and include the ineligible fingerprint(s) too?`
+        );
+      }
+      if (confirmOverride) {
+        try {
+          const res = await fetch(`${API_BASE}/api/experiments/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'validation',
+              result_ids: rawIds,
+              force: true,
+              override_ineligible: true,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            setActionError(err.error || 'Failed to start forced validation');
+            return;
+          }
+          setActionError('Validation started with override.');
+          fetchDashboard();
+        } catch (err) {
+          setActionError('Failed to start forced validation: ' + err.message);
+        }
+        return;
+      }
     }
     try {
       const res = await fetch(`${API_BASE}/api/experiments/start`, {
@@ -1310,29 +1467,31 @@ function AppContent({ onRunningChange }) {
 
   const handleQueueInvestigate = useCallback(() => {
     if (!investigationQueue.length) return;
-    const eligibleIds = investigationQueue
+    const queuedIds = investigationQueue
       .filter(item => item.intent === 'investigation')
-      .map(item => item.resultId)
+      .map(item => item.resultId);
+    const eligibleIds = queuedIds
       .filter(resultId => eligibilityByResultId[resultId]?.investigationEligible);
-    if (!eligibleIds.length) {
+    if (!eligibleIds.length && !overrideIneligibleAlways) {
       setActionError('No queued investigation candidates are currently eligible.');
       return;
     }
-    handleInvestigate(eligibleIds);
-  }, [investigationQueue, eligibilityByResultId]);
+    handleInvestigate(overrideIneligibleAlways ? queuedIds : eligibleIds);
+  }, [investigationQueue, eligibilityByResultId, overrideIneligibleAlways, handleInvestigate]);
 
   const handleQueueValidate = useCallback(() => {
     if (!investigationQueue.length) return;
-    const eligibleIds = investigationQueue
+    const queuedIds = investigationQueue
       .filter(item => item.intent === 'validation')
-      .map(item => item.resultId)
+      .map(item => item.resultId);
+    const eligibleIds = queuedIds
       .filter(resultId => eligibilityByResultId[resultId]?.validationEligible);
-    if (!eligibleIds.length) {
+    if (!eligibleIds.length && !overrideIneligibleAlways) {
       setActionError('No queued validation candidates are currently eligible.');
       return;
     }
-    handleValidate(eligibleIds);
-  }, [investigationQueue, eligibilityByResultId]);
+    handleValidate(overrideIneligibleAlways ? queuedIds : eligibleIds);
+  }, [investigationQueue, eligibilityByResultId, overrideIneligibleAlways, handleValidate]);
 
   const queueBreakdown = useMemo(() => {
     return investigationQueue.reduce((acc, item) => {
@@ -1464,6 +1623,12 @@ function AppContent({ onRunningChange }) {
           )}
         </div>
         <div className="header-right">
+          <div className="header-meta" aria-hidden="true">
+            <span className="kbd-chip">Keys 1-7 · ? · Esc</span>
+            <span className="last-updated-chip">
+              {dashboardUpdatedAt ? `Updated ${new Date(dashboardUpdatedAt).toLocaleTimeString()}` : 'Loading...'}
+            </span>
+          </div>
           <button
             className="refresh-btn"
             style={{ fontSize: 14, padding: '3px 8px', fontWeight: 700, lineHeight: 1, minWidth: 28 }}
@@ -1535,8 +1700,12 @@ function AppContent({ onRunningChange }) {
 
       <main className="app-main">
         {initialLoading && !error && (
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '80px 0', color: 'var(--text-secondary)', fontSize: 14 }}>
-            Loading dashboard...
+          <div className="ux-state ux-state-loading" style={{ justifyContent: 'center', marginBottom: 14 }}>
+            <span className="ux-spinner" />
+            <div className="ux-stack">
+              <span className="ux-state-title">Loading dashboard</span>
+              <span className="ux-state-subtle">Fetching latest research, insights, and run status.</span>
+            </div>
           </div>
         )}
         {error && (
@@ -1678,7 +1847,7 @@ function AppContent({ onRunningChange }) {
               </div>
               <div className="card" style={{ padding: 12 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Discovery Frontier</div>
-                <GlobalParetoChart programs={leaderboardEntries} />
+                <GlobalParetoChart programs={leaderboardEntries} onSelectProgram={handleSelectProgram} onNavigateTab={(tab) => setActiveTab(tab)} />
                 {data?.is_running && (
                   <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
                     <LiveFeed
@@ -1840,6 +2009,21 @@ function AppContent({ onRunningChange }) {
               aria-label="Close settings"
             >&times;</button>
             <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>Experiment Settings</div>
+            <label style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 14,
+              fontSize: 12,
+              color: 'var(--text-secondary)',
+            }}>
+              <input
+                type="checkbox"
+                checked={overrideIneligibleAlways}
+                onChange={(e) => setOverrideIneligibleAlways(Boolean(e.target.checked))}
+              />
+              Always allow override for ineligible fingerprints (Investigate/Validate)
+            </label>
             {strategyBlocksAdvancedStart && (
               <div style={{
                 marginBottom: 16,
@@ -1920,6 +2104,7 @@ function AppContent({ onRunningChange }) {
           onOpenInDesigner={(rid) => setDesignerResultId(rid)}
           onAddToComparison={handleAddToComparison}
           eligibilityByResultId={eligibilityByResultId}
+          defaultOverrideIneligible={overrideIneligibleAlways}
         />
       )}
 

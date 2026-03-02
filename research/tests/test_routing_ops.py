@@ -1,6 +1,6 @@
 """Unit tests for routing compiler ops (Phase 2).
 
-Tests both aria-core C kernel paths and PyTorch fallback paths.
+Tests both aria_core C kernel paths and PyTorch fallback paths.
 Verifies output shapes, semantics, and telemetry recording.
 """
 import torch
@@ -14,7 +14,7 @@ from research.synthesis.compiler import (
     _record_routing_telemetry,
 )
 
-# Check if aria-core is available
+# Check if aria_core is available
 try:
     import aria_core
     HAS_ARIA_CORE = True

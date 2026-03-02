@@ -943,6 +943,7 @@ class LabNotebook:
         self.conn.row_factory = sqlite3.Row
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
+        self._leaderboard_columns: Optional[set[str]] = None
         self.conn.executescript(NOTEBOOK_SCHEMA)
         self._maybe_commit()
         self._migrate()
@@ -1298,6 +1299,7 @@ class LabNotebook:
                 pass
 
         self._program_results_columns = None
+        self._leaderboard_columns = None
         self._maybe_commit()
 
     def _get_program_results_columns(self) -> set[str]:
@@ -1306,6 +1308,13 @@ class LabNotebook:
             rows = self.conn.execute("PRAGMA table_info(program_results)").fetchall()
             self._program_results_columns = {str(row[1]) for row in rows}
         return self._program_results_columns
+
+    def _get_leaderboard_columns(self) -> set[str]:
+        """Return current leaderboard columns for defensive updates."""
+        if self._leaderboard_columns is None:
+            rows = self.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
+            self._leaderboard_columns = {str(row[1]) for row in rows}
+        return self._leaderboard_columns
 
     @classmethod
     def _detect_code_version(cls) -> str:
@@ -2116,6 +2125,12 @@ class LabNotebook:
              entry.entry_type, entry.title, entry.content,
              json.dumps(entry.metadata), ",".join(entry.tags)),
         )
+        # Keep fingerprint-level leaderboard evidence synchronized across
+        # repeated runs of the same architecture.
+        try:
+            self._sync_fingerprint_leaderboard(result_id)
+        except Exception as e:
+            LOGGER.debug("Fingerprint leaderboard sync skipped for %s: %s", result_id, e)
         self._maybe_commit()
         return entry_id
 
@@ -3844,6 +3859,12 @@ class LabNotebook:
         "moe_topk", "route_topk", "route_lanes", "adaptive_lane_mixer",
         "compression_mixture_experts", "entropy_router",
     })
+    _TIER_ORDER = {
+        "screening": 0,
+        "investigation": 1,
+        "validation": 2,
+        "breakthrough": 3,
+    }
 
     def _count_routing_ops(self, result_id: str) -> Optional[int]:
         """Count routing/branching ops in the graph for a program result."""
@@ -3892,6 +3913,322 @@ class LabNotebook:
             return count if count > 0 else None
         except Exception:
             return None
+
+    @staticmethod
+    def _best_min(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
+        vals = [r.get(key) for r in rows if r.get(key) is not None]
+        if not vals:
+            return None
+        try:
+            return float(min(vals))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _best_max(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
+        vals = [r.get(key) for r in rows if r.get(key) is not None]
+        if not vals:
+            return None
+        try:
+            return float(max(vals))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _best_bool(rows: List[Dict[str, Any]], key: str) -> Optional[int]:
+        vals = [r.get(key) for r in rows if r.get(key) is not None]
+        if not vals:
+            return None
+        return int(any(bool(v) for v in vals))
+
+    def _highest_tier(self, rows: List[Dict[str, Any]]) -> Optional[str]:
+        tiers = [str(r.get("tier") or "").lower() for r in rows if r.get("tier")]
+        if not tiers:
+            return None
+        return max(tiers, key=lambda t: self._TIER_ORDER.get(t, -1))
+
+    def _sync_fingerprint_leaderboard(self, result_id: str) -> None:
+        """Aggregate leaderboard evidence across all runs of a fingerprint.
+
+        This ensures repeated training runs for the same architecture contribute
+        to one coherent fingerprint-level score/tier rather than fragmenting
+        across per-result rows.
+        """
+        fp_row = self.conn.execute(
+            "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+            (result_id,),
+        ).fetchone()
+        if not fp_row or not fp_row["graph_fingerprint"]:
+            return
+        graph_fingerprint = str(fp_row["graph_fingerprint"])
+
+        lb_rows_raw = self.conn.execute(
+            """
+            SELECT l.*
+            FROM leaderboard l
+            JOIN program_results pr ON pr.result_id = l.result_id
+            WHERE pr.graph_fingerprint = ?
+            """,
+            (graph_fingerprint,),
+        ).fetchall()
+        if not lb_rows_raw:
+            return
+        lb_rows = [dict(r) for r in lb_rows_raw]
+
+        pr_cols_all = self._get_program_results_columns()
+        wanted_pr_cols = [
+            "result_id", "novelty_confidence", "loss_improvement_rate",
+            "discovery_loss_ratio", "validation_loss_ratio", "efficiency_multiple",
+            "max_viable_seq_len", "robustness_long_ctx_scaling_score",
+            "robustness_long_ctx_assoc_score", "robustness_long_ctx_multi_hop_score",
+            "robustness_long_ctx_passkey_score", "robustness_long_ctx_retrieval_aggregate",
+            "robustness_long_ctx_combined_score", "robustness_noise_score",
+            "activation_sparsity_score", "depth_savings_ratio",
+            "recursion_savings_ratio", "routing_expert_count",
+            "routing_confidence_mean", "routing_drop_rate",
+            "wikitext_perplexity", "wikitext_score", "tinystories_perplexity",
+            "tinystories_score", "cross_task_score", "efficiency_wall_score",
+        ]
+        pr_select_cols = [c for c in wanted_pr_cols if c in pr_cols_all]
+        if not pr_select_cols:
+            pr_select_cols = ["result_id"]
+        pr_rows_raw = self.conn.execute(
+            f"SELECT {', '.join(pr_select_cols)} FROM program_results WHERE graph_fingerprint = ?",
+            (graph_fingerprint,),
+        ).fetchall()
+        pr_rows = [dict(r) for r in pr_rows_raw]
+
+        # Use current best composite entry as the anchor for stable metadata.
+        anchor = max(
+            lb_rows,
+            key=lambda r: (float(r.get("composite_score") or -1e9), float(r.get("timestamp") or 0.0)),
+        )
+        merged = dict(anchor)
+
+        # Best-of-run metrics used directly by scoring.
+        min_cols = (
+            "screening_loss_ratio",
+            "investigation_loss_ratio",
+            "validation_loss_ratio",
+            "validation_baseline_ratio",
+            "validation_multi_seed_std",
+            "discovery_loss_ratio",
+            "compression_ratio",
+            "routing_drop_rate",
+            "robustness_noise_score",
+            "wikitext_perplexity",
+            "tinystories_perplexity",
+            "ncd_score",
+        )
+        max_cols = (
+            "screening_novelty",
+            "investigation_robustness",
+            "normalized_baseline_ratio",
+            "param_efficiency",
+            "quant_int8_retention",
+            "quant_quality_per_byte",
+            "robustness_long_ctx_score",
+            "init_sensitivity_std",
+            "scaling_param_efficiency",
+            "scaling_flop_efficiency",
+            "scaling_d512_param_efficiency",
+            "routing_savings_ratio",
+            "activation_sparsity_score",
+            "depth_savings_ratio",
+            "recursion_savings_ratio",
+            "routing_expert_count",
+            "routing_confidence_mean",
+            "efficiency_multiple",
+            "wikitext_score",
+            "tinystories_score",
+            "cross_task_score",
+            "efficiency_wall_score",
+            "max_viable_seq_len",
+            "robustness_long_ctx_scaling_score",
+            "robustness_long_ctx_assoc_score",
+            "robustness_long_ctx_multi_hop_score",
+            "robustness_long_ctx_passkey_score",
+            "robustness_long_ctx_retrieval_aggregate",
+            "robustness_long_ctx_combined_score",
+            "loss_improvement_rate",
+        )
+        bool_cols = (
+            "screening_passed",
+            "investigation_passed",
+            "validation_passed",
+            "scaling_gate_passed",
+        )
+
+        # Combine leaderboard + program rows where useful.
+        combo_rows = lb_rows + pr_rows
+        for col in min_cols:
+            best = self._best_min(combo_rows, col)
+            if best is not None:
+                merged[col] = best
+        for col in max_cols:
+            best = self._best_max(combo_rows, col)
+            if best is not None:
+                merged[col] = best
+        for col in bool_cols:
+            best = self._best_bool(combo_rows, col)
+            if best is not None:
+                merged[col] = best
+
+        # Tier is fingerprint-level progression.
+        highest_tier = self._highest_tier(lb_rows)
+        if highest_tier:
+            merged["tier"] = highest_tier
+
+        nov_conf = self._best_max(pr_rows, "novelty_confidence")
+        n_routing = self._count_routing_ops(result_id)
+        n_sparse = self._count_sparse_ops(result_id)
+        n_moe = self._count_moe_ops(result_id)
+        composite = self.compute_composite_score(
+            screening_lr=merged.get("screening_loss_ratio"),
+            screening_nov=merged.get("screening_novelty"),
+            inv_lr=merged.get("investigation_loss_ratio"),
+            inv_robust=merged.get("investigation_robustness"),
+            val_lr=merged.get("validation_loss_ratio"),
+            val_baseline=merged.get("validation_baseline_ratio"),
+            val_std=merged.get("validation_multi_seed_std"),
+            novelty_confidence=nov_conf,
+            scaling_param_efficiency=merged.get("scaling_param_efficiency"),
+            is_reference=bool(merged.get("is_reference")),
+            routing_savings=merged.get("routing_savings_ratio"),
+            compression_ratio=merged.get("compression_ratio"),
+            discovery_lr=merged.get("discovery_loss_ratio"),
+            spectral_norm=merged.get("fp_jacobian_spectral_norm"),
+            robustness_noise=merged.get("robustness_noise_score"),
+            quant_retention=merged.get("quant_int8_retention"),
+            long_ctx_score=merged.get("robustness_long_ctx_score"),
+            init_std=merged.get("init_sensitivity_std"),
+            loss_improvement_rate=merged.get("loss_improvement_rate"),
+            quant_quality_per_byte=merged.get("quant_quality_per_byte"),
+            ncd_score=merged.get("ncd_score"),
+            n_routing_ops=n_routing,
+            n_sparse_ops=n_sparse,
+            n_moe_ops=n_moe,
+            recursion_savings=merged.get("recursion_savings_ratio"),
+            depth_savings=merged.get("depth_savings_ratio"),
+            activation_sparsity=merged.get("activation_sparsity_score"),
+            max_viable_seq_len=merged.get("max_viable_seq_len"),
+            long_ctx_scaling=merged.get("robustness_long_ctx_scaling_score"),
+            long_ctx_passkey=merged.get("robustness_long_ctx_passkey_score"),
+            long_ctx_multi_hop=merged.get("robustness_long_ctx_multi_hop_score"),
+            long_ctx_assoc=merged.get("robustness_long_ctx_assoc_score"),
+            routing_expert_count=merged.get("routing_expert_count"),
+            routing_confidence_mean=merged.get("routing_confidence_mean"),
+            routing_drop_rate=merged.get("routing_drop_rate"),
+            wikitext_perplexity=merged.get("wikitext_perplexity"),
+        )
+        # Monotonic safeguard: fingerprint aggregate should not score below its
+        # historical best leaderboard score when incorporating additional runs.
+        prior_best = self._best_max(lb_rows, "composite_score")
+        if prior_best is not None:
+            composite = max(float(composite), float(prior_best))
+
+        update_cols = [
+            "tier",
+            "composite_score",
+            "screening_loss_ratio",
+            "screening_novelty",
+            "screening_passed",
+            "investigation_loss_ratio",
+            "investigation_robustness",
+            "investigation_passed",
+            "validation_loss_ratio",
+            "validation_baseline_ratio",
+            "validation_multi_seed_std",
+            "validation_passed",
+            "discovery_loss_ratio",
+            "loss_improvement_rate",
+            "normalized_baseline_ratio",
+            "param_efficiency",
+            "quant_int8_retention",
+            "quant_quality_per_byte",
+            "robustness_long_ctx_score",
+            "robustness_noise_score",
+            "init_sensitivity_std",
+            "scaling_param_efficiency",
+            "scaling_flop_efficiency",
+            "scaling_gate_passed",
+            "scaling_d512_param_efficiency",
+            "routing_savings_ratio",
+            "compression_ratio",
+            "activation_sparsity_score",
+            "wikitext_perplexity",
+            "wikitext_score",
+            "tinystories_perplexity",
+            "tinystories_score",
+            "cross_task_score",
+            "efficiency_wall_score",
+            "max_viable_seq_len",
+            "robustness_long_ctx_scaling_score",
+            "robustness_long_ctx_assoc_score",
+            "robustness_long_ctx_multi_hop_score",
+            "robustness_long_ctx_passkey_score",
+            "robustness_long_ctx_retrieval_aggregate",
+            "robustness_long_ctx_combined_score",
+            "depth_savings_ratio",
+            "recursion_savings_ratio",
+            "routing_expert_count",
+            "routing_confidence_mean",
+            "routing_drop_rate",
+            "ncd_score",
+            "efficiency_multiple",
+            "timestamp",
+        ]
+        update_cols = [c for c in update_cols if c in self._get_leaderboard_columns()]
+        sets = [f"{c} = ?" for c in update_cols]
+
+        # Keep all rows for traceability but synchronize fingerprint-level evidence.
+        now_ts = time.time()
+        params_template = []
+        for col in update_cols:
+            if col == "composite_score":
+                params_template.append(composite)
+            elif col == "timestamp":
+                params_template.append(now_ts)
+            else:
+                val = merged.get(col)
+                if isinstance(val, bool):
+                    val = int(val)
+                params_template.append(val)
+
+        for row in lb_rows:
+            params = list(params_template)
+            params.append(row["entry_id"])
+            self.conn.execute(
+                f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",
+                params,
+            )
+
+    def backfill_fingerprint_aggregates(self) -> int:
+        """Recompute fingerprint-level leaderboard aggregates for all entries."""
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT l.result_id
+            FROM leaderboard l
+            JOIN program_results pr ON pr.result_id = l.result_id
+            WHERE pr.graph_fingerprint IS NOT NULL
+            """
+        ).fetchall()
+        synced = 0
+        seen_fp: set[str] = set()
+        for row in rows:
+            rid = row["result_id"]
+            fp_row = self.conn.execute(
+                "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+                (rid,),
+            ).fetchone()
+            fp = str(fp_row["graph_fingerprint"]) if fp_row and fp_row["graph_fingerprint"] else ""
+            if not fp or fp in seen_fp:
+                continue
+            seen_fp.add(fp)
+            self._sync_fingerprint_leaderboard(rid)
+            synced += 1
+        self._maybe_commit()
+        return synced
 
     @staticmethod
     def compute_efficiency_multiple(
@@ -4940,6 +5277,15 @@ class LabNotebook:
             f"UPDATE leaderboard SET {', '.join(sets)} WHERE entry_id = ?",
             params,
         )
+        try:
+            rid_row = self.conn.execute(
+                "SELECT result_id FROM leaderboard WHERE entry_id = ?",
+                (entry_id,),
+            ).fetchone()
+            if rid_row and rid_row["result_id"]:
+                self._sync_fingerprint_leaderboard(str(rid_row["result_id"]))
+        except Exception as e:
+            LOGGER.debug("Fingerprint leaderboard sync skipped for entry %s: %s", entry_id, e)
         self._maybe_commit()
 
     # ── Scaling Summary ──

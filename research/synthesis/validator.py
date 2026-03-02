@@ -51,6 +51,7 @@ def validate_graph(
     max_ops: int = 20,
     max_depth: int = 15,
     max_params_ratio: float = 6.0,
+    min_splits: int = 0,
 ) -> ValidationResult:
     """Validate a computation graph.
 
@@ -75,8 +76,10 @@ def validate_graph(
     if result.n_ops > max_ops:
         result.add_error(f"Too many ops: {result.n_ops} > {max_ops}")
 
-    if result.depth > max_depth:
-        result.add_error(f"Too deep: {result.depth} > {max_depth}")
+    # Forced splits add structural depth (split+merge+proj = ~3 per split)
+    depth_limit = max_depth + min_splits * 3
+    if result.depth > depth_limit:
+        result.add_error(f"Too deep: {result.depth} > {depth_limit}")
 
     # Parameter budget
     D = graph.model_dim

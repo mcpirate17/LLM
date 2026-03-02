@@ -8,7 +8,7 @@
 #include <math.h>
 #include <assert.h>
 #include <string.h>
-#include "kernels.h"  /* from aria-designer/runtime/src/ via CMake include path */
+#include "kernels.h"  /* from aria_designer/runtime/src/ via CMake include path */
 #include "../src/kernels_ext.h"
 #include "../src/registry.h"
 

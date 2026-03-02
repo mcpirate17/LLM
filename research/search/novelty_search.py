@@ -22,8 +22,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 from ..synthesis.graph import ComputationGraph
-from ..synthesis.grammar import GrammarConfig, generate_layer_graph
-from ..eval.fingerprint import BehavioralFingerprint, compute_fingerprint
+from ..synthesis.grammar import GrammarConfig
+from ..eval.fingerprint import BehavioralFingerprint
 from .evolution import Individual, EvolutionConfig, evolutionary_search
 
 

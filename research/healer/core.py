@@ -58,6 +58,12 @@ class CodeHealer:
     def _run_allowed_command(self, command: str, cwd: Path) -> Dict[str, Any]:
         if not self._command_allowed(command):
             raise HealerError(f"Command blocked by healer sandbox policy: {command}")
+        
+        # Z17: Ensure project root is in PYTHONPATH
+        import os
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(cwd)
+        
         proc = subprocess.run(
             command,
             cwd=str(cwd),
@@ -65,6 +71,7 @@ class CodeHealer:
             capture_output=True,
             text=True,
             timeout=180,
+            env=env,
         )
         return {
             "command": command,

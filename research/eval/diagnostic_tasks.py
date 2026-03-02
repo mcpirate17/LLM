@@ -28,7 +28,6 @@ import torch.nn.functional as F
 # Constants
 # ---------------------------------------------------------------------------
 
-DIAG_VOCAB_RANGE = 256      # tokens drawn from [0, 256)
 DIAG_SEP_TOKEN = 255        # separator token
 DIAG_MARK_TOKEN = 254       # marker for selective copy
 DIAG_STEPS = 100            # training steps per task

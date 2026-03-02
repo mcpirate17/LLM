@@ -29,3 +29,13 @@ export function scoreColor(score) {
   if (score >= 20) return 'var(--accent-orange, #f0883e)';
   return 'var(--accent-red)';
 }
+
+export function fmtNumber(value, digits = 0) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+export function fmtPct(value, digits = 0) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return `${(Number(value) * 100).toFixed(digits)}%`;
+}

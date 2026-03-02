@@ -117,16 +117,15 @@ def run_long_context_sweep(
                 "error": str(e)[:100],
             }
 
-    # Score: fraction of tested lengths where loss_ratio < 1.5
-    viable_count = sum(
-        1 for r in scaling_results.values()
-        if r.get("loss_ratio") is not None and r["loss_ratio"] < 1.5
-    )
-    total_tested = sum(
-        1 for r in scaling_results.values()
-        if r.get("loss_ratio") is not None
-    )
-    long_context_score = viable_count / max(total_tested, 1)
+    # Graded score from tested lengths:
+    # loss_ratio<=1.0 -> 1.0, loss_ratio>=2.0 -> 0.0, linear in-between.
+    per_len_scores = []
+    for r in scaling_results.values():
+        lr_ratio = r.get("loss_ratio")
+        if lr_ratio is None:
+            continue
+        per_len_scores.append(max(0.0, min(1.0, 2.0 - float(lr_ratio))))
+    long_context_score = (sum(per_len_scores) / len(per_len_scores)) if per_len_scores else 0.0
 
     return {
         "scaling_results": scaling_results,

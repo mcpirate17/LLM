@@ -311,13 +311,24 @@ Based on the evidence, make a go/no-go decision for this candidate.
 
 {context}
 
+IMPORTANT — Loss ratio reference scale (lower is better):
+  - loss_ratio < 0.05: Excellent (top-tier candidate, strong go)
+  - loss_ratio 0.05–0.20: Good (worth investigating)
+  - loss_ratio 0.20–0.50: Mediocre (go only if novelty is high)
+  - loss_ratio > 0.50: Poor (no-go unless extraordinary novelty)
+  - Pipeline S1 threshold: 0.80, Investigation threshold: 0.50
+
+Bias toward GO for candidates with high novelty (>0.6). Novel architectures
+are scientifically valuable even with moderate performance. The cost of a
+false negative (rejecting a promising candidate) far exceeds the cost of a
+false positive (investigating a mediocre one).
+
 You must decide whether this candidate should advance to the next phase of testing.
 Consider:
-- Performance metrics vs thresholds
-- Robustness across conditions
-- Novelty and scientific interest
-- Resource cost of further testing
-- What alternatives exist
+- Performance metrics vs the reference scale above
+- Novelty and scientific interest (high novelty strongly favors go)
+- Robustness across conditions (if available)
+- Resource cost of further testing is LOW — bias toward go
 
 Return in this exact format:
 DECISION: [go/no_go/pivot]

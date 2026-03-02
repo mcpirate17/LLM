@@ -9,16 +9,16 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -march=native -Wall -Wextra -fPIC")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--disable-new-dtags")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--disable-new-dtags")
 
-# Include paths — both local and shared aria-designer kernels
+# Include paths — both local and shared aria_designer kernels
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../aria-designer/runtime/src)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_designer/runtime/src)
 
 # Local native kernel sources
 file(GLOB NATIVE_SRCS src/*.c)
 
-# Shared aria-designer kernel sources (reuse, don't duplicate)
-set(DESIGNER_KERNELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria-designer/runtime/src)
+# Shared aria_designer kernel sources (reuse, don't duplicate)
+set(DESIGNER_KERNELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_designer/runtime/src)
 set(DESIGNER_SRCS
     ${DESIGNER_KERNELS_DIR}/kernels.c
 )

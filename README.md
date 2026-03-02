@@ -2,7 +2,7 @@
 
 Unified workspace for:
 - `research/` — Aria (AI Scientist) backend + dashboard
-- `aria-designer/` — visual architecture designer and runtime bridge
+- `aria_designer/` — visual architecture designer and runtime bridge
 
 ## Quick Start (Recommended)
 
@@ -21,8 +21,8 @@ When you click a Designer entry point in the dashboard, Aria auto-starts Aria De
 ## Repos and Docs
 
 - Aria runtime/docs: `research/README.md`
-- Designer runtime/docs: `aria-designer/README.md`
-- Designer workflow usage: `aria-designer/WORKFLOW_GUIDE.md`
+- Designer runtime/docs: `aria_designer/README.md`
+- Designer workflow usage: `aria_designer/WORKFLOW_GUIDE.md`
 
 ## Common Commands
 
@@ -42,7 +42,7 @@ python -m research --mode=dashboard --port 5000
 
 ```bash
 # Aria Designer local dev (manual)
-cd aria-designer
+cd aria_designer
 make setup
 make dev
 make dev-stop
@@ -82,6 +82,6 @@ Cutover gate readiness check (gate lane):
 - If `python -m research` fails, confirm you are in `/home/tim/Projects/LLM` (parent of `research/`).
 - If dashboard opens but Designer does not, check:
   - Aria logs for `/api/designer/ensure-running`
-  - `aria-designer/.run/research_designer_boot.log`
+  - `aria_designer/.run/research_designer_boot.log`
 - If ports are stuck:
-  - `cd aria-designer && make dev-stop`
+  - `cd aria_designer && make dev-stop`

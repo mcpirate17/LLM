@@ -29,6 +29,62 @@ export const TIER_LABELS = {
   breakthrough: 'Breakthrough',
 };
 
+// ── GPT-2 reference metrics (measured on d_model=256, 6-layer config) ──
+
+export const GPT2_REF = {
+  loss_ratio: 0.2646,
+  param_count: 9_767_424,
+  flops_forward: 19_534_848,
+  throughput_tok_s: 1_200_845,
+  peak_memory_mb: 115.0,
+  forward_time_ms: 0.43,
+};
+
+/**
+ * Geometric mean of per-dimension ratios vs GPT-2.
+ * All ratios >1.0 = better than GPT-2.
+ * Requires at least 3 of 6 dimensions. Returns null if insufficient data.
+ */
+export function computeEfficiencyMultiple(entry) {
+  const ref = GPT2_REF;
+  const ratios = {};
+
+  const loss = bestLossForEfficiency(entry);
+  if (loss != null && loss > 0) ratios.x_quality = ref.loss_ratio / loss;
+
+  const params = entry?.param_count ?? entry?.graph_n_params_estimate;
+  if (params != null && params > 0) ratios.x_params = ref.param_count / params;
+
+  const flops = entry?.flops_forward;
+  if (flops != null && flops > 0) ratios.x_flops = ref.flops_forward / flops;
+
+  const tput = entry?.throughput_tok_s;
+  if (tput != null && tput > 0) ratios.x_throughput = tput / ref.throughput_tok_s;
+
+  const mem = entry?.peak_memory_mb;
+  if (mem != null && mem > 0) ratios.x_memory = ref.peak_memory_mb / mem;
+
+  const lat = entry?.forward_time_ms;
+  if (lat != null && lat > 0) ratios.x_latency = ref.forward_time_ms / lat;
+
+  const keys = Object.keys(ratios);
+  if (keys.length < 3) return null;
+
+  let product = 1;
+  for (const k of keys) product *= ratios[k];
+  const geomean = Math.pow(product, 1.0 / keys.length);
+
+  return { ...ratios, geomean, n_dimensions: keys.length };
+}
+
+/** Pick the best available loss ratio for efficiency computation. */
+function bestLossForEfficiency(entry) {
+  return pickFirstNumber(entry, [
+    'validation_loss_ratio', 'investigation_loss_ratio',
+    'screening_loss_ratio', 'loss_ratio',
+  ]);
+}
+
 // ── Shared leaderboard helpers ──────────────────────────────────────
 
 export function bestLoss(entry) {

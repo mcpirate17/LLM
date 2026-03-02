@@ -1,5 +1,5 @@
 export function parseDesignerBridgeMessage(data) {
-  if (!data || data.source !== 'aria-designer') {
+  if (!data || data.source !== 'aria_designer') {
     return { kind: 'ignore' };
   }
 

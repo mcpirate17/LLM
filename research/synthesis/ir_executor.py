@@ -16,7 +16,7 @@ import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 
 from .graph import ComputationGraphIR
-from .primitives import PrimitiveOp, get_primitive, REVERSE_OPCODE_MAP
+from .primitives import REVERSE_OPCODE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -125,16 +125,16 @@ class IRExecutor(nn.Module):
             except Exception:
                 pass
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, capture_intermediates: bool = False) -> torch.Tensor | Tuple[torch.Tensor, Dict[int, torch.Tensor]]:
         """Lowered execution loop. torch.compile fuses this into a single kernel."""
         # node_outputs[i] stores the output of the i-th IR node
         node_outputs: List[Optional[torch.Tensor]] = [None] * len(self.op_codes)
+        captured = {} if capture_intermediates else None
         
         # Z8: Copy consumer counts to track liveness per-forward
         # We use a list instead of numpy for better torch.compile compatibility
         counts = list(self.consumer_counts)
         output_idx = int(self.output_node_idx)
-        is_cuda = x.is_cuda
         
         for i in range(len(self.op_codes)):
             opcode = self.op_codes[i]
@@ -158,18 +158,24 @@ class IRExecutor(nn.Module):
                     
                     # Decrement and reclaim in2 if done
                     counts[in2_idx] -= 1
-                    if counts[in2_idx] <= 0 and in2_idx != output_idx:
+                    if counts[in2_idx] <= 0 and in2_idx != output_idx and captured is None:
                         node_outputs[in2_idx] = None
                 else:
                     node_outputs[i] = op(t1)
                 
                 # Decrement and reclaim in1 if done
                 counts[in1_idx] -= 1
-                if counts[in1_idx] <= 0 and in1_idx != output_idx:
+                if counts[in1_idx] <= 0 and in1_idx != output_idx and captured is None:
                     node_outputs[in1_idx] = None
+                
+                # Capture if requested
+                if captured is not None:
+                    captured[i] = node_outputs[i].detach().clone()
         
         res = node_outputs[output_idx]
         if res is None:
-            return x # Fallback
+            res = x # Fallback
             
+        if captured is not None:
+            return res, captured
         return res

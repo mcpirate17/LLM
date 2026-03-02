@@ -6,7 +6,7 @@ This file serves as a live synchronization point for all AI agents (Gemini, Clau
 
 | Agent | Area of Focus | Active Files/Directories | Status |
 | :--- | :--- | :--- | :--- |
-| **Gemini** | **Project Hephaestus** (Native Graph Engine, Proactive Gating, Adaptive Synthesis) | `aria-core/`, `research/scientist/runner.py`, `research/synthesis/` | **PROJECT COMPLETED** |
+| **Gemini** | **Project Hephaestus** (Native Graph Engine, Proactive Gating, Adaptive Synthesis) | `aria_core/`, `research/scientist/runner.py`, `research/synthesis/` | **PROJECT COMPLETED** |
 | **Claude** | **Gate & Investigation Improvements** (Fingerprints to Investigation) | `research/eval/`, `research/scientist/runner.py` | Refinement of Fingerprint Promotion |
 | **Codex** | **UI/UX + Knowledge Quality** (Dashboard visuals, KB curation) | `research/dashboard/src/`, `research/scientist/runner.py`, `research/scientist/llm/context.py`, `research/tools/curate_knowledge_base.py` | Table/detail UX + knowledge generation quality filters + KB clustering |
 
@@ -15,7 +15,7 @@ This file serves as a live synchronization point for all AI agents (Gemini, Clau
 ## Conflict Zones (Watch Files)
 
 - `research/scientist/runner.py`: High collision risk between Gemini (Native Gating) and Claude (Investigation Gates).
-- `aria-designer/runtime/bridge.py`: Coordination required for new native telemetry.
+- `aria_designer/runtime/bridge.py`: Coordination required for new native telemetry.
 
 ## Communication Protocol
 
@@ -30,19 +30,19 @@ This file serves as a live synchronization point for all AI agents (Gemini, Clau
 **Objective:** Transition Aria's decision-making from reactive Python filtering to a high-performance Rust/C++/Cython proactive engine.
 
 ### Phase 1: Native Graph Engine (COMPLETED)
-- [x] Initialize C++ module for `aria-core-graph` in `aria-core`.
+- [x] Initialize C++ module for `aria_core-graph` in `aria_core`.
 - [x] Implement fast subgraph isomorphism for toxic motif detection.
 - [x] Implement path-walking for stability heuristics (normalization/residual checks).
 - [x] Integrate `proactive_gating` into `research/scientist/runner.py`.
 
 ### Phase 2: Proactive Stability Gates (COMPLETED)
 - [x] Implement "Shadow Mode" logic in `runner.py` via `_native_proactive_gating`.
-- [x] Logic verified via `aria-core/tests/test_proactive_gating.py`.
+- [x] Logic verified via `aria_core/tests/test_proactive_gating.py`.
 
 ### Phase 3: Behavioral Dry-Run (COMPLETED)
 - [x] Implement native CKA kernels (`linear_cka_f32`) for high-performance similarity scoring.
 - [x] Implement `compute_lightning_fingerprint` in `research/eval/fingerprint.py` for pre-S1 novelty gating.
-- [x] Parity verified via `aria-core/tests/test_cka_parity.py` (17x speedup over PyTorch).
+- [x] Parity verified via `aria_core/tests/test_cka_parity.py` (17x speedup over PyTorch).
 
 ### Phase 4: Adaptive Synthesis (COMPLETED)
 - [x] Implement `EfficiencyPrior` to extract Pareto frontier biases from `ExperimentAnalytics`.
@@ -73,5 +73,13 @@ This file serves as a live synchronization point for all AI agents (Gemini, Clau
 - **2026-02-28 (Codex):** Added Discovery quality-floor UX in `dashboard/src/components/Discoveries.js` (default ON): hides low-quality candidates with best loss > 0.8, includes toggle to show all, and displays hidden-count indicator.
 - **2026-02-28 (Codex):** Fixed experiment-level novelty propagation in `runner.py` (investigation/validation inline + threaded paths): `results.best_novelty_score` now updates from source candidate novelty so Experiments tab novelty KPI can populate. Backfilled `experiments.best_novelty_score` from `program_results` max novelty for existing rows.
 - **2026-02-28 (Codex):** Cleaned stale validation runs in `lab_notebook.db` that were stuck as `running` with no active progress; only one current `running` experiment remains (`synthesis`, started 2026-02-28 17:38:53 UTC).
-- **2026-02-28 (Codex):** Patched architecture drawer/designer bridge mismatch diagnostics: `ArchitectureDrawer.js` now requests graph snapshots with explicit reasons (`integrity`, `export`, `commit`) and only commits on explicit `commit`; `aria-designer/ui/src/App.jsx` now echoes `reason/requestId` in `graph-data` responses to prevent accidental commits during integrity checks.
-- **2026-02-28 (Codex):** Purged stale toxic-pattern data from `failure_signatures` across local notebook DBs (`research/lab_notebook.db`, mirrors, `aria-designer/lab_notebook.db`) after compile-fix trust reset; all `failure_signatures` row counts are now `0`.
+- **2026-02-28 (Codex):** Patched architecture drawer/designer bridge mismatch diagnostics: `ArchitectureDrawer.js` now requests graph snapshots with explicit reasons (`integrity`, `export`, `commit`) and only commits on explicit `commit`; `aria_designer/ui/src/App.jsx` now echoes `reason/requestId` in `graph-data` responses to prevent accidental commits during integrity checks.
+- **2026-02-28 (Codex):** Purged stale toxic-pattern data from `failure_signatures` across local notebook DBs (`research/lab_notebook.db`, mirrors, `aria_designer/lab_notebook.db`) after compile-fix trust reset; all `failure_signatures` row counts are now `0`.
+- **2026-03-01 (Codex):** Fixed Aria Designer preview/runtime failure mode for missing component kernels: added fallback kernel for `math_space/low_rank_proj` and added fail-fast compile validation in `aria_designer/runtime/compiler.py` to surface missing `kernel_fallback.py` components as explicit compile errors instead of downstream `Tensor * NoneType` runtime crashes.
+- **2026-03-01 (Codex):** Improved Aria Designer proposal UX and save lineage: proposal panel now scopes to current workflow, patch apply surfaces backend failure details, reject calls backend endpoint, and save responses now report fingerprint lineage (`fingerprint_changed`, `parent_fingerprint`) when edits create a new fingerprint.
+- **2026-03-01 (Codex):** Expanded Ask Aria intent presets and inference for split/routing/compression flows (`Split Pipeline`, `Add Routing`, `Add Compression`) across UI and backend prompt parser; compile failure messaging now includes missing-kernel guidance + semantic warning snippet; deep-run completion status now includes benchmark score and on/off-target metrics when available.
+- **2026-03-01 (Codex):** Aria Designer Ask-Aria proposals now prefilter stale entries before UI display (`/api/v1/aria/proposals` supports `workflow_id` + `fresh_only=1`; UI polls scoped+fresh only). Also fixed deep-run `No module named 'aria_core'` failures by bootstrapping `aria_core/` onto API `sys.path` and making `research.eval` package imports resilient when fingerprint native deps are unavailable.
+- **2026-03-01 (Codex):** Designer save UX hardened in `App.jsx`: non-network save failures now surface exact backend error (instead of generic "API offline"), network-only fallback still writes local browser backup. Added Results-panel `Original Baseline` section and deep-run status annotation (baseline loss ratio) from imported metadata, plus importer metadata enrichment (`validation_loss_ratio`, `discovery_loss_ratio`) in `runtime/importer.py`.
+- **2026-03-01 (Codex):** Fixed Ask-Aria split intent misgeneration in `api/app/main.py`: split/parallel intent now has explicit branch+merge patch recipe (`math/relu` + `math/add`) and heuristic priority moved so split/routing/compression overrides generic "output" keyword. Also reordered UI fallback intent matching in `ui/src/App.jsx` to avoid `io/output_head` false positives for split prompts.
+- **2026-03-01 (Codex):** Improved Designer save UX (`ui/src/App.jsx`, `ui/src/styles.css`): Save button now has explicit pressed/active/loading state, in-toolbar save result badge (`Saving…`, `Saved vX`, `Save failed`), and network-vs-backend error feedback remains explicit.
+- **2026-03-01 (Codex):** Implemented automatic save-time promotion of Designer workflows into research Discoveries (`aria_designer/api/app/main.py`). Save now attempts remote `/api/designer/commit`, then local notebook fallback if unavailable; promotion dedupes by fingerprint and upserts screening leaderboard entry. Save response includes `auto_promoted` + `promoted_result_id`. Verified for fingerprint `ac00c8baf77610af` -> result `6adf1e61-d9d` now appears in `/api/discoveries`.

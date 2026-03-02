@@ -48,24 +48,6 @@ def is_cuda_fatal(error: BaseException) -> bool:
     return any(m.lower() in msg for m in _CUDA_FATAL_MARKERS)
 
 
-def cuda_health_check(device: str = "cuda") -> bool:
-    """Probe whether CUDA is still functional.
-
-    Attempts a tiny tensor allocation + sync on the given device.
-    Returns True if healthy, False if the CUDA context is dead.
-    """
-    if not torch.cuda.is_available():
-        return False
-    try:
-        dev = torch.device(device)
-        t = torch.zeros(1, device=dev)
-        del t
-        torch.cuda.synchronize(dev)
-        return True
-    except Exception:
-        return False
-
-
 from research.synthesis.result_schemas import SandboxResult
 
 class TimeoutError(Exception):

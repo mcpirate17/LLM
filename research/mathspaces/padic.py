@@ -23,7 +23,7 @@ import torch.nn as nn
 
 try:
     import aria_core
-    _HAS_ARIA_CORE = True
+    _HAS_ARIA_CORE = hasattr(aria_core, 'ultrametric_attention_f32')
 except ImportError:
     _HAS_ARIA_CORE = False
 
@@ -138,7 +138,7 @@ def execute_ultrametric_attn(module: nn.Module, x: torch.Tensor) -> torch.Tensor
 
 def execute_padic_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Gate activations using smooth p-adic valuation signal."""
-    if _HAS_ARIA_CORE and x.is_contiguous():
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.device.type == "cpu":
         try:
             return aria_core.padic_gate_f32(x, float(DEFAULT_P))
         except TypeError:

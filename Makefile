@@ -3,32 +3,40 @@
 
 PYTHON ?= python
 
-.PHONY: all aria-core test clean help
+.PHONY: all aria_core test clean help
 
-all: aria-core  ## Build everything
+all: aria_core  ## Build everything
 
-# ── aria-core: Unified C++/CUDA kernel library ──────────────────────
-aria-core:  ## Build aria_core C++ extension
-	@echo "=== Building aria-core ==="
-	cd aria-core && $(PYTHON) setup.py build_ext --inplace
+# ── aria_core: Unified C++/CUDA kernel library ──────────────────────
+aria_core:  ## Build aria_core C++ extension
+	@echo "=== Building aria_core ==="
+	cd aria_core && $(PYTHON) setup.py build_ext --inplace
 
 # ── Tests ────────────────────────────────────────────────────────────
-test: aria-core  ## Run all tests
-	@echo "=== aria-core equivalence tests ==="
-	cd aria-core && $(PYTHON) -m pytest tests/ -x -q
-	@echo "=== aria-designer tests ==="
-	cd aria-designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
+test: aria_core  ## Run all tests
+	@echo "=== aria_core equivalence tests ==="
+	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
+	@echo "=== aria_designer tests ==="
+	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
 
-test-aria-core: aria-core  ## Run only aria-core tests
-	cd aria-core && $(PYTHON) -m pytest tests/ -x -q
+test-aria_core: aria_core  ## Run only aria_core tests
+	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
 
-test-designer:  ## Run only aria-designer tests
-	cd aria-designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
+test-designer:  ## Run only aria_designer tests
+	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
 
 # ── Clean ────────────────────────────────────────────────────────────
 clean:  ## Clean all build artifacts
-	cd aria-core && rm -rf build/ dist/ *.egg-info aria_core/_C* aria_core/*.so
+	cd aria_core && rm -rf build/ dist/ *.egg-info aria_core/_C* aria_core/*.so
 
+clean-junk:  ## Remove all cache files, orphaned DB records and temp logs
+	@echo "=== Removing __pycache__ and .pytest_cache ==="
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type d -name ".pytest_cache" -exec rm -rf {} +
+	@echo "=== Cleaning Database Orphans ==="
+	$(PYTHON) -m research.tools.db_integrity_cleanup
+	@echo "=== Cleaning Designer logs ==="
+	rm -f aria_designer/.run/*.log
 # ── Help ─────────────────────────────────────────────────────────────
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

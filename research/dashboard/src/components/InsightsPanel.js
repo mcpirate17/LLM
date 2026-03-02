@@ -69,8 +69,26 @@ function NegativeResultsSection() {
     setExpandedToxicCats(prev => ({ ...prev, [cat]: !prev[cat] }));
   };
 
-  if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading negative results...</p></div>;
-  if (error) return <div className="card"><p style={{ color: 'var(--accent-red)', fontSize: 12 }}>Error: {error}</p></div>;
+  if (loading) {
+    return (
+      <div className="card">
+        <div className="ux-state ux-state-loading">
+          <span className="ux-spinner" />
+          <div className="ux-stack">
+            <span className="ux-state-title">Loading negative results</span>
+            <span className="ux-state-subtle">Gathering toxic op patterns and failed families.</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="card">
+        <div className="ux-state ux-state-error">Error loading negative results: {error}</div>
+      </div>
+    );
+  }
   if (!data) return null;
 
   const hasContent = (data.failed_ops?.length > 0) || (data.dominant_errors?.length > 0) ||
@@ -353,34 +371,49 @@ function InsightsPanel({ insights, compact }) {
   }, [filtered, sortKey, sortDesc]);
 
   const columns = compact ? COLUMNS_COMPACT : COLUMNS_FULL;
+  const latestTimestamp = useMemo(() => {
+    const stamps = (insights || [])
+      .map((insight) => insight?.timestamp)
+      .filter((ts) => ts != null);
+    return stamps.length > 0 ? Math.max(...stamps) : null;
+  }, [insights]);
 
   return (
     <>
       <div className="card">
-        <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <span>Insights {compact ? `(${insights?.length || 0})` : `— ${insights?.length || 0} Active`}</span>
-          {insights?.length > 0 && (
-            <input
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
-              placeholder="Filter insights"
-              style={{
-                fontSize: 11,
-                padding: '4px 8px',
-                borderRadius: 4,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-primary)',
-                minWidth: 160,
-              }}
-            />
-          )}
+        <div className="table-toolbar">
+          <div className="card-title" style={{ marginBottom: 0 }}>
+            <span>Insights {compact ? `(${insights?.length || 0})` : `— ${insights?.length || 0} Active`}</span>
+          </div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {latestTimestamp && (
+              <span className="last-updated-chip" title="Most recent insight timestamp">
+                Updated {formatTime(latestTimestamp)}
+              </span>
+            )}
+            {insights?.length > 0 && (
+              <input
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+                placeholder="Filter insights"
+                style={{
+                  fontSize: 11,
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-tertiary)',
+                  color: 'var(--text-primary)',
+                  minWidth: 160,
+                }}
+              />
+            )}
+          </div>
         </div>
         
         {(!insights || insights.length === 0) ? (
-          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 8 }}>
+          <div className="ux-state ux-state-empty" style={{ marginTop: 8 }}>
             No insights recorded yet. Run experiments to generate insights.
-          </p>
+          </div>
         ) : (
           <>
             {!compact && (
@@ -536,6 +569,11 @@ function InsightsPanel({ insights, compact }) {
                 })}
               </tbody>
             </table>
+            {sorted.length === 0 && (
+              <div className="ux-state ux-state-empty" style={{ marginTop: 10 }}>
+                No insights match this filter.
+              </div>
+            )}
           </>
         )}
       </div>

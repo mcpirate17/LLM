@@ -207,4 +207,4 @@ npm run check:hook-order
 ## Troubleshooting
 
 - `No module named research`: you ran from inside `research/`; move to `/home/tim/Projects/LLM`.
-- Designer fails to embed: verify `aria-designer/tools/dev_up.sh` and `dev_down.sh` exist and are executable.
+- Designer fails to embed: verify `aria_designer/tools/dev_up.sh` and `dev_down.sh` exist and are executable.

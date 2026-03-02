@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useEventBus } from '../hooks/useEventBus';
 import apiService from '../services/apiService';
 
+const LIVE_LOSS_CURVE_MAX_POINTS = 20000;
+
 const RESULT_COLORS = {
   'S1 PASS': 'var(--accent-green)',
   'S0': 'var(--accent-blue)',
@@ -179,6 +181,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
   const [events, setEvents] = useState([]);
   const [lossCurve, setLossCurve] = useState([]);
   const lossCurveExpRef = useRef(null);
+  const activeExperimentRef = useRef(experimentId || null);
   const feedRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showControls, setShowControls] = useState(false);
@@ -187,6 +190,20 @@ function LiveFeed({ apiBase, experimentId = null }) {
 
   // Helper to add an event with a mapped type
   const addEvent = useCallback((type) => (data) => {
+    const eventExpId = data?.experiment_id || null;
+    const currentExpId = activeExperimentRef.current || null;
+
+    // If this is a new run starting, clear stale feed and switch context.
+    if ((type === 'start' || type === 'invest_start' || type === 'validate_start') && eventExpId && eventExpId !== currentExpId) {
+      activeExperimentRef.current = eventExpId;
+      lossCurveExpRef.current = eventExpId;
+      setEvents([]);
+      setLossCurve([]);
+    }
+
+    // When run context is known, ignore unrelated events from other runs.
+    if (currentExpId && eventExpId && eventExpId !== currentExpId) return;
+
     const normalized = normalizeLiveFeedEvent({ type, ...data, ts: Date.now() });
     if (!normalized) return;
     setEvents(prev => [...prev.slice(-99), normalized]);
@@ -195,6 +212,9 @@ function LiveFeed({ apiBase, experimentId = null }) {
   // Handle training_step events for the mini loss chart
   const handleTrainingStep = useCallback((data) => {
     const expId = data.experiment_id || '';
+    const currentExpId = activeExperimentRef.current || null;
+    if (currentExpId && expId && expId !== currentExpId) return;
+    if (!currentExpId && expId) activeExperimentRef.current = expId;
     setLossCurve(prev => {
       // Clear buffer when experiment changes
       if (lossCurveExpRef.current !== expId) {
@@ -202,7 +222,9 @@ function LiveFeed({ apiBase, experimentId = null }) {
         return [{ step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase }];
       }
       const next = [...prev, { step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase }];
-      return next.slice(-200);
+      return next.length > LIVE_LOSS_CURVE_MAX_POINTS
+        ? next.slice(-LIVE_LOSS_CURVE_MAX_POINTS)
+        : next;
     });
   }, []);
 
@@ -262,6 +284,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
 
   // Load history from REST when experimentId changes
   useEffect(() => {
+    activeExperimentRef.current = experimentId || null;
     setEvents([]);
     setLossCurve([]);
     lossCurveExpRef.current = null;
@@ -607,8 +630,8 @@ function LiveFeed({ apiBase, experimentId = null }) {
               )}
               {evt.type === 'invest_progress' && (
                 <span className="feed-event-msg">
-                  Investigating {evt.current_candidate}/{evt.total_candidates}:
-                  {evt.result_id?.slice(0, 8)} — program {evt.current_program}/{evt.total_programs}
+                  Investigating {evt.current_candidate ?? '?'} / {evt.total_candidates ?? '?'}:
+                  {' '}{evt.result_id?.slice(0, 8) || 'unknown'} — program {evt.current_program ?? '?'} / {evt.total_programs ?? '?'}
                   {evt.loss_ratio != null && (
                     <span style={{ marginLeft: 4 }}>L:{evt.loss_ratio}</span>
                   )}

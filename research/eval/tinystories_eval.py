@@ -66,7 +66,18 @@ def _download_tinystories(
     return train_path, val_path
 
 
-    train_path, val_path = _download_tinystories(max_chars_train, max_chars_val)
+def evaluate_tinystories(
+    model, vocab_size, device,
+    n_train_steps=200, seq_len=128,
+    n_train_batches=32, n_eval_batches=8,
+    batch_size=4, lr=3e-4,
+    max_chars_train=_DEFAULT_MAX_CHARS_TRAIN,
+    max_chars_val=_DEFAULT_MAX_CHARS_VAL,
+) -> Dict[str, Any]:
+    """Micro-train on TinyStories and evaluate perplexity."""
+    t0 = time.perf_counter()
+    try:
+        train_path, val_path = _download_tinystories(max_chars_train, max_chars_val)
     except Exception as e:
         logger.warning("TinyStories download failed: %s", e)
         return {"tinystories_perplexity": None, "error": f"download_failed: {e}"}

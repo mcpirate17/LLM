@@ -1,10 +1,9 @@
 """
 Component Registry: Single source of truth for component type mappings.
-Consolidates aliases and category mappings between aria-designer and research.
+Consolidates aliases and category mappings between aria_designer and research.
 """
 
 from __future__ import annotations
-import os
 import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -12,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 # Configuration file location
 _HERE = Path(__file__).resolve().parent
 _PROJECT_ROOT = _HERE.parent.parent
-_MAPPING_FILE = _PROJECT_ROOT / "aria-designer" / "runtime" / "component_mapping.yaml"
+_MAPPING_FILE = _PROJECT_ROOT / "aria_designer" / "runtime" / "component_mapping.yaml"
 
 class ComponentRegistry:
     """Registry for mapping frontend components to backend primitives."""

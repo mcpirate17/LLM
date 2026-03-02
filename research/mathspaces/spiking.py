@@ -22,7 +22,7 @@ import torch.nn.functional as F
 
 try:
     import aria_core
-    _HAS_ARIA_CORE = True
+    _HAS_ARIA_CORE = hasattr(aria_core, 'lif_neuron_f32')
 except ImportError:
     _HAS_ARIA_CORE = False
 
@@ -79,7 +79,7 @@ def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     decay = 0.9
     threshold = 1.0
 
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
         return aria_core.lif_neuron_f32(x, decay, threshold)
 
     B, S, D = x.shape
@@ -117,7 +117,7 @@ def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.T
         Spike-coded tensor of shape (B, S, D)
     """
     x = inputs[0]  # (B, S, D)
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3:
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
         return aria_core.spike_rate_code_f32(x)
     # Firing probability from continuous activation
     probs = torch.sigmoid(x)
@@ -153,7 +153,7 @@ def execute_stdp_attention(module: nn.Module, *inputs: torch.Tensor) -> torch.Te
     else:
         tau = max(S / 8.0, 1.0)
 
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and not x.requires_grad:
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu" and not x.requires_grad:
         return aria_core.stdp_attention_f32(x, tau, 0.0)
 
     # Build causal exponential decay kernel: weight[i,j] = exp(-(i-j)/tau) for j<=i

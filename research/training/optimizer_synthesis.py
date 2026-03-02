@@ -22,13 +22,6 @@ import torch.nn as nn
 
 
 @dataclass
-class OptimizerComponent:
-    """A component of the optimizer update rule."""
-    name: str
-    description: str = ""
-
-
-@dataclass
 class SynthesizedOptimizer:
     """A synthesized optimizer."""
     name: str

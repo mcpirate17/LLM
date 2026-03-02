@@ -32,11 +32,15 @@ class GrammarConfig:
     model_dim: int = 256
     min_depth: int = 3
     max_depth: int = 10
-    max_width: int = 4          # max parallel paths
+    max_width: int = 4          # max parallel paths (2 or 3 way splits)
     max_ops: int = 16           # max total operations
     max_params_ratio: float = 8.0  # max params relative to D^2
     residual_prob: float = 0.7  # probability of residual connection
     split_prob: float = 0.3     # probability of branching into parallel paths
+    min_splits: int = 0         # minimum number of split-merge blocks to force
+    three_way_split_prob: float = 0.0  # probability of 3-way split (vs 2-way)
+    branch_depth: int = 1       # depth of subgraph processing on each branch (1=shallow, 2+=deep)
+    max_recursion_depth: int = 4  # iteration cap for recursive ops (adaptive_recursion, fixed_point_iter, etc.)
     stability_check: bool = True  # validate architectures before compilation
     merge_prob: float = 0.4     # probability of merging paths
     risky_op_prob: float = 0.6  # probability of using numerically risky ops
@@ -56,7 +60,14 @@ class GrammarConfig:
         "functional": 1.5,
     })
     # Excluded op names (if any)
-    excluded_ops: Set[str] = field(default_factory=set)
+    # Non-causal ops are excluded by default — they break the strict causality
+    # gate in autoregressive evaluation (softmax_seq operates on full sequence,
+    # sort/argsort reorder sequence, rfft/irfft use global FFT).
+    excluded_ops: Set[str] = field(default_factory=lambda: {
+        "softmax_seq", "mean_seq", "sum_seq",
+        "sort_seq", "argsort_seq",
+        "rfft_seq", "irfft_seq",
+    })
     # Per-op weight multipliers (op_name -> weight, default 1.0 if absent).
     # Values < 1.0 soft-penalize weak ops; values > 1.0 boost strong ops.
     # Empty by default: the runtime learning system derives weights from actual data.
@@ -76,6 +87,62 @@ class GrammarConfig:
     def update_bias(self, delta: float):
         """Adjust structured sparsity bias."""
         self.structured_sparsity_bias = max(0.0, min(1.0, self.structured_sparsity_bias + delta))
+
+    @classmethod
+    def exotic(cls, model_dim: int = 256) -> "GrammarConfig":
+        """Return a config tuned for exotic architecture exploration.
+
+        Boosts branching, routing, MoE, and compression primitives to ensure
+        ~25% of search budget explores complex multi-lane architectures.
+        """
+        return cls(
+            model_dim=model_dim,
+            min_depth=3,
+            max_depth=10,
+            max_ops=16,
+            split_prob=0.6,
+            residual_prob=0.4,
+            merge_prob=0.5,
+            risky_op_prob=0.7,
+            category_weights={
+                "elementwise_unary": 1.5,
+                "elementwise_binary": 1.0,
+                "reduction": 0.8,
+                "linear_algebra": 1.0,
+                "structural": 1.0,
+                "parameterized": 3.0,
+                "mixing": 3.0,
+                "sequence": 1.2,
+                "frequency": 1.0,
+                "math_space": 1.5,
+                "functional": 3.5,
+            },
+            op_weights={
+                # Routing ops
+                "route_topk": 3.0,
+                "route_lanes": 3.0,
+                "route_recursion": 2.5,
+                "mod_topk": 3.0,
+                "early_exit": 2.0,
+                "adaptive_recursion": 3.0,
+                "token_merging": 2.0,
+                "cascade": 2.0,
+                "speculative": 2.0,
+                # MoE / gating
+                "moe_topk": 3.0,
+                "adaptive_lane_mixer": 3.0,
+                "mixed_recursion_gate": 2.5,
+                "relu_gate_routing": 2.5,
+                # Compression
+                "latent_attention_compressor": 3.0,
+                "routing_conditioned_compression": 2.5,
+                "progressive_compression_gate": 2.0,
+                "compression_mixture_experts": 2.5,
+                # Classification / routing support
+                "token_type_classifier": 2.5,
+                "entropy_router": 2.5,
+            },
+        )
 
 
 class EfficiencyPrior:
@@ -252,6 +319,7 @@ def generate_layer_graph(
     input_id = graph.add_input()
 
     # Build the computation
+    config._split_counter = [0]  # mutable counter for forced splits
     result_id = _build_subgraph(
         graph, config, rng,
         available_nodes=[input_id],
@@ -277,6 +345,11 @@ def generate_layer_graph(
 
     graph.set_output(result_id)
 
+    # Prune dead branches: the recursive builder keeps old nodes in
+    # available_nodes for skip connections, but some never connect to
+    # the output path. Strip them before validation.
+    graph.prune_unreachable_nodes()
+
     # Post-generation validation
     _validate_graph(graph, config)
 
@@ -289,8 +362,11 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     if n_ops > config.max_ops:
         raise ValueError(f"Too many ops: {n_ops} > {config.max_ops}")
     depth = graph.depth()
-    if depth > config.max_depth:
-        raise ValueError(f"Too deep: {depth} > {config.max_depth}")
+    # Forced splits add structural depth (split+merge+proj = ~3 per split).
+    # Allow extra depth headroom proportional to min_splits.
+    depth_limit = config.max_depth + config.min_splits * 3
+    if depth > depth_limit:
+        raise ValueError(f"Too deep: {depth} > {depth_limit}")
 
     D = config.model_dim
     max_params = int(config.max_params_ratio * D * D)
@@ -331,9 +407,22 @@ def _build_subgraph(
             or n_ops_so_far >= config.max_ops):
         return available_nodes[-1]  # return most recent node
 
+    # Force split_merge if we haven't met min_splits quota yet
+    # (only if we have enough budget and depth remaining)
+    sc = getattr(config, '_split_counter', [0])
+    force_split = (
+        config.min_splits > 0
+        and sc[0] < config.min_splits
+        and current_depth < config.max_depth - 3
+        and n_ops_so_far < config.max_ops - 4
+    )
+
     # Decide what to do
-    action = _choose_action(config, rng, current_depth, len(available_nodes),
-                            n_ops_so_far)
+    if force_split:
+        action = "split_merge"
+    else:
+        action = _choose_action(config, rng, current_depth, len(available_nodes),
+                                n_ops_so_far)
 
     if action == "unary_op":
         return _apply_unary(graph, config, rng, available_nodes,
@@ -355,7 +444,8 @@ def _build_subgraph(
         from .templates import apply_random_template
         node_id = available_nodes[-1]
         try:
-            result_id = apply_random_template(graph, node_id, rng)
+            result_id = apply_random_template(graph, node_id, rng,
+                                                     excluded_ops=config.excluded_ops)
             return _build_subgraph(
                 graph, config, rng,
                 available_nodes=available_nodes + [result_id],
@@ -399,8 +489,10 @@ def _choose_action(
         actions.append("split_merge")
         weights.append(config.split_prob * 3)
 
-    # Frequency domain detour
-    if depth < config.max_depth - 2 and n_ops < config.max_ops - 2:
+    # Frequency domain detour (disabled when rfft_seq/irfft_seq are excluded —
+    # they break causality in autoregressive models)
+    if (depth < config.max_depth - 2 and n_ops < config.max_ops - 2
+            and "rfft_seq" not in config.excluded_ops):
         actions.append("freq_detour")
         weights.append(config.freq_domain_prob * 3)
 
@@ -409,10 +501,11 @@ def _choose_action(
         actions.append("template")
         weights.append(0.8)
 
-    # Stop (more likely as we go deeper)
-    actions.append("stop")
-    stop_weight = (depth / config.max_depth) ** 2 * 5
-    weights.append(stop_weight)
+    # Stop (more likely as we go deeper, but never before min_depth)
+    if depth >= config.min_depth:
+        actions.append("stop")
+        stop_weight = ((depth - config.min_depth) / max(1, config.max_depth - config.min_depth)) ** 2 * 5
+        weights.append(stop_weight)
 
     return rng.choices(actions, weights=weights, k=1)[0]
 
@@ -542,6 +635,7 @@ def _apply_unary(graph, config, rng, available_nodes,
     categories = [
         OpCategory.ELEMENTWISE_UNARY,
         OpCategory.SEQUENCE,
+        OpCategory.MATH_SPACE,
     ]
 
     op_name = _pick_op(config, rng, categories, [shape], config.model_dim)
@@ -588,6 +682,7 @@ def _apply_binary(graph, config, rng, available_nodes,
                           OpCategory.FUNCTIONAL]
             if s_i.dim == s_j.dim:
                 categories.append(OpCategory.LINEAR_ALGEBRA)
+                categories.append(OpCategory.MATH_SPACE)
 
             op_name = _pick_op(config, rng, categories, [s_i, s_j], config.model_dim)
             if op_name is not None:
@@ -621,7 +716,9 @@ def _apply_parameterized(graph, config, rng, available_nodes,
 
     # Pick a parameterized op that doesn't exceed param budget
     candidates = []
+    cand_cat_weights = []
     for cat in (OpCategory.PARAMETERIZED, OpCategory.MATH_SPACE, OpCategory.FUNCTIONAL):
+        cat_w = config.category_weights.get(cat.value, 1.0)
         for op in list_primitives(cat):
             if op.name in config.excluded_ops:
                 continue
@@ -640,12 +737,13 @@ def _apply_parameterized(graph, config, rng, available_nodes,
                 op_params = D_actual * D_actual
             if params_so_far + op_params <= max_params:
                 candidates.append((op.name, op_params))
+                cand_cat_weights.append(cat_w)
 
     if not candidates:
         return node_id
 
-    # Weighted selection using per-op weights for soft penalties
-    cand_weights = [config.op_weights.get(name, 1.0) for name, _ in candidates]
+    # Weighted selection using per-op weights * category weights
+    cand_weights = [config.op_weights.get(name, 1.0) * cand_cat_weights[i] for i, (name, _) in enumerate(candidates)]
     op_name, op_params = rng.choices(candidates, weights=cand_weights, k=1)[0]
 
     try:
@@ -658,8 +756,10 @@ def _apply_parameterized(graph, config, rng, available_nodes,
             else:
                 op_config["out_dim"] = shape.dim
         elif op_name == "fixed_point_iter":
-            op_config["n_iters"] = rng.choice([2, 3, 4])
+            op_config["n_iters"] = min(rng.choice([2, 3, 4]), config.max_recursion_depth)
             op_config["damping"] = rng.choice([0.4, 0.5, 0.6])
+        elif op_name in ("adaptive_recursion", "route_recursion", "mixed_recursion_gate"):
+            op_config["max_depth"] = config.max_recursion_depth
         elif op_name == "integral_kernel":
             op_config["kernel_scale"] = rng.choice([0.15, 0.25, 0.35])
         elif op_name == "block_sparse_linear":
@@ -690,48 +790,89 @@ def _split_and_merge(graph, config, rng, available_nodes,
     node_id = available_nodes[-1]
     shape = graph.nodes[node_id].output_shape
 
-    # Need enough dim for split + useful ops on each half
+    # Increment split counter
+    sc = getattr(config, '_split_counter', [0])
+    sc[0] += 1
+
+    # Need enough dim for split + useful ops on each part
     if shape.dim < 16:
         return node_id
 
-    # Split into 2 paths
+    # Decide 2-way or 3-way split
+    use_three_way = (
+        rng.random() < config.three_way_split_prob
+        and shape.dim >= 48  # need enough dim for 3 parts
+        and n_ops < config.max_ops - 6
+        and "split3" in PRIMITIVE_REGISTRY
+        and "split3" not in config.excluded_ops
+    )
+
+    split_op = "split3" if use_three_way else "split2"
     try:
-        split_id = graph.add_op("split2", [node_id])
+        split_id = graph.add_op(split_op, [node_id])
     except ValueError:
         return node_id
 
-    half_dim = shape.dim // 2
+    n_paths = 3 if use_three_way else 2
+    branch_depth = max(1, config.branch_depth)
 
-    # Process each path independently (shallow subgraphs)
-    path_a = _build_subgraph(
-        graph, config, rng,
-        available_nodes=[split_id],
-        current_depth=depth + 2,
-        n_ops_so_far=n_ops + 1,
-        params_so_far=params_so_far,
-    )
+    # Budget management: reserve ops for merge infrastructure + continuation
+    # merge=1 (2-way) or 2 (3-way), linear_proj=1, continuation=2
+    merge_overhead = (2 if use_three_way else 1) + 1 + 2
+    remaining = config.max_ops - n_ops - 1  # subtract 1 for split op
+    # Cap branch budget: each branch gets at most half the remaining budget
+    # (after overhead), minimum 1
+    branch_budget = max(1, (remaining - merge_overhead) // (n_paths + 1))
 
-    # Second path: apply a different op to the same split
-    path_b_ops = [
-        "tanh", "sigmoid", "relu", "gelu", "silu", "sin", "square",
-        "learnable_scale", "learnable_bias",
-    ]
-    valid_ops = [op for op in path_b_ops
-                 if op not in config.excluded_ops and op in PRIMITIVE_REGISTRY]
-    if valid_ops:
-        b_op = rng.choice(valid_ops)
-        try:
-            path_b = graph.add_op(b_op, [split_id])
-        except ValueError:
-            path_b = split_id
-    else:
-        path_b = split_id
+    # Process each path with a subgraph of configurable depth
+    paths = []
+    ops_used = 1  # for the split op
+    for p in range(n_paths):
+        if branch_depth >= 2 or p == 0:
+            # Subgraph branch: use budget-capped _build_subgraph
+            # Inflate n_ops_so_far so the branch only has branch_budget room
+            capped_n_ops = max(n_ops + ops_used, config.max_ops - branch_budget)
+            # Push depth closer to limit — leave room for merge overhead (3 depth)
+            capped_depth = max(depth + 1, config.max_depth - 4)
+            path_out = _build_subgraph(
+                graph, config, rng,
+                available_nodes=[split_id],
+                current_depth=capped_depth,
+                n_ops_so_far=capped_n_ops,
+                params_so_far=params_so_far,
+            )
+        else:
+            # Shallow branch: single op from diverse set
+            branch_ops = [
+                "tanh", "sigmoid", "relu", "gelu", "silu", "sin", "square",
+                "learnable_scale", "learnable_bias",
+                "sparse_threshold", "spike_rate_code", "padic_gate",
+                "tropical_gate",
+            ]
+            valid_ops = [op for op in branch_ops
+                         if op not in config.excluded_ops and op in PRIMITIVE_REGISTRY]
+            if valid_ops:
+                b_op = rng.choice(valid_ops)
+                try:
+                    path_out = graph.add_op(b_op, [split_id])
+                except ValueError:
+                    path_out = split_id
+            else:
+                path_out = split_id
+        paths.append(path_out)
+        ops_used += 1
 
-    # Merge paths
+    # Merge all paths
     try:
-        merged = graph.add_op("concat", [path_a, path_b])
+        if len(paths) == 2:
+            merged = graph.add_op("concat", [paths[0], paths[1]])
+        else:
+            # 3-way: concat first two, then concat with third
+            merged_ab = graph.add_op("concat", [paths[0], paths[1]])
+            merged = graph.add_op("concat", [merged_ab, paths[2]])
+            ops_used += 1
     except ValueError:
-        return path_a
+        return paths[0]
 
     # Project back to original dim if needed
     merged_shape = graph.nodes[merged].output_shape
@@ -739,14 +880,15 @@ def _split_and_merge(graph, config, rng, available_nodes,
         try:
             merged = graph.add_op("linear_proj", [merged],
                                    config={"out_dim": config.model_dim})
+            ops_used += 1
         except ValueError:
-            return path_a
+            return paths[0]
 
     return _build_subgraph(
         graph, config, rng,
         available_nodes=[merged],
         current_depth=depth + 3,
-        n_ops_so_far=n_ops + 4,
+        n_ops_so_far=n_ops + ops_used + 2,
         params_so_far=params_so_far + config.model_dim * config.model_dim,
     )
 
