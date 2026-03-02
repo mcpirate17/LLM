@@ -44,7 +44,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   }, []);
 
   const requestGraph = useCallback((reason) => {
-    const requestId = `\${reason}-\${Date.now()}`;
+    const requestId = `${reason}-${Date.now()}`;
     pendingGraphRequestRef.current = { reason, requestId };
     sendToDesigner('get-graph', { reason, requestId });
   }, [sendToDesigner]);
@@ -64,7 +64,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
       if (onActionComplete) onActionComplete('commit', data);
       setTimeout(() => setNotice(null), 3000);
     } catch (err) {
-      setError(`Commit failed: \${err.message}`);
+      setError(`Commit failed: ${err.message}`);
     } finally {
       setCommitting(false);
     }
@@ -114,7 +114,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     if (!resultId) return;
     setLoading(true);
     setBridgeStep('fetching-source');
-    apiCall(`/api/programs/\${resultId}`)
+    apiCall(`/api/programs/${resultId}`)
       .then((r) => r.json())
       .then((data) => {
         setGraphInfo(data);
@@ -123,7 +123,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
         setBooting(false);
       })
       .catch((err) => {
-        setError(`Failed to fetch source graph: \${err.message}`);
+        setError(`Failed to fetch source graph: ${err.message}`);
         setLoading(false);
         setBooting(false);
       });
@@ -147,7 +147,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     const isDev = window.location.port === '3000' || window.location.hostname === 'localhost';
     const base = isDev ? 'http://localhost:5174' : DESIGNER_BASE;
     
-    return `\${base}/?\${params.toString()}`;
+    return `${base}/?${params.toString()}`;
   }, [resultId, readOnly]);
 
   return (
@@ -176,7 +176,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
             onClick={() => setShowMorph(!showMorph)}
             style={{
               background: showMorph ? 'var(--bg-tertiary)' : 'none',
-              border: `1px solid \${showMorph ? 'var(--accent-blue)' : 'var(--border)'}`,
+              border: `1px solid ${showMorph ? 'var(--accent-blue)' : 'var(--border)'}`,
               color: showMorph ? 'var(--accent-blue)' : 'var(--text-secondary)',
             }}
           >
@@ -187,7 +187,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
             onClick={() => setShowLineage(!showLineage)}
             style={{
               background: showLineage ? 'var(--bg-tertiary)' : 'none',
-              border: `1px solid \${showLineage ? 'var(--accent-blue)' : 'var(--border)'}`,
+              border: `1px solid ${showLineage ? 'var(--accent-blue)' : 'var(--border)'}`,
               color: showLineage ? 'var(--accent-blue)' : 'var(--text-secondary)',
             }}
           >
@@ -231,7 +231,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
                   resultId={resultId} 
                   onSelectCandidate={(c) => {
                     sendToDesigner('load-graph', { graphJson: c.workflow_json });
-                    setNotice(`Applied mutation #\${c.fingerprint?.slice(0, 6)} to canvas.`);
+                    setNotice(`Applied mutation #${c.fingerprint?.slice(0, 6)} to canvas.`);
                     setTimeout(() => setNotice(null), 3000);
                   }} 
                 />
