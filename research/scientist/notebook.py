@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import queue
+import re
 import sqlite3
 import subprocess
 import threading
@@ -21,7 +22,7 @@ import uuid
 import zlib
 from contextlib import contextmanager
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,6 +45,76 @@ except Exception:  # direct-module loading fallback for test harness
     validate_preregistration = _prereg_mod.validate_preregistration
 
 LOGGER = logging.getLogger(__name__)
+
+_INSIGHT_TOP_OPS_RE = re.compile(r"^Top-performing ops \(S1 rate\):\s*(.+?)\.\s")
+_INSIGHT_WINNING_COMBO_RE = re.compile(r"^Winning combination:\s*(.+?)\s+appears in\s+\d+\s+survivors")
+_INSIGHT_FAILING_OPS_RE = re.compile(r"^Consistently failing ops:\s*(.+?)\.\s")
+_INSIGHT_GRAPH_CORR_RE = re.compile(r"^Graph\s+(.+?)\s+is\s+(?:positively|negatively)\s+correlated")
+_INSIGHT_COMMON_FAILURE_RE = re.compile(r"^Most common failure:\s*(.+?)\s+\(")
+_INSIGHT_STANDALONE_NUM_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")
+
+
+def _insight_ops_key(text: str) -> str:
+    ops = []
+    for token in (text or "").split(","):
+        name = token.strip()
+        if not name:
+            continue
+        if "(" in name:
+            name = name.split("(", 1)[0].strip()
+        if name:
+            ops.append(name)
+    if not ops:
+        return ""
+    return "+".join(sorted(set(ops)))
+
+
+def infer_insight_identity(category: str, content: str) -> Tuple[str, str, str]:
+    """Infer ``(insight_type, subject_key, semantic_key)`` from insight text."""
+    text = str(content or "").strip()
+    cat = str(category or "pattern").strip() or "pattern"
+
+    m = _INSIGHT_TOP_OPS_RE.match(text)
+    if m:
+        subject_key = _insight_ops_key(m.group(1))
+        if subject_key:
+            return ("top_ops", subject_key, f"top_ops:{subject_key}")
+
+    m = _INSIGHT_WINNING_COMBO_RE.match(text)
+    if m:
+        raw_ops = [part.strip() for part in m.group(1).split("+")]
+        subject_key = "+".join(sorted({op for op in raw_ops if op}))
+        if subject_key:
+            return ("winning_combo", subject_key, f"winning_combo:{subject_key}")
+
+    m = _INSIGHT_FAILING_OPS_RE.match(text)
+    if m:
+        subject_key = _insight_ops_key(m.group(1))
+        if subject_key:
+            return ("failing_ops", subject_key, f"failing_ops:{subject_key}")
+
+    m = _INSIGHT_GRAPH_CORR_RE.match(text)
+    if m:
+        subject_key = re.sub(r"\s+", "_", m.group(1).strip().lower())
+        return ("graph_correlation", subject_key, f"graph_correlation:{subject_key}")
+
+    m = _INSIGHT_COMMON_FAILURE_RE.match(text)
+    if m:
+        subject_key = re.sub(r"\s+", "_", m.group(1).strip().lower())
+        return ("common_failure", subject_key, f"common_failure:{subject_key}")
+
+    if text.startswith("Overall survival rate:"):
+        return ("overall_survival_rate", "global", "overall_survival_rate:global")
+
+    if text.startswith("Found ") and "genuinely novel survivors" in text:
+        return ("novel_survivors", "global", "novel_survivors:global")
+
+    if text.startswith("Strong Stage 1 pass rate"):
+        return ("stage1_pass_rate", "global", "stage1_pass_rate:global")
+
+    normalized = _INSIGHT_STANDALONE_NUM_RE.sub("#", text)
+    semantic = f"text:{cat}:{normalized[:240]}"
+    return (f"text_{cat}", normalized[:120], semantic)
 
 
 NOTEBOOK_SCHEMA = """
@@ -315,6 +386,9 @@ CREATE TABLE IF NOT EXISTS insights (
     timestamp REAL NOT NULL,
     experiment_id TEXT,
     category TEXT NOT NULL,  -- 'pattern', 'failure_mode', 'success_factor', 'hypothesis'
+    insight_type TEXT,
+    subject_key TEXT,
+    semantic_key TEXT,
     content TEXT NOT NULL,
     confidence REAL DEFAULT 0.5,
     supporting_evidence TEXT,
@@ -630,7 +704,7 @@ CREATE TABLE IF NOT EXISTS designer_run_lineage (
     workflow_version INTEGER,
     graph_fingerprint TEXT,
     status TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'aria-designer',
+    source TEXT NOT NULL DEFAULT 'aria_designer',
     total_time_ms REAL,
     metrics_json TEXT,
     payload_json TEXT,
@@ -801,6 +875,13 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "ncd_score": "REAL",
     "ncd_description_length": "INTEGER",
     "ncd_description_length_per_param": "REAL",
+    # Long-context sub-scores (RULER-style)
+    "robustness_long_ctx_scaling_score": "REAL",
+    "robustness_long_ctx_assoc_score": "REAL",
+    "robustness_long_ctx_multi_hop_score": "REAL",
+    "robustness_long_ctx_passkey_score": "REAL",
+    "robustness_long_ctx_retrieval_aggregate": "REAL",
+    "robustness_long_ctx_combined_score": "REAL",
 }
 
 
@@ -821,8 +902,27 @@ class LabNotebook:
     _cached_code_version: Optional[str] = None
     _last_report_snapshot_cleanup_at: float = 0.0
 
+    @staticmethod
+    def resolve_db_path(db_path: str | Path) -> Path:
+        """Resolve a database path to its absolute path, handling nested research/ cases.
+
+        Ensures that if we are currently inside the research/ directory,
+        a path like 'research/lab_notebook.db' refers to the one in the parent.
+        """
+        path = Path(db_path)
+        if not path.is_absolute():
+            # If we are in /some/path/LLM/research and db_path is 'research/lab_notebook.db'
+            # then path.resolve() would be /some/path/LLM/research/research/lab_notebook.db.
+            # We want /some/path/LLM/research/lab_notebook.db.
+            cwd = Path.cwd()
+            if cwd.name == "research" and path.parts and path.parts[0] == "research":
+                # db_path starts with 'research/' and we are already in research/
+                # assume the user meant the parent's research/ directory
+                return (cwd.parent / db_path).absolute()
+        return path.resolve()
+
     def __init__(self, db_path: str | Path = "research/lab_notebook.db"):
-        self.db_path = Path(db_path)
+        self.db_path = self.resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path))
         # Enable WAL mode for high-concurrency performance
@@ -1031,6 +1131,83 @@ class LabNotebook:
                 "ALTER TABLE campaigns ADD COLUMN successor_campaign_id TEXT"
             )
 
+        # Migrate insights: add semantic identity columns and collapse duplicates.
+        insight_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(insights)").fetchall()
+        }
+        if "insight_type" not in insight_cols:
+            self.conn.execute("ALTER TABLE insights ADD COLUMN insight_type TEXT")
+        if "subject_key" not in insight_cols:
+            self.conn.execute("ALTER TABLE insights ADD COLUMN subject_key TEXT")
+        if "semantic_key" not in insight_cols:
+            self.conn.execute("ALTER TABLE insights ADD COLUMN semantic_key TEXT")
+
+        rows = self.conn.execute(
+            """SELECT insight_id, category, content, insight_type, subject_key, semantic_key
+               FROM insights"""
+        ).fetchall()
+        for row in rows:
+            existing_type = str(row["insight_type"] or "").strip() if isinstance(row, sqlite3.Row) else str(row[3] or "").strip()
+            existing_subject = str(row["subject_key"] or "").strip() if isinstance(row, sqlite3.Row) else str(row[4] or "").strip()
+            existing_semantic = str(row["semantic_key"] or "").strip() if isinstance(row, sqlite3.Row) else str(row[5] or "").strip()
+            if existing_type and existing_subject and existing_semantic:
+                continue
+            category = row["category"] if isinstance(row, sqlite3.Row) else row[1]
+            content = row["content"] if isinstance(row, sqlite3.Row) else row[2]
+            inferred_type, inferred_subject, inferred_semantic = infer_insight_identity(
+                str(category or ""),
+                str(content or ""),
+            )
+            self.conn.execute(
+                """UPDATE insights
+                   SET insight_type = COALESCE(NULLIF(insight_type, ''), ?),
+                       subject_key = COALESCE(NULLIF(subject_key, ''), ?),
+                       semantic_key = COALESCE(NULLIF(semantic_key, ''), ?)
+                   WHERE insight_id = ?""",
+                (inferred_type, inferred_subject, inferred_semantic, row["insight_id"] if isinstance(row, sqlite3.Row) else row[0]),
+            )
+
+        def _supersede_active_semantic_duplicates() -> None:
+            active_rows = self.conn.execute(
+                """SELECT insight_id, semantic_key
+                   FROM insights
+                   WHERE status = 'active'
+                     AND semantic_key IS NOT NULL
+                     AND semantic_key != ''
+                   ORDER BY confidence DESC, timestamp DESC"""
+            ).fetchall()
+            seen_semantic: set[str] = set()
+            for row in active_rows:
+                sem = str(row["semantic_key"] if isinstance(row, sqlite3.Row) else row[1])
+                insight_id = row["insight_id"] if isinstance(row, sqlite3.Row) else row[0]
+                if sem in seen_semantic:
+                    self.conn.execute(
+                        "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
+                        (insight_id,),
+                    )
+                    continue
+                seen_semantic.add(sem)
+
+        _supersede_active_semantic_duplicates()
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_insights_semantic_key ON insights(semantic_key)"
+        )
+        try:
+            self.conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_active_semantic_unique
+                   ON insights(semantic_key)
+                   WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''"""
+            )
+        except sqlite3.IntegrityError:
+            _supersede_active_semantic_duplicates()
+            self.conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_active_semantic_unique
+                   ON insights(semantic_key)
+                   WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''"""
+            )
+
         # Migrate leaderboard: add efficiency and robustness columns
         lb_cols = {
             row[1] for row in
@@ -1069,6 +1246,18 @@ class LabNotebook:
             "discovery_loss_ratio REAL",
             "pre_inv_score REAL",
             "ncd_score REAL",
+            "robustness_long_ctx_scaling_score REAL",
+            "robustness_long_ctx_assoc_score REAL",
+            "robustness_long_ctx_multi_hop_score REAL",
+            "robustness_long_ctx_passkey_score REAL",
+            "robustness_long_ctx_retrieval_aggregate REAL",
+            "robustness_long_ctx_combined_score REAL",
+            "depth_savings_ratio REAL",
+            "recursion_savings_ratio REAL",
+            "activation_sparsity_score REAL",
+            "routing_expert_count INTEGER",
+            "routing_confidence_mean REAL",
+            "routing_drop_rate REAL",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:
@@ -2547,17 +2736,60 @@ class LabNotebook:
         experiment_id: Optional[str] = None,
         confidence: float = 0.5,
         evidence: Optional[str] = None,
+        insight_type: Optional[str] = None,
+        subject_key: Optional[str] = None,
+        semantic_key: Optional[str] = None,
     ) -> str:
-        """Record an insight/learning."""
-        insight_id = str(uuid.uuid4())[:12]
-        self.conn.execute(
-            """INSERT INTO insights
-            (insight_id, timestamp, experiment_id, category, content,
-             confidence, supporting_evidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (insight_id, time.time(), experiment_id, category,
-             content, confidence, evidence),
+        """Record an insight/learning, superseding active semantic duplicates."""
+        inferred_type, inferred_subject, inferred_semantic = infer_insight_identity(
+            category,
+            content,
         )
+        insight_type = str(insight_type or inferred_type).strip() or inferred_type
+        subject_key = str(subject_key or inferred_subject).strip() or inferred_subject
+        semantic_key = str(semantic_key or inferred_semantic).strip() or inferred_semantic
+
+        if semantic_key:
+            existing = self.conn.execute(
+                """SELECT insight_id FROM insights
+                   WHERE status = 'active' AND semantic_key = ?
+                   ORDER BY confidence DESC, timestamp DESC""",
+                (semantic_key,),
+            ).fetchall()
+            for row in existing:
+                self.conn.execute(
+                    "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
+                    (row["insight_id"],),
+                )
+
+        insight_id = str(uuid.uuid4())[:12]
+        insert_sql = """INSERT INTO insights
+            (insight_id, timestamp, experiment_id, category, insight_type,
+             subject_key, semantic_key, content, confidence, supporting_evidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        insert_params = (
+            insight_id,
+            time.time(),
+            experiment_id,
+            category,
+            insight_type,
+            subject_key,
+            semantic_key,
+            content,
+            confidence,
+            evidence,
+        )
+        try:
+            self.conn.execute(insert_sql, insert_params)
+        except sqlite3.IntegrityError:
+            if semantic_key:
+                self.conn.execute(
+                    "UPDATE insights SET status = 'superseded' WHERE status = 'active' AND semantic_key = ?",
+                    (semantic_key,),
+                )
+                self.conn.execute(insert_sql, insert_params)
+            else:
+                raise
         self._maybe_commit()
         return insight_id
 
@@ -2870,7 +3102,7 @@ class LabNotebook:
         workflow_version: Optional[int] = None,
         graph_fingerprint: Optional[str] = None,
         status: str = "unknown",
-        source: str = "aria-designer",
+        source: str = "aria_designer",
         total_time_ms: Optional[float] = None,
         metrics: Optional[Dict[str, Any]] = None,
         payload: Optional[Dict[str, Any]] = None,
@@ -3556,6 +3788,77 @@ class LabNotebook:
 
     # ── Leaderboard ──
 
+    # Ops considered "routing" for the structural complexity bonus
+    _ROUTING_OPS = frozenset({
+        "route_topk", "route_lanes", "route_recursion", "token_merge",
+        "mod_topk", "early_exit", "adaptive_recursion", "token_merging",
+        "cascade", "speculative", "moe_topk", "adaptive_lane_mixer",
+        "mixed_recursion_gate", "relu_gate_routing", "routing_conditioned_compression",
+        "token_type_classifier", "entropy_router", "progressive_compression_gate",
+        "compression_mixture_experts", "latent_attention_compressor",
+    })
+
+    _SPARSE_OPS = frozenset({
+        "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
+        "structured_sparse", "block_sparse", "semi_structured_2_4",
+        "hash_trick", "sparse_topk", "latent_attention_compressor",
+        "routing_conditioned_compression", "compression_mixture_experts",
+        "progressive_compression_gate",
+    })
+
+    _MOE_OPS = frozenset({
+        "moe_topk", "route_topk", "route_lanes", "adaptive_lane_mixer",
+        "compression_mixture_experts", "entropy_router",
+    })
+
+    def _count_routing_ops(self, result_id: str) -> Optional[int]:
+        """Count routing/branching ops in the graph for a program result."""
+        try:
+            row = self.conn.execute(
+                "SELECT graph_json FROM program_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            graph_data = json.loads(row[0])
+            nodes = graph_data.get("nodes", [])
+            count = sum(1 for n in nodes if n.get("op") in self._ROUTING_OPS)
+            return count if count > 0 else None
+        except Exception:
+            return None
+
+    def _count_sparse_ops(self, result_id: str) -> Optional[int]:
+        """Count sparsity/compression ops in the graph for a program result."""
+        try:
+            row = self.conn.execute(
+                "SELECT graph_json FROM program_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            graph_data = json.loads(row[0])
+            nodes = graph_data.get("nodes", [])
+            count = sum(1 for n in nodes if n.get("op") in self._SPARSE_OPS)
+            return count if count > 0 else None
+        except Exception:
+            return None
+
+    def _count_moe_ops(self, result_id: str) -> Optional[int]:
+        """Count MoE-specific ops in the graph for a program result."""
+        try:
+            row = self.conn.execute(
+                "SELECT graph_json FROM program_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            graph_data = json.loads(row[0])
+            nodes = graph_data.get("nodes", [])
+            count = sum(1 for n in nodes if n.get("op") in self._MOE_OPS)
+            return count if count > 0 else None
+        except Exception:
+            return None
+
     @staticmethod
     def compute_composite_score(
         screening_lr: Optional[float] = None,
@@ -3580,6 +3883,20 @@ class LabNotebook:
         loss_improvement_rate: Optional[float] = None,
         quant_quality_per_byte: Optional[float] = None,
         ncd_score: Optional[float] = None,
+        n_routing_ops: Optional[int] = None,
+        n_sparse_ops: Optional[int] = None,
+        n_moe_ops: Optional[int] = None,
+        recursion_savings: Optional[float] = None,
+        depth_savings: Optional[float] = None,
+        activation_sparsity: Optional[float] = None,
+        max_viable_seq_len: Optional[int] = None,
+        long_ctx_scaling: Optional[float] = None,
+        long_ctx_passkey: Optional[float] = None,
+        long_ctx_multi_hop: Optional[float] = None,
+        long_ctx_assoc: Optional[float] = None,
+        routing_expert_count: Optional[int] = None,
+        routing_confidence_mean: Optional[float] = None,
+        routing_drop_rate: Optional[float] = None,
         **kwargs
     ) -> float:
         """
@@ -3635,18 +3952,67 @@ class LabNotebook:
             # Max 15 points when NCD = 0
             score += 15.0 * max(0, 1.0 - ncd_score)
 
+        # 3b. Structural complexity bonus: reward routing/branching architectures
+        # Counterbalances MDL and NCD penalties for exotic architectures
+        if n_routing_ops is not None and n_routing_ops > 0:
+            # Up to 15 points (reduced from 25, replaced by MoE quality)
+            score += min(15.0, n_routing_ops * 5.0)
+
+        # 3c. Sparsity bonus (max 30pts: 20 structural + 10 activation)
+        if n_sparse_ops is not None and n_sparse_ops > 0:
+            score += min(20.0, n_sparse_ops * 6.0)
+        if activation_sparsity is not None and activation_sparsity > 0.3:
+            score += 10.0 * min(1.0, (activation_sparsity - 0.3) / 0.5)
+
+        # 3d. MoE quality bonus (max ~25pts)
+        if n_moe_ops is not None and n_moe_ops > 0:
+            moe_base = min(10.0, n_moe_ops * 5.0)
+            # Expert diversity multiplier: more experts = higher potential
+            if routing_expert_count is not None and routing_expert_count > 1:
+                expert_mult = min(1.5, 1.0 + math.log2(routing_expert_count) / 6.0)
+                moe_base *= expert_mult
+            # Confidence bonus: high confidence = routing is working
+            if routing_confidence_mean is not None and routing_confidence_mean > 0.5:
+                moe_base *= 1.0 + 0.3 * (routing_confidence_mean - 0.5)
+            # Drop rate penalty: high drop = wasted compute
+            if routing_drop_rate is not None and routing_drop_rate > 0.3:
+                moe_base *= max(0.5, 1.0 - (routing_drop_rate - 0.3))
+            score += moe_base
+
+        # 3e. Adaptive computation bonus (max 25pts)
+        if recursion_savings is not None and recursion_savings > 0:
+            score += 15.0 * min(1.0, recursion_savings / 0.5)
+        if depth_savings is not None and depth_savings > 0:
+            score += 10.0 * min(1.0, depth_savings / 0.5)
+
         # 4. Robustness & Stability Utility
         if spectral_norm is not None:
             score += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
-            
+
         if robustness_noise is not None:
             score += 15.0 * max(0, 1.0 - robustness_noise)
-            
+
         if quant_retention is not None:
             score += 15.0 * max(0, quant_retention - 0.5) / 0.5
-            
+
+        # 4b. Expanded long-context scoring (total budget 50pts, up from 20)
         if long_ctx_score is not None:
+            # Base combined score: 20pts (unchanged)
             score += 20.0 * long_ctx_score
+            # Sub-score bonuses: reward specific long-context capabilities
+            if long_ctx_passkey is not None:
+                score += 10.0 * long_ctx_passkey
+            if long_ctx_multi_hop is not None:
+                score += 10.0 * long_ctx_multi_hop
+            if long_ctx_scaling is not None:
+                score += 5.0 * long_ctx_scaling
+            if long_ctx_assoc is not None:
+                score += 5.0 * long_ctx_assoc
+
+        # Bonus for viable long sequences (log-scale, max 20pts)
+        if max_viable_seq_len is not None and max_viable_seq_len > 512:
+            seq_bonus = 5.0 * min(4.0, math.log2(max_viable_seq_len / 512))
+            score += seq_bonus
 
         # 5. Generalization Utility (The "Anti-Cheat")
         # Wikitext/TinyStories scores are normalized 0-1, where 1 is good (low perplexity)
@@ -3675,9 +4041,9 @@ class LabNotebook:
             # High variance across seeds is a major red flag
             score -= 50.0 * min(2.0, val_std / 0.5)
             
-        if entropy is not None and entropy > 0.8:
-            # Overly complex routing without focus
-            score -= 10.0 * (entropy - 0.8)
+        if entropy is not None and entropy > 0.95:
+            # Only penalize truly unfocused routing, not healthy multi-lane distribution
+            score -= 5.0 * (entropy - 0.95)
 
         # Sanity floor
         return max(0.0, score)
@@ -3768,6 +4134,20 @@ class LabNotebook:
             loss_improvement_rate=d.get("loss_improvement_rate"),
             quant_quality_per_byte=d.get("quant_quality_per_byte"),
             ncd_score=d.get("ncd_score"),
+            n_routing_ops=self._count_routing_ops(result_id),
+            n_sparse_ops=self._count_sparse_ops(result_id),
+            n_moe_ops=self._count_moe_ops(result_id),
+            recursion_savings=d.get("recursion_savings_ratio"),
+            depth_savings=d.get("depth_savings_ratio"),
+            activation_sparsity=d.get("activation_sparsity_score"),
+            max_viable_seq_len=d.get("max_viable_seq_len"),
+            long_ctx_scaling=d.get("robustness_long_ctx_scaling_score"),
+            long_ctx_passkey=d.get("robustness_long_ctx_passkey_score"),
+            long_ctx_multi_hop=d.get("robustness_long_ctx_multi_hop_score"),
+            long_ctx_assoc=d.get("robustness_long_ctx_assoc_score"),
+            routing_expert_count=d.get("routing_expert_count"),
+            routing_confidence_mean=d.get("routing_confidence_mean"),
+            routing_drop_rate=d.get("routing_drop_rate"),
         )
 
         if existing:
@@ -3802,7 +4182,16 @@ class LabNotebook:
                          "scaling_gate_passed", "scaling_best_family",
                          "scaling_d512_param_efficiency", "scaling_confidence",
                          "routing_savings_ratio", "compression_ratio",
-                         "discovery_loss_ratio", "ncd_score"):
+                         "discovery_loss_ratio", "ncd_score",
+                         "robustness_long_ctx_scaling_score",
+                         "robustness_long_ctx_assoc_score",
+                         "robustness_long_ctx_multi_hop_score",
+                         "robustness_long_ctx_passkey_score",
+                         "robustness_long_ctx_retrieval_aggregate",
+                         "robustness_long_ctx_combined_score",
+                         "depth_savings_ratio", "recursion_savings_ratio",
+                         "activation_sparsity_score", "routing_expert_count",
+                         "routing_confidence_mean", "routing_drop_rate"):
                 if col in kwargs and kwargs[col] is not None:
                     sets.append(f"{col} = ?")
                     val = kwargs[col]
@@ -3816,11 +4205,11 @@ class LabNotebook:
             )
         else:
             entry_id = str(uuid.uuid4())[:12]
-            cols = ["entry_id", "result_id", "timestamp", "model_source", "architecture_desc", 
+            cols = ["entry_id", "result_id", "timestamp", "model_source", "architecture_desc",
                     "tier", "composite_score", "is_reference", "reference_name", "tags", "notes"]
-            vals = [entry_id, result_id, time.time(), model_source, architecture_desc, 
+            vals = [entry_id, result_id, time.time(), model_source, architecture_desc,
                     tier, composite, int(is_reference), reference_name, tags, notes]
-            
+
             for col in ("screening_loss_ratio", "screening_novelty", "screening_passed",
                          "investigation_loss_ratio", "investigation_robustness",
                          "investigation_best_training", "investigation_passed",
@@ -3834,7 +4223,16 @@ class LabNotebook:
                          "scaling_gate_passed", "scaling_best_family",
                          "scaling_d512_param_efficiency", "scaling_confidence",
                          "routing_savings_ratio", "compression_ratio",
-                         "discovery_loss_ratio", "ncd_score"):
+                         "discovery_loss_ratio", "ncd_score",
+                         "robustness_long_ctx_scaling_score",
+                         "robustness_long_ctx_assoc_score",
+                         "robustness_long_ctx_multi_hop_score",
+                         "robustness_long_ctx_passkey_score",
+                         "robustness_long_ctx_retrieval_aggregate",
+                         "robustness_long_ctx_combined_score",
+                         "depth_savings_ratio", "recursion_savings_ratio",
+                         "activation_sparsity_score", "routing_expert_count",
+                         "routing_confidence_mean", "routing_drop_rate"):
                 if col in kwargs and kwargs[col] is not None:
                     cols.append(col)
                     val = kwargs[col]
@@ -3902,7 +4300,15 @@ class LabNotebook:
             "pr.depth_savings_ratio AS depth_savings_ratio, "
             "pr.effective_depth_ratio AS effective_depth_ratio, "
             "pr.recursion_savings_ratio AS recursion_savings_ratio, "
-            "pr.recursion_depth_ratio AS recursion_depth_ratio "
+            "pr.recursion_depth_ratio AS recursion_depth_ratio, "
+            "pr.activation_sparsity_score AS activation_sparsity_score, "
+            "pr.routing_expert_count AS routing_expert_count, "
+            "pr.routing_confidence_mean AS routing_confidence_mean, "
+            "pr.max_viable_seq_len AS max_viable_seq_len, "
+            "pr.robustness_long_ctx_scaling_score AS robustness_long_ctx_scaling_score, "
+            "pr.robustness_long_ctx_assoc_score AS robustness_long_ctx_assoc_score, "
+            "pr.robustness_long_ctx_multi_hop_score AS robustness_long_ctx_multi_hop_score, "
+            "pr.robustness_long_ctx_passkey_score AS robustness_long_ctx_passkey_score "
             "FROM leaderboard l "
             "LEFT JOIN program_results pr ON pr.result_id = l.result_id "
             "WHERE 1=1"
@@ -4388,6 +4794,7 @@ class LabNotebook:
                 ).fetchone()
                 if pr:
                     nov_conf = pr["novelty_confidence"]
+            n_routing = self._count_routing_ops(d["result_id"]) if d.get("result_id") else None
             composite = self.compute_composite_score(
                 screening_lr=d.get("screening_loss_ratio"),
                 screening_nov=d.get("screening_novelty"),
@@ -4401,6 +4808,7 @@ class LabNotebook:
                 is_reference=bool(d.get("is_reference")),
                 routing_savings=d.get("routing_savings_ratio"),
                 compression_ratio=d.get("compression_ratio"),
+                n_routing_ops=n_routing,
             )
             sets.append("composite_score = ?")
             params.append(composite)

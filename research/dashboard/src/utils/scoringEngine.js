@@ -15,6 +15,37 @@ export const TIER_ORDER = {
   screening: 1,
 };
 
+export const TIER_COLORS = {
+  screening: 'var(--accent-blue)',
+  investigation: 'var(--accent-yellow)',
+  validation: 'var(--accent-purple)',
+  breakthrough: 'var(--accent-green)',
+};
+
+export const TIER_LABELS = {
+  screening: 'Screening',
+  investigation: 'Investigation',
+  validation: 'Validation',
+  breakthrough: 'Breakthrough',
+};
+
+// ── Shared leaderboard helpers ──────────────────────────────────────
+
+export function bestLoss(entry) {
+  if (entry?.validation_loss_ratio != null) return Number(entry.validation_loss_ratio);
+  if (entry?.investigation_loss_ratio != null) return Number(entry.investigation_loss_ratio);
+  if (entry?.screening_loss_ratio != null) return Number(entry.screening_loss_ratio);
+  if (entry?.loss_ratio != null) return Number(entry.loss_ratio);
+  return null;
+}
+
+export function percentOfReference(entryLoss, refLoss) {
+  const e = Number(entryLoss);
+  const r = Number(refLoss);
+  if (!Number.isFinite(e) || !Number.isFinite(r) || r <= 0) return null;
+  return (e / r) * 100;
+}
+
 // ── Shared normalizers ──────────────────────────────────────────────
 
 export function clamp01(value) {
@@ -39,17 +70,17 @@ export function normalizeLossRatio(lossRatio) {
 
 const BONUS_WEIGHTS = {
   efficiency: 6,
-  routing: 5,
-  adaptive: 4,
+  routing: 7,
+  adaptive: 6,
   sparsity: 5,
   learningSpeed: 4,
   externalComparison: 6,
-  robustness: 5,
+  robustness: 7,
   referenceDelta: 8,
 };
 
 // Maximum total bonus contribution (prevents bonus stacking from inflating scores)
-const MAX_TOTAL_BONUS = 25;
+const MAX_TOTAL_BONUS = 40;
 
 const ARCHITECTURE_TARGETS = {
   moe: { capacity_multiplier: 4.0, flops_iso: true },
@@ -199,13 +230,27 @@ function computeRoutingBonus(entry) {
   if (confStd != null) scores.push(clamp01(1 - Number(confStd) / 0.3));
   if (tokensTotal && tokensProcessed) {
     const procRate = Number(tokensProcessed) / Number(tokensTotal);
-    // Reward processed rate, especially if it meets high utilization targets
     scores.push(clamp01(procRate / 0.95));
   }
 
   const avg = averageScores(scores);
-  // Apply MoE multiplier if expert utilization is balanced (high entropy)
-  const moeFactor = (entropyScore && entropyScore > 0.8) ? 1.2 : 1.0;
+  // MoE quality multiplier: reward expert diversity and balanced utilization
+  let moeFactor = 1.0;
+  if (nExperts != null && nExperts > 1) {
+    // Expert diversity: more experts = higher potential (log-scale)
+    const expertMult = Math.min(1.5, 1.0 + Math.log2(nExperts) / 6.0);
+    moeFactor *= expertMult;
+    // Balanced utilization bonus
+    if (entropyScore != null && entropyScore > 0.8) moeFactor *= 1.2;
+  }
+  // Confidence bonus: high confidence = routing is working
+  if (confMean != null && Number(confMean) > 0.5) {
+    moeFactor *= 1.0 + 0.3 * (Number(confMean) - 0.5);
+  }
+  // Drop rate penalty: high drop = wasted compute
+  if (dropRate != null && Number(dropRate) > 0.3) {
+    moeFactor *= Math.max(0.5, 1.0 - (Number(dropRate) - 0.3));
+  }
   return avg == null ? null : avg * BONUS_WEIGHTS.routing * moeFactor;
 }
 
@@ -238,8 +283,8 @@ function computeAdaptiveBonus(entry) {
     'depth_compute_savings',
     'depth_efficiency_gain',
   ]);
-  // Target for MoD is 50% savings
-  if (depthSavings != null) scores.push(clamp01(depthSavings / ARCHITECTURE_TARGETS.mod.throughput_multiplier * 2));
+  // Target for MoD is 50% savings — stronger reward curve
+  if (depthSavings != null) scores.push(clamp01(depthSavings / 0.5));
 
   const depthUtil = pickFirstNumber(entry, [
     'effective_depth_ratio',
@@ -254,7 +299,8 @@ function computeAdaptiveBonus(entry) {
     'adaptive_recursion_savings',
     'recursion_efficiency_gain',
   ]);
-  if (recursionSavings != null) scores.push(clamp01(recursionSavings));
+  // Recursion savings: 50% savings = full score
+  if (recursionSavings != null) scores.push(clamp01(recursionSavings / 0.5));
 
   const avg = averageScores(scores);
   return avg == null ? null : avg * BONUS_WEIGHTS.adaptive;
@@ -271,6 +317,12 @@ function computeSparsityBonus(entry) {
 
   const memory = entry?.peak_memory_mb;
   if (memory != null) scores.push(clamp01(1 - Number(memory) / 500));
+
+  // Activation sparsity bonus (mirrors Python 3c)
+  const activationSparsity = entry?.activation_sparsity_score;
+  if (activationSparsity != null && Number(activationSparsity) > 0.3) {
+    scores.push(clamp01((Number(activationSparsity) - 0.3) / 0.5));
+  }
 
   const avg = averageScores(scores);
   if (avg == null) return null;
@@ -373,6 +425,16 @@ function computeRobustnessBonus(entry) {
   }
   if (initStd != null) scores.push(clamp01(1 - Number(initStd) / 0.2));
   if (spectralNorm != null) scores.push(clamp01(1 - Number(spectralNorm) / 20));
+
+  // Long-context sub-scores (RULER-style) — boost robustness when detailed data available
+  const passkey = entry?.robustness_long_ctx_passkey_score;
+  const multiHop = entry?.robustness_long_ctx_multi_hop_score;
+  const scaling = entry?.robustness_long_ctx_scaling_score;
+  const assoc = entry?.robustness_long_ctx_assoc_score;
+  if (passkey != null) scores.push(clamp01(Number(passkey)));
+  if (multiHop != null) scores.push(clamp01(Number(multiHop)));
+  if (scaling != null) scores.push(clamp01(Number(scaling)));
+  if (assoc != null) scores.push(clamp01(Number(assoc)));
 
   const avg = averageScores(scores);
   return avg == null ? null : avg * BONUS_WEIGHTS.robustness;
@@ -626,9 +688,41 @@ export function candidateScore(entry) {
     utility += 15.0 * Math.max(0, quant - 0.5) / 0.5;
   }
   
+  // 4b. Expanded long-context scoring (total budget 50pts, up from 20)
   const longCtx = entry.robustness_long_ctx_score;
   if (longCtx != null) {
     utility += 20.0 * longCtx;
+    // Sub-score bonuses: reward specific long-context capabilities
+    const passkey = entry.robustness_long_ctx_passkey_score;
+    if (passkey != null) utility += 10.0 * passkey;
+    const multiHop = entry.robustness_long_ctx_multi_hop_score;
+    if (multiHop != null) utility += 10.0 * multiHop;
+    const lcScaling = entry.robustness_long_ctx_scaling_score;
+    if (lcScaling != null) utility += 5.0 * lcScaling;
+    const lcAssoc = entry.robustness_long_ctx_assoc_score;
+    if (lcAssoc != null) utility += 5.0 * lcAssoc;
+  }
+
+  // Bonus for viable long sequences (log-scale, max 20pts)
+  const maxSeqLen = entry.max_viable_seq_len;
+  if (maxSeqLen != null && maxSeqLen > 512) {
+    utility += 5.0 * Math.min(4.0, Math.log2(maxSeqLen / 512));
+  }
+
+  // 4c. Adaptive computation bonus (recursion + depth savings)
+  const recursionSavings = entry.recursion_savings_ratio;
+  if (recursionSavings != null && recursionSavings > 0) {
+    utility += 15.0 * Math.min(1.0, recursionSavings / 0.5);
+  }
+  const depthSavings = entry.depth_savings_ratio;
+  if (depthSavings != null && depthSavings > 0) {
+    utility += 10.0 * Math.min(1.0, depthSavings / 0.5);
+  }
+
+  // 4d. Activation sparsity bonus
+  const activationSparsity = entry.activation_sparsity_score;
+  if (activationSparsity != null && activationSparsity > 0.3) {
+    utility += 10.0 * Math.min(1.0, (activationSparsity - 0.3) / 0.5);
   }
 
   // 5. Penalties
