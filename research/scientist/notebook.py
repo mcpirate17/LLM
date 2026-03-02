@@ -882,6 +882,8 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "robustness_long_ctx_passkey_score": "REAL",
     "robustness_long_ctx_retrieval_aggregate": "REAL",
     "robustness_long_ctx_combined_score": "REAL",
+    # Efficiency multiple (geomean of per-dimension ratios vs GPT-2)
+    "efficiency_multiple": "REAL",
 }
 
 
@@ -901,6 +903,16 @@ class LabNotebook:
 
     _cached_code_version: Optional[str] = None
     _last_report_snapshot_cleanup_at: float = 0.0
+
+    # GPT-2 reference metrics (measured on our d_model=256, 6-layer config)
+    _GPT2_REF = {
+        "loss_ratio": 0.2646,
+        "param_count": 9_767_424,
+        "flops_forward": 19_534_848,
+        "throughput_tok_s": 1_200_845,
+        "peak_memory_mb": 115.0,
+        "forward_time_ms": 0.43,
+    }
 
     @staticmethod
     def resolve_db_path(db_path: str | Path) -> Path:
@@ -1258,6 +1270,7 @@ class LabNotebook:
             "routing_expert_count INTEGER",
             "routing_confidence_mean REAL",
             "routing_drop_rate REAL",
+            "efficiency_multiple REAL",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:
@@ -3253,8 +3266,29 @@ class LabNotebook:
         """Store external benchmark payload for a program result."""
         if not result_id:
             return False
+        serialized = None
         try:
-            serialized = json.dumps(payload) if payload is not None else None
+            if payload is None:
+                serialized = None
+            elif isinstance(payload, dict):
+                # Merge partial benchmark updates (for example, scaling-only writes)
+                # with any previously stored benchmark families (for example, long_context).
+                existing = self.conn.execute(
+                    "SELECT external_benchmarks_json FROM program_results WHERE result_id = ?",
+                    (result_id,),
+                ).fetchone()
+                merged: Dict[str, Any] = {}
+                if existing and existing["external_benchmarks_json"]:
+                    try:
+                        parsed = json.loads(existing["external_benchmarks_json"])
+                        if isinstance(parsed, dict):
+                            merged.update(parsed)
+                    except Exception:
+                        pass
+                merged.update(payload)
+                serialized = json.dumps(merged)
+            else:
+                serialized = json.dumps(payload)
         except (TypeError, ValueError):
             return False
         cur = self.conn.execute(
@@ -3860,6 +3894,59 @@ class LabNotebook:
             return None
 
     @staticmethod
+    def compute_efficiency_multiple(
+        loss_ratio: Optional[float] = None,
+        param_count: Optional[float] = None,
+        flops_forward: Optional[float] = None,
+        throughput_tok_s: Optional[float] = None,
+        peak_memory_mb: Optional[float] = None,
+        forward_time_ms: Optional[float] = None,
+    ) -> Optional[Dict[str, float]]:
+        """Geometric mean of per-dimension ratios vs GPT-2.
+
+        All ratios >1.0 = better than GPT-2. Requires at least 3 of 6
+        dimensions to return a result (graceful with missing data).
+        Returns dict with per-dimension ratios and ``geomean``, or None.
+        """
+        ref = LabNotebook._GPT2_REF
+        ratios: Dict[str, float] = {}
+
+        # x_quality: ref_loss / cand_loss (lower loss = better)
+        if loss_ratio is not None and loss_ratio > 0:
+            ratios["x_quality"] = ref["loss_ratio"] / loss_ratio
+
+        # x_params: ref_params / cand_params (fewer = better)
+        if param_count is not None and param_count > 0:
+            ratios["x_params"] = ref["param_count"] / param_count
+
+        # x_flops: ref_flops / cand_flops (fewer = better)
+        if flops_forward is not None and flops_forward > 0:
+            ratios["x_flops"] = ref["flops_forward"] / flops_forward
+
+        # x_throughput: cand_tput / ref_tput (higher = better)
+        if throughput_tok_s is not None and throughput_tok_s > 0:
+            ratios["x_throughput"] = throughput_tok_s / ref["throughput_tok_s"]
+
+        # x_memory: ref_mem / cand_mem (less = better)
+        if peak_memory_mb is not None and peak_memory_mb > 0:
+            ratios["x_memory"] = ref["peak_memory_mb"] / peak_memory_mb
+
+        # x_latency: ref_lat / cand_lat (lower = better)
+        if forward_time_ms is not None and forward_time_ms > 0:
+            ratios["x_latency"] = ref["forward_time_ms"] / forward_time_ms
+
+        if len(ratios) < 3:
+            return None
+
+        geomean = 1.0
+        for v in ratios.values():
+            geomean *= v
+        geomean = geomean ** (1.0 / len(ratios))
+        ratios["geomean"] = geomean
+        ratios["n_dimensions"] = float(len(ratios) - 1)  # exclude geomean itself
+        return ratios
+
+    @staticmethod
     def compute_composite_score(
         screening_lr: Optional[float] = None,
         screening_nov: Optional[float] = None,
@@ -4150,6 +4237,29 @@ class LabNotebook:
             routing_drop_rate=d.get("routing_drop_rate"),
         )
 
+        # Compute efficiency_multiple from program_results operational metrics
+        eff_mult = kwargs.get("efficiency_multiple")
+        if eff_mult is None:
+            pr_row = self.conn.execute(
+                "SELECT loss_ratio, param_count, flops_forward, "
+                "throughput_tok_s, peak_memory_mb, forward_time_ms "
+                "FROM program_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if pr_row:
+                eff_result = self.compute_efficiency_multiple(
+                    loss_ratio=pr_row["loss_ratio"],
+                    param_count=pr_row["param_count"],
+                    flops_forward=pr_row["flops_forward"],
+                    throughput_tok_s=pr_row["throughput_tok_s"],
+                    peak_memory_mb=pr_row["peak_memory_mb"],
+                    forward_time_ms=pr_row["forward_time_ms"],
+                )
+                if eff_result is not None:
+                    eff_mult = eff_result["geomean"]
+        if eff_mult is not None:
+            kwargs["efficiency_multiple"] = eff_mult
+
         if existing:
             entry_id = existing["entry_id"]
             sets = ["timestamp = ?", "model_source = ?", "tier = ?", "composite_score = ?", "is_reference = ?"]
@@ -4191,7 +4301,10 @@ class LabNotebook:
                          "robustness_long_ctx_combined_score",
                          "depth_savings_ratio", "recursion_savings_ratio",
                          "activation_sparsity_score", "routing_expert_count",
-                         "routing_confidence_mean", "routing_drop_rate"):
+                         "routing_confidence_mean", "routing_drop_rate",
+                         "efficiency_multiple",
+                         "wikitext_perplexity", "wikitext_score",
+                         "tinystories_perplexity", "tinystories_score"):
                 if col in kwargs and kwargs[col] is not None:
                     sets.append(f"{col} = ?")
                     val = kwargs[col]
@@ -4232,7 +4345,8 @@ class LabNotebook:
                          "robustness_long_ctx_combined_score",
                          "depth_savings_ratio", "recursion_savings_ratio",
                          "activation_sparsity_score", "routing_expert_count",
-                         "routing_confidence_mean", "routing_drop_rate"):
+                         "routing_confidence_mean", "routing_drop_rate",
+                         "efficiency_multiple"):
                 if col in kwargs and kwargs[col] is not None:
                     cols.append(col)
                     val = kwargs[col]
@@ -4259,7 +4373,8 @@ class LabNotebook:
                        "screening_novelty", "timestamp",
                        "robustness_noise_score", "quant_int8_retention",
                        "robustness_long_ctx_score",
-                       "discovery_loss_ratio", "generalization_gap"}
+                       "discovery_loss_ratio", "generalization_gap",
+                       "efficiency_multiple"}
         if sort_by not in valid_sorts:
             sort_by = "composite_score"
 
@@ -4308,7 +4423,8 @@ class LabNotebook:
             "pr.robustness_long_ctx_scaling_score AS robustness_long_ctx_scaling_score, "
             "pr.robustness_long_ctx_assoc_score AS robustness_long_ctx_assoc_score, "
             "pr.robustness_long_ctx_multi_hop_score AS robustness_long_ctx_multi_hop_score, "
-            "pr.robustness_long_ctx_passkey_score AS robustness_long_ctx_passkey_score "
+            "pr.robustness_long_ctx_passkey_score AS robustness_long_ctx_passkey_score, "
+            "pr.efficiency_multiple AS _pr_efficiency_multiple "
             "FROM leaderboard l "
             "LEFT JOIN program_results pr ON pr.result_id = l.result_id "
             "WHERE 1=1"
@@ -4356,8 +4472,11 @@ class LabNotebook:
             d["novelty_confidence"] = d.pop("_novelty_confidence", None)
             d["cka_source"] = d.pop("_cka_source", None)
             d["routing_confidence_mean"] = d.pop("_routing_confidence_mean", None)
+            if d.get("efficiency_multiple") is None and d.get("_pr_efficiency_multiple") is not None:
+                d["efficiency_multiple"] = d.get("_pr_efficiency_multiple")
             d.pop("_pr_discovery_loss_ratio", None)
             d.pop("_pr_validation_loss_ratio", None)
+            d.pop("_pr_efficiency_multiple", None)
             
             if d.get("investigation_best_training"):
                 try:

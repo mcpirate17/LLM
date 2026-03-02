@@ -52,11 +52,9 @@ from ..eval.metrics import novelty_score
 from ..eval.flops import estimate_flops
 from ..eval.baseline import TransformerBaseline
 from ..eval.fingerprint import compute_fingerprint, BehavioralFingerprint
-from ..eval.diagnostic_tasks import run_diagnostic_suite, DiagnosticSuiteResult
+from ..eval.diagnostic_tasks import run_diagnostic_suite
 from ..eval.perf_budget import evaluate_perf_budget_gate
 from ..eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ..training.loss_synthesis import synthesize_loss
-from ..training.optimizer_synthesis import synthesize_optimizer
 from ..training.training_program import synthesize_training_program, synthesize_training_program_batch
 from ..training.data_pipeline import CorpusConfig, CorpusTokenBatcher
 from ..training.checkpointing import CheckpointManager
@@ -74,12 +72,10 @@ from .preregistration import (
 )
 from ..healer import CodeHealer
 from ..healer.core import HealerTaskSpec
-from .llm.context import (build_experiment_context,
-                          build_rich_context, build_investigation_context,
+from .llm.context import (build_rich_context, build_investigation_context,
                           build_validation_context, build_mode_selection_context,
                           build_hypothesis_context, build_go_no_go_context,
                           build_knowledge_extraction_context,
-                          build_campaign_report_context,
                           build_campaign_formulation_context,
                           build_manual_start_fallback_context)
 from .llm.decision import NextExperimentDecisionPlanner
@@ -87,12 +83,15 @@ from .llm.decision import NextExperimentDecisionPlanner
 import logging
 logger = logging.getLogger(__name__)
 
+_LIVE_LOSS_CURVE_MAX_POINTS = 20000
+_TRAINING_STEP_SSE_EVERY = 10
+
 import aria_core
 from ..synthesis.primitives import OPCODE_MAP
 
 def _native_proactive_gating(graph) -> Dict[str, Any]:
     """
-    Perform high-performance DAG validation and proactive gating using aria-core.
+    Perform high-performance DAG validation and proactive gating using aria_core.
     Identifies stability risks and toxic motifs before compilation.
     """
     try:
@@ -450,7 +449,7 @@ class RunConfig:
     # Stage pass thresholds (overridable by LLM per-cycle)
     stage1_loss_ratio_threshold: float = 0.8
     stage05_stability_threshold: float = 0.5
-    investigation_loss_ratio_threshold: float = 0.5
+    investigation_loss_ratio_threshold: float = 0.15
     investigation_robustness_threshold: float = 0.5
     # Pre-investigation gate
     pre_inv_gate_enabled: bool = True
@@ -468,6 +467,14 @@ class RunConfig:
     grammar_merge_prob: float = 0.2
     grammar_risky_op_prob: float = 0.1
     grammar_freq_domain_prob: float = 0.0
+    # Custom grammar weights (passed through to GrammarConfig)
+    category_weights: Optional[Dict[str, float]] = None
+    op_weights: Optional[Dict[str, float]] = None
+    # Branching / width control (passed to GrammarConfig)
+    min_splits: int = 0              # minimum forced split-merge blocks per graph
+    three_way_split_prob: float = 0.0  # probability of 3-way split (vs 2-way)
+    branch_depth: int = 1            # depth of processing on each branch (1=shallow, 2+=deep)
+    max_recursion_depth: int = 4     # iteration cap for recursive ops
     # Healer/agent settings
     max_agent_seconds: int = 300
     # LLM consultation in continuous mode
@@ -689,6 +696,7 @@ class ExperimentRunner:
         vocab_size: int,
         device: str,
         run_stability_probe: bool = True,
+        timeout_seconds: int = 30,
     ):
         """Stage-aware safe_eval routing for ABI primary/probe cohorts.
 
@@ -714,6 +722,7 @@ class ExperimentRunner:
             vocab_size=vocab_size,
             device=device,
             run_stability_probe=run_stability_probe,
+            timeout_seconds=timeout_seconds,
             abi_infer_probe=use_probe,
             abi_infer_primary=use_primary,
             abi_infer_primary_no_grad=True,
@@ -933,31 +942,32 @@ class ExperimentRunner:
                     adjusted=auto_harden,
                 )
 
-            # Simplicity bias: top performers are often shallow/compact.
-            # Apply conservative search caps by default under auto-harden.
-            if screened.max_depth > 3:
+            # Complexity-aware search caps: allow exotic multi-lane architectures
+            # (MoE, MoD, routing) that need ~10-15 ops while still preventing
+            # runaway recursion (hard limits remain at 12/20 in evolution).
+            if screened.max_depth > 8:
                 old = screened.max_depth
                 if auto_harden:
-                    screened.max_depth = 3
+                    screened.max_depth = 8
                 _record_issue(
                     key="max_depth",
                     severity="medium",
-                    reason="Applying simplicity constraint for evolve/novelty: capping max_depth at 3.",
+                    reason="Capping max_depth at 8 for evolve/novelty (allows exotic architectures).",
                     old_value=old,
-                    suggested_value=3,
+                    suggested_value=8,
                     risk_points=8,
                     adjusted=auto_harden,
                 )
-            if screened.max_ops > 5:
+            if screened.max_ops > 12:
                 old = screened.max_ops
                 if auto_harden:
-                    screened.max_ops = 5
+                    screened.max_ops = 12
                 _record_issue(
                     key="max_ops",
                     severity="medium",
-                    reason="Applying simplicity constraint for evolve/novelty: capping max_ops at 5.",
+                    reason="Capping max_ops at 12 for evolve/novelty (allows exotic architectures).",
                     old_value=old,
-                    suggested_value=5,
+                    suggested_value=12,
                     risk_points=8,
                     adjusted=auto_harden,
                 )
@@ -1513,23 +1523,48 @@ class ExperimentRunner:
 
     def _emit_event(self, event_type: str, data: Dict):
         """Push an event for SSE consumers."""
+        # training_step can emit at very high frequency; throttle SSE pressure so
+        # structural live-feed events (program_evaluated/validation_progress/etc.)
+        # are not dropped when the event queue is saturated.
+        should_enqueue = True
+        if event_type == "training_step":
+            step = int(data.get("step") or 0)
+            total_steps = int(data.get("total_steps") or 0)
+            should_enqueue = (
+                step <= 1
+                or (step % _TRAINING_STEP_SSE_EVERY == 0)
+                or (total_steps > 0 and step >= total_steps)
+            )
+
+        payload = {
+            "type": event_type,
+            "data": data,
+            "timestamp": time.time(),
+        }
+
         try:
-            self._event_queue.put_nowait({
-                "type": event_type,
-                "data": data,
-                "timestamp": time.time(),
-            })
+            if should_enqueue:
+                self._event_queue.put_nowait(payload)
         except queue.Full:
-            pass  # drop oldest if full
-        # Buffer training_step events for REST retrieval (dashboard chart restore)
+            if event_type != "training_step":
+                # Prefer dropping one stale queued event so critical lifecycle
+                # events can still be delivered to the dashboard feed.
+                try:
+                    self._event_queue.get_nowait()
+                    self._event_queue.put_nowait(payload)
+                except Exception:
+                    pass
+        # Buffer training_step events for REST retrieval (dashboard chart restore).
+        # Keep a deep enough history so the dashboard can reconstruct near-full
+        # curves for long validation/investigation runs.
         if event_type == "training_step":
             curve = self._live_loss_curve
             exp_id = data.get("experiment_id", "")
             if curve and curve[0].get("experiment_id") != exp_id:
                 curve.clear()
             curve.append(data)
-            if len(curve) > 200:
-                del curve[:len(curve) - 200]
+            if len(curve) > _LIVE_LOSS_CURVE_MAX_POINTS:
+                del curve[:len(curve) - _LIVE_LOSS_CURVE_MAX_POINTS]
 
     @staticmethod
     def _aria_phase_label(phase: str) -> str:
@@ -1840,7 +1875,11 @@ class ExperimentRunner:
         limit_str = " | ".join(limit_info) if limit_info else f"exp {n_experiments}"
 
         # Check for stale screening candidates that beat references
-        if config.auto_investigate and selected_mode not in ("investigation", "validation"):
+        # Only override if we're past the exploration-first window (first 3 cycles)
+        # and the selected mode isn't already investigation/validation
+        if (config.auto_investigate
+                and selected_mode not in ("investigation", "validation")
+                and n_experiments >= 3):
             stale_ids = self._check_stale_screening_candidates(nb, config)
             if stale_ids:
                 self._pending_investigation = {
@@ -1852,7 +1891,9 @@ class ExperimentRunner:
         pending_inv = getattr(self, "_pending_investigation", None)
         pending_val = getattr(self, "_pending_validation", None)
 
-        if pending_inv and selected_mode != "investigation":
+        # Don't let auto-escalation override synthesis in the first 3 cycles —
+        # Aria needs to explore before she can make informed investigation decisions
+        if pending_inv and selected_mode != "investigation" and n_experiments >= 3:
             selected_mode = "investigation"
             mode_reasoning = pending_inv.get("hypothesis", "Auto-investigation")
             mode_confidence = 0.9
@@ -1863,7 +1904,7 @@ class ExperimentRunner:
                 "confidence": 0.9,
                 "experiment_number": n_experiments,
             })
-        elif pending_val and selected_mode != "validation":
+        elif pending_val and selected_mode != "validation" and n_experiments >= 3:
             selected_mode = "validation"
             mode_reasoning = pending_val.get("hypothesis", "Auto-validation")
             mode_confidence = 0.9
@@ -4440,7 +4481,7 @@ class ExperimentRunner:
             
             # Efficiency: Throughput, FLOPs, and MDL (Description Length)
             # We penalize large description lengths (complex IR)
-            mdl_penalty = math.log(max(1.0, dl)) * 0.1
+            mdl_penalty = math.log(max(1.0, dl)) * 0.04
             efficiency_raw[rid] = (throughput_bonus * 5.0) - (0.35 * flops) - (0.15 * mem) - mdl_penalty
             
             # Add adaptive savings bonus if available
@@ -5463,62 +5504,72 @@ class ExperimentRunner:
             # Gather richer analytics for data-driven rule-based recommendation
             recent_modes = [e.get("experiment_type", "synthesis") for e in recent]
             
-            # Z16: Hard-coded fallback logic to prevent pipeline starvation
-            # Only promote 'worth it' candidates: Top performer per fingerprint
-            # that also meets a 'worthiness' bar (e.g. low loss OR high novelty)
+            # Z16: Dynamic top-10% worthiness bar
+            # Only investigate candidates whose loss_ratio is in the top 10%
+            # of ALL unique fingerprints. This means investigation gives Aria
+            # genuinely novel data about exceptional architectures, not noise.
             worth_it_investigation = []
             seen_fps = set()
-            
+
+            # Compute dynamic threshold: top 10% of all screening loss ratios
+            all_screening_lrs = sorted([
+                e.get("screening_loss_ratio") for e in leaderboard
+                if e.get("tier") == "screening"
+                and e.get("screening_loss_ratio") is not None
+            ])
+            if all_screening_lrs:
+                # Top 10% = the 10th percentile value (lower is better)
+                p10_idx = max(0, len(all_screening_lrs) // 10 - 1)
+                dynamic_lr_threshold = all_screening_lrs[p10_idx]
+            else:
+                dynamic_lr_threshold = 0.05  # conservative default
+
             # Sort leaderboard by best loss to prioritize performance
             sorted_lb = sorted(leaderboard, key=lambda x: x.get("screening_loss_ratio") or 1.0)
-            
+
             for e in sorted_lb:
                 if e.get("tier") != "screening": continue
                 lr = e.get("screening_loss_ratio") or 1.0
-                nov = e.get("screening_novelty") or 0.0
                 fp = e.get("graph_fingerprint") or e.get("result_id")
-                
+
                 if fp in seen_fps: continue
                 seen_fps.add(fp)
-                
-                # Worthiness Bar:
-                # Prefer pre_inv_score when available (from pre-investigation gate)
-                # Fall back to legacy heuristic thresholds
+
+                # Worthiness Bar: must be in top 10% of all fingerprints
                 pis = e.get("pre_inv_score")
                 if pis is not None:
                     is_worth_it = float(pis) >= 20.0
                 else:
-                    # Tightened worthiness bar to prevent investigation flood:
-                    # 1. Exceptional performance (LR < 0.15)
-                    # 2. Good performance + decent novelty (LR < 0.3 AND Nov > 0.5)
-                    is_worth_it = (
-                        lr < 0.15 or
-                        (lr < 0.3 and nov > 0.5)
-                    )
-                
+                    is_worth_it = lr <= dynamic_lr_threshold
+
                 if is_worth_it and fp not in _investigated_fps:
                     worth_it_investigation.append(e["result_id"])
 
             investigation_backlog = len(worth_it_investigation)
 
-            # Enforce minimum synthesis ratio: at least 50% of recent experiments
-            # should be synthesis/novelty to prevent investigation/validation starvation
-            synthesis_modes = {"synthesis", "novelty"}
+            # Enforce exploration-first policy:
+            # - First 3 cycles of a session are always synthesis/exploration
+            # - After that, at least 40% of recent experiments must be synthesis
+            # - Without enough exploration, investigation just re-examines stale data
+            synthesis_modes = {"synthesis", "novelty", "evolve"}
             recent_synthesis_count = sum(1 for m in recent_modes if m in synthesis_modes)
             synthesis_ratio = recent_synthesis_count / max(len(recent_modes), 1)
-            synthesis_starved = synthesis_ratio < 0.5
+            exploration_first = n_experiments < 3
+            synthesis_starved = exploration_first or synthesis_ratio < 0.4
 
             if not synthesis_starved:
                 # Only force investigation/validation if we have enough synthesis going
-                if investigation_backlog >= 10 and "investigation" not in recent_modes[:4]:
+                if investigation_backlog >= 5 and "investigation" not in recent_modes[:3]:
                     return {
                         "mode": "investigation",
-                        "reasoning": f"Backlog of {investigation_backlog} ELITE investigation-ready candidates detected. Prioritizing unique, high-performing architectures.",
+                        "reasoning": (f"Top-10% investigation: {investigation_backlog} candidates with "
+                                      f"loss_ratio <= {dynamic_lr_threshold:.4f} (top 10% threshold). "
+                                      f"These are genuinely exceptional and worth deeper study."),
                         "confidence": 1.0,
-                        "config": {"n_programs": min(investigation_backlog, 20)}
+                        "config": {"n_programs": min(investigation_backlog, 10)}
                     }
 
-                if validation_ready >= 5 and "validation" not in recent_modes[:4]:
+                if validation_ready >= 5 and "validation" not in recent_modes[:3]:
                     return {
                         "mode": "validation",
                         "reasoning": f"Pipeline bottleneck at validation: {validation_ready} candidates ready. Switching to multi-seed verification.",
@@ -5646,6 +5697,18 @@ class ExperimentRunner:
                     f"Recursive refinement on {rec['refinement_plan']['source_count']} "
                     f"diverse Stage-1 winners for {rec['refinement_plan']['generations']} generation(s)."
                 ).strip(" |")
+
+            # Exploration-first override: force synthesis in the first 3 cycles
+            # so Aria builds a data foundation before spending time on investigation.
+            # Also enforce synthesis when recent mode history is investigation-heavy.
+            if n_experiments < 3 and rec.get("mode") in ("investigation", "validation"):
+                rec["mode"] = "synthesis"
+                rec["reasoning"] = (
+                    f"Exploration-first: cycle {n_experiments + 1}/3. "
+                    f"Building data foundation before investigation. "
+                    f"(Original recommendation: {rec.get('reasoning', '')})"
+                )
+                rec["confidence"] = 0.8
 
             evidence_pack = build_evidence_pack(
                 nb,
@@ -6076,6 +6139,7 @@ class ExperimentRunner:
                 graph,
                 max_ops=max(1, int(config.max_ops)),
                 max_depth=max(1, int(config.max_depth)),
+                min_splits=config.min_splits,
             )
             if not validation.valid:
                 dropped_invalid += 1
@@ -7265,6 +7329,66 @@ class ExperimentRunner:
                          or (best_lr is not None and best_lr < 0.3))
                 )
 
+                # Benchmark evals (non-blocking) for inline investigation survivors
+                inv_wikitext_ppl = None
+                inv_wikitext_score = None
+                inv_tinystories_ppl = None
+                inv_tinystories_score = None
+                if n_passed > 0:
+                    eval_seq_len = min(128, config.max_seq_len)
+                    try:
+                        from ..eval.wikitext_eval import evaluate_wikitext_perplexity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            from ..morphological_box import ArchSpec as _AS_wt
+                            from ..arch_builder import build_model as _bm_wt, BuildConfig as _BC_wt
+                            _spec_wt = _AS_wt(**self._cached_json_load(arch_spec_json_str))
+                            _bc_wt = _BC_wt(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
+                            wt_model = _bm_wt(_spec_wt, _bc_wt).to(dev)
+                        else:
+                            wt_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.max_seq_len).to(dev)
+                        wt_result = evaluate_wikitext_perplexity(
+                            wt_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=eval_seq_len)
+                        inv_wikitext_ppl = wt_result.get("wikitext_perplexity")
+                        inv_wikitext_score = wt_result.get("wikitext_score")
+                        if inv_wikitext_ppl is not None:
+                            logger.info("Investigation WikiText ppl=%.1f score=%.3f",
+                                        inv_wikitext_ppl, inv_wikitext_score or 0)
+                        del wt_model
+                    except Exception as e:
+                        logger.debug("Investigation WikiText eval skipped: %s", e)
+                    try:
+                        from ..eval.tinystories_eval import evaluate_tinystories
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            from ..morphological_box import ArchSpec as _AS_ts
+                            from ..arch_builder import build_model as _bm_ts, BuildConfig as _BC_ts
+                            _spec_ts = _AS_ts(**self._cached_json_load(arch_spec_json_str))
+                            _bc_ts = _BC_ts(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
+                            ts_model = _bm_ts(_spec_ts, _bc_ts).to(dev)
+                        else:
+                            ts_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.max_seq_len).to(dev)
+                        ts_result = evaluate_tinystories(
+                            ts_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=eval_seq_len)
+                        inv_tinystories_ppl = ts_result.get("tinystories_perplexity")
+                        inv_tinystories_score = ts_result.get("tinystories_score")
+                        if inv_tinystories_ppl is not None:
+                            logger.info("Investigation TinyStories ppl=%.1f score=%.3f",
+                                        inv_tinystories_ppl, inv_tinystories_score or 0)
+                        del ts_model
+                    except Exception as e:
+                        logger.debug("Investigation TinyStories eval skipped: %s", e)
+
                 nb.upsert_leaderboard(
                     result_id=source_result_id,
                     model_source=model_source,
@@ -7279,6 +7403,10 @@ class ExperimentRunner:
                     tier="investigation" if investigation_passed else "screening",
                     novelty_confidence=source.get("novelty_confidence"),
                     fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
+                    wikitext_perplexity=inv_wikitext_ppl,
+                    wikitext_score=inv_wikitext_score,
+                    tinystories_perplexity=inv_tinystories_ppl,
+                    tinystories_score=inv_tinystories_score,
                 )
 
                 # Record result
@@ -7301,6 +7429,10 @@ class ExperimentRunner:
                     training_program_json=best_tp_json,
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
+                    wikitext_perplexity=inv_wikitext_ppl,
+                    wikitext_score=inv_wikitext_score,
+                    tinystories_perplexity=inv_tinystories_ppl,
+                    tinystories_score=inv_tinystories_score,
                 )
 
             # Complete experiment with LLM analysis
@@ -7404,6 +7536,14 @@ class ExperimentRunner:
             "experiment_id": exp_id,
             "n_candidates": len(result_ids),
         })
+
+        # Tier promotion: mark as validation tier immediately so other cycles don't pick them up
+        for rid in result_ids:
+            try:
+                # result_id is typically the entry_id in the leaderboard
+                nb.promote_to_tier(rid, "validation")
+            except Exception as e:
+                logger.debug("Failed to promote %s to validation tier: %s", rid, e)
 
         try:
             # ── Inline validation logic (from _run_validation_thread) ──
@@ -7904,6 +8044,7 @@ class ExperimentRunner:
 
                 # Long-context sweep (informational, non-blocking)
                 long_context_score = None
+                long_context_details = None
                 if best_seed is not None:
                     try:
                         from ..eval.long_context import run_long_context_sweep
@@ -7944,13 +8085,38 @@ class ExperimentRunner:
                         )
                         del retr_model
                         
-                        # Combine scaling score and retrieval score (50/50)
+                        # Combine scaling score and retrieval aggregate (50/50)
                         scaling_score = lc_result.get("long_context_score", 0.0)
-                        retrieval_score = retr_result.get("retrieval_score", 0.0)
+                        retrieval_score = retr_result.get(
+                            "retrieval_aggregate_score",
+                            retr_result.get("retrieval_score", 0.0),
+                        )
+                        assoc_retrieval_score = retr_result.get("assoc_retrieval_score", retr_result.get("retrieval_score", 0.0))
+                        passkey_score = retr_result.get("passkey_score", 0.0)
+                        multi_hop_score = retr_result.get("multi_hop_score", 0.0)
                         long_context_score = (scaling_score * 0.5) + (retrieval_score * 0.5)
-                        
-                        logger.info("Long-context check: scaling=%.2f, retrieval=%.2f, combined=%.2f",
-                                    scaling_score, retrieval_score, long_context_score)
+
+                        long_context_details = {
+                            "scaling": lc_result,
+                            "retrieval": retr_result,
+                            "scaling_score": scaling_score,
+                            "assoc_retrieval_score": assoc_retrieval_score,
+                            "multi_hop_score": multi_hop_score,
+                            "passkey_score": passkey_score,
+                            "retrieval_aggregate_score": retrieval_score,
+                            "combined_score": long_context_score,
+                            "benchmark_version": "v3_assoc_multihop_passkey",
+                        }
+
+                        logger.info(
+                            "Long-context check: scaling=%.2f, assoc=%.2f, multi_hop=%.2f, passkey=%.2f, retrieval=%.2f, combined=%.2f",
+                            scaling_score,
+                            assoc_retrieval_score,
+                            multi_hop_score,
+                            passkey_score,
+                            retrieval_score,
+                            long_context_score,
+                        )
                     except Exception as e:
                         logger.debug("Long-context sweep skipped: %s", e)
 
@@ -8239,10 +8405,17 @@ class ExperimentRunner:
                             max_viable_seq_len=max_viable_seq_len,
                             scaling_regime=scaling_regime,
                         )
-                        # Store detailed scaling result in external_benchmarks_json
+                        # Store detailed benchmark payload in external_benchmarks_json
+                        external_benchmarks_payload = {}
                         if scaling_result is not None:
-                            nb.set_external_benchmarks(
-                                source_result_id, scaling_result.to_dict())
+                            scaling_payload = scaling_result.to_dict()
+                            if isinstance(scaling_payload, dict):
+                                external_benchmarks_payload.update(scaling_payload)
+                                external_benchmarks_payload["scaling_comparison"] = scaling_payload
+                        if long_context_details is not None:
+                            external_benchmarks_payload["long_context"] = long_context_details
+                        if external_benchmarks_payload:
+                            nb.set_external_benchmarks(source_result_id, external_benchmarks_payload)
                         break
 
                 # Record validation result
@@ -8330,10 +8503,12 @@ class ExperimentRunner:
 
         Returns a shallow copy of config with adjusted grammar settings.
         Uses modular arithmetic to cycle through configurations deterministically.
+        Every 4th experiment (cycle 3 mod 8) uses the exotic preset for complex
+        architecture exploration (~25% of search budget).
         """
         import copy
         cfg = copy.copy(config)
-        cycle = n_experiments % 6
+        cycle = n_experiments % 8
 
         if cycle == 0:
             # Boost frequency and reduction, suppress dominant categories
@@ -8350,20 +8525,36 @@ class ExperimentRunner:
             cfg.max_ops = 12
             cfg.residual_prob = 0.6
         elif cycle == 3:
+            # EXOTIC: routing/MoE/compression exploration
+            cfg.max_depth = 10
+            cfg.max_ops = 16
+            cfg.residual_prob = 0.4
+            cfg.grammar_split_prob = 0.6
+            cfg.math_space_weight = 1.5
+            cfg._exotic_mode = True
+        elif cycle == 4:
             # High risk, frequency focus
             cfg.math_space_weight = 3.0
             cfg.residual_prob = 0.4
-        elif cycle == 4:
+        elif cycle == 5:
             # Minimal depth, low residual
             cfg.max_depth = 8
             cfg.max_ops = 10
             cfg.math_space_weight = 1.5
             cfg.residual_prob = 0.3
-        else:
+        elif cycle == 6:
             # Default with boosted math space
             cfg.math_space_weight = 2.5
             cfg.max_depth = 10
             cfg.residual_prob = 0.7
+        else:
+            # EXOTIC: second exotic slot per 8-cycle (~25% total)
+            cfg.max_depth = 10
+            cfg.max_ops = 16
+            cfg.residual_prob = 0.4
+            cfg.grammar_split_prob = 0.6
+            cfg.math_space_weight = 1.5
+            cfg._exotic_mode = True
 
         return cfg
 
@@ -9735,6 +9926,7 @@ class ExperimentRunner:
                 graph,
                 max_ops=max(1, int(config.max_ops)),
                 max_depth=max(1, int(config.max_depth)),
+                min_splits=config.min_splits,
             )
             if not validation.valid:
                 # Don't store S0 validation failures — they carry no learning
@@ -9771,6 +9963,7 @@ class ExperimentRunner:
 
                 layer_graphs = [graph] * config.n_layers
                 model = compile_model(layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
+                _eval_timeout = 60 if getattr(config, "_exotic_mode", False) else 30
                 sandbox_result = self._safe_eval_for_stage(
                     model,
                     stage_tag="candidate_screening",
@@ -9778,6 +9971,7 @@ class ExperimentRunner:
                     seq_len=min(128, config.max_seq_len),
                     vocab_size=config.vocab_size,
                     device=dev_str,
+                    timeout_seconds=_eval_timeout,
                 )
                 program_metrics.update(self._extract_sandbox_metrics(sandbox_result))
                 program_metrics["param_count"] = sandbox_result.param_count
@@ -10009,6 +10203,7 @@ class ExperimentRunner:
                         child,
                         max_ops=max(1, int(config.max_ops)),
                         max_depth=max(1, int(config.max_depth)),
+                        min_splits=config.min_splits,
                     )
                     if not validation.valid:
                         continue
@@ -10872,34 +11067,24 @@ class ExperimentRunner:
             analytics = ExperimentAnalytics(nb)
             structured = analytics.compute_insights()
 
-            # Deduplicate: normalize numbers out of content so
-            # "appears in 144 survivors" matches "appears in 145 survivors"
-            def _dedup_key(text: str) -> str:
-                s = re.sub(r'\d+\.\d+%?', '#', text)   # decimals / pcts
-                s = re.sub(r'\b\d{2,}\b', '#', s)       # multi-digit ints
-                return s
-
-            # Build map: dedup_key -> list of existing insight rows
-            existing_by_key: dict = {}
-            for row in nb.get_insights(limit=500):
-                key = _dedup_key(row["content"])
-                existing_by_key.setdefault(key, []).append(row)
-
             recorded = []
             for ins in structured:
                 content = ins if isinstance(ins, str) else ins.get("content", "")
-                key = _dedup_key(content)
                 category = ins.get("category", "pattern") if isinstance(ins, dict) else "pattern"
                 confidence = ins.get("confidence", 0.7) if isinstance(ins, dict) else 0.7
+                insight_type = ins.get("insight_type") if isinstance(ins, dict) else None
+                subject_key = ins.get("subject_key") if isinstance(ins, dict) else None
+                semantic_key = ins.get("semantic_key") if isinstance(ins, dict) else None
 
-                old_entries = existing_by_key.get(key, [])
-                if old_entries:
-                    # Supersede all old versions of this insight
-                    for old in old_entries:
-                        nb.supersede_insight(old["insight_id"])
-                    existing_by_key[key] = []
-
-                nb.record_insight(category, content, exp_id, confidence=confidence)
+                nb.record_insight(
+                    category,
+                    content,
+                    exp_id,
+                    confidence=confidence,
+                    insight_type=insight_type,
+                    subject_key=subject_key,
+                    semantic_key=semantic_key,
+                )
                 self.aria.add_insight(content)
                 recorded.append(content)
             return recorded
@@ -10947,7 +11132,7 @@ class ExperimentRunner:
     # ── Rich Context Helpers ──
 
     def _gather_designer_telemetry(self) -> Dict:
-        """Fetch telemetry from aria-designer if available."""
+        """Fetch telemetry from aria_designer if available."""
         import requests
         base = os.environ.get("ARIA_DESIGNER_PROXY_BASE", "http://127.0.0.1:8091")
         result: Dict = {}
@@ -11626,6 +11811,7 @@ class ExperimentRunner:
                 graph,
                 max_ops=max(1, int(config.max_ops)),
                 max_depth=max(1, int(config.max_depth)),
+                min_splits=config.min_splits,
             )
             if not validation.valid:
                 continue
@@ -12465,6 +12651,66 @@ class ExperimentRunner:
                          or (best_lr is not None and best_lr < 0.3))
                 )
 
+                # Benchmark evals (non-blocking) for investigation thread survivors
+                inv_wikitext_ppl = None
+                inv_wikitext_score = None
+                inv_tinystories_ppl = None
+                inv_tinystories_score = None
+                if n_passed > 0:
+                    eval_seq_len = min(128, config.max_seq_len)
+                    try:
+                        from ..eval.wikitext_eval import evaluate_wikitext_perplexity
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            from ..morphological_box import ArchSpec as _AS_wt
+                            from ..arch_builder import build_model as _bm_wt, BuildConfig as _BC_wt
+                            _spec_wt = _AS_wt(**self._cached_json_load(arch_spec_json_str))
+                            _bc_wt = _BC_wt(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
+                            wt_model = _bm_wt(_spec_wt, _bc_wt).to(dev)
+                        else:
+                            wt_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.max_seq_len).to(dev)
+                        wt_result = evaluate_wikitext_perplexity(
+                            wt_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=eval_seq_len)
+                        inv_wikitext_ppl = wt_result.get("wikitext_perplexity")
+                        inv_wikitext_score = wt_result.get("wikitext_score")
+                        if inv_wikitext_ppl is not None:
+                            logger.info("Investigation WikiText ppl=%.1f score=%.3f",
+                                        inv_wikitext_ppl, inv_wikitext_score or 0)
+                        del wt_model
+                    except Exception as e:
+                        logger.debug("Investigation WikiText eval skipped: %s", e)
+                    try:
+                        from ..eval.tinystories_eval import evaluate_tinystories
+                        if model_source == "morphological_box" and arch_spec_json_str:
+                            from ..morphological_box import ArchSpec as _AS_ts
+                            from ..arch_builder import build_model as _bm_ts, BuildConfig as _BC_ts
+                            _spec_ts = _AS_ts(**self._cached_json_load(arch_spec_json_str))
+                            _bc_ts = _BC_ts(
+                                dim=config.model_dim, n_layers=config.n_layers,
+                                vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
+                            ts_model = _bm_ts(_spec_ts, _bc_ts).to(dev)
+                        else:
+                            ts_model = compile_model(
+                                [graph_from_json(graph_json_str)] * config.n_layers,
+                                vocab_size=config.vocab_size,
+                                max_seq_len=config.max_seq_len).to(dev)
+                        ts_result = evaluate_tinystories(
+                            ts_model, config.vocab_size, dev,
+                            n_train_steps=200, seq_len=eval_seq_len)
+                        inv_tinystories_ppl = ts_result.get("tinystories_perplexity")
+                        inv_tinystories_score = ts_result.get("tinystories_score")
+                        if inv_tinystories_ppl is not None:
+                            logger.info("Investigation TinyStories ppl=%.1f score=%.3f",
+                                        inv_tinystories_ppl, inv_tinystories_score or 0)
+                        del ts_model
+                    except Exception as e:
+                        logger.debug("Investigation TinyStories eval skipped: %s", e)
+
                 nb.upsert_leaderboard(
                     result_id=source_result_id,
                     model_source=model_source,
@@ -12479,6 +12725,10 @@ class ExperimentRunner:
                     tier="investigation" if investigation_passed else "screening",
                     novelty_confidence=source.get("novelty_confidence"),
                     fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
+                    wikitext_perplexity=inv_wikitext_ppl,
+                    wikitext_score=inv_wikitext_score,
+                    tinystories_perplexity=inv_tinystories_ppl,
+                    tinystories_score=inv_tinystories_score,
                 )
 
                 # Record result
@@ -12501,6 +12751,10 @@ class ExperimentRunner:
                     training_program_json=best_tp_json,
                     model_source=model_source,
                     arch_spec_json=arch_spec_json_str,
+                    wikitext_perplexity=inv_wikitext_ppl,
+                    wikitext_score=inv_wikitext_score,
+                    tinystories_perplexity=inv_tinystories_ppl,
+                    tinystories_score=inv_tinystories_score,
                 )
 
                 # Save checkpoint after each candidate completes
@@ -12597,7 +12851,8 @@ class ExperimentRunner:
                          hypothesis: Optional[str] = None,
                          preregistration: Optional[Dict[str, Any]] = None,
                          exploratory: bool = False,
-                         trigger: str = "manual") -> str:
+                         trigger: str = "manual",
+                         force: bool = False) -> str:
         """Start validation phase for investigation survivors."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -12607,32 +12862,33 @@ class ExperimentRunner:
 
         nb = self._make_notebook()
 
-        # Tier guard: reject candidates already at validation tier or beyond
+        # Tier guards can be bypassed explicitly for manual override workflows.
         tiers = nb.get_tiers_for_result_ids(result_ids)
-        already_validated = {
-            rid: tier for rid, tier in tiers.items()
-            if tier in ("validation", "breakthrough")
-        }
-        if already_validated:
-            nb.close()
-            labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_validated.items())
-            raise ValueError(
-                f"Cannot validate: {len(already_validated)} candidate(s) already "
-                f"at or beyond validation tier: {labels}"
-            )
-        # Warn if known-screening candidates haven't been investigated
-        # (result_ids without leaderboard entries are allowed — they may
-        # come from auto-escalation paths that create entries mid-flight)
-        not_investigated = {
-            rid for rid in result_ids
-            if tiers.get(rid) == "screening"
-        }
-        if not_investigated:
-            nb.close()
-            raise ValueError(
-                f"Cannot validate: {len(not_investigated)} candidate(s) are still "
-                f"at screening tier (not investigated): {', '.join(not_investigated)}"
-            )
+        if not force:
+            already_validated = {
+                rid: tier for rid, tier in tiers.items()
+                if tier in ("validation", "breakthrough")
+            }
+            if already_validated:
+                nb.close()
+                labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_validated.items())
+                raise ValueError(
+                    f"Cannot validate: {len(already_validated)} candidate(s) already "
+                    f"at or beyond validation tier: {labels}"
+                )
+            # Warn if known-screening candidates haven't been investigated
+            # (result_ids without leaderboard entries are allowed — they may
+            # come from auto-escalation paths that create entries mid-flight)
+            not_investigated = {
+                rid for rid in result_ids
+                if tiers.get(rid) == "screening"
+            }
+            if not_investigated:
+                nb.close()
+                raise ValueError(
+                    f"Cannot validate: {len(not_investigated)} candidate(s) are still "
+                    f"at screening tier (not investigated): {', '.join(not_investigated)}"
+                )
 
         source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
@@ -13192,6 +13448,7 @@ class ExperimentRunner:
 
                 # Long-context sweep (informational, non-blocking)
                 long_context_score = None
+                long_context_details = None
                 if best_seed is not None:
                     try:
                         from ..eval.long_context import run_long_context_sweep
@@ -13231,13 +13488,38 @@ class ExperimentRunner:
                         )
                         del retr_model
                         
-                        # Combine scaling score and retrieval score (50/50)
+                        # Combine scaling score and retrieval aggregate (50/50)
                         scaling_score = lc_result.get("long_context_score", 0.0)
-                        retrieval_score = retr_result.get("retrieval_score", 0.0)
+                        retrieval_score = retr_result.get(
+                            "retrieval_aggregate_score",
+                            retr_result.get("retrieval_score", 0.0),
+                        )
+                        assoc_retrieval_score = retr_result.get("assoc_retrieval_score", retr_result.get("retrieval_score", 0.0))
+                        passkey_score = retr_result.get("passkey_score", 0.0)
+                        multi_hop_score = retr_result.get("multi_hop_score", 0.0)
                         long_context_score = (scaling_score * 0.5) + (retrieval_score * 0.5)
-                        
-                        logger.info("Long-context check (v2): scaling=%.2f, retrieval=%.2f, combined=%.2f",
-                                    scaling_score, retrieval_score, long_context_score)
+
+                        long_context_details = {
+                            "scaling": lc_result,
+                            "retrieval": retr_result,
+                            "scaling_score": scaling_score,
+                            "assoc_retrieval_score": assoc_retrieval_score,
+                            "multi_hop_score": multi_hop_score,
+                            "passkey_score": passkey_score,
+                            "retrieval_aggregate_score": retrieval_score,
+                            "combined_score": long_context_score,
+                            "benchmark_version": "v3_assoc_multihop_passkey",
+                        }
+
+                        logger.info(
+                            "Long-context check (v2): scaling=%.2f, assoc=%.2f, multi_hop=%.2f, passkey=%.2f, retrieval=%.2f, combined=%.2f",
+                            scaling_score,
+                            assoc_retrieval_score,
+                            multi_hop_score,
+                            passkey_score,
+                            retrieval_score,
+                            long_context_score,
+                        )
                     except Exception as e:
                         logger.debug("Long-context sweep skipped: %s", e)
 
@@ -13528,10 +13810,17 @@ class ExperimentRunner:
                             max_viable_seq_len=max_viable_seq_len,
                             scaling_regime=scaling_regime,
                         )
-                        # Store detailed scaling result
+                        # Store detailed benchmark payload
+                        external_benchmarks_payload = {}
                         if scaling_result is not None:
-                            nb.set_external_benchmarks(
-                                source_result_id, scaling_result.to_dict())
+                            scaling_payload = scaling_result.to_dict()
+                            if isinstance(scaling_payload, dict):
+                                external_benchmarks_payload.update(scaling_payload)
+                                external_benchmarks_payload["scaling_comparison"] = scaling_payload
+                        if long_context_details is not None:
+                            external_benchmarks_payload["long_context"] = long_context_details
+                        if external_benchmarks_payload:
+                            nb.set_external_benchmarks(source_result_id, external_benchmarks_payload)
                         break
 
                 # Breakthrough detection
@@ -13669,10 +13958,34 @@ class ExperimentRunner:
                               op_weights: Optional[Dict[str, float]] = None) -> GrammarConfig:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
         from ..synthesis.grammar import GrammarConfig
-        
+
+        # Exotic mode: use the exotic preset as base, then layer on
+        # excluded_ops and learned op_weights
+        if getattr(config, "_exotic_mode", False):
+            grammar = GrammarConfig.exotic(model_dim=config.model_dim)
+            # Merge with defaults (non-causal ops) rather than replacing
+            grammar.excluded_ops = grammar.excluded_ops | (excluded_ops or set())
+            # Merge learned op_weights (exotic preset weights take precedence
+            # only when learned weight is default 1.0)
+            if op_weights:
+                for op_name, w in op_weights.items():
+                    existing = grammar.op_weights.get(op_name, 1.0)
+                    # If the learned system penalizes an op, respect it even in exotic mode
+                    if w < 1.0:
+                        grammar.op_weights[op_name] = existing * w
+                    else:
+                        grammar.op_weights.setdefault(op_name, w)
+            return grammar
+
         # Pick up structured_sparsity_bias from mode recommendation or config
         sparsity_bias = getattr(self, "_structured_sparsity_bias_override",
                                 getattr(config, "structured_sparsity_bias", 0.0))
+
+        # Merge API-provided op_weights with learned op_weights
+        merged_op_weights = dict(op_weights or {})
+        if config.op_weights:
+            # API overrides take precedence over learned weights
+            merged_op_weights.update(config.op_weights)
 
         grammar = GrammarConfig(
             model_dim=config.model_dim,
@@ -13685,11 +13998,20 @@ class ExperimentRunner:
             risky_op_prob=config.grammar_risky_op_prob,
             freq_domain_prob=config.grammar_freq_domain_prob,
             structured_sparsity_bias=sparsity_bias,
-            excluded_ops=excluded_ops or set(),
-            op_weights=op_weights or {},
+            op_weights=merged_op_weights,
+            min_splits=config.min_splits,
+            three_way_split_prob=config.three_way_split_prob,
+            branch_depth=config.branch_depth,
+            max_recursion_depth=config.max_recursion_depth,
         )
+        # Merge learned excluded_ops with defaults (non-causal ops)
+        if excluded_ops:
+            grammar.excluded_ops = grammar.excluded_ops | excluded_ops
         # Apply specialized weights
         grammar.category_weights["math_space"] = config.math_space_weight
+        # Apply custom category weights from API (overrides defaults)
+        if config.category_weights:
+            grammar.category_weights.update(config.category_weights)
 
         # Apply Bayesian op priors from compressed learning (optional)
         try:
@@ -15250,6 +15572,36 @@ class ExperimentRunner:
                         program_metrics["diagnostic_score"] = diag.diagnostic_score
                     except Exception:
                         pass
+
+                # Benchmark evals (non-blocking) for scale-up survivors
+                if s1_passed and model is not None:
+                    eval_seq_len = min(128, config.scale_up_seq_len)
+                    try:
+                        from ..eval.wikitext_eval import evaluate_wikitext_perplexity
+                        wt_result = evaluate_wikitext_perplexity(
+                            model, config.vocab_size, dev_str,
+                            n_train_steps=200, seq_len=eval_seq_len)
+                        program_metrics["wikitext_perplexity"] = wt_result.get("wikitext_perplexity")
+                        program_metrics["wikitext_score"] = wt_result.get("wikitext_score")
+                        if program_metrics.get("wikitext_perplexity") is not None:
+                            logger.info("Scale-up WikiText ppl=%.1f score=%.3f",
+                                        program_metrics["wikitext_perplexity"],
+                                        program_metrics.get("wikitext_score") or 0)
+                    except Exception as e:
+                        logger.debug("Scale-up WikiText eval skipped: %s", e)
+                    try:
+                        from ..eval.tinystories_eval import evaluate_tinystories
+                        ts_result = evaluate_tinystories(
+                            model, config.vocab_size, dev_str,
+                            n_train_steps=200, seq_len=eval_seq_len)
+                        program_metrics["tinystories_perplexity"] = ts_result.get("tinystories_perplexity")
+                        program_metrics["tinystories_score"] = ts_result.get("tinystories_score")
+                        if program_metrics.get("tinystories_perplexity") is not None:
+                            logger.info("Scale-up TinyStories ppl=%.1f score=%.3f",
+                                        program_metrics["tinystories_perplexity"],
+                                        program_metrics.get("tinystories_score") or 0)
+                    except Exception as e:
+                        logger.debug("Scale-up TinyStories eval skipped: %s", e)
 
                 # Novelty — compute behavioral fingerprint for S1 survivors
                 fp = None
