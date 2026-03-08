@@ -1,12 +1,136 @@
-"""Control/experiment mutation route registration for scientist API."""
+"""experiments API route registration."""
 from __future__ import annotations
 
+import functools
+import time
+import datetime
+from flask import jsonify, request, Response
 from ..json_utils import json_safe as _json_safe
-
+from ..notebook import LabNotebook
 from .deps import ApiRouteContext, install_legacy_symbols
 
-def register_control_routes(app, context: ApiRouteContext):
+def register_experiments_routes(app, context: ApiRouteContext):
     install_legacy_symbols(globals(), context)
+
+    @app.route("/api/experiments")
+    def api_experiments():
+        """List experiments (newest first)."""
+        n = request.args.get("n", type=int)
+        if n is None:
+            n = request.args.get("limit", type=int)
+        if n is None:
+            n = 200
+        n = max(1, min(n, 5000))
+        offset = request.args.get("offset", 0, type=int)
+        offset = max(0, min(offset, 1_000_000))
+        nb = LabNotebook(notebook_path)
+        try:
+            return jsonify(nb.get_recent_experiments(n, offset=offset))
+        except Exception as e:
+            logger.error(f"Error in /api/experiments: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+
+    @app.route("/api/experiments/<experiment_id>")
+    def api_experiment_detail(experiment_id):
+        """Get experiment details with entries and per-experiment programs."""
+        nb = LabNotebook(notebook_path)
+        try:
+            exp = nb.get_experiment(experiment_id)
+            if exp is None:
+                return jsonify({"error": "Not found"}), 404
+            entries = nb.get_entries(experiment_id=experiment_id)
+            programs = nb.get_program_results(experiment_id)
+            prereg = nb.get_preregistration_for_experiment(experiment_id)
+            deviations = nb.get_preregistration_deviations(experiment_id)
+            payload = {
+                "experiment": exp,
+                "entries": entries,
+                "programs": programs,
+                "preregistration": prereg,
+                "preregistration_deviations": deviations,
+            }
+            return jsonify(_json_safe(payload))
+        except Exception as e:
+            logger.error(f"Error in /api/experiments/{experiment_id}: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+
+    @app.route("/api/experiments/<experiment_id>/programs")
+    def api_experiment_programs(experiment_id):
+        """All programs for an experiment (not just S1 survivors)."""
+        nb = LabNotebook(notebook_path)
+        try:
+            programs = nb.get_program_results(experiment_id)
+            return jsonify(_json_safe(programs))
+        except Exception as e:
+            logger.error(f"Error in /api/experiments/{experiment_id}/programs: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+
+    @app.route("/api/experiments/<experiment_id>/failures")
+    def api_failure_analysis(experiment_id):
+        """Failure analysis: error distribution, stage funnel."""
+        nb = LabNotebook(notebook_path)
+        try:
+            analysis = nb.get_failure_analysis(experiment_id)
+            return jsonify(analysis)
+        except Exception as e:
+            logger.error(f"Error in failure analysis: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+
+    @app.route("/api/experiments/<experiment_id>/analysis")
+    def api_experiment_analysis(experiment_id):
+        """LLM-generated analysis (stored or on-demand)."""
+        nb = LabNotebook(notebook_path)
+        aria = get_aria()
+        try:
+            exp = nb.get_experiment(experiment_id)
+            if exp is None:
+                return jsonify({"error": "Not found"}), 404
+
+            # Return stored analysis if available
+            stored = exp.get("llm_analysis")
+            if stored:
+                return jsonify({"analysis": stored, "source": "stored"})
+
+            # Try generating on-demand
+            results = exp.get("results") or {}
+            from .llm.context import build_experiment_context
+            ctx = build_experiment_context(results)
+            analysis = aria.analyze_results(results, context=ctx)
+
+            if analysis:
+                # Cache it
+                try:
+                    nb.conn.execute(
+                        "UPDATE experiments SET llm_analysis = ? WHERE experiment_id = ?",
+                        (analysis, experiment_id),
+                    )
+                    nb.conn.commit()
+                except Exception as e:
+                    logger.warning("Failed caching llm_analysis for %s: %s",
+                                   experiment_id, e)
+                return jsonify({"analysis": analysis, "source": "generated"})
+
+            return jsonify({"analysis": None, "source": "unavailable",
+                            "reason": "No LLM backend configured"})
+        except Exception as e:
+            logger.error(f"Error in experiment analysis: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
+
+
     @app.route("/api/experiments/preflight", methods=["POST"])
     def api_preflight_experiment():
         """Run preflight checks without launching an experiment."""
@@ -37,56 +161,13 @@ def register_control_routes(app, context: ApiRouteContext):
             "can_start_without_override": preflight.get("verdict") == "pass",
         })
 
-    @app.route("/api/worker/evaluate", methods=["POST"])
-    def api_worker_evaluate():
-        """Z12: Distributed worker endpoint for evaluating a computation graph."""
-        runner = _get_runner(notebook_path)
-        body = request.get_json(silent=True) or {}
-        
-        graph_json = body.get("graph_json")
-        config_dict = body.get("config")
-        seed = body.get("seed", 42)
-        
-        if not graph_json or not config_dict:
-            return jsonify({"error": "Missing graph_json or config"}), 400
-            
-        try:
-            from ..synthesis.graph import json_to_graph
-            from ..synthesis.compiler import compile_model
-            import torch
-            
-            graph = json_to_graph(graph_json)
-            config = RunConfig.from_dict(config_dict)
-            
-            dev_str = config.device if torch.cuda.is_available() else "cpu"
-            dev = torch.device(dev_str)
-            
-            # Compile model locally on worker
-            layer_graphs = [graph] * config.n_layers
-            model = compile_model(
-                layer_graphs,
-                vocab_size=config.vocab_size,
-                max_seq_len=config.max_seq_len,
-            ).to(dev)
-            
-            # Use the runner's async-friendly training method
-            result = runner._micro_train_async(model, config, seed, dev)
-            
-            return jsonify({
-                "status": "ok",
-                "result": result,
-                "device": dev_str,
-                "worker_id": os.environ.get("ARIA_WORKER_ID", "anonymous")
-            })
-            
-        except Exception as e:
-            logger.error("Worker evaluation failed: %s", e)
-            return jsonify({"error": str(e), "passed": False}), 500
 
     @app.route("/api/experiments/start", methods=["POST"])
     def api_start_experiment():
         """Start a new experiment. Accepts RunConfig fields + optional hypothesis."""
         runner = _get_runner(notebook_path)
+        if runner.is_running:
+            return jsonify({"error": "An experiment is already running"}), 409
 
         body = request.get_json(silent=True) or {}
         auto_harden = bool(body.pop("auto_harden", True))
@@ -98,24 +179,6 @@ def register_control_routes(app, context: ApiRouteContext):
         exploratory = bool(body.pop("exploratory", False))
         refine_analysis_json = body.pop("refine_analysis_json", "")
         mode = _normalize_start_mode(body.pop("mode", "single"))
-        if mode in {"investigation", "validation"}:
-            requested_ids = _normalize_result_ids(body.get("result_ids", []))
-            if not requested_ids:
-                return jsonify({"error": f"result_ids required for {mode} mode"}), 400
-        if mode in {"scale_up", "refine_fingerprint"}:
-            requested_ids = _normalize_result_ids(body.get("result_ids", []))
-            requested_fps = _normalize_result_ids(
-                body.get("graph_fingerprints", body.get("fingerprints", []))
-            )
-            if not requested_ids and not requested_fps:
-                payload = {
-                    "error": f"result_ids or graph_fingerprints required for {mode} mode",
-                }
-                if mode == "refine_fingerprint":
-                    payload["refine_resolution"] = {"result_ids": [], "missing_graph_fingerprints": []}
-                else:
-                    payload["scale_up_resolution"] = {"result_ids": [], "missing_graph_fingerprints": []}
-                return jsonify(payload), 400
 
         config = RunConfig.from_dict(body) if body else RunConfig()
         if refine_analysis_json:
@@ -160,9 +223,6 @@ def register_control_routes(app, context: ApiRouteContext):
         eligibility: Optional[Dict[str, Any]] = None
         scale_up_resolution: Optional[Dict[str, Any]] = None
         refine_resolution: Optional[Dict[str, Any]] = None
-
-        if runner.is_running:
-            return jsonify({"error": "An experiment is already running"}), 409
 
         try:
             if mode == "continuous":
@@ -359,6 +419,7 @@ def register_control_routes(app, context: ApiRouteContext):
                 "auto_repair_task": auto_repair_task,
             }), 500
 
+
     @app.route("/api/experiments/stop", methods=["POST"])
     def api_stop_experiment():
         """Stop the currently running experiment."""
@@ -371,6 +432,7 @@ def register_control_routes(app, context: ApiRouteContext):
             "status": "stopping",
             "aria_message": runner.progress.aria_message,
         })
+
 
     @app.route("/api/experiments/<experiment_id>/cancel", methods=["POST"])
     def api_cancel_experiment(experiment_id):
@@ -385,6 +447,7 @@ def register_control_routes(app, context: ApiRouteContext):
             return jsonify({"status": "cancelled", "experiment_id": experiment_id})
         finally:
             nb.close()
+
 
     @app.route("/api/experiments/<experiment_id>/rerun", methods=["POST"])
     def api_rerun_experiment(experiment_id):
@@ -453,15 +516,6 @@ def register_control_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-    # ── Batch rerun state ────────────────────────────────────────────
-    _batch_rerun_state: Dict[str, Any] = {
-        "active": False,
-        "total": 0,
-        "completed": 0,
-        "current": None,
-        "remaining": [],
-        "results": [],
-    }
 
     @app.route("/api/experiments/batch-rerun", methods=["POST"])
     def api_batch_rerun():
@@ -595,6 +649,7 @@ def register_control_routes(app, context: ApiRouteContext):
             "queued": queue,
         })
 
+
     @app.route("/api/experiments/batch-rerun/status", methods=["GET"])
     def api_batch_rerun_status():
         """Poll batch rerun progress."""
@@ -606,6 +661,7 @@ def register_control_routes(app, context: ApiRouteContext):
             "remaining": _batch_rerun_state["remaining"],
             "results": _batch_rerun_state["results"],
         })
+
 
     @app.route("/api/experiments/batch-rerun/cancel", methods=["POST"])
     def api_batch_rerun_cancel():
@@ -619,6 +675,7 @@ def register_control_routes(app, context: ApiRouteContext):
             "cancelled_count": len(cancelled),
             "completed_so_far": _batch_rerun_state["completed"],
         })
+
 
     @app.route("/api/experiments/<experiment_id>/fill-gaps", methods=["POST"])
     def api_fill_experiment_gaps(experiment_id):
@@ -639,6 +696,7 @@ def register_control_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
+
     @app.route("/api/experiments/cleanup-stale", methods=["POST"])
     def api_cleanup_stale():
         """Clean up stale running experiments that are no longer active."""
@@ -649,294 +707,4 @@ def register_control_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-    @app.route("/api/programs/purge-junk", methods=["POST"])
-    def api_purge_junk_programs():
-        """Purge Stage 0 failure program results that carry no useful data."""
-        dry_run = True
-        if request.is_json and request.json:
-            dry_run = request.json.get("dry_run", True)
-        nb = LabNotebook(notebook_path)
-        try:
-            result = nb.purge_junk_programs(dry_run=dry_run)
-            return jsonify(result)
-        except Exception as e:
-            logger.error(f"Error purging junk programs: {e}\n{traceback.format_exc()}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
-
-    @app.route("/api/progress")
-    def api_progress():
-        """Get current experiment progress (poll-based alternative to SSE)."""
-        runner = _get_runner(notebook_path)
-        progress_payload = _with_native_runner_progress(runner.progress.to_dict())
-        trigger = _get_run_trigger_snapshot(progress_payload.get("experiment_id"))
-        progress_payload["run_trigger_source"] = trigger.get("source")
-        progress_payload["run_trigger"] = trigger
-        return jsonify({
-            "is_running": runner.is_running,
-            "progress": progress_payload,
-            "native_runner": progress_payload.get("native_runner"),
-            "run_trigger_source": trigger.get("source"),
-            "run_trigger": trigger,
-        })
-
-    @app.route("/api/events")
-    def api_events():
-        """SSE endpoint for real-time experiment events."""
-        runner = _get_runner(notebook_path)
-        sse_timeout = _get_sse_timeout_seconds()
-
-        def event_stream():
-            while True:
-                for event in runner.get_events(timeout=sse_timeout):
-                    data = json.dumps(
-                        _json_safe(event.get("data", {})),
-                        allow_nan=False,
-                    )
-                    yield f"event: {event['type']}\ndata: {data}\n\n"
-                # After timeout, check if client is still connected
-                yield f"event: keepalive\ndata: {{}}\n\n"
-
-        return Response(
-            event_stream(),
-            mimetype="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
-
-    @app.route("/api/diagnostics/fingerprint")
-    def api_fingerprint_diagnostics():
-        """Expose lightweight runtime diagnostics for fingerprint analysis."""
-        reset = str(request.args.get("reset", "0")).strip().lower() in {"1", "true", "yes"}
-        try:
-            from research.eval.fingerprint import get_sensitivity_skip_stats
-
-            stats = get_sensitivity_skip_stats(reset=reset)
-            return jsonify({
-                "sensitivity_skips": stats,
-            })
-        except Exception as e:
-            logger.error(f"Error in /api/diagnostics/fingerprint: {e}")
-            return jsonify({
-                "sensitivity_skips": {
-                    "total": 0,
-                    "by_reason": {},
-                },
-                "error": str(e),
-            }), 500
-
-    @app.route("/api/diagnostics/report-cache")
-    def api_report_cache_diagnostics():
-        """Expose report snapshot cache usage and retention diagnostics."""
-        nb = LabNotebook(notebook_path)
-        try:
-            cleanup = str(request.args.get("cleanup", "0")).strip().lower() in {"1", "true", "yes"}
-            try:
-                ttl_seconds = int(os.environ.get("ARIA_REPORT_SNAPSHOT_TTL_SECONDS", str(7 * 24 * 3600)))
-            except Exception:
-                ttl_seconds = 7 * 24 * 3600
-            try:
-                max_rows_per_scope = int(os.environ.get("ARIA_REPORT_SNAPSHOT_MAX_ROWS_PER_SCOPE", "400"))
-            except Exception:
-                max_rows_per_scope = 400
-
-            cleanup_stats = None
-            if cleanup:
-                cleanup_stats = nb.cleanup_report_snapshots(
-                    ttl_seconds=max(60, ttl_seconds),
-                    max_rows_per_scope=max(20, max_rows_per_scope),
-                )
-
-            snapshot_stats = nb.get_report_snapshot_stats()
-            return jsonify({
-                "snapshot_cache": snapshot_stats,
-                "retention": {
-                    "ttl_seconds": max(60, int(ttl_seconds or 0)),
-                    "max_rows_per_scope": max(20, int(max_rows_per_scope or 0)),
-                },
-                "cleanup_triggered": bool(cleanup),
-                "cleanup": cleanup_stats,
-            })
-        except Exception as e:
-            logger.error(f"Error in /api/diagnostics/report-cache: {e}")
-            return jsonify({
-                "snapshot_cache": {
-                    "total_snapshots": 0,
-                    "n_scopes": 0,
-                    "oldest_age_seconds": None,
-                    "newest_age_seconds": None,
-                    "scopes": [],
-                },
-                "error": str(e),
-            }), 500
-        finally:
-            nb.close()
-
-    @app.route("/api/config", methods=["GET"])
-    def api_get_config():
-        """Get the default RunConfig."""
-        return jsonify(RunConfig().to_dict())
-
-    # ── LLM Configuration endpoints ──
-
-    @app.route("/api/llm/config")
-    def api_llm_config():
-        """Get current LLM backend configuration."""
-        aria = get_aria()
-        return jsonify(aria.get_llm_config())
-
-    @app.route("/api/llm/config", methods=["POST"])
-    def api_llm_configure():
-        """Configure the LLM backend at runtime and persist to disk."""
-        aria = get_aria()
-        body = request.get_json(silent=True) or {}
-
-        backend_name = str(body.get("backend", "")).strip()
-        if not backend_name:
-            return jsonify({"error": "backend is required (anthropic, openai, ollama)"}), 400
-
-        api_key = str(body.get("api_key", "")).strip()
-        model = str(body.get("model", "")).strip()
-        host = str(body.get("host", "")).strip()
-
-        success = aria.configure_llm(
-            backend_name=backend_name,
-            api_key=api_key,
-            model=model,
-            host=host,
-        )
-
-        if success:
-            # Quick health check: try a minimal LLM call to verify the key works
-            health_ok = True
-            health_error = None
-            llm = aria._get_llm()
-            if llm:
-                try:
-                    test_resp = llm.generate(
-                        "Respond with exactly: OK",
-                        max_tokens=10, temperature=0,
-                    )
-                    if not (test_resp and test_resp.text):
-                        health_ok = False
-                        health_error = "LLM returned empty response"
-                except Exception as e:
-                    health_ok = False
-                    health_error = f"{type(e).__name__}: {str(e)[:150]}"
-                    logger.warning(f"LLM health check failed: {health_error}")
-
-            # Persist config so it survives server restarts
-            _save_llm_config(notebook_path, {
-                "backend": backend_name,
-                "api_key": api_key,
-                "model": model,
-                "host": host,
-            })
-
-            # Clear any cached deterministic briefing so AI takes over
-            if hasattr(aria, "_briefing_cache"):
-                aria._briefing_cache = None
-
-            result = {
-                "status": "configured",
-                "config": aria.get_llm_config(),
-            }
-            if not health_ok:
-                result["status"] = "configured_with_warning"
-                result["warning"] = health_error
-            return jsonify(result)
-        else:
-            return jsonify({"error": "Failed to configure LLM backend"}), 500
-
-    # ── Strategy Briefing endpoint ──
-
-    def _normalize_briefing_mode(mode: Optional[str]) -> Optional[str]:
-        if not mode:
-            return None
-        normalized = str(mode).strip().lower()
-        aliases = {
-            "evolution": "evolve",
-            "evolve": "evolve",
-            "novelty_search": "novelty",
-            "novelty": "novelty",
-            "investigate": "investigation",
-            "investigation": "investigation",
-            "validate": "validation",
-            "validation": "validation",
-            "scale-up": "scale_up",
-            "scale_up": "scale_up",
-            "continuous": "continuous",
-            "single": "single",
-        }
-        return aliases.get(normalized, normalized)
-
-    def _briefing_action_from_mode(mode: Optional[str]) -> Optional[str]:
-        if not mode:
-            return None
-        actions = {
-            "investigation": "investigate",
-            "validation": "validate",
-            "continuous": "continuous",
-            "novelty": "novelty_search",
-            "evolve": "evolve",
-            "scale_up": "scale_up",
-        }
-        return actions.get(mode)
-
-    def _briefing_action_label(mode: Optional[str], hypothesis: Optional[str] = None) -> str:
-        """Human-readable label for an LLM-suggested action."""
-        labels = {
-            "continuous": "Run Continuous Research",
-            "evolve": "Run Evolution Search",
-            "novelty": "Run Novelty Search",
-            "investigation": "Investigate Candidates",
-            "validation": "Run Validation",
-            "scale_up": "Scale Up Training",
-        }
-        return labels.get(mode, f"Run {mode or 'experiment'}")
-
-    def _sparse_coverage_summary(sparse_coverage_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        summary = sparse_coverage_data or {}
-        sparse_share = summary.get("sparse_share")
-        sparse_survival_rate = summary.get("sparse_survival_rate")
-        target_share = 0.15
-        sparse_share_value = float(sparse_share) if isinstance(sparse_share, (int, float)) else None
-        sparse_survival_value = float(sparse_survival_rate) if isinstance(sparse_survival_rate, (int, float)) else None
-        below_target = bool(sparse_share_value is not None and sparse_share_value < target_share)
-        return {
-            "sparse_share": sparse_share_value,
-            "sparse_survival_rate": sparse_survival_value,
-            "target_share": target_share,
-            "below_target": below_target,
-        }
-
-    def _augment_sparse_action_config(
-        suggested_config: Optional[Dict[str, Any]],
-        normalized_mode: Optional[str],
-        sparse_coverage_data: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        config = dict(suggested_config or {})
-        sparse_summary = _sparse_coverage_summary(sparse_coverage_data)
-        if not sparse_summary.get("below_target"):
-            return config
-
-        mode = str(normalized_mode or config.get("mode") or "").strip().lower()
-        if mode not in {"novelty", "evolve", "continuous", "single", "synthesis"}:
-            return config
-
-        config.setdefault("model_source", "mixed")
-        config.setdefault("morph_focus_sparse", True)
-        config.setdefault("morph_ratio", 0.8)
-        config.setdefault("use_synthesized_training", True)
-        config.setdefault("morph_sparse_weight_storage", "semi_structured_2_4")
-        config.setdefault("math_space_weight", 2.2)
-        config.setdefault("n_programs", 120)
-        if mode in {"novelty", "evolve"}:
-            config.setdefault("max_depth", 6)
-            config.setdefault("max_ops", 10)
-        return config
 

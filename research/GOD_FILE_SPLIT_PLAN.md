@@ -11,7 +11,7 @@
 | # | File | Lines | Language | Effort | Impact |
 |---|------|-------|----------|--------|--------|
 | 1 | `scientist/runner.py` | 15,795 | Python | **NONE** — already split, delete dead file | HIGH |
-| 2 | `scientist/api.py` | 10,623 | Python | HIGH | CRITICAL |
+| 2 | `scientist/api.py` | 10,623 | Python | [DONE] | CRITICAL |
 | 3 | `scientist/notebook.py` | 6,275 | Python | [DONE] | HIGH |
 | 4 | `scientist/runner/execution.py` | 4,563 | Python | MEDIUM | HIGH |
 | 5 | `scientist/analytics.py` | 4,429 | Python | MEDIUM | MEDIUM |
