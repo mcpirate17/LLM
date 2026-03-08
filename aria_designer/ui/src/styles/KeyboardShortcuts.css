@@ -1,0 +1,13 @@
+.shortcuts-modal { max-width: 400px; }
+.shortcuts-grid { display: flex; flex-direction: column; gap: 12px; }
+.shortcut-row { display: flex; justify-content: space-between; align-items: center; }
+.shortcut-key {
+  background: #1f3147;
+  color: var(--accent);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+}

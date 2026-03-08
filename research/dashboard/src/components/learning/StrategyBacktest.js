@@ -44,7 +44,7 @@ export function StrategyBacktest() {
               <div 
                 style={{ 
                   height: '100%', 
-                  width: `\${(i.s1_pass_rate / maxS1) * 100}%`, 
+                  width: `${(i.s1_pass_rate / maxS1) * 100}%`,
                   background: 'var(--accent-blue)',
                   opacity: 0.7,
                   transition: 'width 0.6s ease-out'
@@ -83,7 +83,7 @@ export function StrategyBacktest() {
                   {i.avg_best_novelty != null ? i.avg_best_novelty.toFixed(3) : '--'}
                 </td>
                 <td style={{ fontSize: 11 }}>
-                  {i.avg_throughput != null ? `\${Math.round(i.avg_throughput).toLocaleString()} t/s` : '--'}
+                  {i.avg_throughput != null ? `${Math.round(i.avg_throughput).toLocaleString()} t/s` : '--'}
                 </td>
                 <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                   {Math.round(i.avg_duration / 60)} min

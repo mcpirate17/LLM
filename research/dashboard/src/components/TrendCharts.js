@@ -12,7 +12,7 @@ import MiniChart, { TREND_CHART_WINDOW } from './charts/MiniChart';
 import RegressionBaselineChart from './charts/RegressionBaselineChart';
 import ParetoEfficiencyChart from './charts/ParetoEfficiencyChart';
 import ExperimentDataTab from './charts/ExperimentDataTab';
-export { default as ExperimentDataTab } from './charts/ExperimentDataTab';
+export { ExperimentDataTab };
 
 /**
  * TrendCharts — Cross-experiment line charts using inline SVG
@@ -33,14 +33,13 @@ function TrendCharts({ onSelectExperiment }) {
       setError(null);
     }
     try {
-      const [tData, wData, frData, tpData] = await Promise.all([
+      const [tData, frData, tpData] = await Promise.all([
         apiService.getTrends(),
-        apiService.getWeightEvents(),
         apiService.getEfficiencyFrontier(),
-        apiService.getPrograms(50, 'loss_ratio'),
+        apiService.getPrograms(50),
       ]);
       setTrends(Array.isArray(tData?.trends) ? tData.trends : []);
-      setWeightEvents(Array.isArray(wData?.events) ? wData.events : []);
+      setWeightEvents(Array.isArray(tData?.adaptation_events) ? tData.adaptation_events : []);
       setFrontier(Array.isArray(frData) ? frData : []);
       setTopPrograms(Array.isArray(tpData) ? tpData : []);
       setError(null);
@@ -77,9 +76,14 @@ function TrendCharts({ onSelectExperiment }) {
     return (
       <div className="card">
         <div className="card-title">Research Trends</div>
-        <p className="ux-state ux-state-empty">
-          Need at least 2 completed experiments to visualize search trends.
-        </p>
+        <div className="empty-state">
+          <div className="empty-state-icon">&#x1F4C8;</div>
+          <div className="empty-state-title">Not enough data yet</div>
+          <p className="empty-state-hint">
+            Need at least 2 completed experiments to visualize search trends.
+            Run your first experiment from the Control tab.
+          </p>
+        </div>
       </div>
     );
   }
@@ -87,28 +91,22 @@ function TrendCharts({ onSelectExperiment }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Tab Switcher */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-        <button
-          onClick={() => setActiveTier('trends')}
-          className={`step-btn ${activeTab === 'trends' ? 'active' : ''}`}
-          style={{ fontSize: 12, padding: '6px 16px' }}
-        >
-          Research Trends
-        </button>
-        <button
-          onClick={() => setActiveTier('efficiency')}
-          className={`step-btn ${activeTab === 'efficiency' ? 'active' : ''}`}
-          style={{ fontSize: 12, padding: '6px 16px' }}
-        >
-          Efficiency Frontier
-        </button>
-        <button
-          onClick={() => setActiveTier('data')}
-          className={`step-btn ${activeTab === 'data' ? 'active' : ''}`}
-          style={{ fontSize: 12, padding: '6px 16px' }}
-        >
-          Full Experiment Log
-        </button>
+      <div role="tablist" aria-label="Trend views" style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+        {[
+          { id: 'trends', label: 'Research Trends' },
+          { id: 'efficiency', label: 'Efficiency Frontier' },
+          { id: 'data', label: 'Full Experiment Log' },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            onClick={() => setActiveTier(tab.id)}
+            className={`step-btn ${activeTab === tab.id ? 'active' : ''}`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {activeTab === 'trends' && (
@@ -148,6 +146,15 @@ function TrendCharts({ onSelectExperiment }) {
               color="var(--accent-yellow)"
               formatValue={v => `${Math.round(v).toLocaleString()} tok/s`}
               scaleKey="throughput_tok_s"
+              onSelectExperiment={onSelectExperiment}
+            />
+            <MiniChart
+              data={trends}
+              valueKey="avg_sample_efficiency"
+              label="Avg Sample Efficiency"
+              color="var(--accent-cyan, #22d3ee)"
+              formatValue={v => v != null ? v.toFixed(3) : '--'}
+              scaleKey="sample_efficiency"
               onSelectExperiment={onSelectExperiment}
             />
           </div>

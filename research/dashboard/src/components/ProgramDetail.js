@@ -339,12 +339,35 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
     ? leaderboardEntry.tier
     : (typeof program?.tier === 'string' ? program.tier : '');
   const tier = String(entryTier || '').toLowerCase();
-  const hasInvestigationEvidence = (leaderboardEntry?.investigation_loss_ratio ?? program?.investigation_loss_ratio) != null;
+  // Use leaderboard/tier signals only; program-level stage1 heldout metrics
+  // can include fields named "validation_*" without formal validation promotion.
+  const hasInvestigationEvidence = leaderboardEntry?.investigation_loss_ratio != null;
+  const hasValidationEvidence = (
+    leaderboardEntry?.validation_loss_ratio != null
+    || leaderboardEntry?.validation_baseline_ratio != null
+    || Boolean(leaderboardEntry?.validation_passed)
+  );
+  const alreadyInvestigated = Boolean(
+    hasInvestigationEvidence || tier === 'investigation' || tier === 'validation' || tier === 'breakthrough'
+  );
+  const alreadyValidated = Boolean(
+    tier === 'validation' || tier === 'breakthrough' || hasValidationEvidence
+  );
   const fallbackEligibility = {
     investigationEligible: Boolean(program?.stage1_passed) && (tier === 'screening' && !hasInvestigationEvidence),
     validationEligible: tier === 'investigation' && Boolean(leaderboardEntry?.investigation_passed ?? program?.investigation_passed),
   };
   const resolvedEligibility = eligibilityByResultId?.[resultId] || fallbackEligibility;
+  const canInvestigate = Boolean(resolvedEligibility.investigationEligible || overrideIneligible);
+  const canValidate = Boolean(resolvedEligibility.validationEligible || overrideIneligible);
+  const investigateDisabled = actionStarting === 'investigate' || !canInvestigate;
+  const validateDisabled = actionStarting === 'validate' || !canValidate;
+  const investigateTitle = canInvestigate
+    ? 'Deep study with multiple training programs'
+    : 'Already investigated for this fingerprint. Enable override to run anyway.';
+  const validateTitle = canValidate
+    ? 'Publication-grade multi-seed validation'
+    : 'Already validated or not eligible. Enable override to run anyway.';
   const lastRefinedCandidate =
     refineTrace?.newCandidates?.[0]
     || refineLaunchHistory.find(item => item?.topCandidate)?.topCandidate
@@ -364,6 +387,8 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
           model_source: 'fingerprint_refine',
           refine_intent: intent,
           mutation_rate: 0.85,
+          preflight_override: true,
+          enforce_preflight: true,
           ...(refineAnalysis ? { refine_analysis_json: refineAnalysis } : {}),
         }),
       });
@@ -444,12 +469,12 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
               className="refresh-btn"
               aria-pressed={drawerMaximized}
               onClick={() => setDrawerMaximized(v => !v)}
-              style={{ fontSize: 12, padding: '5px 10px' }}
-              title={drawerMaximized ? 'Restore panel size' : 'Maximize panel'}
+              style={{ fontSize: 16, padding: '4px 8px' }}
+              title={drawerMaximized ? 'Exit fullscreen' : 'Expand to fullscreen'}
             >
-              {drawerMaximized ? 'Restore' : 'Maximize'}
+              {drawerMaximized ? '\u2750' : '\u2922'}
             </button>
-            <button className="refresh-btn" onClick={onClose} style={{ fontSize: 18, lineHeight: 1, padding: '4px 8px' }}>&times;</button>
+            <button className="close-btn" onClick={onClose}>&times;</button>
           </div>
         </div>
 
@@ -897,6 +922,13 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       {fmt(program.baseline_loss_ratio)} {program.baseline_loss_ratio < 1 ? '(beats transformer)' : ''}
                     </span> : null} />
                   <MetricRow label="Throughput" value={program.throughput_tok_s != null ? `${Number(program.throughput_tok_s).toFixed(0)} tok/s` : null} />
+                  <MetricRow label="Param Efficiency" value={program.param_efficiency != null ? fmt(program.param_efficiency) : (leaderboardEntry?.param_efficiency != null ? fmt(leaderboardEntry.param_efficiency) : null)} />
+                  <MetricRow label="Sample Efficiency" value={program.sample_efficiency != null ?
+                    <span style={{
+                      color: program.sample_efficiency >= 0.8 ? 'var(--accent-green)' : program.sample_efficiency >= 0.5 ? 'var(--accent-yellow)' : 'var(--accent-red)',
+                    }} title={`Converges to 25% initial loss in ${((1 - program.sample_efficiency) * 100).toFixed(0)}% of training budget`}>
+                      {fmt(program.sample_efficiency, 3)}
+                    </span> : null} />
                   <MetricRow label="Novelty" value={program.novelty_score != null ?
                     <span style={{
                       color: noveltyColor(program.novelty_score),
@@ -1130,6 +1162,8 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                                 scale_up_steps: scaleUpConfig.steps,
                                 scale_up_batch_size: scaleUpConfig.batch_size,
                                 scale_up_seq_len: scaleUpConfig.seq_len,
+                                preflight_override: true,
+                                enforce_preflight: true,
                               }),
                             });
                             if (!res.ok) {
@@ -1285,6 +1319,8 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                               investigation_batch_size: manualRunConfig.batch_size,
                               max_seq_len: manualRunConfig.seq_len,
                               data_mode: manualRunConfig.data_source,
+                              preflight_override: true,
+                              enforce_preflight: true,
                             };
                             if (manualRunConfig.data_source === 'huggingface') {
                               body.hf_dataset = manualRunConfig.hf_dataset;
@@ -1467,43 +1503,43 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                   />
                   Override ineligible guardrails
                 </label>
-                {(resolvedEligibility.investigationEligible || overrideIneligible) && (
-                  <button
-                    className="start-btn"
-                    disabled={actionStarting === 'investigate'}
-                    onClick={async () => {
-                      setActionStarting('investigate');
-                      try {
-                        setActionError(null);
-                        const res = await apiCall(`/api/experiments/start`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            mode: 'investigation',
-                            result_ids: [resultId],
-                            force: overrideIneligible,
-                            override_ineligible: overrideIneligible,
-                          }),
-                        });
-                        if (!res.ok) {
-                          const err = await res.json();
-                          setActionError(err.error || 'Failed to start investigation');
-                        } else {
-                          if (onActionComplete) onActionComplete();
-                          onClose();
-                        }
-                      } catch (e) {
-                        setActionError('Error: ' + e.message);
+                <button
+                  className="start-btn"
+                  disabled={investigateDisabled}
+                  onClick={async () => {
+                    setActionStarting('investigate');
+                    try {
+                      setActionError(null);
+                      const res = await apiCall(`/api/experiments/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          mode: 'investigation',
+                          result_ids: [resultId],
+                          force: overrideIneligible,
+                          override_ineligible: overrideIneligible,
+                          preflight_override: true,
+                          enforce_preflight: true,
+                        }),
+                      });
+                      if (!res.ok) {
+                        const err = await res.json();
+                        setActionError(err.error || 'Failed to start investigation');
+                      } else {
+                        if (onActionComplete) onActionComplete();
+                        onClose();
                       }
-                      setActionStarting(null);
-                    }}
-                    style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(63, 185, 80, 0.15)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
-                    title="Deep study with multiple training programs"
-                  >
-                    {actionStarting === 'investigate' ? 'Starting...' : 'Investigate'}
-                  </button>
-                )}
-                {!resolvedEligibility.investigationEligible && (leaderboardEntry?.tier === 'screening') && (
+                    } catch (e) {
+                      setActionError('Error: ' + e.message);
+                    }
+                    setActionStarting(null);
+                  }}
+                  style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(63, 185, 80, 0.15)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
+                  title={investigateTitle}
+                >
+                  {actionStarting === 'investigate' ? 'Starting...' : 'Investigate'}
+                </button>
+                {alreadyInvestigated && !overrideIneligible && (
                   <span style={{
                     fontSize: 11,
                     padding: '4px 8px',
@@ -1514,41 +1550,52 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                     Already investigated
                   </span>
                 )}
-                {(resolvedEligibility.validationEligible || overrideIneligible) && (
-                  <button
-                    className="start-btn"
-                    disabled={actionStarting === 'validate'}
-                    onClick={async () => {
-                      setActionStarting('validate');
-                      try {
-                        setActionError(null);
-                        const res = await apiCall(`/api/experiments/start`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            mode: 'validation',
-                            result_ids: [resultId],
-                            force: overrideIneligible,
-                            override_ineligible: overrideIneligible,
-                          }),
-                        });
-                        if (!res.ok) {
-                          const err = await res.json();
-                          setActionError(err.error || 'Failed to start validation');
-                        } else {
-                          if (onActionComplete) onActionComplete();
-                          onClose();
-                        }
-                      } catch (e) {
-                        setActionError('Error: ' + e.message);
+                <button
+                  className="start-btn"
+                  disabled={validateDisabled}
+                  onClick={async () => {
+                    setActionStarting('validate');
+                    try {
+                      setActionError(null);
+                      const res = await apiCall(`/api/experiments/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          mode: 'validation',
+                          result_ids: [resultId],
+                          force: overrideIneligible,
+                          override_ineligible: overrideIneligible,
+                          preflight_override: true,
+                          enforce_preflight: true,
+                        }),
+                      });
+                      if (!res.ok) {
+                        const err = await res.json();
+                        setActionError(err.error || 'Failed to start validation');
+                      } else {
+                        if (onActionComplete) onActionComplete();
+                        onClose();
                       }
-                      setActionStarting(null);
-                    }}
-                    style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(188, 140, 255, 0.15)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
-                    title="Publication-grade multi-seed validation"
-                  >
-                    {actionStarting === 'validate' ? 'Starting...' : 'Validate'}
-                  </button>
+                    } catch (e) {
+                      setActionError('Error: ' + e.message);
+                    }
+                    setActionStarting(null);
+                  }}
+                  style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(188, 140, 255, 0.15)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
+                  title={validateTitle}
+                >
+                  {actionStarting === 'validate' ? 'Starting...' : 'Validate'}
+                </button>
+                {alreadyValidated && !overrideIneligible && (
+                  <span style={{
+                    fontSize: 11,
+                    padding: '4px 8px',
+                    borderRadius: 4,
+                    background: 'rgba(88,166,255,0.12)',
+                    color: 'var(--accent-blue)',
+                  }} title="Candidate already has validation evidence. Enable override to rerun validation.">
+                    Already validated
+                  </span>
                 )}
                 {actionError && (
                   <span style={{ fontSize: 11, color: 'var(--accent-red)', alignSelf: 'center' }}>

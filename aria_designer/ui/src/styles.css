@@ -110,23 +110,35 @@ button[aria-expanded="true"] {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
+  left: -3px;
   width: 8px;
   cursor: col-resize;
   background: transparent;
-  border-left: 1px solid var(--border);
-  transition: background 0.2s;
-  z-index: 10;
+  border-left: 2px solid var(--border);
+  transition: background 0.15s, border-color 0.15s;
+  z-index: 20;
+  touch-action: none;
 }
 
 .resize-handle-left:hover, .resize-handle-left.resizing {
-  background: rgba(23, 163, 255, 0.15);
+  background: rgba(23, 163, 255, 0.2);
   border-left-color: var(--accent);
 }
 .resize-handle-left:focus-visible {
-  background: rgba(23, 163, 255, 0.2);
+  background: rgba(23, 163, 255, 0.25);
   border-left-color: var(--accent);
   outline: none;
+}
+
+/* Prevent text selection and pointer events on content while resizing */
+.page.is-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+.page.is-resizing iframe,
+.page.is-resizing .react-flow,
+.page.is-resizing .panel.right > *:not(.resize-handle-left) {
+  pointer-events: none;
 }
 
 .panel h2 { margin: 0 0 10px; font-size: 16px; }
@@ -378,6 +390,47 @@ button[aria-expanded="true"] {
   gap: 10px;
   border-color: rgba(68, 103, 133, 0.55);
   overflow: visible;
+}
+
+/* Arrange dropdown */
+.arrange-dropdown-wrap {
+  position: relative;
+}
+.arrange-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 180px;
+  background: var(--bg-secondary, #14263d);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 0;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  display: flex;
+  flex-direction: column;
+}
+.arrange-dropdown button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.arrange-dropdown button:hover {
+  background: rgba(23, 163, 255, 0.12);
+}
+.arrange-dropdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 8px;
 }
 
 .actions button {
@@ -1125,6 +1178,14 @@ button[aria-expanded="true"] {
   border-color: var(--danger);
   box-shadow: 0 0 12px rgba(255, 107, 107, 0.45);
 }
+.react-flow__node.node-invalid .designer-node {
+  border-color: var(--danger) !important;
+  box-shadow:
+    0 0 0 2px rgba(255, 80, 80, 0.35),
+    0 0 24px rgba(255, 80, 80, 0.48),
+    0 10px 22px rgba(0, 0, 0, 0.4) !important;
+  animation: error-glow 1.2s ease-in-out infinite alternate;
+}
 .designer-node.patch-preview-highlight {
   border-color: var(--accent-2);
   box-shadow: 0 0 15px rgba(36, 209, 160, 0.4);
@@ -1146,6 +1207,20 @@ button[aria-expanded="true"] {
 @keyframes eval-pulse {
   0%, 100% { box-shadow: 0 0 6px rgba(23, 163, 255, 0.25); }
   50% { box-shadow: 0 0 16px rgba(23, 163, 255, 0.55); }
+}
+@keyframes error-glow {
+  0% {
+    box-shadow:
+      0 0 0 1px rgba(255, 80, 80, 0.28),
+      0 0 10px rgba(255, 80, 80, 0.28),
+      0 10px 22px rgba(0, 0, 0, 0.35);
+  }
+  100% {
+    box-shadow:
+      0 0 0 2px rgba(255, 80, 80, 0.45),
+      0 0 26px rgba(255, 80, 80, 0.55),
+      0 10px 22px rgba(0, 0, 0, 0.42);
+  }
 }
 .node-eval-badge {
   display: flex; align-items: center; gap: 4px;

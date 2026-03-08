@@ -743,85 +743,59 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
 
   return (
     <div className="card" style={{ marginTop: 12, marginBottom: 0 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-          Aria Chat
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '0.5px' }}>Aria Chat</div>
           {messages.length > 0 && (
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 400 }}>
               ({messages.length})
             </span>
           )}
-          {autonomousMode && (
-            <span style={{
-              fontSize: 9, fontWeight: 700, textTransform: 'uppercase',
-              color: 'var(--accent-purple)',
-              background: 'rgba(137, 87, 229, 0.12)',
-              border: '1px solid var(--accent-purple)',
-              borderRadius: 4, padding: '1px 5px',
-            }}>
-              Autonomous
-            </span>
-          )}
-          {localHelper && (
-            <span
-              title={localHelper.model
-                ? `model=${localHelper.model}${localHelper.estimatedVramGb != null ? `, est=${localHelper.estimatedVramGb}GB` : ''}${localHelper.maxVramGb != null ? `, limit=${localHelper.maxVramGb}GB` : ''}`
-                : undefined}
-              style={{
-                fontSize: 9,
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                color: localHelper.enabled ? 'var(--accent-green, #4caf50)' : 'var(--text-muted)',
-                background: localHelper.enabled ? 'rgba(76, 175, 80, 0.12)' : 'var(--bg-primary)',
-                border: `1px solid ${localHelper.enabled ? 'var(--accent-green, #4caf50)' : 'var(--border)'}`,
-                borderRadius: 4,
-                padding: '1px 5px',
-              }}
-            >
-              Local LM: {localHelper.enabled ? 'ready' : localHelperReasonLabel(localHelper.reason)}
-            </span>
-          )}
-          <span
-            title="Aria code agent can directly patch Python and JavaScript files"
-            style={{
-              fontSize: 9,
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              color: 'var(--accent-blue)',
-              background: 'rgba(31, 111, 235, 0.12)',
-              border: '1px solid var(--accent-blue)',
-              borderRadius: 4,
-              padding: '1px 5px',
-            }}
-          >
-            Self-fix: .py/.js
-          </span>
+          <div style={{ display: 'flex', gap: 6, marginLeft: 4 }}>
+            {autonomousMode && (
+              <span style={{
+                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                color: 'var(--accent-purple)',
+                background: 'rgba(137, 87, 229, 0.12)',
+                border: '1px solid var(--accent-purple)',
+                borderRadius: 4, padding: '2px 6px',
+              }}>
+                Autonomous
+              </span>
+            )}
+            {localHelper && (
+              <span
+                title={localHelper.model
+                  ? `model=${localHelper.model}${localHelper.estimatedVramGb != null ? `, est=${localHelper.estimatedVramGb}GB` : ''}${localHelper.maxVramGb != null ? `, limit=${localHelper.maxVramGb}GB` : ''}`
+                  : undefined}
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  color: localHelper.enabled ? 'var(--accent-green, #4caf50)' : 'var(--text-muted)',
+                  background: localHelper.enabled ? 'rgba(76, 175, 80, 0.12)' : 'var(--bg-primary)',
+                  border: `1px solid ${localHelper.enabled ? 'var(--accent-green, #4caf50)' : 'var(--border)'}`,
+                  borderRadius: 4,
+                  padding: '2px 6px',
+                }}
+              >
+                Local LM: {localHelper.enabled ? 'ready' : localHelperReasonLabel(localHelper.reason)}
+              </span>
+            )}
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <span
-            title="Aria analyzes only on explicit request"
-            style={{
-              fontSize: 10,
-              padding: '2px 6px',
-              background: 'var(--bg-primary)',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              color: 'var(--text-secondary)',
-            }}
-          >
-            Auto: Off (Manual only)
-          </span>
+        <div style={{ display: 'flex', gap: 8 }}>
           {messages.length > 0 && (
             <button
               className="refresh-btn"
-              style={{ fontSize: 10, padding: '2px 6px' }}
+              style={{ fontSize: 11, padding: '4px 10px' }}
               onClick={handleClear}
             >
               Clear
             </button>
           )}
-          <button className="refresh-btn" onClick={refreshAnalysis} disabled={loading}>
-            {loading ? 'Loading...' : 'Ask for Action'}
+          <button className="refresh-btn" onClick={refreshAnalysis} disabled={loading} style={{ background: 'var(--accent-blue)', color: '#fff', borderColor: 'var(--accent-blue)', fontWeight: 600 }}>
+            {loading ? 'Thinking...' : 'Action Analysis'}
           </button>
         </div>
       </div>
@@ -855,31 +829,37 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
             <div
               key={m.id}
               style={{
-                padding: '8px 10px',
-                borderRadius: 6,
+                padding: '12px 16px',
+                borderRadius: 12,
+                position: 'relative',
                 ...(m.role === 'user' ? {
-                  background: 'var(--bg-tertiary)',
-                  marginLeft: 32,
-                  borderRight: '2px solid var(--accent-blue)',
+                  background: 'rgba(88, 166, 255, 0.1)',
+                  marginLeft: 40,
+                  border: '1px solid rgba(88, 166, 255, 0.2)',
+                  borderBottomRightRadius: 2,
                 } : m.role === 'system' ? {
                   background: 'var(--bg-primary)',
                   textAlign: 'center',
                   fontStyle: 'italic',
-                  borderLeft: 'none',
+                  border: '1px solid var(--border)',
+                  fontSize: 11,
+                  margin: '4px 20px',
                 } : {
                   background: m.isSummary ? 'rgba(137, 87, 229, 0.08)' : 'var(--bg-tertiary)',
-                  marginRight: 32,
-                  borderLeft: `2px solid ${m.isSummary ? 'var(--accent-purple)' : 'var(--accent-purple)'}`,
+                  marginRight: 40,
+                  border: `1px solid ${m.isSummary ? 'rgba(137, 87, 229, 0.3)' : 'var(--border)'}`,
+                  borderBottomLeftRadius: 2,
+                  borderLeft: `4px solid ${m.isSummary ? 'var(--accent-purple)' : 'var(--accent-purple)'}`,
                 }),
               }}
             >
-              <div style={{ display: 'flex', justifyContent: m.role === 'system' ? 'center' : 'space-between', gap: 8, marginBottom: 3 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              <div style={{ display: 'flex', justifyContent: m.role === 'system' ? 'center' : 'space-between', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: m.role === 'user' ? 'var(--accent-blue)' : 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                   {m.isSummary ? 'Summary' : m.label || (m.role === 'user' ? 'You' : m.role === 'system' ? 'System' : 'Aria')}
                 </span>
                 {m.role !== 'system' && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatTimestamp(m.timestamp)}</span>}
               </div>
-              <div style={{ fontSize: m.role === 'system' ? 11 : 12, lineHeight: 1.45, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{m.text}</div>
+              <div style={{ fontSize: 14, lineHeight: 1.5, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>{m.text}</div>
               {renderAgentTask(m)}
               {renderActions(m)}
               {renderLocalEvidence(m)}
@@ -888,9 +868,8 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-        <input
-          type="text"
+      <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'flex-end' }}>
+        <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -901,20 +880,26 @@ function AriaChatPanel({ isRunning, autonomousMode, onAutonomousEnd }) {
           }}
           placeholder="Ask Aria about the latest results..."
           aria-label="Message to Aria"
+          rows={Math.min(5, draft.split('\n').length || 1)}
           style={{
             flex: 1,
             background: 'var(--bg-primary)',
             border: '1px solid var(--border)',
-            borderRadius: 6,
+            borderRadius: 8,
             color: 'var(--text-primary)',
-            fontSize: 12,
-            padding: '8px 10px',
+            fontSize: 13,
+            padding: '10px 14px',
+            resize: 'none',
+            minHeight: '42px',
+            lineHeight: '1.5',
+            fontFamily: 'inherit',
           }}
         />
         <button
           className="refresh-btn"
           onClick={sendMessage}
           disabled={sending || !draft.trim()}
+          style={{ height: '42px', minWidth: '80px' }}
           aria-label={sending ? 'Sending message, please wait' : 'Send message'}
           aria-busy={sending}
         >

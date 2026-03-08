@@ -1,0 +1,70 @@
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  pointer-events: none;
+}
+.empty-state-content {
+  pointer-events: all;
+  background: radial-gradient(circle at top, rgba(10, 25, 47, 0.95), rgba(5, 10, 21, 0.98));
+  border: 1px solid rgba(73, 111, 143, 0.56);
+  border-radius: 18px;
+  padding: 34px 32px;
+  max-width: 560px;
+  text-align: center;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+}
+.empty-state-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(97, 150, 194, 0.6);
+  color: #b9ddfb;
+  background: linear-gradient(180deg, rgba(20, 54, 84, 0.88), rgba(14, 33, 52, 0.9));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.empty-state h2 { font-size: 25px; margin-bottom: 10px; }
+.empty-state p { color: #bdd4e9; margin-bottom: 16px; }
+.empty-state-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.empty-state-help {
+  text-align: left;
+  border-top: 1px solid rgba(67, 104, 135, 0.48);
+  padding-top: 14px;
+}
+.empty-state-help h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9fc6e7;
+}
+.empty-state-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.empty-state-shortcuts span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #aed0eb;
+  border: 1px solid rgba(74, 119, 153, 0.6);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(15, 33, 52, 0.85);
+}

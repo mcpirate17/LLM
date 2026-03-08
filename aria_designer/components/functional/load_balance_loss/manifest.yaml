@@ -1,0 +1,52 @@
+id: load_balance_loss
+version: 1.0.0
+name: Load Balance Loss
+category: functional
+tags:
+- functional
+- adaptive_compute
+- loss
+status: approved
+description: Auxiliary loss enforcing balanced lane utilization via L2(actual_fracs - target_fracs)
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  num_lanes:
+    type: integer
+    default: 3
+    description: Number of processing lanes
+  loss_weight:
+    type: float
+    default: 0.01
+    description: Weight for the auxiliary balance loss
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: '0'
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  Computes auxiliary loss to encourage balanced utilization across lanes.
+
+  Loss = loss_weight * L2(actual_lane_fractions - target_fractions).
+  Target fractions default to uniform (1/num_lanes each).
+  Loss is stashed as _aux_loss on the module for the training loop to pick up.
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: y:tensor[B, S, D] (passthrough).
+  Params: num_lanes (integer), loss_weight (float).
+
+  ### Plain Language
+  Encourages the router to send roughly equal numbers of tokens to each lane,
+  preventing all tokens from being routed to a single easy lane.

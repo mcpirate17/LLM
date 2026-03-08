@@ -14,13 +14,13 @@ export function MorphPanel({ resultId, onSelectCandidate }) {
     setError(null);
     setCandidates(null);
     try {
-      const res = await apiCall(`/api/programs/\${resultId}/morph`, {
+      const res = await apiCall(`/api/programs/${resultId}/morph`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intent, n_candidates: 6, use_analysis: true }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || `HTTP \${res.status}`);
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       setCandidates(data.candidates || []);
       setSourceOps(data.source_ops || []);
     } catch (err) {
@@ -45,7 +45,7 @@ export function MorphPanel({ resultId, onSelectCandidate }) {
                 fontSize: 10,
                 padding: '2px 8px',
                 borderRadius: 10,
-                border: intent === i.key ? `1.5px solid \${i.color}` : '1px solid var(--border)',
+                border: intent === i.key ? `1.5px solid ${i.color}` : '1px solid var(--border)',
                 background: intent === i.key ? 'var(--bg-tertiary)' : 'none',
                 color: intent === i.key ? i.color : 'var(--text-muted)',
                 cursor: 'pointer',
@@ -64,7 +64,7 @@ export function MorphPanel({ resultId, onSelectCandidate }) {
             fontSize: 11,
             padding: '3px 12px',
             borderRadius: 4,
-            border: `1px solid \${intentColor}`,
+            border: `1px solid ${intentColor}`,
             background: 'none',
             color: intentColor,
             cursor: loading ? 'wait' : 'pointer',
@@ -118,15 +118,15 @@ export function MorphPanel({ resultId, onSelectCandidate }) {
               </div>
               <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
                 {c.added_ops.map(op => (
-                  <span key={`+\${op}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(80,200,120,0.15)', color: 'var(--accent-green)' }}>+{op}</span>
+                  <span key={`+${op}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(80,200,120,0.15)', color: 'var(--accent-green)' }}>+{op}</span>
                 ))}
                 {c.removed_ops.map(op => (
-                  <span key={`-\${op}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(255,100,100,0.15)', color: 'var(--accent-red)' }}>-{op}</span>
+                  <span key={`-${op}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(255,100,100,0.15)', color: 'var(--accent-red)' }}>-{op}</span>
                 ))}
               </div>
               <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
                 {Object.entries(c.score_breakdown || {}).map(([k, v]) => (
-                  <div key={k} title={`\${k}: \${(v * 100).toFixed(0)}%`} style={{ width: 4, height: Math.max(4, v * 28), background: intentColor, borderRadius: 2, opacity: 0.5 + v * 0.5 }} />
+                  <div key={k} title={`${k}: ${(v * 100).toFixed(0)}%`} style={{ width: 4, height: Math.max(4, v * 28), background: intentColor, borderRadius: 2, opacity: 0.5 + v * 0.5 }} />
                 ))}
               </div>
             </div>

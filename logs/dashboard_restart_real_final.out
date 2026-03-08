@@ -1,0 +1,72 @@
+2026-03-08 13:01:39 INFO     [research.scientist.api] Logging to /home/tim/Projects/LLM/research/aria_dashboard.log
+2026-03-08 13:01:39 INFO     [research.scientist.llm.anthropic] Using default Anthropic model alias: claude-sonnet-4-5-20250929
+2026-03-08 13:01:40 INFO     [research.scientist.persona] Aria LLM reconfigured: anthropic
+2026-03-08 13:01:40 INFO     [research.scientist.api] Loaded persisted LLM config: anthropic
+2026-03-08 13:01:40 INFO     [research.scientist.api] Starting Aria's Dashboard API on http://0.0.0.0:5000
+Starting Aria's Dashboard API on http://0.0.0.0:5000
+ * Serving Flask app 'research.scientist.api'
+ * Debug mode: off
+2026-03-08 13:01:40 INFO     [werkzeug] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.50.191:5000
+2026-03-08 13:01:40 INFO     [werkzeug] [33mPress CTRL+C to quit[0m
+2026-03-08 13:01:47 INFO     [research.scientist.runner] Restored grammar weight overrides from DB: {'elementwise_binary': 2.8, 'elementwise_unary': 2.0, 'functional': 2.2, 'linear_algebra': 1.5, 'math_space': 3.0, 'math_space_weight': 2.0, 'mixing': 1.3, 'parameterized': 2.8, 'sequence': 0.8, 'structural': 2.5}
+2026-03-08 13:01:47 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:01:47] "GET /api/status HTTP/1.1" 200 -
+2026-03-08 13:08:08 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:08:08] "[36mGET / HTTP/1.1[0m" 304 -
+2026-03-08 13:08:08 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:08:08] "GET /api/live-loss-curve HTTP/1.1" 200 -
+2026-03-08 13:08:26 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:08:26] "GET /api/programs?n=50&sort=novelty_score HTTP/1.1" 200 -
+2026-03-08 13:08:26 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:08:26] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:08:38 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:08:38] "GET /api/live-loss-curve HTTP/1.1" 200 -
+2026-03-08 13:09:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:09:13] "POST /api/designer/ensure-running HTTP/1.1" 200 -
+2026-03-08 13:09:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:09:13] "[36mGET /designer-proxy/?mode=readonly&embedded=1&origin=http://0.0.0.0:5000 HTTP/1.1[0m" 304 -
+2026-03-08 13:09:13 WARNING  [research.scientist.api] GET /api/v1/components -> 404
+2026-03-08 13:09:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:09:13] "[33mGET /api/v1/components?status=approved HTTP/1.1[0m" 404 -
+2026-03-08 13:09:15 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:09:15] "POST /api/v1/constraints/palette HTTP/1.1" 200 -
+2026-03-08 13:09:19 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:09:19] "POST /api/v1/constraints/palette HTTP/1.1" 200 -
+2026-03-08 13:14:27 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:14:27] "GET / HTTP/1.1" 200 -
+2026-03-08 13:14:27 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:14:27] "GET /api/live-loss-curve HTTP/1.1" 200 -
+2026-03-08 13:17:10 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:10] "GET / HTTP/1.1" 200 -
+2026-03-08 13:17:10 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:10] "GET /api/live-loss-curve HTTP/1.1" 200 -
+2026-03-08 13:17:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:13] "GET /api/programs?n=50&sort=novelty_score HTTP/1.1" 200 -
+2026-03-08 13:17:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:17:36 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:36] "POST /api/designer/ensure-running HTTP/1.1" 200 -
+2026-03-08 13:17:42 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:42] "GET /api/programs/ec4f0207-bb8 HTTP/1.1" 200 -
+2026-03-08 13:17:42 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:42] "GET /designer-proxy/?mode=readonly&embedded=1&origin=http://0.0.0.0:5000&result_id=ec4f0207-bb8 HTTP/1.1" 200 -
+2026-03-08 13:17:42 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:42] "GET /api/v1/components?status=approved HTTP/1.1" 200 -
+2026-03-08 13:17:42 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:42] "POST /api/v1/import/survivors/ec4f0207-bb8 HTTP/1.1" 200 -
+2026-03-08 13:17:43 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:17:43] "POST /api/v1/constraints/palette HTTP/1.1" 200 -
+2026-03-08 13:18:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:18:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:19:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:19:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:20:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:20:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:20:26 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:20:26] "HEAD /api/v1/components HTTP/1.1" 200 -
+2026-03-08 13:20:48 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:20:48] "HEAD /api/v1/components?status=approved HTTP/1.1" 200 -
+2026-03-08 13:21:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:21:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:21:14 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:21:14] "GET /api/v1/components?status=approved HTTP/1.1" 200 -
+2026-03-08 13:21:20 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:21:20] "HEAD /api/dashboard HTTP/1.1" 200 -
+2026-03-08 13:22:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:22:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:22:20 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:22:20] "GET /api/experiments HTTP/1.1" 200 -
+2026-03-08 13:23:02 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:23:02] "GET /api/v1/components?status=approved HTTP/1.1" 200 -
+2026-03-08 13:23:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:23:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:23:55 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:23:55] "GET /api/v1/components?status=approved HTTP/1.1" 200 -
+2026-03-08 13:24:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:24:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:24:55 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:24:55] "GET /api/v1/components HTTP/1.1" 200 -
+2026-03-08 13:25:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:25:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:25:38 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:25:38] "GET /api/analytics/efficiency-frontier HTTP/1.1" 200 -
+2026-03-08 13:25:38 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:25:38] "GET /api/programs?limit=50 HTTP/1.1" 200 -
+2026-03-08 13:26:08 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:26:08] "GET /api/v1/components?status=approved HTTP/1.1" 200 -
+2026-03-08 13:26:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:26:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:26:47 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:26:47] "GET /api/programs?limit=50 HTTP/1.1" 200 -
+2026-03-08 13:27:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:27:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:28:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:28:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:29:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:29:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:30:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:30:13] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:30:16 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:30:16] "GET /api/live-loss-curve HTTP/1.1" 200 -
+2026-03-08 13:30:26 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:30:26] "GET / HTTP/1.1" 200 -
+2026-03-08 13:30:26 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:30:26] "GET /api/live-loss-curve HTTP/1.1" 200 -
+2026-03-08 13:30:30 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:30:30] "GET /api/programs?n=50&sort=novelty_score HTTP/1.1" 200 -
+2026-03-08 13:30:30 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:30:30] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:31:30 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:31:30] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+2026-03-08 13:32:30 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:32:30] "GET /api/discoveries?sort=composite_score&limit=200&view=ranked&tier=validation HTTP/1.1" 200 -
+Stopping dev servers...
+Stopped.

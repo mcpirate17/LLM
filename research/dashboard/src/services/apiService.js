@@ -4,6 +4,7 @@
  */
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
+const DEFAULT_TIMEOUT_MS = 15000;
 
 async function handleResponse(response) {
   if (!response.ok) {
@@ -22,20 +23,32 @@ async function handleResponse(response) {
  * Generic request helper to reduce boilerplate.
  */
 export const apiCall = (endpoint, options = {}) => {
+  const { timeoutMs: timeoutOpt, ...requestOptions } = options;
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
+  const timeoutMs = Number.isFinite(Number(timeoutOpt))
+    ? Number(timeoutOpt)
+    : DEFAULT_TIMEOUT_MS;
+  const controller = requestOptions.signal ? null : new AbortController();
   const config = {
-    ...options,
+    ...requestOptions,
     headers: {
-      ...options.headers,
+      ...requestOptions.headers,
     },
+    signal: requestOptions.signal || controller?.signal,
   };
-  
-  if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+
+  if (requestOptions.body && typeof requestOptions.body === 'object' && !(requestOptions.body instanceof FormData)) {
     config.headers['Content-Type'] = 'application/json';
-    config.body = JSON.stringify(options.body);
+    config.body = JSON.stringify(requestOptions.body);
   }
 
-  return fetch(url, config);
+  let timeoutId = null;
+  if (controller && timeoutMs > 0) {
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  }
+  return fetch(url, config).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
 };
 
 const get = (endpoint) => apiCall(endpoint, { method: 'GET' }).then(handleResponse);
@@ -65,6 +78,7 @@ export const apiService = {
   getLeaderboard: (params = '') => get(`/api/leaderboard${params}`),
   getReferences: () => get(`/api/references`),
   getRegressionVsBaseline: (limit = 200) => get(`/api/analytics/regression-vs-baseline?limit=${limit}`),
+  getEfficiencyFrontier: () => get(`/api/analytics/efficiency-frontier`),
 
   // Knowledge & Campaigns
   getCampaigns: () => get(`/api/campaigns`),

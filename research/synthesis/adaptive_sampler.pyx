@@ -149,7 +149,7 @@ class AdaptiveGenerator:
                 params_acc + op_p,
                 flops_acc + op_f
             )
-        except:
+        except Exception:
             return
 
     def _choose_action_adaptive(self, rng, depth, p_acc, f_acc):

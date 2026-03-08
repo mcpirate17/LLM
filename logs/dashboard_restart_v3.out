@@ -1,0 +1,10 @@
+2026-03-08 12:57:55 INFO     [research.scientist.api] Logging to /home/tim/Projects/LLM/research/aria_dashboard.log
+2026-03-08 12:57:55 INFO     [research.scientist.llm.anthropic] Using default Anthropic model alias: claude-sonnet-4-5-20250929
+2026-03-08 12:57:55 INFO     [research.scientist.persona] Aria LLM reconfigured: anthropic
+2026-03-08 12:57:55 INFO     [research.scientist.api] Loaded persisted LLM config: anthropic
+2026-03-08 12:57:55 INFO     [research.scientist.api] Starting Aria's Dashboard API on http://0.0.0.0:5000
+Starting Aria's Dashboard API on http://0.0.0.0:5000
+ * Serving Flask app 'research.scientist.api'
+ * Debug mode: off
+Address already in use
+Port 5000 is in use by another program. Either identify and stop that program, or start the server with a different port.

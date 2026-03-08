@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import AriaAvatar from './AriaAvatar';
 
 function StatusBar({
@@ -11,21 +11,26 @@ function StatusBar({
   learningTrajectory,
   productionReadiness,
 }) {
+  const [showTechnical, setShowTechnical] = useState(false);
   const mood = aria?.mood || 'curious';
 
   // Activity text
   let activityText;
-  if (isRunning && progress) {
+  if (ariaCycle && ariaCycle.continuous_active && !ariaCycle.cycle_paused) {
+    const cycleIdx = ariaCycle.cycle_index || 0;
+    const mode = (ariaCycle.selected_mode || ariaCycle.last_completed_mode || 'idle');
+    const phase = ariaCycle.phase_label || ariaCycle.phase || (progress?.status || 'Idle');
+    activityText = `Autonomous cycle ${cycleIdx} · ${mode} · ${phase}`;
+  } else if (ariaCycle && ariaCycle.cycle_paused && isRunning && progress) {
+    const expId = progress.experiment_id ? String(progress.experiment_id).slice(0, 12) : '';
+    const status = progress.status || 'running';
+    activityText = `Autonomous paused · current experiment ${expId} — ${status}`;
+  } else if (isRunning && progress) {
     const expId = progress.experiment_id ? String(progress.experiment_id).slice(0, 12) : '';
     const status = progress.status || 'running';
     const current = progress.current ?? '';
     const total = progress.total ?? '';
     activityText = `Running experiment ${expId} — ${status}${current !== '' && total !== '' ? `, ${current}/${total} programs` : ''}`;
-  } else if (ariaCycle && ariaCycle.continuous_active) {
-    const cycleIdx = ariaCycle.cycle_index || 0;
-    const mode = (ariaCycle.selected_mode || ariaCycle.last_completed_mode || 'idle');
-    const phase = ariaCycle.phase_label || ariaCycle.phase || 'Idle';
-    activityText = `Cycle ${cycleIdx} · ${mode} · ${phase}`;
   } else {
     const hyp = aria?.current_hypothesis;
     activityText = hyp ? `Idle — ${String(hyp).slice(0, 100)}` : 'Idle — ready for next run';
@@ -70,15 +75,22 @@ function StatusBar({
     }
   }
 
+  // Use rgba overlay on a neutral base — hex shorthand alpha (#rrggbbAA) does not
+  // work when the value is a CSS variable reference, only with literal hex strings.
   const badgeStyle = (color) => ({
-    display: 'inline-block',
+    display: 'inline-flex',
+    alignItems: 'center',
     padding: '2px 8px',
     borderRadius: 12,
     fontSize: 11,
     fontWeight: 600,
-    background: `${color}20`,
+    background: 'rgba(255,255,255,0.06)',
     color,
-    border: `1px solid ${color}40`,
+    border: `1px solid ${color === 'var(--accent-green)' ? 'rgba(63,185,80,0.4)'
+      : color === 'var(--accent-red)' ? 'rgba(248,81,73,0.4)'
+      : color === 'var(--accent-yellow)' ? 'rgba(210,153,34,0.4)'
+      : color === 'var(--accent-purple)' ? 'rgba(0,212,255,0.4)'
+      : 'rgba(88,166,255,0.4)'}`,
   });
 
   const nativeRunner = progress?.native_runner || null;
@@ -166,7 +178,17 @@ function StatusBar({
           </div>
         )}
 
-        {isRunning && nativeSummary && (
+        <button
+          className="refresh-btn"
+          style={{ fontSize: 11, padding: '3px 8px' }}
+          aria-expanded={showTechnical}
+          aria-label={showTechnical ? 'Hide technical diagnostics' : 'Show technical diagnostics'}
+          onClick={() => setShowTechnical(!showTechnical)}
+        >
+          {showTechnical ? 'Hide Diagnostics' : 'Diagnostics'}
+        </button>
+
+        {showTechnical && isRunning && nativeSummary && (
           <span
             style={badgeStyle(nativeRunner.enabled ? 'var(--accent-blue)' : 'var(--accent-red)')}
             title={nativeRunner ? JSON.stringify(nativeRunner) : ''}
@@ -176,7 +198,7 @@ function StatusBar({
             {nativeRunner?.selective_execution?.layer_exec_enabled ? ` · L ${selectiveApplied}/${selectiveSkipped}` : ''}
           </span>
         )}
-        {isRunning && nativeRunner && (
+        {showTechnical && isRunning && nativeRunner && (
           <span
             style={badgeStyle(abiBadgeColor)}
             title={
@@ -189,7 +211,7 @@ function StatusBar({
             {abiParityMaxAbsText ? ` · ${abiParityMaxAbsText}` : ''}
           </span>
         )}
-        {isRunning && nativeRunner && (
+        {showTechnical && isRunning && nativeRunner && (
           <span style={badgeStyle(
             cutoverState === 'pending'
               ? 'var(--accent-blue)'

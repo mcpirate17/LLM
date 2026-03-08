@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiCall } from '../../services/apiService';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -6,7 +7,7 @@ export default function NegativeResultsSummary() {
   const [data, setData] = useState(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/analytics/negative-results`)
+    apiCall(`/api/analytics/negative-results`)
       .then(r => r.ok ? r.json() : null)
       .then(d => setData(d))
       .catch(() => {});

@@ -4,10 +4,10 @@
   "name": "RWKV Reference",
   "nodes": [
     {"id": "n_input", "component_type": "data_io/random_data_source", "params": {"batch_size": 2, "seq_len": 16, "feature_dim": 256}, "ui_meta": {"position": {"x": 300, "y": 40}}},
-    {"id": "n_ln1", "component_type": "normalization/rmsnorm", "params": {}, "ui_meta": {"position": {"x": 300, "y": 140}}},
+    {"id": "n_ln1", "component_type": "normalization/rmsnorm_pre", "params": {}, "ui_meta": {"position": {"x": 300, "y": 140}}},
     {"id": "n_time_mix", "component_type": "mixing/rwkv_time_mixing", "params": {}, "ui_meta": {"position": {"x": 300, "y": 240}}},
     {"id": "n_res1", "component_type": "math/add", "params": {}, "ui_meta": {"position": {"x": 500, "y": 340}}},
-    {"id": "n_ln2", "component_type": "normalization/rmsnorm", "params": {}, "ui_meta": {"position": {"x": 300, "y": 440}}},
+    {"id": "n_ln2", "component_type": "normalization/rmsnorm_pre", "params": {}, "ui_meta": {"position": {"x": 300, "y": 440}}},
     {"id": "n_channel_mix", "component_type": "channel_mixing/rwkv_channel", "params": {}, "ui_meta": {"position": {"x": 300, "y": 540}}},
     {"id": "n_res2", "component_type": "math/add", "params": {}, "ui_meta": {"position": {"x": 500, "y": 640}}},
     {"id": "n_out", "component_type": "structural/multi_head_mix", "params": {"n_heads": 8}, "ui_meta": {"position": {"x": 300, "y": 740}}}

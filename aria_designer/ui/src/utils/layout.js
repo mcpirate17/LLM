@@ -110,9 +110,9 @@ export function normalizeNodePlacement(nodes, options = {}) {
   })
 }
 
-function asIdSet(nodes) {
+function asIdSet(items) {
   const out = new Set()
-  for (const n of nodes || []) out.add(n.id)
+  for (const item of items || []) out.add(typeof item === 'string' ? item : item.id)
   return out
 }
 

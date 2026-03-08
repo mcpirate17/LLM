@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useEventBus } from './useEventBus';
+import { apiCall } from '../services/apiService';
 
 const AriaDataContext = createContext(null);
 
@@ -25,15 +26,21 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
 
   const apiBaseRef = useRef(apiBase);
   apiBaseRef.current = apiBase;
+  const inFlightRef = useRef(false);
+  const abortRef = useRef(null);
 
   const fetchSharedData = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     const base = apiBaseRef.current;
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const [ltRes, lbRes, mcRes, fpRes] = await Promise.all([
-        fetch(`${base}/api/analytics/learning-trajectory`),
-        fetch(`${base}/api/leaderboard?sort=composite_score&limit=300`),
-        fetch(`${base}/api/analytics/math-family-coverage`),
-        fetch(`${base}/api/diagnostics/fingerprint`),
+        apiCall(`/api/analytics/learning-trajectory`, { signal: controller.signal }),
+        apiCall(`/api/leaderboard?sort=composite_score&limit=300`, { signal: controller.signal }),
+        apiCall(`/api/analytics/math-family-coverage`, { signal: controller.signal }),
+        apiCall(`/api/diagnostics/fingerprint`, { signal: controller.signal }),
       ]);
 
       // Parse all responses (tolerant of individual failures)
@@ -53,6 +60,11 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       setLastUpdated(Date.now());
     } catch {
       // Silently fail — keep stale data rather than clearing
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
+      inFlightRef.current = false;
     }
   }, []);
 
@@ -67,14 +79,29 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     return () => clearInterval(interval);
   }, [fetchSharedData, isRunning]);
 
+  useEffect(() => () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  }, []);
+
   // SSE-driven refresh on experiment/cycle completion
+  const sseTimersRef = useRef([]);
+
   useEventBus('experiment_completed', useCallback(() => {
-    setTimeout(fetchSharedData, 2000);
+    sseTimersRef.current.push(setTimeout(fetchSharedData, 2000));
   }, [fetchSharedData]));
 
   useEventBus('aria_cycle_completed', useCallback(() => {
-    setTimeout(fetchSharedData, 2000);
+    sseTimersRef.current.push(setTimeout(fetchSharedData, 2000));
   }, [fetchSharedData]));
+
+  // Cancel SSE-driven timers on unmount
+  useEffect(() => () => {
+    sseTimersRef.current.forEach(clearTimeout);
+    sseTimersRef.current = [];
+  }, []);
 
   return (
     <AriaDataContext.Provider value={{

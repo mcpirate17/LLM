@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { apiCall } from '../services/apiService';
 import { useAriaData } from '../hooks/useAriaData';
 import { NarrativeProvider } from '../hooks/useNarrative';
 
@@ -195,26 +196,27 @@ function LearningPanel({ onNavigateStrategy, onStartExperiment }) {
   };
 
   useEffect(() => {
-    const safeFetch = (url) => fetch(url).then(r => {
-      if (!r.ok) throw new Error(`HTTP \${r.status}`);
+    const controller = new AbortController();
+    const safeFetch = (url) => apiCall(url, { signal: controller.signal }).then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }).catch(() => null);
 
     Promise.all([
-      safeFetch(`\${API_BASE}/api/analytics/grammar-weights`),
-      safeFetch(`\${API_BASE}/api/analytics/op-success`),
-      safeFetch(`\${API_BASE}/api/analytics/learning-log`),
-      safeFetch(`\${API_BASE}/api/analytics/efficiency-frontier`),
-      safeFetch(`\${API_BASE}/api/analytics/experiment-clusters`),
-      safeFetch(`\${API_BASE}/api/analytics/routing-health`),
-      safeFetch(`\${API_BASE}/api/analytics/routing-comparison`),
-      safeFetch(`\${API_BASE}/api/analytics/gating-diagnostics`),
-      safeFetch(`\${API_BASE}/api/analytics/mathspace-impact`),
-      safeFetch(`\${API_BASE}/api/analytics/compression-coverage`),
-      safeFetch(`\${API_BASE}/api/analytics/learning-summary`),
-      safeFetch(`\${API_BASE}/api/programs?n=100&sort_by=loss_ratio`),
-      safeFetch(`\${API_BASE}/api/analytics/control-comparison`),
-      safeFetch(`\${API_BASE}/api/analytics/insight-interactions`),
+      safeFetch(`${API_BASE}/api/analytics/grammar-weights`),
+      safeFetch(`${API_BASE}/api/analytics/op-success`),
+      safeFetch(`${API_BASE}/api/analytics/learning-log`),
+      safeFetch(`${API_BASE}/api/analytics/efficiency-frontier`),
+      safeFetch(`${API_BASE}/api/analytics/experiment-clusters`),
+      safeFetch(`${API_BASE}/api/analytics/routing-health`),
+      safeFetch(`${API_BASE}/api/analytics/routing-comparison`),
+      safeFetch(`${API_BASE}/api/analytics/gating-diagnostics`),
+      safeFetch(`${API_BASE}/api/analytics/mathspace-impact`),
+      safeFetch(`${API_BASE}/api/analytics/compression-coverage`),
+      safeFetch(`${API_BASE}/api/analytics/learning-summary`),
+      safeFetch(`${API_BASE}/api/programs?n=100&sort_by=loss_ratio`),
+      safeFetch(`${API_BASE}/api/analytics/control-comparison`),
+      safeFetch(`${API_BASE}/api/analytics/insight-interactions`),
     ]).then(([w, ops, lg, fr, cl, rh, rc, gd, mi, cc, ls, tp, ctrl, si]) => {
       if (!w && !ops && !lg && !fr && !cl && !rh && !rc && !gd && !mi && !cc && !ls && !si) {
         setError('Failed to load analytics data. The API may be unavailable.');
@@ -236,9 +238,13 @@ function LearningPanel({ onNavigateStrategy, onStartExperiment }) {
       setLastUpdated(new Date());
       setLoading(false);
     }).catch(e => {
-      setError('Failed to load analytics: ' + e.message);
+      if (e.name !== 'AbortError') {
+        setError('Failed to load analytics: ' + e.message);
+      }
       setLoading(false);
     });
+
+    return () => controller.abort();
   }, []);
 
   if (loading) {

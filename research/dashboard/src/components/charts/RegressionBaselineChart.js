@@ -48,7 +48,7 @@ export function RegressionBaselineChart({ points, frontier }) {
   const frontierPath = (frontier || [])
     .map((p, i) => {
       const pt = project(Number(p.throughput_tok_s || 0), Number(p.baseline_loss_ratio || 0));
-      return `\${i === 0 ? 'M' : 'L'} \${pt.x} \${pt.y}`;
+      return `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`;
     })
     .join(' ');
 
@@ -74,7 +74,7 @@ export function RegressionBaselineChart({ points, frontier }) {
   const histW = 40;
 
   return (
-    <svg width={W} height={H} viewBox={`0 0 \${W} \${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
       <defs>
         <filter id="paretoGlow" x="-50%" y="-50%" width="200%" height="200%">
           <feDropShadow dx="0" dy="0" stdDeviation="1.4" floodColor={frontierColor} floodOpacity="0.85" />
@@ -83,7 +83,7 @@ export function RegressionBaselineChart({ points, frontier }) {
       <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
       <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
       <text x={W / 2} y={H - 6} textAnchor="middle" fontSize={10} fill="var(--text-muted)">Throughput (tok/s)</text>
-      <text x={8} y={H / 2} transform={`rotate(-90 8 \${H / 2})`} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
+      <text x={8} y={H / 2} transform={`rotate(-90 8 ${H / 2})`} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
         Baseline Ratio (lower is better)
       </text>
       {validPoints.map((p, idx) => {
@@ -93,7 +93,7 @@ export function RegressionBaselineChart({ points, frontier }) {
         const beats = baseY < 1.0;
         return (
           <circle
-            key={`\${p.result_id || idx}`}
+            key={`${p.result_id || idx}`}
             cx={pt.x}
             cy={pt.y}
             r={3}
@@ -101,7 +101,7 @@ export function RegressionBaselineChart({ points, frontier }) {
             opacity={0.85}
           >
             <title>
-              {`\${(p.result_id || '').slice(0, 12)} | baseline=\${Number(p.baseline_loss_ratio || 0).toFixed(3)} | throughput=\${Math.round(Number(p.throughput_tok_s || 0))} tok/s`}
+              {`${(p.result_id || '').slice(0, 12)} | baseline=${Number(p.baseline_loss_ratio || 0).toFixed(3)} | throughput=${Math.round(Number(p.throughput_tok_s || 0))} tok/s`}
             </title>
           </circle>
         );
@@ -134,7 +134,7 @@ export function RegressionBaselineChart({ points, frontier }) {
           const w = (count / histMax) * (histW - 4);
           return (
             <rect
-              key={`hist-\${i}`}
+              key={`hist-${i}`}
               x={histX}
               y={y + 1}
               width={w}

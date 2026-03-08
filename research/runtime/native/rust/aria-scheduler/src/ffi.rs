@@ -81,6 +81,24 @@ extern "C" {
     pub fn aria_registry_init();
     pub fn nk_is_registered(op_name: *const c_char) -> i32;
     pub fn nk_dispatch(op_name: *const c_char) -> *const NkRegistration;
+    // ── Tier 3 / Research Math Spaces ────────────────────────────────
+    pub fn aria_exp_map_f32(x: *const f32, y: *mut f32, batch: i64, dim: i64, c: f32);
+    pub fn aria_log_map_f32(x: *const f32, y: *mut f32, batch: i64, dim: i64, c: f32);
+    pub fn aria_poincare_add_f32(x: *const f32, v: *const f32, y: *mut f32, batch: i64, dim: i64, c: f32);
+    pub fn aria_hyp_linear_f32(x: *const f32, w: *const f32, y: *mut f32, batch: i64, dim_in: i64, dim_out: i64, c: f32);
+    pub fn aria_hyperbolic_norm_f32(x: *const f32, gamma: *const f32, beta: *const f32, y: *mut f32, batch: i64, dim: i64, c: f32, eps: f32);
+    pub fn aria_hyp_tangent_nonlinear_f32(x: *const f32, y: *mut f32, n: i64, c: f32);
+
+    pub fn aria_tropical_attention_f32(x: *const f32, y: *mut f32, batch: i64, seq: i64, dim: i64, temperature: f32);
+    pub fn aria_tropical_gate_f32(x: *const f32, y: *mut f32, batch: i64, seq: i64, dim: i64, temperature: f32);
+    pub fn aria_tropical_add_f32(a: *const f32, b: *const f32, y: *mut f32, n: i64);
+    pub fn aria_tropical_matmul_f32(a: *const f32, b: *const f32, c: *mut f32, m: i64, k: i64, n: i64);
+
+    pub fn aria_rotor_transform_f32(x: *const f32, rotor: *const f32, y: *mut f32, batch: i64, dim: i64);
+    pub fn aria_grade_select_f32(x: *const f32, y: *mut f32, batch: i64, dim: i64, grade: i32);
+    pub fn aria_grade_mix_f32(x: *const f32, alpha: *const f32, y: *mut f32, batch: i64, dim: i64);
+    pub fn aria_clifford_attention_f32(x: *const f32, y: *mut f32, batch: i64, seq: i64, dim: i64);
+    pub fn aria_clifford_geometric_product_cl30_f32(a: *const f32, b: *const f32, y: *mut f32, n_multivectors: i64);
 
     // ── Backward (gradient) kernels ──────────────────────────────────
     // Unary backward kernels: grad_out, input_or_output, grad_in, n

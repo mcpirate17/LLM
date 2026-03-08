@@ -34,6 +34,10 @@ typedef struct {
     int32_t n_edges;
     AriaEdge edges[ARIA_MAX_EDGES];
     int32_t op_codes[ARIA_MAX_NODES]; /* operator type for each node */
+    /* Per-node classification flags (set by Python from OPCODE_MAP) */
+    uint8_t is_norm[ARIA_MAX_NODES];        /* 1 if normalization op */
+    uint8_t is_parameterized[ARIA_MAX_NODES]; /* 1 if parameterized op */
+    uint8_t is_linear[ARIA_MAX_NODES];      /* 1 if linear projection op */
 } AriaGraph;
 
 /* ── Result codes ──────────────────────────────────────────────────── */

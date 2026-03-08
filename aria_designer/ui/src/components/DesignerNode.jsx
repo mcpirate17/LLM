@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import {
   HelpCircle,
@@ -26,7 +26,13 @@ const DTYPE_COLORS = {
 }
 
 function DesignerNode({ data, selected, onHelp, hardwareView, heatmapView, maxFlops }) {
-  const { label, category, inputs = [], outputs = [], params = {}, performance = {} } = data
+  const { category, inputs = [], outputs = [], params = {}, performance = {} } = data
+  // Defensive: if label looks like a raw node ID, derive from componentId
+  let label = data.label
+  if (!label || /^node_\d+$/.test(label) || label === 'node_out') {
+    const cid = data.componentId || ''
+    label = cid.split('/').pop() || label || 'unknown'
+  }
   const IconComponent = CATEGORY_ICONS[category] || Box
   const evalStatus = data.evalStatus // 'running' | 'pass' | 'fail' | null
   const evalClass = evalStatus ? `eval-${evalStatus}` : ''

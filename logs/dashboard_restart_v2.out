@@ -1,0 +1,23 @@
+2026-03-08 12:55:53 INFO     [research.scientist.api] Logging to /home/tim/Projects/LLM/research/aria_dashboard.log
+2026-03-08 12:55:53 INFO     [research.scientist.llm.anthropic] Using default Anthropic model alias: claude-sonnet-4-5-20250929
+2026-03-08 12:55:54 INFO     [research.scientist.persona] Aria LLM reconfigured: anthropic
+2026-03-08 12:55:54 INFO     [research.scientist.api] Loaded persisted LLM config: anthropic
+2026-03-08 12:55:54 INFO     [research.scientist.api] Starting Aria's Dashboard API on http://0.0.0.0:5000
+Starting Aria's Dashboard API on http://0.0.0.0:5000
+ * Serving Flask app 'research.scientist.api'
+ * Debug mode: off
+2026-03-08 12:55:54 INFO     [werkzeug] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.50.191:5000
+2026-03-08 12:55:54 INFO     [werkzeug] [33mPress CTRL+C to quit[0m
+2026-03-08 12:56:22 INFO     [research.scientist.runner] Restored grammar weight overrides from DB: {'elementwise_binary': 2.8, 'elementwise_unary': 2.0, 'functional': 2.2, 'linear_algebra': 1.5, 'math_space': 3.0, 'math_space_weight': 2.0, 'mixing': 1.3, 'parameterized': 2.8, 'sequence': 0.8, 'structural': 2.5}
+2026-03-08 12:56:32 INFO     [research.scientist.runner] Recovered 1 stale experiments from previous crash
+2026-03-08 12:56:32 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 12:56:32] "GET /api/status HTTP/1.1" 200 -
+2026-03-08 12:57:19 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 12:57:19] "GET /api/experiments?n=5 HTTP/1.1" 200 -
+2026-03-08 12:58:25 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 12:58:25] "GET /api/status HTTP/1.1" 200 -
+2026-03-08 12:59:52 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 12:59:52] "GET /api/status HTTP/1.1" 200 -
+2026-03-08 13:00:13 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:00:13] "GET /api/status HTTP/1.1" 200 -
+2026-03-08 13:00:58 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:00:58] "GET /api/experiments?n=1 HTTP/1.1" 200 -
+2026-03-08 13:01:02 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:01:02] "GET /api/experiments?n=2 HTTP/1.1" 200 -
+2026-03-08 13:01:28 INFO     [werkzeug] 127.0.0.1 - - [08/Mar/2026 13:01:28] "GET /api/status HTTP/1.1" 200 -

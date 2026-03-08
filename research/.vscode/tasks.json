@@ -3,6 +3,7 @@
 	"tasks": [
 		{
 			"label": "CKA: Artifact Integrity Check",
+  "problemMatcher": "$python",
 			"type": "shell",
 			"command": "/home/tim/venvs/llm/bin/python",
 			"args": [

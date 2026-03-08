@@ -3,7 +3,7 @@
 
 PYTHON ?= python
 
-.PHONY: all aria_core test clean help
+.PHONY: all aria_core test clean help guardrails-dry guardrails-dry-report
 
 all: aria_core  ## Build everything
 
@@ -24,6 +24,12 @@ test-aria_core: aria_core  ## Run only aria_core tests
 
 test-designer:  ## Run only aria_designer tests
 	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
+
+guardrails-dry:  ## Enforce DRY/language guardrails against baseline
+	$(PYTHON) -m research.tools.dry_language_guardrails --strict
+
+guardrails-dry-report:  ## Print DRY/language guardrail metrics
+	$(PYTHON) -m research.tools.dry_language_guardrails
 
 # ── Clean ────────────────────────────────────────────────────────────
 clean:  ## Clean all build artifacts

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
-import apiService from '../services/apiService';
+import apiService, { apiCall } from '../services/apiService';
 
 const LIVE_LOSS_CURVE_MAX_POINTS = 20000;
 
@@ -45,6 +45,7 @@ const EVENT_TYPE_ALIASES = {
   knowledge_extracted: 'knowledge',
   campaign_created: 'campaign_created',
   campaign_completed: 'campaign_completed',
+  aria_cycle_phase: 'aria_phase',
   continuous_limit_reached: 'limit_reached',
   learning_event: 'learning',
   training_step: 'training_step',
@@ -84,11 +85,13 @@ const RENDERABLE_EVENT_TYPES = new Set([
   'knowledge',
   'campaign_created',
   'campaign_completed',
+  'aria_phase',
   'limit_reached',
   'learning',
 ]);
 
 const GENERATION_EVENT_TYPES = new Set(['evo_gen', 'nov_gen']);
+const RUN_START_EVENT_TYPES = new Set(['start', 'evo_start', 'nov_start', 'invest_start', 'validate_start', 'scaleup_start']);
 
 function normalizeLiveFeedEvent(rawEvent) {
   if (!rawEvent || typeof rawEvent !== 'object') return null;
@@ -138,7 +141,7 @@ function annotateGenerationHistory(events) {
 // Mini inline SVG chart for live training loss
 function MiniLossChart({ curve }) {
   if (!curve || curve.length < 2) return null;
-  const W = 200, H = 60;
+  const W = 500, H = 113; // graph area: +25% wider and +25% taller from 400x90
   const pad = { l: 4, r: 4, t: 4, b: 4 };
 
   const losses = curve.map(p => p.loss);
@@ -201,8 +204,18 @@ function LiveFeed({ apiBase, experimentId = null }) {
       setLossCurve([]);
     }
 
-    // When run context is known, ignore unrelated events from other runs.
-    if (currentExpId && eventExpId && eventExpId !== currentExpId) return;
+    // If we missed the invest_start/validate_start event (SSE reconnect,
+    // queue overflow), let progress events from a new phase switch context.
+    if (currentExpId && eventExpId && eventExpId !== currentExpId) {
+      if (type === 'invest_progress' || type === 'validate_progress') {
+        activeExperimentRef.current = eventExpId;
+        lossCurveExpRef.current = eventExpId;
+        setEvents([]);
+        setLossCurve([]);
+      } else {
+        return;
+      }
+    }
 
     const normalized = normalizeLiveFeedEvent({ type, ...data, ts: Date.now() });
     if (!normalized) return;
@@ -262,13 +275,14 @@ function LiveFeed({ apiBase, experimentId = null }) {
   useEventBus('knowledge_extracted', addEvent('knowledge'));
   useEventBus('campaign_created', addEvent('campaign_created'));
   useEventBus('campaign_completed', addEvent('campaign_completed'));
+  useEventBus('aria_cycle_phase', addEvent('aria_phase'));
   useEventBus('continuous_limit_reached', addEvent('limit_reached'));
   useEventBus('learning_event', addEvent('learning'));
   useEventBus('training_step', handleTrainingStep);
 
   // Fetch loss curve on mount (regardless of experimentId)
   useEffect(() => {
-    fetch(`${apiBase}/api/live-loss-curve`)
+    apiCall(`/api/live-loss-curve`)
       .then(r => r.json())
       .then(curve => {
         if (Array.isArray(curve) && curve.length >= 2) {
@@ -302,7 +316,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
       .catch(() => {});
 
     // Restore loss curve from server buffer
-    fetch(`${apiBase}/api/live-loss-curve`)
+    apiCall(`/api/live-loss-curve`)
       .then(r => r.json())
       .then(curve => {
         if (Array.isArray(curve) && curve.length >= 2) {
@@ -371,7 +385,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
         .catch((err) => console.error('LiveFeed: Gap heal fetch failed', err));
 
       // Also restore loss curve on reconnect
-      fetch(`${apiBase}/api/live-loss-curve`)
+      apiCall(`/api/live-loss-curve`)
         .then(r => r.json())
         .then(curve => {
           if (Array.isArray(curve) && curve.length >= 2) {
@@ -389,15 +403,16 @@ function LiveFeed({ apiBase, experimentId = null }) {
   }, [connected, experimentId, apiBase]);
 
   return (
-    <div
-      className="live-feed"
-      onMouseEnter={() => setShowControls(true)}
-      onMouseLeave={() => setShowControls(false)}
-    >
+    <div className="live-feed">
       <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span>Live Feed</span>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span className={`connection-dot ${connected ? 'connected' : ''}`}></span>
+          {/* Connection status — visible at all times */}
+          <span
+            className={`connection-dot ${connected ? 'connected' : ''}`}
+            role="status"
+            aria-label={connected ? 'Connected' : 'Reconnecting'}
+          />
           <span style={{
             fontSize: 11,
             fontWeight: 700,
@@ -407,26 +422,23 @@ function LiveFeed({ apiBase, experimentId = null }) {
           }}>
             {connected ? 'Live' : 'Reconnecting'}
           </span>
+          {/* Auto-scroll toggle — always visible, not hidden behind hover */}
           <button
             className={`refresh-btn ${!autoScroll ? 'active' : ''}`}
-            style={{ 
-              fontSize: 11, 
-              padding: '2px 8px', 
-              opacity: showControls ? 1 : 0, 
-              transition: 'opacity 0.2s',
-              pointerEvents: showControls ? 'auto' : 'none',
-              background: !autoScroll ? 'rgba(88, 166, 255, 0.15)' : 'var(--bg-tertiary)',
-              color: !autoScroll ? 'var(--accent-blue)' : 'var(--text-primary)',
-              borderColor: !autoScroll ? 'var(--accent-blue)' : 'var(--border)',
+            style={{
+              fontSize: 11,
+              padding: '3px 8px',
             }}
+            aria-pressed={!autoScroll}
             onClick={() => setAutoScroll(!autoScroll)}
+            title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
           >
             {autoScroll ? 'Pause Scroll' : 'Resume Scroll'}
           </button>
         </div>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        Real-time stream of architectures being tested. Each line shows a generated computation graph and whether it passed or failed. Green = survived, red = failed at some stage.
+        Real-time stream of architectures being tested. Green = survived, red = failed.
       </p>
       {!connected && events.length > 0 && (
         <div className="reconnect-banner">
@@ -441,8 +453,22 @@ function LiveFeed({ apiBase, experimentId = null }) {
             {connected ? 'Waiting for experiment events...' : 'Unable to connect to event stream. Is the server running?'}
           </div>
         ) : (
-          displayEvents.map((evt, i) => (
-            <div key={i} className={`feed-item feed-${evt.type}`}>
+          displayEvents.map((evt, i) => {
+            const prev = i > 0 ? displayEvents[i - 1] : null;
+            const prevExpId = prev?.experiment_id || null;
+            const currExpId = evt?.experiment_id || null;
+            const hasRunBoundary =
+              i > 0 &&
+              RUN_START_EVENT_TYPES.has(evt?.type) &&
+              prevExpId &&
+              currExpId &&
+              prevExpId !== currExpId;
+            return (
+            <div
+              key={i}
+              className={`feed-item feed-${evt.type}`}
+              style={hasRunBoundary ? { marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' } : undefined}
+            >
               {evt.type === 'program' && (
                 <>
                   <span className="feed-index">#{evt.index + 1}</span>
@@ -629,13 +655,27 @@ function LiveFeed({ apiBase, experimentId = null }) {
                 </span>
               )}
               {evt.type === 'invest_progress' && (
-                <span className="feed-event-msg">
-                  Investigating {evt.current_candidate ?? '?'} / {evt.total_candidates ?? '?'}:
-                  {' '}{evt.result_id?.slice(0, 8) || 'unknown'} — program {evt.current_program ?? '?'} / {evt.total_programs ?? '?'}
-                  {evt.loss_ratio != null && (
-                    <span style={{ marginLeft: 4 }}>L:{evt.loss_ratio}</span>
-                  )}
-                </span>
+                (() => {
+                  const candidateCurrent = evt.current_candidate ?? evt.current;
+                  const candidateTotal = evt.total_candidates ?? evt.total;
+                  const sourceId = evt.result_id || evt.source_result_id;
+                  const programCurrent = evt.current_program ?? evt.training_program;
+                  const programTotal = evt.total_programs;
+                  return (
+                    <span className="feed-event-msg">
+                      Investigating {candidateCurrent ?? '?'} / {candidateTotal ?? '?'}:
+                      {' '}{sourceId?.slice(0, 8) || 'unknown'}
+                      {(programCurrent != null || programTotal != null) && (
+                        <>
+                          {' '}— program {programCurrent ?? '?'} / {programTotal ?? '?'}
+                        </>
+                      )}
+                      {evt.loss_ratio != null && (
+                        <span style={{ marginLeft: 4 }}>L:{evt.loss_ratio}</span>
+                      )}
+                    </span>
+                  );
+                })()
               )}
               {evt.type === 'invest_complete' && (
                 <span className="feed-event-msg feed-success">
@@ -747,6 +787,13 @@ function LiveFeed({ apiBase, experimentId = null }) {
                   Campaign completed: {evt.title}
                 </span>
               )}
+              {evt.type === 'aria_phase' && (
+                <span className="feed-event-msg" style={{ color: 'var(--text-secondary)' }}>
+                  Aria phase: <strong>{evt.phase_label || evt.phase || 'running'}</strong>
+                  {evt.selected_mode && <> — mode {evt.selected_mode}</>}
+                  {evt.last_note && <> — {evt.last_note}</>}
+                </span>
+              )}
               {/* Learning events */}
               {evt.type === 'learning' && (
                 <span className="feed-event-msg" style={{ color: 'var(--accent-orange, #f0883e)', fontWeight: 600 }}>
@@ -755,7 +802,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
                 </span>
               )}
             </div>
-          ))
+          )})
         )}
       </div>
     </div>

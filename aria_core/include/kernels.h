@@ -338,6 +338,75 @@ void aria_sparse_threshold_f32(const float *x, float *y,
 
 /* ── Routing Kernels (CPU reference) ────────────────────────────────── */
 
+/** Difficulty scorer MLP: x[B,S,D] -> scores[B,S,1] */
+void aria_difficulty_scorer_f32(const float *x,
+                                const float *w1, const float *b1,
+                                const float *w2, const float *b2,
+                                float *scores,
+                                int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
+
+/** Threshold lane router: scores[B,S] -> assignments[B,S], one-hot weights[B,S,L] */
+void aria_lane_router_threshold_f32(const float *scores,
+                                    int64_t *assignments,
+                                    float *weights,
+                                    int64_t batch, int64_t seq, int64_t lanes,
+                                    const float *thresholds);
+
+/** Load-balance auxiliary loss and lane fractions from assignments[B,S]. */
+void aria_load_balance_loss_f32(const int64_t *assignments,
+                                const float *target_distribution,
+                                float *lane_fractions,
+                                float *loss_out,
+                                int64_t batch, int64_t seq, int64_t lanes,
+                                float loss_weight);
+
+/**
+ * Conditional dispatch (single lane): packs tokens assigned to `lane_id`.
+ * lane_out is written as [B,S,D] packed per batch; lane_counts[B] gives valid tokens.
+ * index_map[B,S] stores packed position for each source token, or -1 if not in lane.
+ */
+void aria_conditional_dispatch_f32(const float *x, const int64_t *assignments, int64_t lane_id,
+                                   float *lane_out, int64_t *index_map, int64_t *lane_counts,
+                                   int64_t batch, int64_t seq, int64_t dim);
+
+/** Backward for conditional dispatch: scatter packed lane_grad back to original token order. */
+void aria_conditional_dispatch_backward_f32(const float *lane_grad, const int64_t *index_map,
+                                            float *grad_x, int64_t batch, int64_t seq, int64_t dim);
+
+/**
+ * Conditional gather contribution (single lane): y += weight * lane_out_at_packed_pos.
+ * weights shape is [B,S].
+ */
+void aria_conditional_gather_f32(const float *lane_out, const int64_t *index_map, const float *weights,
+                                 float *y, int64_t batch, int64_t seq, int64_t dim);
+
+/**
+ * Backward for single-lane gather contribution.
+ * grad_lane receives packed-token gradients; grad_weights receives per-token scalar gradients.
+ */
+void aria_conditional_gather_backward_f32(const float *grad_y, const float *lane_out,
+                                          const int64_t *index_map, const float *weights,
+                                          float *grad_lane, float *grad_weights,
+                                          int64_t batch, int64_t seq, int64_t dim);
+
+/**
+ * Fused reference path: difficulty_scorer -> threshold_router -> per-lane dispatch.
+ * Outputs:
+ * - scores [B,S] (caller may reshape to [B,S,1])
+ * - assignments [B,S]
+ * - weights [B,S,L]
+ * - lane_out [L,B,S,D]
+ * - index_map [L,B,S]
+ * - lane_counts [L,B]
+ */
+void aria_adaptive_route_dispatch_f32(const float *x,
+                                      const float *w1, const float *b1,
+                                      const float *w2, const float *b2,
+                                      int64_t lanes, const float *thresholds,
+                                      float *scores, int64_t *assignments, float *weights,
+                                      float *lane_out, int64_t *index_map, int64_t *lane_counts,
+                                      int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
+
 /** Top-k routing over sequence tokens: scores shape (B, S) -> indices (B, K), weights (B, K) */
 void aria_route_topk_indices_f32(const float *scores, int64_t *indices, float *weights,
                                    int64_t batch, int64_t seq, int64_t k);
@@ -404,8 +473,8 @@ void aria_linear_tied_f32(const float *x, const float *W, const float *b_down, c
  * ══════════════════════════════════════════════════════════════════════ */
 
 /* Hyperbolic */
-void aria_exp_map_f32(const float *x, float *y, int64_t n, float c);
-void aria_log_map_f32(const float *x, float *y, int64_t n, float c);
+void aria_exp_map_f32(const float *x, float *y, int64_t batch, int64_t dim, float c);
+void aria_log_map_f32(const float *x, float *y, int64_t batch, int64_t dim, float c);
 void aria_poincare_add_f32(const float *x, const float *v, float *y,
                              int64_t batch, int64_t dim, float c);
 void aria_hyp_linear_f32(const float *x, const float *W, float *y,
@@ -434,6 +503,10 @@ void aria_grade_mix_f32(const float *x, const float *alpha, float *y,
                           int64_t batch, int64_t dim);
 void aria_clifford_attention_f32(const float *x, float *y,
                                    int64_t batch, int64_t seq, int64_t dim);
+
+/* Clifford Cl30 specific */
+void aria_clifford_geometric_product_cl30_f32(const float *a, const float *b, float *y, int64_t n);
+void aria_clifford_rotor_transform_cl30_f32(const float *x, const float *rotor, float *y, int64_t n);
 
 /* Spiking */
 void aria_lif_neuron_f32(const float *x, float *y,

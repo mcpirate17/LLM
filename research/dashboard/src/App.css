@@ -160,15 +160,23 @@ body::-webkit-scrollbar-thumb,
 }
 .auto-refresh { font-size: 13px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 4px; }
 .refresh-btn {
-  padding: 7px 13px;
+  padding: 8px 16px;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text-primary);
   cursor: pointer;
   font-size: 14px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
-.refresh-btn:hover { border-color: var(--accent-blue); }
+.refresh-btn:hover {
+  border-color: var(--accent-blue);
+  background: rgba(88, 166, 255, 0.05);
+}
 .refresh-btn:active {
   border-color: var(--accent-blue);
   background: rgba(88, 166, 255, 0.2);
@@ -180,37 +188,73 @@ body::-webkit-scrollbar-thumb,
   border-color: var(--accent-blue);
   color: var(--accent-blue);
   box-shadow: inset 0 0 0 1px rgba(88, 166, 255, 0.28);
+  font-weight: 600;
 }
 
 /* ── Nav ── */
-.tab-nav {
+.tab-nav-hierarchical {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0; /* Use 0 if we want it to stick to the very top, or var(--header-height) */
+  z-index: 29;
+  backdrop-filter: blur(10px);
+}
+
+.primary-nav {
+  display: flex;
+  padding: 0 26px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.secondary-nav {
   display: flex;
   gap: 2px;
   padding: 0 26px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
   overflow-x: auto;
   white-space: nowrap;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-  position: sticky;
-  top: var(--header-height);
-  z-index: 29;
-  backdrop-filter: blur(6px);
 }
 
-.tab {
-  padding: 11px 17px;
+.primary-tab {
+  padding: 10px 24px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  transition: all 0.15s ease;
+}
+
+.primary-tab:hover {
+  color: var(--text-secondary);
+}
+
+.primary-tab.active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+}
+
+.tab {
+  padding: 12px 20px;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
   color: var(--text-secondary);
   cursor: pointer;
   font-size: 15px;
+  font-weight: 500;
   font-family: inherit;
+  transition: color 0.12s ease, border-bottom-color 0.12s ease;
 }
-.tab:hover { color: var(--text-primary); }
-.tab.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
+.tab:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.03); }
+.tab.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); font-weight: 700; }
 
 /* ── Main ── */
 .app-main { flex: 1; padding: 28px; max-width: 1400px; margin: 0 auto; width: 100%; }
@@ -267,9 +311,9 @@ body::-webkit-scrollbar-thumb,
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px;
+  padding: 24px;
   box-shadow: var(--shadow);
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
 }
 .card:hover {
   border-color: #3c4653;
@@ -284,39 +328,52 @@ body::-webkit-scrollbar-thumb,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 16px;
   position: sticky;
   top: 0;
   z-index: 6;
-  padding: 8px 10px;
+  padding: 12px 16px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: rgba(22, 27, 34, 0.94);
-  backdrop-filter: blur(6px);
+  backdrop-filter: blur(12px);
 }
 
 .card-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-secondary);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 12px;
+  letter-spacing: 0.75px;
+  margin-bottom: 16px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 /* ── Overview Grid ── */
-.overview-grid { display: grid; gap: 18px; grid-template-columns: 1fr 2fr; }
-.overview-left { display: flex; flex-direction: column; gap: 18px; }
-.overview-right { display: flex; flex-direction: column; gap: 18px; }
-.overview-bottom { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.overview-grid {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+}
+@media (min-width: 1200px) {
+  .overview-grid {
+    grid-template-columns: 1fr 2fr;
+  }
+}
+.overview-left { display: flex; flex-direction: column; gap: 24px; }
+.overview-right { display: flex; flex-direction: column; gap: 24px; }
+.overview-bottom { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 24px; }
 
 /* ── Summary Cards ── */
-.summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+}
 .stat-card { text-align: center; }
 .stat-value { font-size: 28px; font-weight: 700; color: var(--accent-blue); }
 .stat-value.green { color: var(--accent-green); }
@@ -1292,6 +1349,128 @@ details[open] > summary::before { transform: rotate(90deg); }
 .action-card:hover { background: var(--bg-tertiary); }
 .action-queue-empty { border-left: 3px solid var(--accent-green); }
 
+/* ── Pill Tab Buttons (step-btn) ──
+   Used in Leaderboard tier filters, TrendCharts tab switcher, etc.
+   Intentionally compact — these sit inside cards above data tables. */
+.step-btn {
+  padding: 5px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.step-btn:hover {
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+  background: rgba(88, 166, 255, 0.06);
+}
+.step-btn.active {
+  background: rgba(88, 166, 255, 0.15);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+.step-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* ── Section Sub-Header ──
+   Replaces repeated inline style blocks in ControlPanel and other components. */
+.section-subheader {
+  margin-top: 20px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+}
+
+/* ── Empty State ──
+   Consistent empty/zero-results placeholder for tables and lists. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.empty-state-icon {
+  font-size: 28px;
+  opacity: 0.5;
+  margin-bottom: 4px;
+}
+.empty-state-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.empty-state-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  max-width: 320px;
+}
+
+/* ── Sortable Column Header ── */
+.th-sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s ease, background-color 0.12s ease;
+}
+.th-sortable:hover {
+  color: var(--accent-blue);
+  background: rgba(88, 166, 255, 0.08);
+}
+.th-sort-icon {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 9px;
+  opacity: 0.8;
+  vertical-align: middle;
+}
+
+/* ── Prefill / Info Banner ── */
+.info-banner {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent-blue);
+  background: rgba(88, 166, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  margin-bottom: 12px;
+}
+.info-banner strong {
+  color: var(--text-primary);
+}
+.info-banner-dismiss {
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+}
+.info-banner-dismiss:hover {
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
 /* ── Chat Drawer ── */
 .chat-drawer-backdrop { position: fixed; inset: 0; z-index: 900; }
 .chat-drawer {
@@ -1323,6 +1502,13 @@ details[open] > summary::before { transform: rotate(90deg); }
 }
 
 /* ── Architecture Drawer ── */
+.close-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-secondary); font-size: 18px; line-height: 1;
+  padding: 4px 8px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
+}
+.close-btn:hover { color: var(--accent-red); border-color: var(--accent-red); }
+
 .arch-drawer-backdrop { position: fixed; inset: 0; z-index: 1100; background: rgba(0,0,0,0.4); }
 .arch-drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: 70%;
@@ -1331,6 +1517,10 @@ details[open] > summary::before { transform: rotate(90deg); }
   background: var(--bg-primary); border-left: 1px solid var(--border);
   display: flex; flex-direction: column; z-index: 1101;
   box-shadow: -4px 0 24px rgba(0,0,0,0.3);
+  transition: width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease;
+}
+.arch-drawer.arch-drawer-fullscreen {
+  width: 100%; min-width: 100%; max-width: 100%;
 }
 .arch-drawer-header {
   display: flex; justify-content: space-between; align-items: center;

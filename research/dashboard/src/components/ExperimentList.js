@@ -1,29 +1,10 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { formatTime, formatDuration, scoreColor } from '../utils/format';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { apiCall } from '../services/apiService';
+import { formatTime, formatDuration } from '../utils/format';
 import { noveltyColor, reliabilityColor } from '../utils/colors';
-import { experimentScore, experimentScoreBreakdown } from '../utils/scoringEngine';
+import { experimentScore } from '../utils/scoringEngine';
 import { filterRowsByQuery } from '../utils/tableFiltering';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
-
-/** Color-code experiment outcome: green (good), amber (ok), red (bad) */
-function experimentRating(exp) {
-  if (exp?.status === 'running' && exp?.experiment_type === 'validation') {
-    return {
-      color: 'var(--accent-blue)',
-      label: 'Validating',
-      tip: 'Validation run in progress — rating shown after aggregate seed results arrive',
-    };
-  }
-
-  const n = exp.n_programs_generated || 0;
-  const s1 = exp.n_stage1_passed || 0;
-  const rate = n > 0 ? s1 / n : 0;
-
-  if (s1 > 2 || rate > 0.05) return { color: 'var(--accent-green)', label: 'Strong', tip: 'Multiple architectures learned — productive experiment' };
-  if (s1 > 0) return { color: 'var(--accent-yellow)', label: 'Some', tip: 'At least one learnable architecture found' };
-  if ((exp.n_stage0_passed || 0) > n * 0.3) return { color: 'var(--accent-orange, #f0883e)', label: 'Weak', tip: 'Programs compiled but none learned — need better op combinations' };
-  return { color: 'var(--accent-red)', label: 'Poor', tip: 'Most programs failed to compile — grammar too aggressive' };
-}
 
 function metricText(value, fallbackReason, formatter) {
   if (value == null) return fallbackReason;
@@ -173,8 +154,6 @@ function experimentMetricChips(exp) {
 }
 
 const COLUMNS = [
-  { key: 'score', label: 'Score' },
-  { key: 'rating', label: 'Rating' },
   { key: 'experiment_id', label: 'ID' },
   { key: 'experiment_type', label: 'Type' },
   { key: 'hypothesis', label: 'Hypothesis' },
@@ -251,7 +230,7 @@ function ExperimentList({
         return stored.sortKey;
       }
     } catch {}
-    return 'score';
+    return 'timestamp';
   });
   const [sortDesc, setSortDesc] = useState(() => {
     try {
@@ -270,10 +249,51 @@ function ExperimentList({
   const [cancellingId, setCancellingId] = useState(null);
   const [rerunningId, setRerunningId] = useState(null);
   const [confirmingAction, setConfirmingAction] = useState(null); // { id, type }
+  const [deletingId, setDeletingId] = useState(null);
   const [inlineError, setInlineError] = useState(null); // { id, message }
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchRerunActive, setBatchRerunActive] = useState(false);
   const [batchRerunStatus, setBatchRerunStatus] = useState(null);
+  const [columnWidths, setColumnWidths] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem('aria_experiments_col_widths');
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+  const resizingRef = useRef(null);
+
+  // Persist column widths
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('aria_experiments_col_widths', JSON.stringify(columnWidths));
+    } catch { /* ignore */ }
+  }, [columnWidths]);
+
+  const onResizeStart = useCallback((e, colKey) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const th = e.target.parentElement;
+    const startWidth = th.offsetWidth;
+    resizingRef.current = colKey;
+
+    const onMouseMove = (moveE) => {
+      const diff = moveE.clientX - startX;
+      const newWidth = Math.max(40, startWidth + diff);
+      setColumnWidths(prev => ({ ...prev, [colKey]: newWidth }));
+    };
+    const onMouseUp = () => {
+      resizingRef.current = null;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
 
   const handleCancel = async (e, experimentId) => {
     e.stopPropagation();
@@ -284,7 +304,7 @@ function ExperimentList({
     setConfirmingAction(null);
     setCancellingId(experimentId);
     try {
-      const res = await fetch(`/api/experiments/${experimentId}/cancel`, { method: 'POST' });
+      const res = await apiCall(`/api/experiments/${experimentId}/cancel`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setInlineError({ id: experimentId, message: data.error || 'Failed to cancel experiment' });
@@ -307,7 +327,7 @@ function ExperimentList({
     setConfirmingAction(null);
     setRerunningId(experimentId);
     try {
-      const res = await fetch(`/api/experiments/${experimentId}/rerun`, { method: 'POST' });
+      const res = await apiCall(`/api/experiments/${experimentId}/rerun`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setInlineError({ id: experimentId, message: data.error || 'Failed to rerun experiment' });
@@ -321,6 +341,29 @@ function ExperimentList({
     }
   };
 
+  const handleDelete = async (e, experimentId) => {
+    e.stopPropagation();
+    if (!confirmingAction || confirmingAction.id !== experimentId || confirmingAction.type !== 'delete') {
+      setConfirmingAction({ id: experimentId, type: 'delete' });
+      return;
+    }
+    setConfirmingAction(null);
+    setDeletingId(experimentId);
+    try {
+      const res = await apiCall(`/api/experiments/${experimentId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setInlineError({ id: experimentId, message: data.error || 'Failed to delete experiment' });
+      } else if (onRefresh) {
+        onRefresh();
+      }
+    } catch (err) {
+      setInlineError({ id: experimentId, message: 'Network error deleting experiment' });
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   useEffect(() => {
     localStorage.setItem(EXPERIMENT_LIST_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
   }, [sortKey, sortDesc]);
@@ -329,7 +372,7 @@ function ExperimentList({
     localStorage.setItem(EXPERIMENT_LIST_EXPERT_KEY, String(showExpertColumns));
   }, [showExpertColumns]);
 
-  const signalKeys = new Set(['score', 'n_stage1_passed', 'best_loss_ratio', 'best_novelty_score', 'status', 'timestamp', 'experiment_id']);
+  const signalKeys = new Set(['n_stage1_passed', 'best_loss_ratio', 'best_novelty_score', 'status', 'timestamp', 'experiment_id']);
   const visibleColumns = COLUMNS.filter(col => showExpertColumns || signalKeys.has(col.key));
 
   const handleSort = (key) => {
@@ -347,7 +390,6 @@ function ExperimentList({
     return experiments.map(exp => ({
       ...exp,
       _score: experimentScore(exp),
-      _rating: experimentRating(exp),
     }));
   }, [experiments]);
 
@@ -401,14 +443,7 @@ function ExperimentList({
     const arr = [...filtered];
     arr.sort((a, b) => {
       let va, vb;
-      if (sortKey === 'score') {
-        va = a._score; vb = b._score;
-      } else if (sortKey === 'rating') {
-        // Map label to numeric for sorting
-        const order = { Strong: 4, Some: 3, Validating: 2, Weak: 1, Poor: 0 };
-        va = order[a._rating.label] ?? -1;
-        vb = order[b._rating.label] ?? -1;
-      } else if (sortKey === 'stage_funnel') {
+      if (sortKey === 'stage_funnel') {
         // Sort by compilation rate (stage0/generated)
         va = (a.n_programs_generated || 0) > 0 ? (a.n_stage0_passed || 0) / a.n_programs_generated : 0;
         vb = (b.n_programs_generated || 0) > 0 ? (b.n_stage0_passed || 0) / b.n_programs_generated : 0;
@@ -450,7 +485,7 @@ function ExperimentList({
     if (!window.confirm(`Rerun ${selectedIds.size} selected experiment(s)? They will be queued and run sequentially.`)) return;
     setBatchRerunActive(true);
     try {
-      const res = await fetch('/api/experiments/batch-rerun', {
+      const res = await apiCall('/api/experiments/batch-rerun', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ experiment_ids: Array.from(selectedIds) }),
@@ -464,7 +499,7 @@ function ExperimentList({
       setSelectedIds(new Set());
       const poll = setInterval(async () => {
         try {
-          const sr = await fetch('/api/experiments/batch-rerun/status');
+          const sr = await apiCall('/api/experiments/batch-rerun/status');
           const st = await sr.json();
           setBatchRerunStatus(st);
           if (!st.active) {
@@ -609,7 +644,7 @@ function ExperimentList({
         </div>
       )}
       <ExperimentKpiStrip experiments={sorted} />
-      <table className="data-table">
+      <table className="data-table" style={{ tableLayout: Object.keys(columnWidths).length > 0 ? 'fixed' : 'auto' }}>
         <thead>
           <tr>
             <th style={{ width: 30, textAlign: 'center', padding: '4px 2px' }}>
@@ -626,7 +661,11 @@ function ExperimentList({
                 key={col.key}
                 onClick={() => handleSort(col.key)}
                 aria-label={`Sort op success table by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
-                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                style={{
+                  cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap',
+                  position: 'relative',
+                  ...(columnWidths[col.key] ? { width: columnWidths[col.key], minWidth: columnWidths[col.key] } : {}),
+                }}
               >
                 {col.label}
                 {sortKey === col.key && (
@@ -634,15 +673,24 @@ function ExperimentList({
                     {sortDesc ? '\u25BC' : '\u25B2'}
                   </span>
                 )}
+                <span
+                  onMouseDown={(e) => onResizeStart(e, col.key)}
+                  style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 5,
+                    cursor: 'col-resize',
+                    zIndex: 3,
+                  }}
+                />
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
           {sorted.map(exp => {
-            const rating = exp._rating;
-            const score = exp._score;
-            const isActiveValidation = exp.status === 'running' && exp.experiment_type === 'validation';
             const nUsed = exp.n_programs_generated || 0;
             const s1Count = exp.n_stage1_passed || 0;
             const chips = experimentMetricChips(exp);
@@ -660,30 +708,6 @@ function ExperimentList({
                   />
                 </td>
                 {visibleColumns.map(col => {
-                  if (col.key === 'score') {
-                    return (
-                      <td key="score" style={{ fontWeight: 600, color: isActiveValidation ? 'var(--accent-blue)' : scoreColor(score) }}>
-                        {isActiveValidation ? (
-                          'running validation'
-                        ) : (
-                          <span title={`S1 rate ${(experimentScoreBreakdown(exp).passRate || 0).toFixed(1)}/40 | Loss ${(experimentScoreBreakdown(exp).loss || 0).toFixed(1)}/30 | Novelty ${(experimentScoreBreakdown(exp).novelty || 0).toFixed(1)}/20 | Completion ${(experimentScoreBreakdown(exp).completion || 0).toFixed(1)}/10`}>
-                            {score}
-                          </span>
-                        )}
-                      </td>
-                    );
-                  }
-                  if (col.key === 'rating') {
-                    return (
-                      <td key="rating" title={rating.tip}>
-                        <span style={{
-                          display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-                          background: rating.color, marginRight: 6,
-                        }} />
-                        <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
-                      </td>
-                    );
-                  }
                   if (col.key === 'experiment_id') {
                     return (
                       <td key="id" style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
@@ -795,6 +819,26 @@ function ExperimentList({
                               {rerunningId === exp.experiment_id ? '...' : 'Rerun'}
                             </button>
                           )
+                        )}
+                        {confirmingAction?.id === exp.experiment_id && confirmingAction?.type === 'delete' ? (
+                          <span style={{ fontSize: 10, marginLeft: 6 }}>
+                            <span style={{ color: 'var(--accent-red)' }}>Delete?</span>
+                            <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 4, color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }} onClick={(e) => handleDelete(e, exp.experiment_id)}>Yes</button>
+                            <button className="refresh-btn" style={{ fontSize: 10, padding: '1px 5px', marginLeft: 2 }} onClick={(e) => { e.stopPropagation(); setConfirmingAction(null); }}>No</button>
+                          </span>
+                        ) : (
+                          <button
+                            className="refresh-btn"
+                            style={{
+                              fontSize: 10, padding: '1px 5px', marginLeft: 6,
+                              color: 'var(--accent-red)', borderColor: 'var(--accent-red)',
+                            }}
+                            disabled={deletingId === exp.experiment_id}
+                            onClick={(e) => handleDelete(e, exp.experiment_id)}
+                            aria-label="Delete experiment"
+                          >
+                            {deletingId === exp.experiment_id ? '...' : 'Delete'}
+                          </button>
                         )}
                         {inlineError?.id === exp.experiment_id && (
                           <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--accent-red)' }}>

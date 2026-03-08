@@ -199,20 +199,6 @@ AriaResult aria_validate_graph(const AriaGraph *graph, AriaValidationResult *res
 
 /* ── Proactive Gating Implementation ───────────────────────────────── */
 
-/* 
- * Identify op categories without hard-coding full OPCODE_MAP.
- * These are standard architectural motifs for stability.
- */
-static int is_normalization_op(int32_t op_code) {
-    /* Map these to known normalization opcodes in bridge.py */
-    return (op_code >= 60 && op_code <= 64); /* RMSNorm, LayerNorm, etc. */
-}
-
-static int is_parameterized_op(int32_t op_code) {
-    /* Projections, Convs, Attention heads */
-    return (op_code >= 40 && op_code <= 55); 
-}
-
 AriaResult aria_proactive_gating(const AriaGraph *graph, 
                                const AriaValidationResult *validation,
                                AriaProactiveGatingResult *result) {
@@ -245,7 +231,7 @@ AriaResult aria_proactive_gating(const AriaGraph *graph,
     if (max_d > 8) {
         int has_norm = 0;
         for (int32_t i = 0; i < graph->n_nodes; i++) {
-            if (is_normalization_op(graph->op_codes[i])) {
+            if (graph->is_norm[i]) {
                 has_norm = 1;
                 break;
             }
@@ -294,9 +280,9 @@ int32_t aria_detect_toxic_motifs(const AriaGraph *graph,
                 int32_t w = adj.adj[k];
                 int32_t op_w = graph->op_codes[w];
 
-                /* Toxic Motif: (Parameterized -> Linear -> Parameterized) 
+                /* Toxic Motif: (Parameterized -> Linear -> Parameterized)
                  * without normalization/residuals leads to rank collapse. */
-                if (is_parameterized_op(op_u) && op_v == 15 && is_parameterized_op(op_w)) {
+                if (graph->is_parameterized[u] && graph->is_linear[v] && graph->is_parameterized[w]) {
                     toxic_count++;
                 }
             }

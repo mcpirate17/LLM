@@ -1,6 +1,6 @@
 {
   "backend": "anthropic",
-  "api_key": "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",
-  "model": "",
+  "api_key": "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",
+  "model": "claude-sonnet-4-5-20250929",
   "host": ""
 }

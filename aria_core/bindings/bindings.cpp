@@ -9,6 +9,7 @@
  */
 #include <torch/extension.h>
 #include <pybind11/stl.h>
+#include <unordered_set>
 #include "kernels.h"
 #include "clifford.h"
 #include "hyperbolic.h"
@@ -19,6 +20,7 @@
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_F32(x) TORCH_CHECK(x.dtype() == torch::kFloat32, #x " must be float32")
 #define CHECK_INPUT(x) do { CHECK_CPU(x); CHECK_CONTIGUOUS(x); CHECK_F32(x); } while(0)
+#define CHECK_I64(x) TORCH_CHECK(x.dtype() == torch::kInt64, #x " must be int64")
 
 // ═══ Elementwise unary ═══
 
@@ -260,6 +262,189 @@ std::tuple<torch::Tensor, torch::Tensor> route_topk_indices_f32(torch::Tensor sc
                                 scores.size(0), scores.size(1), k);
     return {idx, w};
 }
+torch::Tensor difficulty_scorer_f32(torch::Tensor x, torch::Tensor w1, c10::optional<torch::Tensor> b1,
+                                    torch::Tensor w2, c10::optional<torch::Tensor> b2) {
+    CHECK_INPUT(x); CHECK_INPUT(w1); CHECK_INPUT(w2);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    TORCH_CHECK(w1.dim() == 2, "w1 must be [H,D]");
+    TORCH_CHECK(w2.dim() == 2 || w2.dim() == 1, "w2 must be [1,H] or [H]");
+    int64_t B = x.size(0), S = x.size(1), D = x.size(2), H = w1.size(0);
+    TORCH_CHECK(w1.size(1) == D, "w1 second dim must equal D");
+
+    const float *b1p = nullptr;
+    if (b1.has_value()) { CHECK_INPUT(b1.value()); b1p = b1.value().data_ptr<float>(); }
+    const float *b2p = nullptr;
+    if (b2.has_value()) { CHECK_INPUT(b2.value()); b2p = b2.value().data_ptr<float>(); }
+    if (w2.dim() == 2) {
+        TORCH_CHECK(w2.size(0) == 1 && w2.size(1) == H, "w2 must be [1,H]");
+    } else {
+        TORCH_CHECK(w2.size(0) == H, "w2 must be [H]");
+    }
+
+    auto scores = torch::empty({B, S, 1}, x.options());
+    aria_difficulty_scorer_f32(x.data_ptr<float>(), w1.data_ptr<float>(), b1p, w2.data_ptr<float>(), b2p,
+                               scores.data_ptr<float>(), B, S, D, H);
+    return scores;
+}
+std::tuple<torch::Tensor, torch::Tensor> lane_router_threshold_f32(
+    torch::Tensor scores, int64_t lanes, c10::optional<torch::Tensor> thresholds) {
+    CHECK_INPUT(scores);
+    TORCH_CHECK(scores.dim() == 2 || scores.dim() == 3, "scores must be [B,S] or [B,S,1]");
+    TORCH_CHECK(lanes > 0, "lanes must be positive");
+    auto flat_scores = scores.dim() == 3 ? scores.squeeze(-1).contiguous() : scores.contiguous();
+    int64_t B = flat_scores.size(0), S = flat_scores.size(1);
+
+    const float *threshold_ptr = nullptr;
+    if (thresholds.has_value()) {
+        CHECK_INPUT(thresholds.value());
+        TORCH_CHECK(thresholds.value().dim() == 1, "thresholds must be 1D");
+        TORCH_CHECK(thresholds.value().size(0) == lanes - 1, "thresholds size must be lanes-1");
+        threshold_ptr = thresholds.value().data_ptr<float>();
+    }
+
+    auto assignments = torch::empty({B, S}, torch::dtype(torch::kInt64));
+    auto weights = torch::empty({B, S, lanes}, scores.options());
+    aria_lane_router_threshold_f32(flat_scores.data_ptr<float>(),
+                                   assignments.data_ptr<int64_t>(), weights.data_ptr<float>(),
+                                   B, S, lanes, threshold_ptr);
+    return {assignments, weights};
+}
+std::tuple<torch::Tensor, torch::Tensor> load_balance_loss_f32(
+    torch::Tensor assignments, int64_t lanes, float loss_weight,
+    c10::optional<torch::Tensor> target_distribution) {
+    CHECK_CPU(assignments); CHECK_CONTIGUOUS(assignments); CHECK_I64(assignments);
+    TORCH_CHECK(assignments.dim() == 2, "assignments must be [B,S]");
+    TORCH_CHECK(lanes > 0, "lanes must be positive");
+
+    const float *target_ptr = nullptr;
+    if (target_distribution.has_value()) {
+        CHECK_INPUT(target_distribution.value());
+        TORCH_CHECK(target_distribution.value().dim() == 1, "target_distribution must be 1D");
+        TORCH_CHECK(target_distribution.value().size(0) == lanes, "target_distribution size must equal lanes");
+        target_ptr = target_distribution.value().data_ptr<float>();
+    }
+
+    auto lane_fractions = torch::empty({lanes}, torch::dtype(torch::kFloat32));
+    auto loss = torch::empty({1}, torch::dtype(torch::kFloat32));
+    aria_load_balance_loss_f32(assignments.data_ptr<int64_t>(), target_ptr, lane_fractions.data_ptr<float>(),
+                               loss.data_ptr<float>(), assignments.size(0), assignments.size(1), lanes, loss_weight);
+    return {loss, lane_fractions};
+}
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> conditional_dispatch_f32(
+    torch::Tensor x, torch::Tensor assignments, int64_t lane_id) {
+    CHECK_INPUT(x);
+    CHECK_CPU(assignments); CHECK_CONTIGUOUS(assignments); CHECK_I64(assignments);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    TORCH_CHECK(assignments.dim() == 2, "assignments must be [B,S]");
+    TORCH_CHECK(x.size(0) == assignments.size(0) && x.size(1) == assignments.size(1),
+                "assignments must match x batch/seq");
+    int64_t B = x.size(0), S = x.size(1), D = x.size(2);
+    auto lane_out = torch::zeros_like(x);
+    auto index_map = torch::empty({B, S}, torch::dtype(torch::kInt64));
+    auto lane_counts = torch::empty({B}, torch::dtype(torch::kInt64));
+    aria_conditional_dispatch_f32(x.data_ptr<float>(), assignments.data_ptr<int64_t>(), lane_id,
+                                  lane_out.data_ptr<float>(), index_map.data_ptr<int64_t>(), lane_counts.data_ptr<int64_t>(),
+                                  B, S, D);
+    return {lane_out, index_map, lane_counts};
+}
+torch::Tensor conditional_dispatch_backward_f32(torch::Tensor lane_grad, torch::Tensor index_map) {
+    CHECK_INPUT(lane_grad);
+    CHECK_CPU(index_map); CHECK_CONTIGUOUS(index_map); CHECK_I64(index_map);
+    TORCH_CHECK(lane_grad.dim() == 3, "lane_grad must be [B,S,D]");
+    TORCH_CHECK(index_map.dim() == 2, "index_map must be [B,S]");
+    TORCH_CHECK(lane_grad.size(0) == index_map.size(0) && lane_grad.size(1) == index_map.size(1),
+                "index_map must match lane_grad batch/seq");
+    int64_t B = lane_grad.size(0), S = lane_grad.size(1), D = lane_grad.size(2);
+    auto grad_x = torch::zeros_like(lane_grad);
+    aria_conditional_dispatch_backward_f32(lane_grad.data_ptr<float>(), index_map.data_ptr<int64_t>(),
+                                           grad_x.data_ptr<float>(), B, S, D);
+    return grad_x;
+}
+torch::Tensor conditional_gather_f32(torch::Tensor lane_out, torch::Tensor index_map, torch::Tensor weights) {
+    CHECK_INPUT(lane_out);
+    CHECK_CPU(index_map); CHECK_CONTIGUOUS(index_map); CHECK_I64(index_map);
+    CHECK_INPUT(weights);
+    TORCH_CHECK(lane_out.dim() == 3, "lane_out must be [B,S,D]");
+    TORCH_CHECK(index_map.dim() == 2, "index_map must be [B,S]");
+    TORCH_CHECK(weights.dim() == 2, "weights must be [B,S]");
+    TORCH_CHECK(lane_out.size(0) == index_map.size(0) && lane_out.size(1) == index_map.size(1),
+                "index_map must match lane_out batch/seq");
+    TORCH_CHECK(weights.size(0) == lane_out.size(0) && weights.size(1) == lane_out.size(1),
+                "weights must match lane_out batch/seq");
+    int64_t B = lane_out.size(0), S = lane_out.size(1), D = lane_out.size(2);
+    auto y = torch::zeros_like(lane_out);
+    aria_conditional_gather_f32(lane_out.data_ptr<float>(), index_map.data_ptr<int64_t>(), weights.data_ptr<float>(),
+                                y.data_ptr<float>(), B, S, D);
+    return y;
+}
+std::tuple<torch::Tensor, torch::Tensor> conditional_gather_backward_f32(
+    torch::Tensor grad_y, torch::Tensor lane_out, torch::Tensor index_map, torch::Tensor weights) {
+    CHECK_INPUT(grad_y); CHECK_INPUT(lane_out);
+    CHECK_CPU(index_map); CHECK_CONTIGUOUS(index_map); CHECK_I64(index_map);
+    CHECK_INPUT(weights);
+    TORCH_CHECK(grad_y.dim() == 3 && lane_out.dim() == 3, "grad_y/lane_out must be [B,S,D]");
+    TORCH_CHECK(index_map.dim() == 2 && weights.dim() == 2, "index_map/weights must be [B,S]");
+    TORCH_CHECK(grad_y.sizes() == lane_out.sizes(), "grad_y and lane_out shape mismatch");
+    TORCH_CHECK(index_map.size(0) == grad_y.size(0) && index_map.size(1) == grad_y.size(1),
+                "index_map must match grad_y batch/seq");
+    TORCH_CHECK(weights.size(0) == grad_y.size(0) && weights.size(1) == grad_y.size(1),
+                "weights must match grad_y batch/seq");
+    int64_t B = grad_y.size(0), S = grad_y.size(1), D = grad_y.size(2);
+    auto grad_lane = torch::zeros_like(lane_out);
+    auto grad_weights = torch::zeros_like(weights);
+    aria_conditional_gather_backward_f32(
+        grad_y.data_ptr<float>(), lane_out.data_ptr<float>(), index_map.data_ptr<int64_t>(), weights.data_ptr<float>(),
+        grad_lane.data_ptr<float>(), grad_weights.data_ptr<float>(), B, S, D
+    );
+    return {grad_lane, grad_weights};
+}
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+adaptive_route_dispatch_f32(torch::Tensor x, torch::Tensor w1, c10::optional<torch::Tensor> b1,
+                            torch::Tensor w2, c10::optional<torch::Tensor> b2,
+                            int64_t lanes, c10::optional<torch::Tensor> thresholds) {
+    CHECK_INPUT(x); CHECK_INPUT(w1); CHECK_INPUT(w2);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    TORCH_CHECK(w1.dim() == 2, "w1 must be [H,D]");
+    TORCH_CHECK(w2.dim() == 2 || w2.dim() == 1, "w2 must be [1,H] or [H]");
+    TORCH_CHECK(lanes > 0, "lanes must be positive");
+    int64_t B = x.size(0), S = x.size(1), D = x.size(2), H = w1.size(0);
+    TORCH_CHECK(w1.size(1) == D, "w1 second dim must equal D");
+    if (w2.dim() == 2) {
+        TORCH_CHECK(w2.size(0) == 1 && w2.size(1) == H, "w2 must be [1,H]");
+    } else {
+        TORCH_CHECK(w2.size(0) == H, "w2 must be [H]");
+    }
+
+    const float *b1p = nullptr;
+    if (b1.has_value()) { CHECK_INPUT(b1.value()); b1p = b1.value().data_ptr<float>(); }
+    const float *b2p = nullptr;
+    if (b2.has_value()) { CHECK_INPUT(b2.value()); b2p = b2.value().data_ptr<float>(); }
+    const float *threshold_ptr = nullptr;
+    if (thresholds.has_value()) {
+        CHECK_INPUT(thresholds.value());
+        TORCH_CHECK(thresholds.value().dim() == 1, "thresholds must be 1D");
+        TORCH_CHECK(thresholds.value().size(0) == lanes - 1, "thresholds size must be lanes-1");
+        threshold_ptr = thresholds.value().data_ptr<float>();
+    }
+
+    auto scores_flat = torch::empty({B, S}, x.options());
+    auto scores = scores_flat.unsqueeze(-1);
+    auto assignments = torch::empty({B, S}, torch::dtype(torch::kInt64));
+    auto weights = torch::empty({B, S, lanes}, x.options());
+    auto lane_out = torch::zeros({lanes, B, S, D}, x.options());
+    auto index_map = torch::empty({lanes, B, S}, torch::dtype(torch::kInt64));
+    auto lane_counts = torch::empty({lanes, B}, torch::dtype(torch::kInt64));
+
+    aria_adaptive_route_dispatch_f32(
+        x.data_ptr<float>(), w1.data_ptr<float>(), b1p, w2.data_ptr<float>(), b2p,
+        lanes, threshold_ptr,
+        scores_flat.data_ptr<float>(), assignments.data_ptr<int64_t>(), weights.data_ptr<float>(),
+        lane_out.data_ptr<float>(), index_map.data_ptr<int64_t>(), lane_counts.data_ptr<int64_t>(),
+        B, S, D, H
+    );
+
+    return {scores, assignments, weights, lane_out, index_map, lane_counts};
+}
 torch::Tensor route_lane_argmax_f32(torch::Tensor scores) {
     CHECK_INPUT(scores);
     auto idx = torch::empty({scores.size(0), scores.size(1)}, torch::dtype(torch::kInt64));
@@ -276,10 +461,15 @@ torch::Tensor route_recursion_depth_f32(torch::Tensor scores) {
 }
 std::tuple<torch::Tensor, torch::Tensor> token_merge_simple_f32(torch::Tensor x, int64_t n_keep) {
     CHECK_INPUT(x);
-    auto y = torch::empty({x.size(0), n_keep, x.size(2)}, x.options());
+    TORCH_CHECK(x.dim() == 3, "x must be [B, S, D]");
+    TORCH_CHECK(x.size(1) > 0, "sequence length must be > 0");
+    int64_t nk = n_keep;
+    if (nk < 1) nk = 1;
+    if (nk > x.size(1)) nk = x.size(1);
+    auto y = torch::empty({x.size(0), nk, x.size(2)}, x.options());
     auto restore = torch::empty({x.size(0), x.size(1)}, torch::dtype(torch::kInt64));
     aria_token_merge_simple_f32(x.data_ptr<float>(), y.data_ptr<float>(), restore.data_ptr<int64_t>(),
-                                x.size(0), x.size(1), x.size(2), n_keep);
+                                x.size(0), x.size(1), x.size(2), nk);
     return {y, restore};
 }
 
@@ -384,8 +574,20 @@ torch::Tensor linear_tied_f32(torch::Tensor x, torch::Tensor W, c10::optional<to
 
 // ═══ Hyperbolic ═══
 
-torch::Tensor exp_map_f32(torch::Tensor x, float c) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_exp_map_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.numel(), c); return y; }
-torch::Tensor log_map_f32(torch::Tensor x, float c) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_log_map_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.numel(), c); return y; }
+torch::Tensor exp_map_f32(torch::Tensor x, float c) {
+    CHECK_INPUT(x); auto y = torch::empty_like(x);
+    int64_t dim = x.size(-1);
+    int64_t batch = x.numel() / dim;
+    aria_exp_map_f32(x.data_ptr<float>(), y.data_ptr<float>(), batch, dim, c);
+    return y;
+}
+torch::Tensor log_map_f32(torch::Tensor x, float c) {
+    CHECK_INPUT(x); auto y = torch::empty_like(x);
+    int64_t dim = x.size(-1);
+    int64_t batch = x.numel() / dim;
+    aria_log_map_f32(x.data_ptr<float>(), y.data_ptr<float>(), batch, dim, c);
+    return y;
+}
 torch::Tensor poincare_add_f32(torch::Tensor x, torch::Tensor v, float c) { CHECK_INPUT(x); CHECK_INPUT(v); auto y = torch::empty_like(x); aria_poincare_add_f32(x.data_ptr<float>(), v.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), c); return y; }
 torch::Tensor hyp_linear_f32(torch::Tensor x, torch::Tensor W, float c) { CHECK_INPUT(x); CHECK_INPUT(W); auto y = torch::empty({x.size(0), W.size(0)}, x.options()); aria_hyp_linear_f32(x.data_ptr<float>(), W.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), W.size(0), c); return y; }
 torch::Tensor hyperbolic_norm_f32(torch::Tensor x, torch::Tensor g, torch::Tensor b, float c, float eps) { CHECK_INPUT(x); CHECK_INPUT(g); CHECK_INPUT(b); auto y = torch::empty_like(x); aria_hyperbolic_norm_f32(x.data_ptr<float>(), g.data_ptr<float>(), b.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), c, eps); return y; }
@@ -715,7 +917,8 @@ py::dict validate_graph(int32_t n_nodes, std::vector<std::vector<int32_t>> edges
     return out;
 }
 
-py::dict proactive_gating(int32_t n_nodes, std::vector<std::vector<int32_t>> edges, std::vector<int32_t> op_codes) {
+py::dict proactive_gating(int32_t n_nodes, std::vector<std::vector<int32_t>> edges, std::vector<int32_t> op_codes,
+                          std::vector<int32_t> norm_opcodes, std::vector<int32_t> param_opcodes, std::vector<int32_t> linear_opcodes) {
     AriaGraph graph;
     memset(&graph, 0, sizeof(graph));
     graph.n_nodes = n_nodes;
@@ -724,8 +927,15 @@ py::dict proactive_gating(int32_t n_nodes, std::vector<std::vector<int32_t>> edg
         graph.edges[i].source = edges[i][0];
         graph.edges[i].target = edges[i][1];
     }
+    // Build opcode lookup sets
+    std::unordered_set<int32_t> norm_set(norm_opcodes.begin(), norm_opcodes.end());
+    std::unordered_set<int32_t> param_set(param_opcodes.begin(), param_opcodes.end());
+    std::unordered_set<int32_t> linear_set(linear_opcodes.begin(), linear_opcodes.end());
     for (int32_t i = 0; i < n_nodes && i < (int32_t)op_codes.size(); i++) {
         graph.op_codes[i] = op_codes[i];
+        graph.is_norm[i] = norm_set.count(op_codes[i]) ? 1 : 0;
+        graph.is_parameterized[i] = param_set.count(op_codes[i]) ? 1 : 0;
+        graph.is_linear[i] = linear_set.count(op_codes[i]) ? 1 : 0;
     }
 
     AriaValidationResult val;
@@ -851,6 +1061,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("conv1d_seq_f32", &conv1d_seq_f32); m.def("selective_scan_f32", &selective_scan_f32);
     m.def("topk_gate_f32", &topk_gate_f32); m.def("basis_expansion_f32", &basis_expansion_f32);
     m.def("sparse_threshold_f32", &sparse_threshold_f32); m.def("token_pool_restore_f32", &token_pool_restore_f32);
+    m.def("difficulty_scorer_f32", &difficulty_scorer_f32);
+    m.def("lane_router_threshold_f32", &lane_router_threshold_f32);
+    m.def("load_balance_loss_f32", &load_balance_loss_f32);
+    m.def("conditional_dispatch_f32", &conditional_dispatch_f32);
+    m.def("conditional_dispatch_backward_f32", &conditional_dispatch_backward_f32);
+    m.def("conditional_gather_f32", &conditional_gather_f32);
+    m.def("conditional_gather_backward_f32", &conditional_gather_backward_f32);
+    m.def("adaptive_route_dispatch_f32", &adaptive_route_dispatch_f32);
     m.def("route_topk_indices_f32", &route_topk_indices_f32);
     m.def("route_lane_argmax_f32", &route_lane_argmax_f32);
     m.def("route_recursion_depth_f32", &route_recursion_depth_f32);
@@ -891,7 +1109,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("validate_graph", &validate_graph, "Validate a DAG: cycle detection, topological sort",
           py::arg("n_nodes"), py::arg("edges"), py::arg("op_codes") = std::vector<int32_t>());
     m.def("proactive_gating", &proactive_gating, "Native proactive stability and toxicity gating",
-          py::arg("n_nodes"), py::arg("edges"), py::arg("op_codes"));
+          py::arg("n_nodes"), py::arg("edges"), py::arg("op_codes"),
+          py::arg("norm_opcodes"), py::arg("param_opcodes"), py::arg("linear_opcodes"));
     m.def("propagate_shapes", &propagate_shapes, "Propagate tensor shapes through a graph",
           py::arg("topo_order"), py::arg("edges"), py::arg("node_rules"));
 

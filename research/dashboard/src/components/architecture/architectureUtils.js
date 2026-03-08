@@ -127,20 +127,20 @@ export function buildIntegrityWarning(sourceCheck, designerCheck) {
   const issues = [];
   if (sourceCheck.nodeCount !== designerCheck.nodeCount) {
     issues.push(
-      `node count mismatch (backend \${sourceCheck.nodeCount}, viewer \${designerCheck.nodeCount})`
+      `node count mismatch (backend ${sourceCheck.nodeCount}, viewer ${designerCheck.nodeCount})`
     );
   }
   if (sourceCheck.edgeCount !== designerCheck.edgeCount) {
     issues.push(
-      `edge count mismatch (backend \${sourceCheck.edgeCount}, viewer \${designerCheck.edgeCount})`
+      `edge count mismatch (backend ${sourceCheck.edgeCount}, viewer ${designerCheck.edgeCount})`
     );
   }
   if (sourceCheck.hasInputPath && !designerCheck.hasInputPath) {
     issues.push('viewer graph appears disconnected from input to output');
   }
   if (sourceCheck.deadNodeCount === 0 && designerCheck.deadNodeCount > 0) {
-    issues.push(`viewer has \${designerCheck.deadNodeCount} unreachable node(s)`);
+    issues.push(`viewer has ${designerCheck.deadNodeCount} unreachable node(s)`);
   }
   if (!issues.length) return null;
-  return `Graph integrity mismatch: \${issues.join('; ')}. Backend-tested graph remains authoritative.`;
+  return `Graph integrity mismatch: ${issues.join('; ')}. Backend-tested graph remains authoritative.`;
 }

@@ -264,6 +264,10 @@ export default function DiscoveryRankings({
                 : eligibility.investigationEligible
                   ? 'investigation'
                   : null;
+              
+              const hasBeenInvestigated = p.investigation_loss_ratio != null || ['investigation', 'validation', 'breakthrough'].includes(p.tier);
+              const hasBeenValidated = p.validation_loss_ratio != null || ['validation', 'breakthrough'].includes(p.tier);
+
               return (
               <tr key={p.result_id || i} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px', color: 'var(--text-muted)' }}>{i + 1}</td>
@@ -443,7 +447,7 @@ export default function DiscoveryRankings({
                   {lr != null && <RatingBadge program={p} />}
                   {p.result_id && (
                     <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {onInvestigate && (
+                      {onInvestigate && !hasBeenInvestigated && (
                         <button
                           style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, cursor: 'pointer', background: 'rgba(63, 185, 80, 0.12)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
                           onClick={() => onInvestigate([p.result_id])}
@@ -453,7 +457,7 @@ export default function DiscoveryRankings({
                           {eligibility.investigationEligible ? 'Investigate' : 'Force Investigate'}
                         </button>
                       )}
-                      {onValidate && (
+                      {onValidate && !hasBeenValidated && (
                         <button
                           style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, cursor: 'pointer', background: 'rgba(188, 140, 255, 0.12)', border: '1px solid rgba(188, 140, 255, 0.4)', color: 'var(--accent-purple)' }}
                           onClick={() => onValidate([p.result_id])}

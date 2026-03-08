@@ -7,16 +7,20 @@ export function CategoryWeightsControl({ weights, onChange }) {
   if (!weights) return null;
 
   return (
-    <div style={{ marginTop: 16 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 8, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-        Category Weights <span style={{ fontWeight: 'normal', textTransform: 'none' }}>(1.0 = default, higher = more likely)</span>
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700, marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
+        <span>Category Probabilities</span>
+        <span style={{ fontWeight: 'normal', textTransform: 'none', opacity: 0.6 }}>(1.0 = default)</span>
       </div>
-      <div className="config-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}>
-        {Object.keys(weights).map(cat => (
-          <div className="config-item" key={cat}>
-            <label style={{ fontSize: 11 }}>{cat.replace(/_/g, ' ')}</label>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '12px' }}>
+        {Object.keys(weights).sort().map(cat => (
+          <div key={cat} style={{ display: 'flex', flexDirection: 'column', gap: 4, background: 'rgba(255,255,255,0.03)', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)' }}>
+            <label style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cat.replace(/_/g, ' ')}>
+              {cat.replace(/_/g, ' ')}
+            </label>
             <input
               type="number" min="0.1" max="10" step="0.5"
+              style={{ width: '100%', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-primary)', fontSize: 11, padding: '4px 6px' }}
               value={weights[cat] ?? 1.0}
               onChange={(e) => {
                 const val = parseFloat(e.target.value) || 1.0;

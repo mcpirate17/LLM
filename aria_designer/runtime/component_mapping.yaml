@@ -42,7 +42,7 @@ aliases:
   convolutional: conv1d_seq
   learned_absolute: learnable_bias
   random_fourier: fourier_mixing
-  rope: fourier_mixing
+  rope: rope
   binary_hash: sign_ste
   complex_valued: fourier_mixing
   mixture_embedding: moe_topk
@@ -50,6 +50,7 @@ aliases:
   quaternion: multi_head_mix
   residual_quantized: sign_ste
   sparse_topk: topk_gate
+  identity_skip: identity
   join: concat
   # Direct primitive mappings
   embedding_lookup: embedding_lookup
@@ -105,7 +106,7 @@ approximate_alias_notes:
   convolutional: "Mapped to conv1d_seq; exact positional encoding semantics are approximate."
   learned_absolute: "Mapped to learnable_bias; learned absolute position table semantics are approximate."
   random_fourier: "Mapped to fourier_mixing; random feature sampling semantics are approximate."
-  rope: "Mapped to fourier_mixing; rotational embedding semantics are approximate."
+  rope: "Mapped to rope primitive; rotational embedding."
   binary_hash: "Mapped to sign_ste; binary hashing semantics are approximate."
   complex_valued: "Mapped to fourier_mixing; complex arithmetic semantics are approximate."
   mixture_embedding: "Mapped to moe_topk; embedding mixture semantics are approximate."

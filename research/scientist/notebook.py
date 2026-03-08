@@ -2125,12 +2125,6 @@ class LabNotebook:
              entry.entry_type, entry.title, entry.content,
              json.dumps(entry.metadata), ",".join(entry.tags)),
         )
-        # Keep fingerprint-level leaderboard evidence synchronized across
-        # repeated runs of the same architecture.
-        try:
-            self._sync_fingerprint_leaderboard(result_id)
-        except Exception as e:
-            LOGGER.debug("Fingerprint leaderboard sync skipped for %s: %s", result_id, e)
         self._maybe_commit()
         return entry_id
 

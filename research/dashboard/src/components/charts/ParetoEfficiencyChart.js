@@ -17,12 +17,12 @@ export function ParetoEfficiencyChart({ points }) {
   });
 
   return (
-    <svg width={W} height={H} viewBox={`0 0 \${W} \${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxWidth: W }}>
       <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
       <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="var(--border)" strokeWidth={1} />
       
       <text x={W/2} y={H-8} textAnchor="middle" fontSize={10} fill="var(--text-muted)">Compute Efficiency (Throughput)</text>
-      <text x={10} y={H/2} transform={`rotate(-90 10 \${H/2})`} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
+      <text x={10} y={H/2} transform={`rotate(-90 10 ${H/2})`} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
         Accuracy (1 - LR)
       </text>
 
@@ -34,7 +34,7 @@ export function ParetoEfficiencyChart({ points }) {
             key={i} cx={x} cy={y} r={sizes[i]} 
             fill="var(--accent-blue)" opacity={0.6} stroke="var(--bg-primary)" strokeWidth={1}
           >
-            <title>{`\${p.result_id?.slice(0,8)} | Acc: \${(ys[i]*100).toFixed(1)}% | Eff: \${(xs[i]*100).toFixed(1)}% | Comp: \${Number(p.compression_ratio || 1).toFixed(2)}x`}</title>
+            <title>{`${p.result_id?.slice(0,8)} | Acc: ${(ys[i]*100).toFixed(1)}% | Eff: ${(xs[i]*100).toFixed(1)}% | Comp: ${Number(p.compression_ratio || 1).toFixed(2)}x`}</title>
           </circle>
         );
       })}

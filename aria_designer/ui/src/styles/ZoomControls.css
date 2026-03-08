@@ -1,0 +1,37 @@
+.zoom-controls {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(15, 26, 46, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  z-index: 5;
+}
+.zoom-controls button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.zoom-controls button:hover {
+  background: #1a3050;
+  color: var(--text);
+}
+.zoom-label {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 36px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,61 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "wf_adaptive_trilane_v1",
+  "name": "Adaptive Tri-Lane v1 (Linear Fast Lane)",
+  "metadata": {
+    "description": "Token-difficulty router splits into 3 lanes: easy (25%) → linear attention, medium (25%) → recursion depth-2, hard (50%) → MoE-2 + recursion depth-4. Lanes merge via conditional_gather, compress, normalize to output.",
+    "model_dim": 256
+  },
+  "nodes": [
+    {"id": "input",       "component_type": "io/input",                     "params": {"dim": 256, "vocab_size": 32000},                  "ui_meta": {"position": {"x": 400, "y": 0}}},
+    {"id": "embed_proj",  "component_type": "linear_algebra/linear_proj",   "params": {"out_dim": 256},                                   "ui_meta": {"position": {"x": 400, "y": 120}}},
+    {"id": "pos_enc",     "component_type": "positional/rope",              "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 240}}},
+
+    {"id": "scorer",      "component_type": "routing/difficulty_scorer",    "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 360}}},
+    {"id": "router",      "component_type": "routing/lane_router",          "params": {"num_lanes": 3},                                   "ui_meta": {"position": {"x": 400, "y": 480}}},
+
+    {"id": "lane1_attn",  "component_type": "mixing/linear_attention",      "params": {},                                                  "ui_meta": {"position": {"x": 80,  "y": 640}}},
+    {"id": "lane1_proj",  "component_type": "linear_algebra/linear_proj",   "params": {"out_dim": 256},                                   "ui_meta": {"position": {"x": 80,  "y": 760}}},
+
+    {"id": "lane2_rec",   "component_type": "routing/adaptive_recursion",   "params": {"max_depth": 2},                                   "ui_meta": {"position": {"x": 400, "y": 640}}},
+    {"id": "lane2_norm",  "component_type": "normalization/rmsnorm_pre",    "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 760}}},
+
+    {"id": "lane3_moe",   "component_type": "channel_mixing/moe_topk",     "params": {"num_experts": 2, "top_k": 1},                     "ui_meta": {"position": {"x": 720, "y": 640}}},
+    {"id": "lane3_rec",   "component_type": "routing/adaptive_recursion",   "params": {"max_depth": 4},                                   "ui_meta": {"position": {"x": 720, "y": 760}}},
+    {"id": "lane3_proj",  "component_type": "linear_algebra/linear_proj",   "params": {"out_dim": 256},                                   "ui_meta": {"position": {"x": 720, "y": 880}}},
+
+    {"id": "gather_12",   "component_type": "structural/conditional_gather","params": {"num_lanes": 3},                                   "ui_meta": {"position": {"x": 240, "y": 960}}},
+    {"id": "gather_all",  "component_type": "structural/conditional_gather","params": {"num_lanes": 3},                                   "ui_meta": {"position": {"x": 400, "y": 1080}}},
+
+    {"id": "balance",     "component_type": "functional/load_balance_loss", "params": {"num_lanes": 3, "loss_weight": 0.01},              "ui_meta": {"position": {"x": 400, "y": 1200}}},
+    {"id": "compress",    "component_type": "math_space/bottleneck_proj",   "params": {"bottleneck_ratio": 4},                            "ui_meta": {"position": {"x": 400, "y": 1320}}},
+    {"id": "final_norm",  "component_type": "linear_algebra/rmsnorm",       "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 1440}}},
+    {"id": "output",      "component_type": "io/output_head",              "params": {"vocab_size": 32000},                               "ui_meta": {"position": {"x": 400, "y": 1560}}}
+  ],
+  "edges": [
+    {"id": "e01", "source": "input",      "source_port": "y", "target": "embed_proj", "target_port": "x"},
+    {"id": "e02", "source": "embed_proj", "source_port": "y", "target": "pos_enc",    "target_port": "x"},
+    {"id": "e03", "source": "pos_enc",    "source_port": "y", "target": "scorer",     "target_port": "x"},
+    {"id": "e04", "source": "scorer",     "source_port": "y", "target": "router",     "target_port": "x"},
+
+    {"id": "e10", "source": "router",     "source_port": "y", "target": "lane1_attn", "target_port": "x"},
+    {"id": "e11", "source": "lane1_attn", "source_port": "y", "target": "lane1_proj", "target_port": "x"},
+
+    {"id": "e20", "source": "router",     "source_port": "y", "target": "lane2_rec",  "target_port": "x"},
+    {"id": "e21", "source": "lane2_rec",  "source_port": "y", "target": "lane2_norm", "target_port": "x"},
+
+    {"id": "e30", "source": "router",     "source_port": "y", "target": "lane3_moe",  "target_port": "x"},
+    {"id": "e31", "source": "lane3_moe",  "source_port": "y", "target": "lane3_rec",  "target_port": "x"},
+    {"id": "e32", "source": "lane3_rec",  "source_port": "y", "target": "lane3_proj", "target_port": "x"},
+
+    {"id": "e40", "source": "lane1_proj", "source_port": "y", "target": "gather_12",  "target_port": "a"},
+    {"id": "e41", "source": "lane2_norm", "source_port": "y", "target": "gather_12",  "target_port": "b"},
+    {"id": "e42", "source": "gather_12",  "source_port": "y", "target": "gather_all", "target_port": "a"},
+    {"id": "e43", "source": "lane3_proj", "source_port": "y", "target": "gather_all", "target_port": "b"},
+
+    {"id": "e50", "source": "gather_all", "source_port": "y", "target": "balance",    "target_port": "x"},
+    {"id": "e51", "source": "balance",    "source_port": "y", "target": "compress",   "target_port": "x"},
+    {"id": "e52", "source": "compress",   "source_port": "y", "target": "final_norm", "target_port": "x"},
+    {"id": "e53", "source": "final_norm", "source_port": "y", "target": "output",     "target_port": "x"}
+  ]
+}

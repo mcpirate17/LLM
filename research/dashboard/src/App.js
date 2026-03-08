@@ -31,7 +31,7 @@ import StatusBar from './components/StatusBar';
 import NativeProfilePanel from './components/NativeProfilePanel';
 import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
-import apiService from './services/apiService';
+import apiService, { apiCall } from './services/apiService';
 import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -195,7 +195,7 @@ function ReferenceBaselinesPanel() {
     let cancelled = false;
     async function fetchRefs() {
       try {
-        const res = await fetch(`${API_BASE}/api/discoveries?sort=composite_score&limit=200&view=ranked`);
+        const res = await apiCall(`/api/discoveries?sort=composite_score&limit=200&view=ranked`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         const entries = (json.entries || []).filter(e => e.is_reference);
@@ -215,6 +215,8 @@ function ReferenceBaselinesPanel() {
 
   const metricKeys = [
     { key: 'screening_loss_ratio', label: 'Loss Ratio', fmt: v => v?.toFixed(4) },
+    { key: 'moe_routing_efficiency', label: 'MoE Eff', fmt: v => v?.toFixed(3) },
+    { key: 'arch_quality_score', label: 'Arch Q', fmt: v => v?.toFixed(3) },
     { key: 'screening_novelty', label: 'Novelty', fmt: v => v?.toFixed(4) },
     { key: 'composite_score', label: 'Score', fmt: v => v?.toFixed(4) },
     { key: 'validation_baseline_ratio', label: 'vs Baseline', fmt: v => v ? v.toFixed(2) + 'x' : '--' },
@@ -450,6 +452,21 @@ function App() {
   );
 }
 
+const NAV_CATEGORIES = {
+  workbench: {
+    label: 'Workbench',
+    tabs: ['command', 'experiments', 'discoveries', 'comparison'],
+  },
+  knowledge: {
+    label: 'Knowledge',
+    tabs: ['reports', 'trends', 'log'],
+  },
+  diagnostics: {
+    label: 'Diagnostics',
+    tabs: ['perf'],
+  }
+};
+
 function AppContent({ onRunningChange }) {
   const TAB_LABELS = {
     command: 'Command',
@@ -521,7 +538,16 @@ function AppContent({ onRunningChange }) {
   });
 
   // Architecture designer drawer
-  const [designerResultId, setDesignerResultId] = useState(null);
+  const [designerSession, setDesignerSession] = useState({ open: false, resultId: null });
+  const openDesignerBlank = useCallback(() => {
+    setDesignerSession({ open: true, resultId: null });
+  }, []);
+  const openDesignerForResult = useCallback((rid) => {
+    setDesignerSession({ open: true, resultId: rid || null });
+  }, []);
+  const closeDesigner = useCallback(() => {
+    setDesignerSession({ open: false, resultId: null });
+  }, []);
 
   // Cross-view navigation state
   const [leaderboardHighlight, setLeaderboardHighlight] = useState(null);
@@ -620,6 +646,16 @@ function AppContent({ onRunningChange }) {
     if (onRunningChange) onRunningChange(Boolean(data?.is_running));
   }, [data?.is_running, onRunningChange]);
 
+  useEffect(() => {
+    if (
+      ariaCycle
+      && typeof ariaCycle.continuous_active === 'boolean'
+    ) {
+      const autonomousActive = Boolean(ariaCycle.continuous_active) && !Boolean(ariaCycle.cycle_paused);
+      setAutonomousMode(autonomousActive);
+    }
+  }, [ariaCycle]);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const TAB_KEYS = ['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'];
@@ -633,7 +669,7 @@ function AppContent({ onRunningChange }) {
         if (showHelp) { setShowHelp(false); return; }
         if (showChat) { setShowChat(false); return; }
         if (showSettings) { setShowSettings(false); return; }
-        if (designerResultId) { setDesignerResultId(null); return; }
+        if (designerSession.open) { closeDesigner(); return; }
         if (selectedProgram) { setSelectedProgram(null); return; }
         return;
       }
@@ -646,7 +682,7 @@ function AppContent({ onRunningChange }) {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [showHelp, showChat, showSettings, selectedProgram, designerResultId]);
+  }, [showHelp, showChat, showSettings, selectedProgram, designerSession.open, closeDesigner]);
 
   // Shared analytics from AriaDataProvider
   const {
@@ -703,7 +739,7 @@ function AppContent({ onRunningChange }) {
         if (append) {
           setExperimentsLoadingMore(true);
         }
-        const res = await fetch(`${API_BASE}${endpoint}`);
+        const res = await apiCall(endpoint);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         const page = Array.isArray(json) ? json : [];
@@ -727,7 +763,7 @@ function AppContent({ onRunningChange }) {
     if (!endpoint) return;
 
     try {
-      const res = await fetch(`${API_BASE}${endpoint}`);
+      const res = await apiCall(endpoint);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setTabData(prev => ({ ...prev, [tab]: Array.isArray(json) ? json : [] }));
@@ -835,7 +871,7 @@ function AppContent({ onRunningChange }) {
     const interval = setInterval(async () => {
       await Promise.all(activeTaskIds.map(async (taskId) => {
         try {
-          const res = await fetch(`${API_BASE}/api/aria/agent/status/${encodeURIComponent(taskId)}`);
+          const res = await apiCall(`/api/aria/agent/status/${encodeURIComponent(taskId)}`);
           const payload = await res.json();
           if (!res.ok || !payload?.task) return;
 
@@ -920,7 +956,7 @@ function AppContent({ onRunningChange }) {
 
   const handleStartExperiment = async (config) => {
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+      const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
@@ -958,7 +994,7 @@ function AppContent({ onRunningChange }) {
 
   const handleStopExperiment = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/stop`, {
+      const res = await apiCall(`/api/experiments/stop`, {
         method: 'POST',
       });
       if (!res.ok) {
@@ -981,7 +1017,7 @@ function AppContent({ onRunningChange }) {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/rerun`, {
+      const res = await apiCall(`/api/experiments/${experimentId}/rerun`, {
         method: 'POST',
       });
       if (!res.ok) {
@@ -1002,7 +1038,7 @@ function AppContent({ onRunningChange }) {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/fill-gaps`, {
+      const res = await apiCall(`/api/experiments/${experimentId}/fill-gaps`, {
         method: 'POST',
       });
       if (!res.ok) {
@@ -1029,7 +1065,7 @@ function AppContent({ onRunningChange }) {
       ...(config || {}),
     };
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+      const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1056,15 +1092,35 @@ function AppContent({ onRunningChange }) {
   }, [emitAutoRepairStarted, summarizePreflightBlock]);
 
   const handleStopAutonomous = async () => {
-    setAutonomousMode(false);
-    await handleStopExperiment();
+    try {
+      setCycleControlBusy(true);
+      const res = await apiCall(`/api/aria/cycle-control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'pause' }),
+      });
+      const payload = await res.json();
+      if (!res.ok || payload?.error) {
+        throw new Error(payload?.error || 'Failed to pause autonomous cycle');
+      }
+      if (payload?.cycle) {
+        setAriaCycle(payload.cycle);
+      }
+      setAutonomousMode(false);
+      setActionError(null);
+      fetchDashboard();
+    } catch (err) {
+      setActionError(`Failed to stop autonomous loop: ${err.message}`);
+    } finally {
+      setCycleControlBusy(false);
+    }
   };
 
   const handleCycleControl = async (action) => {
     if (!action || cycleControlBusy) return;
     setCycleControlBusy(true);
     try {
-      const res = await fetch(`${API_BASE}/api/aria/cycle-control`, {
+      const res = await apiCall(`/api/aria/cycle-control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
@@ -1164,7 +1220,7 @@ function AppContent({ onRunningChange }) {
         }
       }
       try {
-        const res = await fetch(`${API_BASE}/api/experiments/start`, {
+        const res = await apiCall(`/api/experiments/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1197,7 +1253,7 @@ function AppContent({ onRunningChange }) {
       }
       if (confirmOverride) {
         try {
-          const res = await fetch(`${API_BASE}/api/experiments/start`, {
+          const res = await apiCall(`/api/experiments/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1221,7 +1277,7 @@ function AppContent({ onRunningChange }) {
       }
     }
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+      const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'investigation', result_ids: eligibility.eligibleIds }),
@@ -1264,7 +1320,7 @@ function AppContent({ onRunningChange }) {
         }
       }
       try {
-        const res = await fetch(`${API_BASE}/api/experiments/start`, {
+        const res = await apiCall(`/api/experiments/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1297,7 +1353,7 @@ function AppContent({ onRunningChange }) {
       }
       if (confirmOverride) {
         try {
-          const res = await fetch(`${API_BASE}/api/experiments/start`, {
+          const res = await apiCall(`/api/experiments/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1321,7 +1377,7 @@ function AppContent({ onRunningChange }) {
       }
     }
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+      const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'validation', result_ids: eligibility.eligibleIds }),
@@ -1370,7 +1426,7 @@ function AppContent({ onRunningChange }) {
       eligibilityMessage = eligibility.message || null;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/experiments/start`, {
+      const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(nextPayload),
@@ -1549,7 +1605,7 @@ function AppContent({ onRunningChange }) {
     setFingerprintLookupBusy(true);
     setFingerprintLookupError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/fingerprint/resolve?value=${encodeURIComponent(value)}`);
+      const res = await apiCall(`/api/fingerprint/resolve?value=${encodeURIComponent(value)}`);
       const payload = await res.json();
       if (!res.ok) {
         setFingerprintLookupError(payload?.error || 'Fingerprint lookup failed.');
@@ -1569,6 +1625,7 @@ function AppContent({ onRunningChange }) {
   }, [fingerprintLookup]);
 
   const ariaMood = data?.aria?.mood || 'curious';
+  const autonomousActive = Boolean(autonomousMode || ariaCycle?.continuous_active);
   const compactInsights = useMemo(() => {
     const insights = Array.isArray(data?.insights) ? data.insights : [];
     const deduped = [];
@@ -1605,6 +1662,13 @@ function AppContent({ onRunningChange }) {
     if (!strategyBlocksAdvancedStart || !activeOverviewStrategy) return '';
     return `Best next step is \"${activeOverviewStrategy.title}\" (Priority #${activeOverviewStrategy.id}). Use Strategy Advisor action or intentionally override advanced setup.`;
   }, [strategyBlocksAdvancedStart, activeOverviewStrategy]);
+
+  const primaryTab = useMemo(() => {
+    for (const cat in NAV_CATEGORIES) {
+      if (NAV_CATEGORIES[cat].tabs.includes(activeTab)) return cat;
+    }
+    return 'workbench';
+  }, [activeTab]);
 
   return (
     <div className="app">
@@ -1668,34 +1732,57 @@ function AppContent({ onRunningChange }) {
             Auto-refresh
           </label>
           <button className="refresh-btn" onClick={fetchDashboard}>Refresh</button>
+          <button
+            className="refresh-btn"
+            onClick={openDesignerBlank}
+            title="Open Aria Designer with a blank canvas"
+          >
+            Designer
+          </button>
         </div>
       </header>
 
-      <nav className="tab-nav">
-        {['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'].map(tab => (
-          <button
-            key={tab}
-            className={`tab ${activeTab === tab ? 'active' : ''}`}
-            title={TAB_TIPS[tab]}
-            onClick={() => {
-              setActiveTab(tab);
-              setSelectedExperiment(null);
-            }}
-          >
-            {TAB_LABELS[tab]}
-            {tabDeltas[tab] && (
-              <span style={{
-                marginLeft: 4, fontSize: 9, fontWeight: 600, padding: '1px 4px',
-                borderRadius: 3,
-                background: tabDeltas[tab].positive ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
-                color: tabDeltas[tab].positive ? 'var(--accent-green)' : 'var(--accent-red)',
-                whiteSpace: 'nowrap',
-              }}>
-                {tabDeltas[tab].text}
-              </span>
-            )}
-          </button>
-        ))}
+      <nav className="tab-nav-hierarchical">
+        <div className="primary-nav">
+          {Object.entries(NAV_CATEGORIES).map(([id, cat]) => (
+            <button
+              key={id}
+              className={`primary-tab ${primaryTab === id ? 'active' : ''}`}
+              onClick={() => {
+                setActiveTab(cat.tabs[0]);
+                setSelectedExperiment(null);
+              }}
+            >
+              {cat.label}
+            </button>
+          ))}
+        </div>
+        <div className="secondary-nav">
+          {NAV_CATEGORIES[primaryTab]?.tabs.map(tab => (
+            <button
+              key={tab}
+              className={`tab ${activeTab === tab ? 'active' : ''}`}
+              title={TAB_TIPS[tab]}
+              onClick={() => {
+                setActiveTab(tab);
+                setSelectedExperiment(null);
+              }}
+            >
+              {TAB_LABELS[tab]}
+              {tabDeltas[tab] && (
+                <span style={{
+                  marginLeft: 4, fontSize: 9, fontWeight: 600, padding: '1px 4px',
+                  borderRadius: 3,
+                  background: tabDeltas[tab].positive ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
+                  color: tabDeltas[tab].positive ? 'var(--accent-green)' : 'var(--accent-red)',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {tabDeltas[tab].text}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
       </nav>
 
       <main className="app-main">
@@ -1754,11 +1841,17 @@ function AppContent({ onRunningChange }) {
           <div className="card" style={{ marginBottom: 12, padding: '10px 12px', borderLeft: '3px solid var(--accent-green)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                <strong style={{ color: 'var(--accent-green)' }}>Run active:</strong>{' '}
-                {data?.progress?.status || 'running'}
+                <strong style={{ color: 'var(--accent-green)' }}>
+                  {autonomousActive ? 'Autonomous active:' : 'Run active:'}
+                </strong>{' '}
+                {autonomousActive
+                  ? `${ariaCycle?.phase_label || ariaCycle?.phase || data?.progress?.status || 'running'}`
+                  : (data?.progress?.status || 'running')}
                 {data?.progress?.experiment_id ? ` · ${String(data.progress.experiment_id).slice(0, 12)}` : ''}
                 <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>
-                  Search continues in background while you browse other tabs.
+                  {autonomousActive
+                    ? 'Aria is iterating across cycles while you browse other tabs.'
+                    : 'Search continues in background while you browse other tabs.'}
                 </span>
               </div>
               {activeTab !== 'command' && (
@@ -1816,7 +1909,7 @@ function AppContent({ onRunningChange }) {
             <ActionQueue
               dashboardData={data}
               isRunning={data?.is_running}
-              autonomousMode={autonomousMode}
+              autonomousMode={autonomousActive}
               onStart={handleStartExperiment}
               onStop={handleStopExperiment}
               onStartAutonomous={handleStartAutonomous}
@@ -1835,8 +1928,8 @@ function AppContent({ onRunningChange }) {
 
 
             {/* Zone 3: Summary + Activity */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16, marginTop: 16 }}>
-              <div>
+            <div className="overview-grid" style={{ marginTop: 24 }}>
+              <div className="overview-left">
                 <SummaryCards learningTrend={learningTrajectory} />
                 <QuickAnalyticsPreview
                   deltas={data?.deltas}
@@ -1845,17 +1938,15 @@ function AppContent({ onRunningChange }) {
                   onOpenAnalytics={() => setActiveTab('trends')}
                 />
               </div>
-              <div className="card" style={{ padding: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Discovery Frontier</div>
+              <div className="overview-right card" style={{ padding: 24 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Discovery Frontier</div>
                 <GlobalParetoChart programs={leaderboardEntries} onSelectProgram={handleSelectProgram} onNavigateTab={(tab) => setActiveTab(tab)} />
-                {data?.is_running && (
-                  <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-                    <LiveFeed
-                      apiBase={API_BASE}
-                      experimentId={data?.progress?.experiment_id || null}
-                    />
-                  </div>
-                )}
+                <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 20 }}>
+                  <LiveFeed
+                    apiBase={API_BASE}
+                    experimentId={data?.progress?.experiment_id || null}
+                  />
+                </div>
               </div>
             </div>
           </>
@@ -1900,7 +1991,7 @@ function AppContent({ onRunningChange }) {
             onQueueRemove={handleQueueRemove}
             queuedResultIds={investigationQueue.map(item => item.resultId)}
             eligibilityByResultId={eligibilityByResultId}
-            onOpenInDesigner={(rid) => setDesignerResultId(rid)}
+            onOpenInDesigner={openDesignerForResult}
           />
         )}
 
@@ -1939,7 +2030,7 @@ function AppContent({ onRunningChange }) {
               onSelectExperiment={handleSelectExperiment}
               onInvestigate={handleInvestigate}
               onValidate={handleValidate}
-              onOpenInDesigner={(rid) => setDesignerResultId(rid)}
+              onOpenInDesigner={openDesignerForResult}
               onQueueAdd={handleQueueAdd}
               onQueueRemove={handleQueueRemove}
               queuedResultIds={investigationQueue.map(item => item.resultId)}
@@ -1980,7 +2071,7 @@ function AppContent({ onRunningChange }) {
               <button onClick={() => setShowChat(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>&times;</button>
             </div>
             <div style={{ flex: 1, overflow: 'auto' }}>
-              <AriaChatPanel isRunning={Boolean(data?.is_running)} autonomousMode={autonomousMode} onAutonomousEnd={() => setAutonomousMode(false)} />
+              <AriaChatPanel isRunning={Boolean(data?.is_running)} autonomousMode={autonomousActive} onAutonomousEnd={() => setAutonomousMode(false)} />
             </div>
           </div>
         </div>
@@ -2101,7 +2192,7 @@ function AppContent({ onRunningChange }) {
           onSelectExperiment={handleSelectExperiment}
           onViewInLeaderboard={handleViewInLeaderboard}
           onSelectCampaign={handleSelectCampaign}
-          onOpenInDesigner={(rid) => setDesignerResultId(rid)}
+          onOpenInDesigner={openDesignerForResult}
           onAddToComparison={handleAddToComparison}
           eligibilityByResultId={eligibilityByResultId}
           defaultOverrideIneligible={overrideIneligibleAlways}
@@ -2109,10 +2200,10 @@ function AppContent({ onRunningChange }) {
       )}
 
       {/* Architecture Designer Drawer */}
-      {designerResultId && (
+      {designerSession.open && (
         <ArchitectureDrawer
-          resultId={designerResultId}
-          onClose={() => setDesignerResultId(null)}
+          resultId={designerSession.resultId}
+          onClose={closeDesigner}
         />
       )}
 

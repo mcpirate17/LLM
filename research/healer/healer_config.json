@@ -1,6 +1,6 @@
 {
   "model_endpoints": [
-    {"name": "local_ollama", "kind": "local", "url": "http://127.0.0.1:11434", "default": true},
+    {"name": "local_ollama_cycle_76", "kind": "local", "url": "http://127.0.0.1:11434", "default": true},
     {"name": "local_llamacpp", "kind": "local", "url": "http://127.0.0.1:8080"},
     {"name": "remote_agent", "kind": "remote", "url": "https://agent.example.invalid"}
   ],

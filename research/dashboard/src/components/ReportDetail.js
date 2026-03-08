@@ -19,6 +19,7 @@ import CompressionTechniqueCoverage from './report/CompressionTechniqueCoverage'
 import NegativeResultsSummary from './report/NegativeResultsSummary';
 import ConfidenceInfographic from './report/ConfidenceInfographic';
 import MirroredOpsChart from './report/MirroredOpsChart';
+import TemplatePerformance from './report/TemplatePerformance';
 
 
 export default function ReportDetail({
@@ -717,6 +718,11 @@ export default function ReportDetail({
       {(bestOps.length > 0 || worstOps.length > 0) && (
         <MirroredOpsChart bestOps={bestOps} worstOps={worstOps} rows={6} />
       )}
+
+      {data.template_hit_rates && Object.keys(data.template_hit_rates).length > 0 && (
+        <TemplatePerformance hitRates={data.template_hit_rates} />
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card">
           <div className="card-title">What Works</div>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAriaData } from './useAriaData';
+import { apiCall } from '../services/apiService';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -52,7 +53,7 @@ export function useReportGallery() {
 
   useEffect(() => {
     let active = true;
-    fetch(`${API_BASE}/api/trends/context`)
+    apiCall(`/api/trends/context`)
       .then(r => r.ok ? r.json() : null)
       .then(payload => {
         if (!active) return;

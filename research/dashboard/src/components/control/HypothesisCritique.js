@@ -39,8 +39,8 @@ export function HypothesisCritique({ critique }) {
       marginBottom: 10,
       padding: '8px 10px',
       borderRadius: 6,
-      border: `1px solid \${style.color}`,
-      background: `\${style.color}11`,
+      border: `1px solid ${style.color}`,
+      background: `${style.color}11`,
       fontSize: 12,
       lineHeight: 1.5,
     }}>
@@ -55,7 +55,7 @@ export function HypothesisCritique({ critique }) {
           textTransform: 'uppercase',
           color: gateStyle.color,
           background: gateStyle.bg,
-          border: `1px solid \${gateStyle.color}`,
+          border: `1px solid ${gateStyle.color}`,
           borderRadius: 4,
           padding: '1px 6px',
         }}>
@@ -77,15 +77,15 @@ export function HypothesisCritique({ critique }) {
         }}>
           {checks.map((check, idx) => {
             const checkStyle = CRITIQUE_GATE_STYLES[check?.status] || CRITIQUE_GATE_STYLES.warn;
-            const label = check?.label || check?.key || `Check \${idx + 1}`;
+            const label = check?.label || check?.key || `Check ${idx + 1}`;
             return (
               <span
-                key={`\${label}-\${idx}`}
+                key={`${label}-${idx}`}
                 style={{
                   fontSize: 10,
                   color: checkStyle.color,
                   background: checkStyle.bg,
-                  border: `1px solid \${checkStyle.color}`,
+                  border: `1px solid ${checkStyle.color}`,
                   borderRadius: 4,
                   padding: '1px 6px',
                   display: 'inline-flex',

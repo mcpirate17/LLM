@@ -219,6 +219,111 @@ impl NativeKernelDispatch {
             AriaError::ExecutionFailed(format!("invalid op name: {}", op_name))
         })?;
 
+        // Intercept tier 3 / math space research ops that are not in NkRegistration
+        match op_name {
+            "exp_map" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                unsafe { ffi::aria_exp_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c); }
+                return Ok(());
+            }
+            "log_map" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                unsafe { ffi::aria_log_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c); }
+                return Ok(());
+            }
+            "poincare_add" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                unsafe { ffi::aria_poincare_add_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim, c); }
+                return Ok(());
+            }
+            "hyp_linear" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim_in = config.get("dim_in").and_then(|v| v.as_i64()).unwrap_or(0);
+                let dim_out = config.get("dim_out").and_then(|v| v.as_i64()).unwrap_or(0);
+                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                unsafe { ffi::aria_hyp_linear_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim_in, dim_out, c); }
+                return Ok(());
+            }
+            "hyp_tangent_nonlinear" => {
+                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                unsafe { ffi::aria_hyp_tangent_nonlinear_f32(inputs[0].as_ptr(), output.as_mut_ptr(), output.len() as i64, c); }
+                return Ok(());
+            }
+            "hyperbolic_norm" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                let eps = config.get("eps").and_then(|v| v.as_f64()).unwrap_or(1e-5) as f32;
+                unsafe { ffi::aria_hyperbolic_norm_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(), output.as_mut_ptr(), batch, dim, c, eps); }
+                return Ok(());
+            }
+            "tropical_attention" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
+                let seq = config.get("seq").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
+                let temperature = config.get("temperature").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                unsafe { ffi::aria_tropical_attention_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim, temperature); }
+                return Ok(());
+            }
+            "tropical_gate" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
+                let seq = config.get("seq").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
+                let temperature = config.get("temperature").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                unsafe { ffi::aria_tropical_gate_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim, temperature); }
+                return Ok(());
+            }
+            "tropical_add" => {
+                unsafe { ffi::aria_tropical_add_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), output.len() as i64); }
+                return Ok(());
+            }
+            "tropical_matmul" => {
+                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| AriaError::ExecutionFailed("tropical_matmul missing m".to_string()))?;
+                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| AriaError::ExecutionFailed("tropical_matmul missing k".to_string()))?;
+                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| AriaError::ExecutionFailed("tropical_matmul missing n".to_string()))?;
+                unsafe { ffi::aria_tropical_matmul_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), m, k, n); }
+                return Ok(());
+            }
+            "rotor_transform" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                unsafe { ffi::aria_rotor_transform_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim); }
+                return Ok(());
+            }
+            "grade_select" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let grade = config.get("grade").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                unsafe { ffi::aria_grade_select_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, grade); }
+                return Ok(());
+            }
+            "grade_mix" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                unsafe { ffi::aria_grade_mix_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim); }
+                return Ok(());
+            }
+            "clifford_attention" => {
+                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
+                let seq = config.get("seq").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
+                unsafe { ffi::aria_clifford_attention_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim); }
+                return Ok(());
+            }
+            "geometric_product" => {
+                let n_multivectors = config.get("n_multivectors").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / 8);
+                unsafe { ffi::aria_clifford_geometric_product_cl30_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), n_multivectors); }
+                return Ok(());
+            }
+            _ => {} // Fall through to standard registry
+        }
+
         let reg_ptr = unsafe { ffi::nk_dispatch(c_op_name.as_ptr()) };
         if reg_ptr.is_null() {
             return Err(AriaError::ExecutionFailed(format!(
@@ -792,6 +897,110 @@ pub struct ExecutionResult {
     pub peak_memory_bytes: i64,
 }
 
+fn is_all_zero(buf: &[f32]) -> bool {
+    buf.iter().all(|v| v.abs() <= 1e-12)
+}
+
+fn execute_conditional_dispatch(
+    inputs: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<Vec<f32>, AriaError> {
+    let x = inputs.first().ok_or_else(|| {
+        AriaError::ExecutionFailed("conditional_dispatch requires at least one input".to_string())
+    })?;
+    let mut out = x.to_vec();
+
+    // Explicit lane-empty hint allows true skip without assignment tensor.
+    if let Some(active_tokens) = config.get("active_tokens").and_then(|v| v.as_i64()) {
+        if active_tokens <= 0 {
+            out.fill(0.0);
+            return Ok(out);
+        }
+    }
+
+    // Optional dense->packed lane routing using assignments input.
+    if inputs.len() < 2 {
+        return Ok(out);
+    }
+    let assignments = inputs[1];
+    let batch = match config.get("batch").and_then(|v| v.as_i64()) {
+        Some(v) if v > 0 => v as usize,
+        _ => return Ok(out),
+    };
+    let seq = match config.get("seq").and_then(|v| v.as_i64()) {
+        Some(v) if v > 0 => v as usize,
+        _ => return Ok(out),
+    };
+    let dim = match config.get("dim").and_then(|v| v.as_i64()) {
+        Some(v) if v > 0 => v as usize,
+        _ => return Ok(out),
+    };
+    let lane = config.get("lane").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    if assignments.len() != batch * seq || x.len() != batch * seq * dim {
+        return Ok(out);
+    }
+
+    out.fill(0.0);
+    for b in 0..batch {
+        let mut write_pos = 0usize;
+        for s in 0..seq {
+            let src_idx = b * seq + s;
+            let assign_lane = assignments[src_idx].round() as i64;
+            if assign_lane == lane {
+                if write_pos < seq {
+                    let src_off = src_idx * dim;
+                    let dst_off = (b * seq + write_pos) * dim;
+                    out[dst_off..dst_off + dim].copy_from_slice(&x[src_off..src_off + dim]);
+                    write_pos += 1;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn execute_conditional_gather(inputs: &[&[f32]]) -> Result<Vec<f32>, AriaError> {
+    if inputs.is_empty() {
+        return Err(AriaError::ExecutionFailed(
+            "conditional_gather requires at least one input".to_string(),
+        ));
+    }
+    if inputs.len() == 1 {
+        return Ok(inputs[0].to_vec());
+    }
+
+    let output_len = inputs[0].len();
+    let mut out = vec![0.0f32; output_len];
+    let mut contributing = 0usize;
+
+    for inp in inputs {
+        if inp.len() != output_len {
+            return Err(AriaError::ExecutionFailed(
+                "conditional_gather input length mismatch".to_string(),
+            ));
+        }
+        if is_all_zero(inp) {
+            continue;
+        }
+        for (o, v) in out.iter_mut().zip(inp.iter()) {
+            *o += *v;
+        }
+        contributing += 1;
+    }
+
+    if contributing == 0 {
+        return Ok(out);
+    }
+    if contributing > 1 {
+        let scale = 1.0f32 / (contributing as f32);
+        for v in &mut out {
+            *v *= scale;
+        }
+    }
+    Ok(out)
+}
+
 /// Execute the graph in topological order using arena-based buffer allocation.
 ///
 /// 1. Estimates total buffer memory needed and creates an arena.
@@ -879,6 +1088,29 @@ pub fn execute_with_arena(
                         ctx.outputs.insert(node_id, NodeBuffer::Heap(first.to_vec()));
                         stats.heap_fallback_count += 1;
                     }
+                }
+            }
+            continue;
+        }
+
+        // Conditional subgraph control: execute dispatch/gather directly in scheduler.
+        // This enables empty-lane skipping without requiring native registry kernels.
+        if node.op_name == "conditional_dispatch" || node.op_name == "conditional_gather" {
+            let out_vec = if node.op_name == "conditional_dispatch" {
+                execute_conditional_dispatch(&input_slices, &node.config)?
+            } else {
+                execute_conditional_gather(&input_slices)?
+            };
+            match arena.alloc_f32_raw(out_vec.len()) {
+                Ok((ptr, len)) => {
+                    let buf = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
+                    buf.copy_from_slice(&out_vec);
+                    ctx.outputs.insert(node_id, NodeBuffer::Arena { ptr, len });
+                    stats.arena_alloc_count += 1;
+                }
+                Err(_) => {
+                    ctx.outputs.insert(node_id, NodeBuffer::Heap(out_vec));
+                    stats.heap_fallback_count += 1;
                 }
             }
             continue;
@@ -1202,6 +1434,43 @@ impl NativeKernelDispatch {
                 Ok(BackwardGrads::Pair(grad_a, grad_b))
             }
 
+            // ── Conditional adaptive-routing ops ─────────────────
+            "conditional_dispatch" => {
+                // Dispatch is identity/passthrough unless lane is marked inactive.
+                if config
+                    .get("active_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(1)
+                    <= 0
+                {
+                    Ok(BackwardGrads::Single(vec![0.0f32; grad_output.len()]))
+                } else {
+                    Ok(BackwardGrads::Single(grad_output.to_vec()))
+                }
+            }
+            "conditional_gather" => {
+                // Mirror forward gather semantics:
+                // - if one lane is effectively empty/zero, route full grad to the other;
+                // - if both contribute, split equally due to averaging.
+                let a = saved_tensors.first().copied().unwrap_or(&[]);
+                let b = saved_tensors.get(1).copied().unwrap_or(&[]);
+                let a_nonzero = !a.is_empty() && !is_all_zero(a);
+                let b_nonzero = !b.is_empty() && !is_all_zero(b);
+                let mut ga = vec![0.0f32; grad_output.len()];
+                let mut gb = vec![0.0f32; grad_output.len()];
+                if a_nonzero && b_nonzero {
+                    for (i, g) in grad_output.iter().enumerate() {
+                        ga[i] = 0.5f32 * g;
+                        gb[i] = 0.5f32 * g;
+                    }
+                } else if a_nonzero {
+                    ga.copy_from_slice(grad_output);
+                } else if b_nonzero {
+                    gb.copy_from_slice(grad_output);
+                }
+                Ok(BackwardGrads::Pair(ga, gb))
+            }
+
             // ── Passthrough for input/output nodes ───────────────
             "input" | "output" => {
                 Ok(BackwardGrads::Single(grad_output.to_vec()))
@@ -1274,6 +1543,10 @@ pub fn execute_forward_saving_activations(
         // "output" nodes are identity/passthrough.
         let output = if node.op_name == "output" {
             input_slices.first().map(|s| s.to_vec()).unwrap_or_default()
+        } else if node.op_name == "conditional_dispatch" {
+            execute_conditional_dispatch(&input_slices, &node.config)?
+        } else if node.op_name == "conditional_gather" {
+            execute_conditional_gather(&input_slices)?
         } else {
             dispatcher.dispatch(&node.op_name, &input_slices, &node.config)?
         };
@@ -1611,5 +1884,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_conditional_gather_skips_empty_lane() {
+        let json = r#"{
+            "schema_version": "0.1", "model_dim": 4,
+            "nodes": [
+                {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                {"id": 1, "op_name": "conditional_dispatch", "input_ids": [0], "config": {"lane": 0, "active_tokens": 0}, "is_input": false, "is_output": false},
+                {"id": 2, "op_name": "relu", "input_ids": [0], "config": {}, "is_input": false, "is_output": false},
+                {"id": 3, "op_name": "conditional_gather", "input_ids": [1, 2], "config": {}, "is_input": false, "is_output": false},
+                {"id": 4, "op_name": "output", "input_ids": [3], "config": {}, "is_input": false, "is_output": true}
+            ],
+            "edges": [
+                {"source": 0, "target": 1, "source_port": null, "target_port": null},
+                {"source": 0, "target": 2, "source_port": null, "target_port": null},
+                {"source": 1, "target": 3, "source_port": null, "target_port": null},
+                {"source": 2, "target": 3, "source_port": null, "target_port": null},
+                {"source": 3, "target": 4, "source_port": null, "target_port": null}
+            ],
+            "output_node_id": 4,
+            "metadata": null
+        }"#;
+        let graph = GraphIR::from_json(json).unwrap();
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let result = execute(&graph, &PassthroughDispatcher, &input).unwrap();
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_conditional_dispatch_packs_with_assignments() {
+        // Because the scheduler API currently accepts one input tensor, use the same
+        // buffer for x and assignments. With dim=1 this is still a valid packing check.
+        let json = r#"{
+            "schema_version": "0.1", "model_dim": 1,
+            "nodes": [
+                {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                {"id": 1, "op_name": "conditional_dispatch", "input_ids": [0, 0], "config": {"batch": 1, "seq": 4, "dim": 1, "lane": 1}, "is_input": false, "is_output": false},
+                {"id": 2, "op_name": "output", "input_ids": [1], "config": {}, "is_input": false, "is_output": true}
+            ],
+            "edges": [
+                {"source": 0, "target": 1, "source_port": null, "target_port": null},
+                {"source": 1, "target": 2, "source_port": null, "target_port": null}
+            ],
+            "output_node_id": 2,
+            "metadata": null
+        }"#;
+        let graph = GraphIR::from_json(json).unwrap();
+        let input = vec![0.0, 1.0, 0.0, 1.0];
+        let result = execute(&graph, &PassthroughDispatcher, &input).unwrap();
+        assert_eq!(result, vec![1.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_conditional_graph_forward_backward_integration() {
+        let json = r#"{
+            "schema_version": "0.1", "model_dim": 4,
+            "nodes": [
+                {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                {"id": 1, "op_name": "conditional_dispatch", "input_ids": [0], "config": {"lane": 0, "active_tokens": 0}, "is_input": false, "is_output": false},
+                {"id": 2, "op_name": "conditional_dispatch", "input_ids": [0], "config": {"lane": 1, "active_tokens": 4}, "is_input": false, "is_output": false},
+                {"id": 3, "op_name": "conditional_gather", "input_ids": [1, 2], "config": {}, "is_input": false, "is_output": false},
+                {"id": 4, "op_name": "output", "input_ids": [3], "config": {}, "is_input": false, "is_output": true}
+            ],
+            "edges": [
+                {"source": 0, "target": 1, "source_port": null, "target_port": null},
+                {"source": 0, "target": 2, "source_port": null, "target_port": null},
+                {"source": 1, "target": 3, "source_port": null, "target_port": null},
+                {"source": 2, "target": 3, "source_port": null, "target_port": null},
+                {"source": 3, "target": 4, "source_port": null, "target_port": null}
+            ],
+            "output_node_id": 4,
+            "metadata": null
+        }"#;
+        let graph = GraphIR::from_json(json).unwrap();
+        let input = vec![0.5f32, -0.25f32, 1.25f32, -2.0f32];
+
+        let fwd = execute_forward_saving_activations(&graph, &PassthroughDispatcher, &input).unwrap();
+        assert_eq!(fwd.output, input);
+
+        let grad_out = vec![1.0f32, 1.0f32, 1.0f32, 1.0f32];
+        let bwd = execute_backward_with_arena(&graph, &grad_out, &fwd.saved_activations).unwrap();
+
+        let grad_input = bwd.grads.get(&0).expect("input gradient missing");
+        assert_eq!(grad_input.len(), grad_out.len());
+        assert!(grad_input.iter().all(|v| v.is_finite()));
+        // lane0 is inactive, so gather should route full gradient through lane1 path.
+        assert_eq!(grad_input, &grad_out);
     }
 }

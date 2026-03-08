@@ -1,0 +1,70 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "wf_adaptive_trilane_v3",
+  "name": "Adaptive Tri-Lane v3 (Tropical + Hyperbolic Heavy Lane)",
+  "metadata": {
+    "description": "Exotic variant: fast lane uses fused linear+gelu, medium uses selective scan (Mamba-style SSM) + depth-2 recursion, heavy lane uses MoE-2 feeding into tropical attention + hyperbolic distance + depth-4 recursion for maximum representational power. Low-rank compression before output.",
+    "model_dim": 256
+  },
+  "nodes": [
+    {"id": "input",         "component_type": "io/input",                           "params": {"dim": 256, "vocab_size": 32000},      "ui_meta": {"position": {"x": 420, "y": 0}}},
+    {"id": "embed_proj",    "component_type": "linear_algebra/linear_proj",         "params": {"out_dim": 256},                       "ui_meta": {"position": {"x": 420, "y": 120}}},
+    {"id": "pos_enc",       "component_type": "positional/rope",                    "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 240}}},
+    {"id": "pre_norm",      "component_type": "normalization/rmsnorm_pre",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 360}}},
+
+    {"id": "scorer",        "component_type": "routing/difficulty_scorer",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 480}}},
+    {"id": "router",        "component_type": "routing/lane_router",                "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 420, "y": 600}}},
+
+    {"id": "lane1_fused",   "component_type": "linear_algebra/fused_linear_gelu",   "params": {},                                      "ui_meta": {"position": {"x": 60,  "y": 760}}},
+
+    {"id": "lane2_ssm",     "component_type": "linear_algebra/selective_scan",       "params": {},                                      "ui_meta": {"position": {"x": 360, "y": 760}}},
+    {"id": "lane2_rec",     "component_type": "routing/mixed_recursion_gate",       "params": {"max_depth": 2},                       "ui_meta": {"position": {"x": 360, "y": 880}}},
+    {"id": "lane2_norm",    "component_type": "normalization/rmsnorm_pre",          "params": {},                                      "ui_meta": {"position": {"x": 360, "y": 1000}}},
+
+    {"id": "lane3_moe",     "component_type": "channel_mixing/moe_topk",           "params": {"num_experts": 2, "top_k": 1},         "ui_meta": {"position": {"x": 750, "y": 760}}},
+    {"id": "lane3_trop",    "component_type": "math_space/tropical_attention",      "params": {},                                      "ui_meta": {"position": {"x": 750, "y": 880}}},
+    {"id": "lane3_hyp",     "component_type": "math_space/hyp_distance",            "params": {},                                      "ui_meta": {"position": {"x": 750, "y": 1000}}},
+    {"id": "lane3_rec",     "component_type": "routing/adaptive_recursion",         "params": {"max_depth": 4},                       "ui_meta": {"position": {"x": 750, "y": 1120}}},
+
+    {"id": "gather_12",     "component_type": "structural/conditional_gather",      "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 210, "y": 1120}}},
+    {"id": "gather_all",    "component_type": "structural/conditional_gather",      "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 420, "y": 1240}}},
+
+    {"id": "residual",      "component_type": "math/add",                           "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 1360}}},
+
+    {"id": "balance",       "component_type": "functional/load_balance_loss",       "params": {"num_lanes": 3, "loss_weight": 0.01},  "ui_meta": {"position": {"x": 420, "y": 1480}}},
+    {"id": "compress",      "component_type": "linear_algebra/low_rank",            "params": {"rank_ratio": 4},                      "ui_meta": {"position": {"x": 420, "y": 1600}}},
+    {"id": "final_norm",    "component_type": "linear_algebra/rmsnorm",             "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 1720}}},
+    {"id": "output",        "component_type": "io/output_head",                    "params": {"vocab_size": 32000},                   "ui_meta": {"position": {"x": 420, "y": 1840}}}
+  ],
+  "edges": [
+    {"id": "e01", "source": "input",       "source_port": "y", "target": "embed_proj",    "target_port": "x"},
+    {"id": "e02", "source": "embed_proj",  "source_port": "y", "target": "pos_enc",       "target_port": "x"},
+    {"id": "e03", "source": "pos_enc",     "source_port": "y", "target": "pre_norm",      "target_port": "x"},
+    {"id": "e04", "source": "pre_norm",    "source_port": "y", "target": "scorer",        "target_port": "x"},
+    {"id": "e05", "source": "scorer",      "source_port": "y", "target": "router",        "target_port": "x"},
+
+    {"id": "e10", "source": "router",      "source_port": "y", "target": "lane1_fused",   "target_port": "x"},
+
+    {"id": "e20", "source": "router",      "source_port": "y", "target": "lane2_ssm",     "target_port": "x"},
+    {"id": "e21", "source": "lane2_ssm",   "source_port": "y", "target": "lane2_rec",     "target_port": "x"},
+    {"id": "e22", "source": "lane2_rec",   "source_port": "y", "target": "lane2_norm",    "target_port": "x"},
+
+    {"id": "e30", "source": "router",      "source_port": "y", "target": "lane3_moe",     "target_port": "x"},
+    {"id": "e31", "source": "lane3_moe",   "source_port": "y", "target": "lane3_trop",    "target_port": "x"},
+    {"id": "e32", "source": "lane3_trop",  "source_port": "y", "target": "lane3_hyp",     "target_port": "x"},
+    {"id": "e33", "source": "lane3_hyp",   "source_port": "y", "target": "lane3_rec",     "target_port": "x"},
+
+    {"id": "e40", "source": "lane1_fused", "source_port": "y", "target": "gather_12",     "target_port": "a"},
+    {"id": "e41", "source": "lane2_norm",  "source_port": "y", "target": "gather_12",     "target_port": "b"},
+    {"id": "e42", "source": "gather_12",   "source_port": "y", "target": "gather_all",    "target_port": "a"},
+    {"id": "e43", "source": "lane3_rec",   "source_port": "y", "target": "gather_all",    "target_port": "b"},
+
+    {"id": "e50", "source": "pre_norm",    "source_port": "y", "target": "residual",      "target_port": "a"},
+    {"id": "e51", "source": "gather_all",  "source_port": "y", "target": "residual",      "target_port": "b"},
+
+    {"id": "e60", "source": "residual",    "source_port": "y", "target": "balance",       "target_port": "x"},
+    {"id": "e61", "source": "balance",     "source_port": "y", "target": "compress",      "target_port": "x"},
+    {"id": "e62", "source": "compress",    "source_port": "y", "target": "final_norm",    "target_port": "x"},
+    {"id": "e63", "source": "final_norm",  "source_port": "y", "target": "output",        "target_port": "x"}
+  ]
+}

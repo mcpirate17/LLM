@@ -137,7 +137,12 @@ function StatusEditor({
 function ScoreCell({ entry }) {
   const [show, setShow] = useState(false);
   const breakdown = candidateScoreBreakdown(entry, TIER_ORDER);
-  const score = candidateScore(entry, TIER_ORDER);
+  // Keep displayed score aligned with table sorting.
+  const score = (entry?._score != null)
+    ? Number(entry._score)
+    : (entry?.composite_score != null)
+      ? Number(entry.composite_score)
+      : candidateScore(entry, TIER_ORDER);
 
   const keyMap = {
     sLoss: { label: 'Screening Loss', color: 'var(--accent-blue)' },
@@ -169,7 +174,7 @@ function ScoreCell({ entry }) {
       onMouseEnter={() => setShow(true)}
       onMouseLeave={() => setShow(false)}
     >
-      <div style={{ fontWeight: 600, color: scoreColor(score) }}>{score}</div>
+      <div style={{ fontWeight: 600, color: scoreColor(score) }}>{Number(score).toFixed(1)}</div>
       <div style={{ display: 'flex', height: 3, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-tertiary)', marginTop: 2 }}>
         {components.map(c => (
           <div key={c.key} style={{ width: `${(c.weight / total) * 100}%`, background: c.color, height: '100%' }} />
@@ -209,6 +214,7 @@ function ExpandedDetail({
   onValidate,
   onQueueAdd,
   onQueueRemove,
+  onDelete,
   isQueued,
   eligibility,
   statusDraft,
@@ -223,6 +229,10 @@ function ExpandedDetail({
     if (num !== 0 && Math.abs(num) < 0.0001) return num.toExponential(2);
     return num.toFixed(d);
   };
+
+  const hasBeenInvestigated = entry.investigation_loss_ratio != null || ['investigation', 'validation', 'breakthrough'].includes(entry.tier);
+  const hasBeenValidated = entry.validation_loss_ratio != null || ['validation', 'breakthrough'].includes(entry.tier);
+  const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
 
   return (
     <tr>
@@ -315,32 +325,36 @@ function ExpandedDetail({
           <div>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Actions</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <button
-                onClick={() => onInvestigate([entry.result_id])}
-                style={{
-                  ...actionBtnStyle,
-                  background: 'rgba(63, 185, 80, 0.12)',
-                  border: '1px solid rgba(63, 185, 80, 0.4)',
-                  color: 'var(--accent-green)',
-                  opacity: eligibility?.investigationEligible ? 1 : 0.85,
-                }}
-                title={eligibility?.investigationEligible ? 'Start investigation' : 'Currently ineligible; click to force override'}
-              >
-                {eligibility?.investigationEligible ? 'Investigate' : 'Force Investigate'}
-              </button>
-              <button
-                onClick={() => onValidate([entry.result_id])}
-                style={{
-                  ...actionBtnStyle,
-                  background: 'rgba(188, 140, 255, 0.12)',
-                  border: '1px solid rgba(188, 140, 255, 0.4)',
-                  color: 'var(--accent-purple)',
-                  opacity: eligibility?.validationEligible ? 1 : 0.85,
-                }}
-                title={eligibility?.validationEligible ? 'Start validation' : 'Currently ineligible; click to force override'}
-              >
-                {eligibility?.validationEligible ? 'Validate' : 'Force Validate'}
-              </button>
+              {!hasBeenInvestigated && (
+                <button
+                  onClick={() => onInvestigate([entry.result_id])}
+                  style={{
+                    ...actionBtnStyle,
+                    background: 'rgba(63, 185, 80, 0.12)',
+                    border: '1px solid rgba(63, 185, 80, 0.4)',
+                    color: 'var(--accent-green)',
+                    opacity: eligibility?.investigationEligible ? 1 : 0.85,
+                  }}
+                  title={eligibility?.investigationEligible ? 'Start investigation' : 'Currently ineligible; click to force override'}
+                >
+                  {eligibility?.investigationEligible ? 'Investigate' : 'Force Investigate'}
+                </button>
+              )}
+              {!hasBeenValidated && (
+                <button
+                  onClick={() => onValidate([entry.result_id])}
+                  style={{
+                    ...actionBtnStyle,
+                    background: 'rgba(188, 140, 255, 0.12)',
+                    border: '1px solid rgba(188, 140, 255, 0.4)',
+                    color: 'var(--accent-purple)',
+                    opacity: eligibility?.validationEligible ? 1 : 0.85,
+                  }}
+                  title={eligibility?.validationEligible ? 'Start validation' : 'Currently ineligible; click to force override'}
+                >
+                  {eligibility?.validationEligible ? 'Validate' : 'Force Validate'}
+                </button>
+              )}
               {entry.result_id && (onQueueAdd || onQueueRemove) && (
                 <button
                   onClick={() => {
@@ -372,8 +386,26 @@ function ExpandedDetail({
                     : (!eligibility?.queueEligible && (entry.tier === 'validation' || entry.tier === 'breakthrough'))
                       ? 'Fully Validated'
                       : !eligibility?.queueEligible 
-                        ? 'Ineligible' 
+                        ? 'Ineligible'
                         : 'Add to Queue'}
+                </button>
+              )}
+              {canDelete && (
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete ${entry.entry_id?.slice(0, 11) || entry.result_id?.slice(0, 11)} and all associated data?`)) {
+                      onDelete?.(entry.entry_id || entry.result_id);
+                    }
+                  }}
+                  style={{
+                    ...actionBtnStyle,
+                    borderColor: 'rgba(248, 81, 73, 0.4)',
+                    background: 'rgba(248, 81, 73, 0.12)',
+                    color: 'var(--accent-red, #f85149)',
+                  }}
+                  title="Delete entry and all associated data"
+                >
+                  Delete
                 </button>
               )}
             </div>
@@ -466,6 +498,8 @@ const COLUMNS = [
   { key: '_best_loss', label: 'Best Loss', title: 'The lowest loss ratio achieved by this architecture across all tests.' },
   { key: '_vs_ref', label: 'vs Ref', title: 'How this model compares to the GPT-2 baseline (lower % is better).' },
   { key: '_novelty', label: 'Novelty', title: 'Measures how unique this model is compared to existing designs.' },
+  { key: 'param_efficiency', label: 'Param Eff', title: 'Parameter efficiency: FLOPs per parameter (higher = parameters are used more efficiently).' },
+  { key: 'sample_efficiency', label: 'Sample Eff', title: 'How quickly the model converges to 25% of initial loss (1.0 = instant, 0.0 = never).' },
   { key: 'investigation_robustness', label: 'Robustness', title: 'Consistency across different training recipes (higher is more stable).' },
   { key: 'robustness_long_ctx_score', label: 'LongCtx', title: 'Combined long-context score used in final evaluation.' },
   { key: 'robustness_long_ctx_scaling_score', label: 'LC-Scale', title: 'Long-context scaling component score.' },
@@ -539,12 +573,22 @@ function Discoveries({
         'robustness_long_ctx_retrieval_aggregate',
         'max_viable_seq_len',
       ];
-      const saved = Array.isArray(prefs?.visibleColumns) ? prefs.visibleColumns : COLUMNS.map(c => c.key);
-      const merged = [...saved];
-      for (const key of requiredLongCtx) {
-        if (!merged.includes(key)) merged.push(key);
+      const validKeys = new Set(COLUMNS.map(c => c.key));
+      const saved = Array.isArray(prefs?.visibleColumns)
+        ? prefs.visibleColumns.filter((key) => validKeys.has(key))
+        : null;
+
+      // Respect saved user choices exactly. Only inject long-context defaults
+      // for first-time users with no saved column preferences.
+      if (saved && saved.length > 0) {
+        return saved;
       }
-      return merged;
+
+      const defaults = [...COLUMNS.map(c => c.key)];
+      for (const key of requiredLongCtx) {
+        if (!defaults.includes(key) && validKeys.has(key)) defaults.push(key);
+      }
+      return defaults;
     }
   );
   const [showColumnPicker, setShowColumnPicker] = useState(false);
@@ -666,6 +710,20 @@ function Discoveries({
       setSavingStatusRowId(null);
     }
   }, [statusDrafts]);
+
+  const handleDelete = useCallback(async (entryId) => {
+    try {
+      const res = await apiCall(`/api/leaderboard/${entryId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setStatusError(`Delete failed: ${err.error || res.statusText}`);
+        return;
+      }
+      fetchData();
+    } catch (e) {
+      setStatusError('Delete failed: ' + e.message);
+    }
+  }, [fetchData]);
 
   // Sort & augment entries
   const sorted = useMemo(() => {
@@ -1015,186 +1073,36 @@ function Discoveries({
                 const isPinnedReference = isPinnedReferenceRow(entry);
                 const eligibility = eligibilityByResultId?.[entry.result_id] || null;
                 const displayName = entry.display_name || entry.architecture_desc || entry.graph_fingerprint?.slice(0, 10) || '--';
-
                 return (
-                  <React.Fragment key={rowId}>
-                    <tr
-                      ref={isHighlighted ? highlightRef : undefined}
-                      style={{
-                        borderBottom: '1px solid var(--border)',
-                        cursor: 'pointer',
-                        background: isHighlighted
-                          ? 'rgba(88, 166, 255, 0.2)'
-                          : isPinnedReference
-                            ? 'rgba(188, 140, 255, 0.14)'
-                            : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
-                        animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
-                      }}
-                      onClick={() => onSelectProgram?.(entry.result_id)}
-                    >
-                      <td style={{ ...tdStyle, width: 26, textAlign: 'center', paddingLeft: 4, paddingRight: 4 }}>
-                        {isPinnedReference ? (
-                          <span title="Pinned reference" style={{ color: 'var(--accent-purple)', fontSize: 12, fontWeight: 700 }}>
-                            ★
-                          </span>
-                        ) : null}
-                      </td>
-                      <td style={tdStyle}>{i + 1}</td>
-                      {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => {
-                        switch (col.key) {
-                          case '_score':
-                            return <td key={col.key} style={tdStyle}><ScoreCell entry={entry} /></td>;
-                          case 'display_name':
-                            return (
-                              <td key={col.key} style={{ ...tdStyle, maxWidth: 200 }}>
-                                <div style={{ fontWeight: 500 }}>{displayName}</div>
-                                {entry.graph_fingerprint && (
-                                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                                    {entry.graph_fingerprint.slice(0, 12)}
-                                  </div>
-                                )}
-                              </td>
-                            );
-                          case 'architecture_family':
-                            return (
-                              <td key={col.key} style={tdStyle}>
-                                <span style={{
-                                  fontSize: 11, padding: '1px 6px', borderRadius: 3,
-                                  background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
-                                }}>
-                                  {entry.architecture_family || '--'}
-                                </span>
-                              </td>
-                            );
-                          case 'discovery_loss_ratio':
-                            const discoveryDisplay = discoveryLossDisplay(entry);
-                            return (
-                              <td key={col.key} style={{ ...tdStyle, color: lossColor(discoveryDisplay), fontFamily: 'monospace' }}>
-                                {discoveryDisplay != null ? Number(discoveryDisplay).toFixed(4) : '--'}
-                              </td>
-                            );
-                          case 'validation_loss_ratio':
-                            const validationDisplay = validationLossDisplay(entry);
-                            return (
-                              <td key={col.key} style={{ ...tdStyle, color: lossColor(validationDisplay), fontFamily: 'monospace' }}>
-                                {validationDisplay != null ? Number(validationDisplay).toFixed(4) : '--'}
-                              </td>
-                            );
-                          case '_best_loss':
-                            return (
-                              <td key={col.key} style={{ ...tdStyle, color: lossColor(entry._best_loss), fontFamily: 'monospace' }}>
-                                {entry._best_loss != null ? (Number(entry._best_loss) !== 0 && Math.abs(Number(entry._best_loss)) < 0.0001 ? Number(entry._best_loss).toExponential(2) : Number(entry._best_loss).toFixed(4)) : '--'}
-                              </td>
-                            );
-                          case '_vs_ref':
-                            return (
-                              <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry._vs_ref != null ? (entry._vs_ref <= 100 ? 'var(--accent-green)' : 'var(--accent-red)') : 'var(--text-muted)' }}>
-                                {entry._vs_ref != null ? `${entry._vs_ref.toFixed(1)}%` : '--'}
-                              </td>
-                            );
-                          case '_novelty':
-                            return (
-                              <td key={col.key} style={{ ...tdStyle, color: noveltyColor(entry._novelty), fontFamily: 'monospace' }}>
-                                {entry._novelty != null ? Number(entry._novelty).toFixed(3) : '--'}
-                              </td>
-                            );
-                          case 'investigation_robustness':
-                            return (
-                              <td key={col.key} style={tdStyle}>
-                                {entry.investigation_robustness != null
-                                  ? <span style={{
-                                      color: entry.investigation_robustness >= 0.5
-                                        ? 'var(--accent-green)' : 'var(--accent-red)',
-                                    }}>
-                                      {Number(entry.investigation_robustness).toFixed(2)}
-                                    </span>
-                                  : '--'}
-                              </td>
-                            );
-                          case 'robustness_long_ctx_score':
-                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_score != null ? Number(entry.robustness_long_ctx_score).toFixed(3) : '--'}</td>;
-                          case 'robustness_long_ctx_scaling_score':
-                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_scaling_score != null ? Number(entry.robustness_long_ctx_scaling_score).toFixed(3) : '--'}</td>;
-                          case 'robustness_long_ctx_assoc_score':
-                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_assoc_score != null ? Number(entry.robustness_long_ctx_assoc_score).toFixed(3) : '--'}</td>;
-                          case 'robustness_long_ctx_multi_hop_score':
-                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_multi_hop_score != null ? Number(entry.robustness_long_ctx_multi_hop_score).toFixed(3) : '--'}</td>;
-                          case 'robustness_long_ctx_passkey_score':
-                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_passkey_score != null ? Number(entry.robustness_long_ctx_passkey_score).toFixed(3) : '--'}</td>;
-                          case 'robustness_long_ctx_retrieval_aggregate':
-                            return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_retrieval_aggregate != null ? Number(entry.robustness_long_ctx_retrieval_aggregate).toFixed(3) : '--'}</td>;
-                          case 'max_viable_seq_len':
-                            return <td key={col.key} style={tdStyle}>{entry.max_viable_seq_len != null ? Number(entry.max_viable_seq_len).toFixed(0) : '--'}</td>;
-                          case 'jacobian_spectral_norm':
-                            const specVal = finitePositiveOrNull(entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm);
-                            return <td key={col.key} style={tdStyle}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
-                          case 'init_sensitivity_std':
-                            return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
-                          case 'tier':
-                            return (
-                              <td key={col.key} style={tdStyle}>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                  <StatusBadge entry={entry} />
-                                </div>
-                              </td>
-                            );
-                          case '_actions':
-                            return (
-                              <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
-                                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                                  <button
-                                    onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
-                                    style={{
-                                      ...actionBtnStyle,
-                                      borderColor: 'var(--accent-blue)',
-                                      color: 'var(--accent-blue)',
-                                      background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
-                                    }}
-                                  >
-                                    {isExpanded ? 'Collapse' : 'Details'}
-                                  </button>
-                                  {onOpenInDesigner && (
-                                    <button
-                                      onClick={() => {
-                                        if (entry.result_id) onOpenInDesigner(entry.result_id)
-                                      }}
-                                      disabled={!entry.result_id}
-                                      style={{
-                                        ...actionBtnStyle,
-                                        borderColor: 'var(--accent-purple)',
-                                        color: 'var(--accent-purple)',
-                                        opacity: entry.result_id ? 1 : 0.5,
-                                        cursor: entry.result_id ? 'pointer' : 'not-allowed',
-                                      }}
-                                      title={entry.result_id ? 'Open architecture in visual designer' : 'Designer unavailable: missing result ID'}
-                                    >
-                                      Designer
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-                            );
-                          default:
-                            return null;
-                        }
-                      })}
-                    </tr>
-                    {isExpanded && (
-                      <ExpandedDetail
-                        entry={entry}
-                        onInvestigate={onInvestigate}
-                        onValidate={onValidate}
-                        onQueueAdd={onQueueAdd}
-                        onQueueRemove={onQueueRemove}
-                        isQueued={isQueued}
-                        eligibility={eligibility}
-                        statusDraft={statusDrafts[rowId] || entry.tier}
-                        onStatusDraftChange={(tier) => handleStatusDraftChange(rowId, tier)}
-                        onSaveStatus={() => handleSaveStatus(entry)}
-                        savingStatus={savingStatusRowId === rowId}
-                      />
-                    )}
-                  </React.Fragment>
+                  <DiscoveryRow 
+                    key={rowId}
+                    entry={entry}
+                    i={i}
+                    rowId={rowId}
+                    isExpanded={isExpanded}
+                    isHighlighted={isHighlighted}
+                    isQueued={isQueued}
+                    isPinnedReference={isPinnedReference}
+                    eligibility={eligibility}
+                    displayName={displayName}
+                    highlightRef={highlightRef}
+                    onSelectProgram={onSelectProgram}
+                    tdStyle={tdStyle}
+                    COLUMNS={COLUMNS}
+                    visibleColumns={visibleColumns}
+                    onOpenInDesigner={onOpenInDesigner}
+                    setExpandedRowId={setExpandedRowId}
+                    actionBtnStyle={actionBtnStyle}
+                    handleDelete={handleDelete}
+                    onInvestigate={onInvestigate}
+                    onValidate={onValidate}
+                    onQueueAdd={onQueueAdd}
+                    onQueueRemove={onQueueRemove}
+                    statusDrafts={statusDrafts}
+                    handleStatusDraftChange={handleStatusDraftChange}
+                    handleSaveStatus={handleSaveStatus}
+                    savingStatusRowId={savingStatusRowId}
+                  />
                 );
               })}
             </tbody>
@@ -1219,5 +1127,224 @@ const actionBtnStyle = {
   border: '1px solid rgba(88, 166, 255, 0.4)', borderRadius: 4,
   background: 'rgba(88, 166, 255, 0.12)', color: 'var(--accent-blue)', cursor: 'pointer',
 };
+
+
+const DiscoveryRow = React.memo(function DiscoveryRow({
+  entry, 
+  i, 
+  rowId, 
+  isExpanded, 
+  isHighlighted, 
+  isQueued, 
+  isPinnedReference, 
+  eligibility, 
+  displayName,
+  highlightRef,
+  onSelectProgram,
+  tdStyle,
+  COLUMNS,
+  visibleColumns,
+  onOpenInDesigner,
+  setExpandedRowId,
+  actionBtnStyle,
+  handleDelete,
+  onInvestigate,
+  onValidate,
+  onQueueAdd,
+  onQueueRemove,
+  statusDrafts,
+  handleStatusDraftChange,
+  handleSaveStatus,
+  savingStatusRowId
+}) {
+  const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
+
+  return (
+    <React.Fragment>
+      <tr
+        ref={isHighlighted ? highlightRef : undefined}
+        style={{
+          borderBottom: '1px solid var(--border)',
+          cursor: 'pointer',
+          background: isHighlighted
+            ? 'rgba(88, 166, 255, 0.2)'
+            : isPinnedReference
+              ? 'rgba(188, 140, 255, 0.14)'
+              : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
+          animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
+        }}
+        onClick={() => onSelectProgram?.(entry.result_id)}
+      >
+        <td style={{ ...tdStyle, width: 26, textAlign: 'center', paddingLeft: 4, paddingRight: 4 }}>
+          {isPinnedReference ? (
+            <span title="Pinned reference" style={{ color: 'var(--accent-purple)', fontSize: 12, fontWeight: 700 }}>
+              ★
+            </span>
+          ) : null}
+        </td>
+        <td style={tdStyle}>{i + 1}</td>
+        {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => {
+          switch (col.key) {
+            case '_score':
+              return <td key={col.key} style={tdStyle}><ScoreCell entry={entry} /></td>;
+            case 'display_name':
+              return (
+                <td key={col.key} style={{ ...tdStyle, maxWidth: 200 }}>
+                  <div style={{ fontWeight: 500 }}>{displayName}</div>
+                  {entry.graph_fingerprint && (
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                      {entry.graph_fingerprint.slice(0, 12)}
+                    </div>
+                  )}
+                </td>
+              );
+            case 'architecture_family':
+              return (
+                <td key={col.key} style={tdStyle}>
+                  <span style={{
+                    fontSize: 11, padding: '1px 6px', borderRadius: 3,
+                    background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
+                  }}>
+                    {entry.architecture_family || '--'}
+                  </span>
+                </td>
+              );
+            case 'discovery_loss_ratio':
+              const discoveryDisplay = discoveryLossDisplay(entry);
+              return (
+                <td key={col.key} style={{ ...tdStyle, color: lossColor(discoveryDisplay), fontFamily: 'monospace' }}>
+                  {discoveryDisplay != null ? Number(discoveryDisplay).toFixed(4) : '--'}
+                </td>
+              );
+            case 'validation_loss_ratio':
+              const validationDisplay = validationLossDisplay(entry);
+              return (
+                <td key={col.key} style={{ ...tdStyle, color: lossColor(validationDisplay), fontFamily: 'monospace' }}>
+                  {validationDisplay != null ? Number(validationDisplay).toFixed(4) : '--'}
+                </td>
+              );
+            case '_best_loss':
+              return (
+                <td key={col.key} style={{ ...tdStyle, color: lossColor(entry._best_loss), fontFamily: 'monospace' }}>
+                  {entry._best_loss != null ? (Number(entry._best_loss) !== 0 && Math.abs(Number(entry._best_loss)) < 0.0001 ? Number(entry._best_loss).toExponential(2) : Number(entry._best_loss).toFixed(4)) : '--'}
+                </td>
+              );
+            case '_vs_ref':
+              return (
+                <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry._vs_ref != null ? (entry._vs_ref <= 100 ? 'var(--accent-green)' : 'var(--accent-red)') : 'var(--text-muted)' }}>
+                  {entry._vs_ref != null ? `${entry._vs_ref.toFixed(1)}%` : '--'}
+                </td>
+              );
+            case '_novelty':
+              return (
+                <td key={col.key} style={{ ...tdStyle, color: noveltyColor(entry._novelty), fontFamily: 'monospace' }}>
+                  {entry._novelty != null ? Number(entry._novelty).toFixed(3) : '--'}
+                </td>
+              );
+            case 'param_efficiency':
+              return (
+                <td key={col.key} style={tdStyle}>{entry.param_efficiency != null ? Number(entry.param_efficiency).toFixed(3) : '--'}</td>
+              );
+            case 'robustness_long_ctx_best_score':
+              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_best_score != null ? Number(entry.robustness_long_ctx_best_score).toFixed(3) : '--'}</td>;
+            case 'robustness_long_ctx_multi_hop_score':
+              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_multi_hop_score != null ? Number(entry.robustness_long_ctx_multi_hop_score).toFixed(3) : '--'}</td>;
+            case 'robustness_long_ctx_passkey_score':
+              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_passkey_score != null ? Number(entry.robustness_long_ctx_passkey_score).toFixed(3) : '--'}</td>;
+            case 'robustness_long_ctx_retrieval_aggregate':
+              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_retrieval_aggregate != null ? Number(entry.robustness_long_ctx_retrieval_aggregate).toFixed(3) : '--'}</td>;
+            case 'max_viable_seq_len':
+              return <td key={col.key} style={tdStyle}>{entry.max_viable_seq_len != null ? Number(entry.max_viable_seq_len).toFixed(0) : '--'}</td>;
+            case 'jacobian_spectral_norm':
+              const specVal = finitePositiveOrNull(entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm);
+              return <td key={col.key} style={tdStyle}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
+            case 'init_sensitivity_std':
+              return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
+            case 'tier':
+              return (
+                <td key={col.key} style={tdStyle}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <StatusBadge entry={entry} />
+                  </div>
+                </td>
+              );
+            case '_actions':
+              return (
+                <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <button
+                      onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
+                      style={{
+                        ...actionBtnStyle,
+                        borderColor: 'var(--accent-blue)',
+                        color: 'var(--accent-blue)',
+                        background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
+                      }}
+                    >
+                      {isExpanded ? 'Collapse' : 'Details'}
+                    </button>
+                    {onOpenInDesigner && (
+                      <button
+                        onClick={() => {
+                          if (entry.result_id) onOpenInDesigner(entry.result_id)
+                        }}
+                        disabled={!entry.result_id}
+                        style={{
+                          ...actionBtnStyle,
+                          borderColor: 'var(--accent-purple)',
+                          color: 'var(--accent-purple)',
+                          opacity: entry.result_id ? 1 : 0.5,
+                          cursor: entry.result_id ? 'pointer' : 'not-allowed',
+                        }}
+                        title={entry.result_id ? 'Open architecture in visual designer' : 'Designer unavailable: missing result ID'}
+                      >
+                        Designer
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Delete ${entry.entry_id?.slice(0, 11) || entry.result_id?.slice(0, 11)} and all associated data?`)) {
+                            handleDelete(entry.entry_id || entry.result_id);
+                          }
+                        }}
+                        style={{
+                          ...actionBtnStyle,
+                          borderColor: 'rgba(248, 81, 73, 0.4)',
+                          background: 'rgba(248, 81, 73, 0.12)',
+                          color: 'var(--accent-red, #f85149)',
+                        }}
+                        title="Delete entry and all associated data"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </td>
+              );
+            default:
+              return null;
+          }
+        })}
+      </tr>
+      {isExpanded && (
+        <ExpandedDetail
+          entry={entry}
+          onInvestigate={onInvestigate}
+          onValidate={onValidate}
+          onQueueAdd={onQueueAdd}
+          onQueueRemove={onQueueRemove}
+          onDelete={handleDelete}
+          isQueued={isQueued}
+          eligibility={eligibility}
+          statusDraft={statusDrafts[rowId] || entry.tier}
+          onStatusDraftChange={(tier) => handleStatusDraftChange(rowId, tier)}
+          onSaveStatus={() => handleSaveStatus(entry)}
+          savingStatus={savingStatusRowId === rowId}
+        />
+      )}
+    </React.Fragment>
+  );
+});
 
 export default Discoveries;

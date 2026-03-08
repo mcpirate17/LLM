@@ -340,7 +340,7 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
                   style={gaps ? { borderLeft: '2px solid var(--accent-yellow)' } : undefined}
                 >
                   <td style={{ fontWeight: 600, color: scoreColor(d._score) }}>
-                    <span title={`S1 rate \${(trendScoreBreakdown(d).passRate || 0).toFixed(1)}/35 | Loss \${(trendScoreBreakdown(d).loss || 0).toFixed(1)}/30 | Novelty \${(trendScoreBreakdown(d).novelty || 0).toFixed(1)}/25 | Efficiency \${(trendScoreBreakdown(d).efficiency || 0).toFixed(1)}/10`}>
+                    <span title={`S1 rate ${(trendScoreBreakdown(d).passRate || 0).toFixed(1)}/35 | Loss ${(trendScoreBreakdown(d).loss || 0).toFixed(1)}/30 | Novelty ${(trendScoreBreakdown(d).novelty || 0).toFixed(1)}/25 | Efficiency ${(trendScoreBreakdown(d).efficiency || 0).toFixed(1)}/10`}>
                       {d._score}
                     </span>
                   </td>
@@ -350,7 +350,7 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
                       style={{ fontSize: 11, padding: '2px 6px', marginRight: 6 }}
                       onClick={() => onSelectExperiment && d.experiment_id && onSelectExperiment(d.experiment_id)}
                       disabled={!onSelectExperiment || !d.experiment_id}
-                      aria-label={`Open experiment \${(d.experiment_id || '').slice(0, 12)}`}
+                      aria-label={`Open experiment ${(d.experiment_id || '').slice(0, 12)}`}
                     >
                       {(d.experiment_id || '').slice(0, 12)}
                     </button>
@@ -359,7 +359,7 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
                         className="refresh-btn"
                         style={{ fontSize: 10, padding: '1px 5px' }}
                         onClick={() => copyText(d.experiment_id)}
-                        aria-label={`Copy experiment id \${d.experiment_id}`}
+                        aria-label={`Copy experiment id ${d.experiment_id}`}
                       >
                         {copiedValue === d.experiment_id ? 'Copied' : 'Copy'}
                       </button>
@@ -369,9 +369,9 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
                     color: (d.s1_pass_rate || 0) > 0.05 ? 'var(--accent-green)' : 'var(--text-muted)',
                   }}>
                     {d.adjusted_s1_pass_rate != null
-                      ? `\${(d.adjusted_s1_pass_rate * 100).toFixed(1)}% adj`
+                      ? `${(d.adjusted_s1_pass_rate * 100).toFixed(1)}% adj`
                       : d.s1_pass_rate != null
-                        ? `\${(d.s1_pass_rate * 100).toFixed(1)}%`
+                        ? `${(d.s1_pass_rate * 100).toFixed(1)}%`
                         : 'insufficient data'}
                     {d.s1_pass_rate != null && (
                       <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
@@ -411,12 +411,12 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
                   </td>
                   <td style={{ color: 'var(--text-secondary)' }}>
                     {d.avg_throughput_tok_s != null
-                      ? `\${Math.round(d.avg_throughput_tok_s).toLocaleString()} tok/s`
+                      ? `${Math.round(d.avg_throughput_tok_s).toLocaleString()} tok/s`
                       : '—'}
                   </td>
                   <td style={{ color: 'var(--text-secondary)' }}>
                     {d.avg_routing_token_retention != null
-                      ? `\${(d.avg_routing_token_retention * 100).toFixed(1)}%`
+                      ? `${(d.avg_routing_token_retention * 100).toFixed(1)}%`
                       : '—'}
                   </td>
                   <td style={{ color: 'var(--text-secondary)' }}>
@@ -426,12 +426,12 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
                   </td>
                   <td style={{ color: 'var(--text-secondary)' }}>
                     {d.avg_depth_savings_ratio != null
-                      ? `\${(d.avg_depth_savings_ratio * 100).toFixed(1)}%`
+                      ? `${(d.avg_depth_savings_ratio * 100).toFixed(1)}%`
                       : '—'}
                   </td>
                   <td style={{ color: 'var(--text-secondary)' }}>
                     {d.avg_recursion_savings_ratio != null
-                      ? `\${(d.avg_recursion_savings_ratio * 100).toFixed(1)}%`
+                      ? `${(d.avg_recursion_savings_ratio * 100).toFixed(1)}%`
                       : '—'}
                   </td>
                   <td>{d.n_programs_generated || 0}</td>

@@ -1,0 +1,33 @@
+name: Association Integrity
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'research/**'
+      - '.github/workflows/association-integrity.yml'
+  pull_request:
+    paths:
+      - 'research/**'
+      - '.github/workflows/association-integrity.yml'
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  association-integrity:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run association integrity check
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python research/tools/check_association_integrity.py --db research/lab_notebook.db --allow-missing-db

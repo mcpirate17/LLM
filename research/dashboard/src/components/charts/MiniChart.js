@@ -22,7 +22,7 @@ export function MiniChart({ data, valueKey, label, color, formatValue, weightEve
   const PAD = 24;
 
   const defaults = CHART_DEFAULTS[scaleKey] || { min: 0, max: 1 };
-  const scale = getFixedScale(`trend.\${scaleKey}`, values, {
+  const scale = getFixedScale(`trend.${scaleKey}`, values, {
     defaultMin: defaults.min,
     defaultMax: defaults.max,
   });
@@ -114,7 +114,7 @@ export function MiniChart({ data, valueKey, label, color, formatValue, weightEve
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 600 }}>
         {label}
       </div>
-      <svg width={W} height={H} viewBox={`0 0 \${W} \${H}`}
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}
         style={{ width: '100%', height: 'auto' }}>
         {/* Grid lines */}
         {[0, 0.25, 0.5, 0.75, 1].map(frac => {
@@ -143,7 +143,7 @@ export function MiniChart({ data, valueKey, label, color, formatValue, weightEve
 
         {/* Weight adjustment markers with before/after regions */}
         {markers.map((m, i) => (
-          <g key={`wm-\${i}`}>
+          <g key={`wm-${i}`}>
             <line x1={m.x} y1={PAD - 4} x2={m.x} y2={H - PAD}
               stroke="var(--accent-orange, #f0883e)" strokeWidth={1} strokeDasharray="3 2" opacity={0.7} />
             <text x={m.x} y={PAD - 6} textAnchor="middle" fontSize={7}
@@ -157,7 +157,7 @@ export function MiniChart({ data, valueKey, label, color, formatValue, weightEve
               </text>
             )}
             <title>{m.desc}{m.avgBefore != null && m.avgAfter != null ?
-              ` | Before: \${fmt(m.avgBefore)} &rarr; After: \${fmt(m.avgAfter)} (\${m.delta > 0 ? '+' : ''}\${fmt(m.delta)})` : ''}</title>
+              ` | Before: ${fmt(m.avgBefore)} &rarr; After: ${fmt(m.avgAfter)} (${m.delta > 0 ? '+' : ''}${fmt(m.delta)})` : ''}</title>
           </g>
         ))}
 
@@ -172,7 +172,7 @@ export function MiniChart({ data, valueKey, label, color, formatValue, weightEve
               fill={color} stroke="var(--bg-secondary, #161b22)" strokeWidth={1.5}
               style={{ cursor: onSelectExperiment && expId ? 'pointer' : 'default' }}
               onClick={() => onSelectExperiment && expId && onSelectExperiment(expId)}>
-              <title>Exp #\${p.idx + 1}: \${fmt(p.v)}{onSelectExperiment && expId ? ' &mdash; click to view' : ''}</title>
+              <title>Exp #${p.idx + 1}: ${fmt(p.v)}{onSelectExperiment && expId ? ' &mdash; click to view' : ''}</title>
             </circle>
           );
         })}
@@ -204,7 +204,7 @@ export function MiniChart({ data, valueKey, label, color, formatValue, weightEve
              } else if (valueKey.includes('loss')) {
                  insightText = 'Performance floor reached \u2014 increase training steps';
              } else {
-                 insightText = `Plateau reached for \${windowed.length} experiments`;
+                 insightText = `Plateau reached for ${windowed.length} experiments`;
              }
              insightColor = 'var(--accent-yellow, #d29922)';
           } else if (isImproving) {

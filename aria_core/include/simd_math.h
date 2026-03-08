@@ -24,6 +24,9 @@ typedef __m512 aria_simd_ps;
 #define aria_simd_fmsub_ps _mm512_fmsub_ps
 #define aria_simd_min_ps _mm512_min_ps
 #define aria_simd_max_ps _mm512_max_ps
+#define aria_simd_and_ps _mm512_and_ps
+#define aria_simd_castsi_ps _mm512_castsi512_ps
+#define aria_simd_set1_epi32 _mm512_set1_epi32
 #define aria_simd_zero_ps _mm512_setzero_ps()
 #elif defined(__AVX2__)
 typedef __m256 aria_simd_ps;
@@ -40,6 +43,9 @@ typedef __m256 aria_simd_ps;
 #define aria_simd_fmsub_ps _mm256_fmsub_ps
 #define aria_simd_min_ps _mm256_min_ps
 #define aria_simd_max_ps _mm256_max_ps
+#define aria_simd_and_ps _mm256_and_ps
+#define aria_simd_castsi_ps _mm256_castsi256_ps
+#define aria_simd_set1_epi32 _mm256_set1_epi32
 #define aria_simd_zero_ps _mm256_setzero_ps()
 #endif
 
@@ -128,6 +134,58 @@ static inline __m256 _mm256_exp_ps(__m256 x) {
     return _mm256_mul_ps(p, pow2n);
 }
 
+/* Fast vectorized log(x) for 8 floats (AVX2) */
+static inline __m256 _mm256_log_ps(__m256 x) {
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    const __m256 ln2_hi = _mm256_set1_ps(0.693359375f);
+    const __m256 ln2_lo = _mm256_set1_ps(-0.00021219444f);
+
+    /* Extract exponent and mantissa */
+    __m256i xi = _mm256_castps_si256(x);
+    __m256i e = _mm256_srli_epi32(_mm256_and_si256(xi, _mm256_set1_epi32(0x7f800000)), 23);
+    e = _mm256_sub_epi32(e, _mm256_set1_epi32(127));
+    __m256 m = _mm256_castsi256_ps(_mm256_or_si256(_mm256_and_si256(xi, _mm256_set1_epi32(0x007fffff)), _mm256_set1_epi32(0x3f800000)));
+
+    /* m = m - 1 if m > sqrt(2) */
+    const __m256 sqrt2 = _mm256_set1_ps(1.41421356f);
+    __m256 mask = _mm256_cmp_ps(m, sqrt2, _CMP_GT_OQ);
+    __m256 e_adj = _mm256_and_ps(mask, one);
+    m = _mm256_sub_ps(m, e_adj);
+    m = _mm256_sub_ps(m, one);
+    __m256 fe = _mm256_add_ps(_mm256_cvtepi32_ps(e), e_adj);
+
+    /* Rational approximation: ln(1+x) approx x - x^2/2 + x^3/3 ... */
+    __m256 x2 = _mm256_mul_ps(m, m);
+    __m256 y = _mm256_fmadd_ps(m, _mm256_set1_ps(0.07037608f), _mm256_set1_ps(-0.11509069f));
+    y = _mm256_fmadd_ps(m, y, _mm256_set1_ps(0.11696452f));
+    y = _mm256_fmadd_ps(m, y, _mm256_set1_ps(-0.16201473f));
+    y = _mm256_fmadd_ps(m, y, _mm256_set1_ps(0.20033587f));
+    y = _mm256_fmadd_ps(m, y, _mm256_set1_ps(-0.24992420f));
+    y = _mm256_fmadd_ps(m, y, _mm256_set1_ps(0.33333192f));
+    y = _mm256_mul_ps(_mm256_mul_ps(x2, m), y);
+    y = _mm256_sub_ps(y, _mm256_mul_ps(x2, half));
+    y = _mm256_add_ps(y, m);
+
+    /* result = y + e * ln(2) */
+    y = _mm256_fmadd_ps(fe, ln2_hi, y);
+    y = _mm256_fmadd_ps(fe, ln2_lo, y);
+    return y;
+}
+
+static inline __m256 _mm256_tanh_ps(__m256 x) {
+    __m256 e2x = _mm256_exp_ps(_mm256_mul_ps(x, _mm256_set1_ps(2.0f)));
+    __m256 one = _mm256_set1_ps(1.0f);
+    return _mm256_div_ps(_mm256_sub_ps(e2x, one), _mm256_add_ps(e2x, one));
+}
+
+static inline __m256 _mm256_atanh_ps(__m256 x) {
+    __m256 one = _mm256_set1_ps(1.0f);
+    __m256 num = _mm256_add_ps(one, x);
+    __m256 den = _mm256_sub_ps(one, x);
+    return _mm256_mul_ps(_mm256_set1_ps(0.5f), _mm256_log_ps(_mm256_div_ps(num, den)));
+}
+
 /* Fast vectorized sigmoid: 1 / (1 + exp(-x)) */
 static inline __m256 _mm256_sigmoid_ps(__m256 x) {
     __m256 one = _mm256_set1_ps(1.0f);
@@ -138,10 +196,59 @@ static inline __m256 _mm256_sigmoid_ps(__m256 x) {
 #endif
 
 #ifdef __AVX512F__
+static inline __m512 _mm512_log_ps(__m512 x) {
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 half = _mm512_set1_ps(0.5f);
+    const __m512 ln2_hi = _mm512_set1_ps(0.693359375f);
+    const __m512 ln2_lo = _mm512_set1_ps(-0.00021219444f);
+    __m512i xi = _mm512_castps_si512(x);
+    __m512i e = _mm512_srli_epi32(_mm512_and_si512(xi, _mm512_set1_epi32(0x7f800000)), 23);
+    e = _mm512_sub_epi32(e, _mm512_set1_epi32(127));
+    __m512 m = _mm512_castsi512_ps(_mm512_or_si512(_mm512_and_si512(xi, _mm512_set1_epi32(0x007fffff)), _mm512_set1_epi32(0x3f800000)));
+    const __m512 sqrt2 = _mm512_set1_ps(1.41421356f);
+    __mmask16 gt = _mm512_cmp_ps_mask(m, sqrt2, _CMP_GT_OQ);
+    __m512 e_adj = _mm512_maskz_mov_ps(gt, one);
+    m = _mm512_sub_ps(m, e_adj);
+    m = _mm512_sub_ps(m, one);
+    __m512 fe = _mm512_add_ps(_mm512_cvtepi32_ps(e), e_adj);
+    __m512 x2 = _mm512_mul_ps(m, m);
+    __m512 y = _mm512_fmadd_ps(m, _mm512_set1_ps(0.07037608f), _mm512_set1_ps(-0.11509069f));
+    y = _mm512_fmadd_ps(m, y, _mm512_set1_ps(0.11696452f));
+    y = _mm512_fmadd_ps(m, y, _mm512_set1_ps(-0.16201473f));
+    y = _mm512_fmadd_ps(m, y, _mm512_set1_ps(0.20033587f));
+    y = _mm512_fmadd_ps(m, y, _mm512_set1_ps(-0.24992420f));
+    y = _mm512_fmadd_ps(m, y, _mm512_set1_ps(0.33333192f));
+    y = _mm512_mul_ps(_mm512_mul_ps(x2, m), y);
+    y = _mm512_sub_ps(y, _mm512_mul_ps(x2, half));
+    y = _mm512_add_ps(y, m);
+    y = _mm512_fmadd_ps(fe, ln2_hi, y);
+    y = _mm512_fmadd_ps(fe, ln2_lo, y);
+    return y;
+}
+
+static inline __m512 _mm512_tanh_ps(__m512 x) {
+    __m512 e2x = _mm512_exp_ps(_mm512_mul_ps(x, _mm512_set1_ps(2.0f)));
+    __m512 one = _mm512_set1_ps(1.0f);
+    return _mm512_div_ps(_mm512_sub_ps(e2x, one), _mm512_add_ps(e2x, one));
+}
+
+static inline __m512 _mm512_atanh_ps(__m512 x) {
+    __m512 one = _mm512_set1_ps(1.0f);
+    __m512 num = _mm512_add_ps(one, x);
+    __m512 den = _mm512_sub_ps(one, x);
+    return _mm512_mul_ps(_mm512_set1_ps(0.5f), _mm512_log_ps(_mm512_div_ps(num, den)));
+}
+
 #define aria_simd_exp_ps _mm512_exp_ps
+#define aria_simd_log_ps _mm512_log_ps
+#define aria_simd_tanh_ps _mm512_tanh_ps
+#define aria_simd_atanh_ps _mm512_atanh_ps
 #define aria_simd_sigmoid_ps _mm512_sigmoid_ps
 #elif defined(__AVX2__)
 #define aria_simd_exp_ps _mm256_exp_ps
+#define aria_simd_log_ps _mm256_log_ps
+#define aria_simd_tanh_ps _mm256_tanh_ps
+#define aria_simd_atanh_ps _mm256_atanh_ps
 #define aria_simd_sigmoid_ps _mm256_sigmoid_ps
 #endif
 

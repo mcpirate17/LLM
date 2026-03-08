@@ -14,7 +14,7 @@ export function LineagePanel({ resultId }) {
       // Ideally this would be a real tree-search API for parent/child relationships.
       const res = await apiCall(`/api/designer/lineage?limit=20`);
       const data = await res.json().catch(() => []);
-      if (!res.ok) throw new Error(data?.error || `HTTP \${res.status}`);
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       setRows(Array.isArray(data) ? data : []);
     } catch (err) {
       setError(err?.message || String(err));
@@ -68,7 +68,7 @@ export function LineagePanel({ resultId }) {
         <div
           key={row.run_id || idx}
           style={{
-            borderLeft: `2px solid \${row.status === 'success' ? 'var(--accent-green)' : 'var(--border)'}`,
+            borderLeft: `2px solid ${row.status === 'success' ? 'var(--accent-green)' : 'var(--border)'}`,
             padding: '8px 10px',
             marginBottom: 8,
             background: 'var(--bg-secondary)',

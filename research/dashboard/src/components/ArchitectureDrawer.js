@@ -3,7 +3,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { parseDesignerBridgeMessage } from '../utils/designerBridge';
 
 import {
-  DESIGNER_BASE,
   analyzeResearchGraph,
   analyzeWorkflowGraph,
   buildIntegrityWarning,
@@ -30,8 +29,18 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   const [showLineage, setShowLineage] = useState(false);
   const [bridgeStep, setBridgeStep] = useState('booting');
   const [committing, setCommitting] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const iframeRef = useRef(null);
   const pendingGraphRequestRef = useRef({ reason: null, requestId: null });
+  const loadResultSentRef = useRef(false);
+  const prevResultIdRef = useRef(resultId);
+  const [startingDesigner, setStartingDesigner] = useState(true);
+
+  // Reset load guard when resultId changes so a new graph gets loaded
+  if (prevResultIdRef.current !== resultId) {
+    prevResultIdRef.current = resultId;
+    loadResultSentRef.current = false;
+  }
 
   // Send command to iframe
   const sendToDesigner = useCallback((type, payload = {}) => {
@@ -80,8 +89,12 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
         case 'embedded-ready':
           setDesignerReady(true);
           setBridgeStep('ready');
-          // Tell the designer to load the graph for this result
-          sendToDesigner('load-result', { resultId });
+          // Tell the designer to load the graph for this result (once only).
+          // In blank-canvas mode there is no source result to load.
+          if (resultId && !loadResultSentRef.current) {
+            loadResultSentRef.current = true;
+            sendToDesigner('load-result', { resultId });
+          }
           break;
         case 'graph-loaded':
           setLoading(false);
@@ -109,24 +122,53 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     return () => window.removeEventListener('message', handleMessage);
   }, [commitToResearch, onGraphLoaded, sendToDesigner, resultId]);
 
-  // Initial load
+  // Ensure designer services and fetch source graph in parallel.
   useEffect(() => {
-    if (!resultId) return;
+    let cancelled = false;
+    
+    setBooting(true);
+    setError(null);
+    setBridgeStep('starting-services');    
     setLoading(true);
-    setBridgeStep('fetching-source');
-    apiCall(`/api/programs/${resultId}`)
-      .then((r) => r.json())
-      .then((data) => {
-        setGraphInfo(data);
-        setSourceGraphCheck(analyzeResearchGraph(data.graph_json_parsed));
-        setBridgeStep('loading-iframe');
+
+    const checkDesigner = apiCall('/api/designer/ensure-running', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force_restart: false }),
+    }).then(res => res.json().then(payload => {
+      if (!res.ok || payload?.ok === false) {
+        throw new Error(payload?.error || `HTTP ${res.status}`);
+      }
+    }));
+
+    const fetchSource = resultId 
+      ? apiCall(`/api/programs/${resultId}`).then(r => r.json())
+      : Promise.resolve(null);
+
+    Promise.all([checkDesigner, fetchSource])
+      .then(([_, sourceData]) => {
+        if (cancelled) return;
+        setStartingDesigner(false);
+        if (sourceData) {
+          setGraphInfo(sourceData);
+          setSourceGraphCheck(analyzeResearchGraph(sourceData.graph_json_parsed));
+        } else {
+          setGraphInfo(null);
+          setSourceGraphCheck(null);
+        }
+        setBridgeStep(sourceData ? 'loading-iframe' : 'ready');
         setBooting(false);
+        if (!sourceData) setLoading(false);
       })
       .catch((err) => {
-        setError(`Failed to fetch source graph: ${err.message}`);
+        if (cancelled) return;
+        setStartingDesigner(false);
+        setError(`Failed to initialize: ${err.message}`);
         setLoading(false);
         setBooting(false);
       });
+
+    return () => { cancelled = true; };
   }, [resultId]);
 
   useEffect(() => {
@@ -135,29 +177,32 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
 
   const designerUrl = useMemo(() => {
     const params = new URLSearchParams({
-      result_id: resultId,
       mode: readOnly ? 'readonly' : 'edit',
+      readonly: readOnly ? '1' : '0',
       embedded: '1',
       origin: window.location.origin,
     });
-    
-    // In development (when dashboard is on port 3000), 
-    // try to talk to the Vite dev server directly.
-    // Otherwise, use the production proxy served by the Python backend.
-    const isDev = window.location.port === '3000' || window.location.hostname === 'localhost';
-    const base = isDev ? 'http://localhost:5174' : DESIGNER_BASE;
-    
-    return `${base}/?${params.toString()}`;
+    if (resultId) params.set('result_id', resultId);
+
+    // Only use the standalone Vite server when the dashboard itself is running
+    // from CRA dev-server (port 3000). Otherwise, force same-origin proxy.
+    const onDashboardDevServer = window.location.port === '3000';
+    const base = onDashboardDevServer
+      ? 'http://localhost:5174/'
+      : new URL('/designer-proxy/', window.location.origin).toString();
+
+    return `${base.replace(/\/?$/, '/')}?${params.toString()}`;
   }, [resultId, readOnly]);
 
   return (
-    <div className="arch-drawer">
+    <div className={`arch-drawer${fullscreen ? ' arch-drawer-fullscreen' : ''}`}>
       <div className="arch-drawer-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="close-btn" onClick={onClose}>&times;</button>
           <div className="ux-stack">
             <span className="ux-state-title">Architecture Viewer</span>
-            <span className="ux-state-subtle">result: {resultId?.slice(0, 12)}</span>
+            <span className="ux-state-subtle">
+              {resultId ? `result: ${resultId.slice(0, 12)}` : 'blank canvas'}
+            </span>
           </div>
         </div>
         <div className="header-actions">
@@ -193,11 +238,24 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
           >
             Lineage
           </button>
+          <button
+            className="refresh-btn"
+            onClick={() => {
+              const next = !fullscreen;
+              setFullscreen(next);
+              sendToDesigner('set-embedded', { embedded: !next });
+            }}
+            title={fullscreen ? 'Exit fullscreen' : 'Expand to fullscreen'}
+            style={{ fontSize: 16, padding: '4px 8px' }}
+          >
+            {fullscreen ? '\u2750' : '\u2922'}
+          </button>
+          <button className="close-btn" onClick={onClose}>&times;</button>
         </div>
       </div>
 
       <div className="arch-drawer-body">
-        {booting ? (
+        {(booting || startingDesigner) ? (
           <div className="ux-state ux-state-loading">
             <span className="ux-spinner" />
             <div className="ux-stack">
