@@ -103,3 +103,12 @@ def canonicalize_text(text: str) -> str:
     normalized = " ".join(text.split()).lower()
     normalized = re.sub(r"\d+", "N", normalized)
     return re.sub(r"[^a-z0-9_ ]", "", normalized).strip()
+
+
+def resolve_device(config_device: Optional[str]) -> "torch.device":
+    """Resolve the runtime device with CUDA availability fallback."""
+    import torch
+
+    requested = config_device or "cpu"
+    device_str = requested if torch.cuda.is_available() else "cpu"
+    return torch.device(device_str)

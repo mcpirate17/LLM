@@ -195,4 +195,4 @@ The `ExperimentRunner` class is composed of 10 mixins via multiple inheritance. 
 5. **A.6** api.py `_to_safe_float` dedup (DRY, low effort)
 6. **E.1** Fix bare except clauses (quality, low effort)
 7. **C.1** Split api.py `create_app()` (architecture, high effort)
-8. **C.5** Split `_rule_based_mode_recommendation()` (architecture, medium effort)
+8. **C.5** Split `_rule_based_mode_recommendation()` [DONE] (architecture, medium effort)

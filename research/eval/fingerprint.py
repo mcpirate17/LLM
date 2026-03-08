@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, fields, field
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -64,7 +64,7 @@ def get_sensitivity_skip_stats(reset: bool = False) -> Dict[str, object]:
     return payload
 
 
-@dataclass
+@dataclass(slots=True)
 class BehavioralFingerprint:
     """Characterizes how a model behaves, not what it computes."""
     # Token interaction pattern
@@ -110,7 +110,7 @@ class BehavioralFingerprint:
     quality: str = "none"  # "full" (4/4), "partial" (1–3), "none" (0)
 
     def to_dict(self) -> Dict:
-        return self.__dict__.copy()
+        return {f.name: getattr(self, f.name) for f in fields(self)}
 
     def summary(self) -> str:
         lines = [
@@ -323,23 +323,41 @@ def _analyze_interactions(
         # Measure how much each position affects each other position
         # by perturbing one token at a time (sampling a few positions)
         n_positions = min(8, seq_len)
-        positions = torch.linspace(0, seq_len - 1, n_positions).long()
-        influence_matrix = torch.zeros(n_positions, seq_len, device=dev)
-
-        for i, pos in enumerate(positions):
-            perturbed = ids.clone()
-            perturbed[0, pos] = (ids[0, pos] + 1) % 32000
-            pert_out = model(perturbed)
-            diff = (pert_out - base_out).abs().mean(dim=-1).squeeze(0)  # (S,)
-            influence_matrix[i] = diff
+        positions = torch.linspace(0, seq_len - 1, n_positions, device=dev).long()
+        
+        # Vectorized creation of perturbed batch: (n_positions, S)
+        perturbed_batch = ids.expand(n_positions, -1).clone()
+        # Single-shot vectorized perturbation
+        perturbed_batch[torch.arange(n_positions, device=dev), positions] = \
+            (perturbed_batch[torch.arange(n_positions, device=dev), positions] + 1) % vocab_size
+        
+        # Determine appropriate batch size based on available memory heuristics
+        # For simplicity, we can just process in chunks of 8, or since max n_positions is 8, just process all at once.
+        max_batch = 8
+        pert_out_list = []
+        for start_idx in range(0, n_positions, max_batch):
+            end_idx = min(n_positions, start_idx + max_batch)
+            chunk = perturbed_batch[start_idx:end_idx]
+            # model(chunk) is a single vectorized forward pass for the batch
+            pert_out_list.append(model(chunk)) # (chunk_size, S, V)
+            
+        pert_outs = torch.cat(pert_out_list, dim=0) # (n_positions, S, V)
+        
+        # Compute differences: base_out is (1, S, V)
+        # Broadcasting handles subtraction of (n_positions, S, V) and (1, S, V)
+        influence_matrix = (pert_outs - base_out).abs().mean(dim=-1) # (n_positions, S)
 
         # Locality: how concentrated is influence around the perturbed position?
-        for i, pos in enumerate(positions):
-            distances = (torch.arange(seq_len, device=dev).float() - pos.float()).abs()
-            weights = influence_matrix[i]
-            if weights.sum() > 1e-8:
-                mean_dist = (distances * weights).sum() / weights.sum()
-                result["locality"] += (1.0 - mean_dist / seq_len)
+        positions_tensor = positions.view(n_positions, 1).float() # (n_positions, 1)
+        distances = (torch.arange(seq_len, device=dev).float().view(1, seq_len) - positions_tensor).abs() # (n_positions, S)
+        
+        weights_sum = influence_matrix.sum(dim=-1) # (n_positions,)
+        valid_mask = weights_sum > 1e-8
+        
+        if valid_mask.any():
+            mean_dist = (distances * influence_matrix).sum(dim=-1)[valid_mask] / weights_sum[valid_mask]
+            locality_vals = 1.0 - (mean_dist / seq_len)
+            result["locality"] += locality_vals.sum().item()
         result["locality"] /= (n_positions + 1)
 
         # Sparsity: how peaked is the influence distribution?

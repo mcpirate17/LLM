@@ -21,7 +21,7 @@ for row in rows:
             for r in inv_res:
                 if r.get('robustness') == 0.0:
                     zero_robustness_ids.append(r.get('result_id'))
-        except:
+        except Exception as e:
             pass
 
 print(f"Found {len(zero_robustness_ids)} results with 0.0 robustness in experiments.")

@@ -1,38 +1,37 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import AriaAvatar from './components/AriaAvatar';
-import AriaStatus from './components/AriaStatus';
 import SummaryCards from './components/SummaryCards';
-import ExperimentList from './components/ExperimentList';
-import ExperimentDetail from './components/ExperimentDetail';
-import TopPrograms from './components/TopPrograms';
-import ProgramDetail from './components/ProgramDetail';
-import InsightsPanel from './components/InsightsPanel';
-import LabNotebook from './components/LabNotebook';
-import MetricsChart from './components/MetricsChart';
 import ControlPanel from './components/ControlPanel';
 import LiveFeed from './components/LiveFeed';
-import TrendCharts, { ExperimentDataTab } from './components/TrendCharts';
-import PerfDashboard from './components/PerfDashboard';
-import LearningPanel from './components/LearningPanel';
-import CycleTimeline from './components/CycleTimeline';
-import ResearchReport from './components/ResearchReport';
 import HelpPanel from './components/HelpPanel';
-import Leaderboard from './components/Leaderboard';
-import Discoveries from './components/Discoveries';
-import CampaignView from './components/CampaignView';
-import KnowledgeBase from './components/KnowledgeBase';
-import CompareView from './components/CompareView';
-import StrategyAdvisor from './components/StrategyAdvisor';
 import GlobalParetoChart from './components/GlobalParetoChart';
 import ActionQueue from './components/ActionQueue';
-import AriaChatPanel from './components/AriaChatPanel';
-import ArchitectureDrawer from './components/ArchitectureDrawer';
 import StatusBar from './components/StatusBar';
-import NativeProfilePanel from './components/NativeProfilePanel';
 import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
 import apiService, { apiCall } from './services/apiService';
 import './App.css';
+
+// Lazy-loaded components (only fetched when their tab/drawer is opened)
+const ExperimentList = React.lazy(() => import('./components/ExperimentList'));
+const ExperimentDetail = React.lazy(() => import('./components/ExperimentDetail'));
+const ProgramDetail = React.lazy(() => import('./components/ProgramDetail'));
+const InsightsPanel = React.lazy(() => import('./components/InsightsPanel'));
+const LabNotebook = React.lazy(() => import('./components/LabNotebook'));
+const TrendCharts = React.lazy(() => import('./components/TrendCharts'));
+const ExperimentDataTab = React.lazy(() => import('./components/TrendCharts').then(m => ({ default: m.ExperimentDataTab })));
+const PerfDashboard = React.lazy(() => import('./components/PerfDashboard'));
+const LearningPanel = React.lazy(() => import('./components/LearningPanel'));
+const CycleTimeline = React.lazy(() => import('./components/CycleTimeline'));
+const ResearchReport = React.lazy(() => import('./components/ResearchReport'));
+const Leaderboard = React.lazy(() => import('./components/Leaderboard'));
+const Discoveries = React.lazy(() => import('./components/Discoveries'));
+const CampaignView = React.lazy(() => import('./components/CampaignView'));
+const KnowledgeBase = React.lazy(() => import('./components/KnowledgeBase'));
+const CompareView = React.lazy(() => import('./components/CompareView'));
+const AriaChatPanel = React.lazy(() => import('./components/AriaChatPanel'));
+const ArchitectureDrawer = React.lazy(() => import('./components/ArchitectureDrawer'));
+const NativeProfilePanel = React.lazy(() => import('./components/NativeProfilePanel'));
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
@@ -63,6 +62,14 @@ class ErrorBoundary extends React.Component {
     }
     return this.props.children;
   }
+}
+
+function LazyFallback() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 40, color: 'var(--text-muted)', fontSize: 13 }}>
+      Loading…
+    </div>
+  );
 }
 
 function normalizeQueue(items) {
@@ -302,34 +309,42 @@ function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onRerunExp
       </div>
       {analyticsView === 'trends' && (
         <ErrorBoundary>
-          <TrendCharts onSelectExperiment={onSelectExperiment} />
+          <Suspense fallback={<LazyFallback />}>
+            <TrendCharts onSelectExperiment={onSelectExperiment} />
+          </Suspense>
         </ErrorBoundary>
       )}
       {analyticsView === 'data' && (
         <ErrorBoundary>
-          <ExperimentDataTab
-            onSelectExperiment={onSelectExperiment}
-            onRerunExperiment={onRerunExperiment}
-            onFillGapsExperiment={onFillGapsExperiment}
-            onStartExperiment={onStartExperiment}
-          />
+          <Suspense fallback={<LazyFallback />}>
+            <ExperimentDataTab
+              onSelectExperiment={onSelectExperiment}
+              onRerunExperiment={onRerunExperiment}
+              onFillGapsExperiment={onFillGapsExperiment}
+              onStartExperiment={onStartExperiment}
+            />
+          </Suspense>
         </ErrorBoundary>
       )}
       {analyticsView === 'insights' && (
         <ErrorBoundary>
-          <div>
-            {tabErrors.insights && (
-              <div className="error-banner" style={{ marginBottom: 12 }}>
-                Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
-              </div>
-            )}
-            <InsightsPanel insights={tabData.insights || data?.insights} />
-          </div>
+          <Suspense fallback={<LazyFallback />}>
+            <div>
+              {tabErrors.insights && (
+                <div className="error-banner" style={{ marginBottom: 12 }}>
+                  Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
+                </div>
+              )}
+              <InsightsPanel insights={tabData.insights || data?.insights} />
+            </div>
+          </Suspense>
         </ErrorBoundary>
       )}
       {analyticsView === 'learning' && (
         <ErrorBoundary>
-          <LearningPanel onNavigateStrategy={onNavigateStrategy} onStartExperiment={onStartExperiment} />
+          <Suspense fallback={<LazyFallback />}>
+            <LearningPanel onNavigateStrategy={onNavigateStrategy} onStartExperiment={onStartExperiment} />
+          </Suspense>
         </ErrorBoundary>
       )}
       {/* Reference baselines pinned at bottom of all analytics views */}
@@ -364,16 +379,16 @@ function LogTab({ entries, entriesError, onSelectExperiment }) {
         ))}
       </div>
       {logView === 'notebook' && (
-        <>
+        <Suspense fallback={<LazyFallback />}>
           {entriesError && (
             <div className="error-banner" style={{ marginBottom: 12 }}>
               Fresh notebook fetch failed ({entriesError}); showing dashboard snapshot.
             </div>
           )}
           <LabNotebook entries={entries} onSelectExperiment={onSelectExperiment} />
-        </>
+        </Suspense>
       )}
-      {logView === 'cycles' && <CycleTimeline />}
+      {logView === 'cycles' && <Suspense fallback={<LazyFallback />}><CycleTimeline /></Suspense>}
     </>
   );
 }
@@ -1953,7 +1968,7 @@ function AppContent({ onRunningChange }) {
         )}
 
         {activeTab === 'experiments' && (
-          <>
+          <Suspense fallback={<LazyFallback />}>
             {tabErrors.experiments && (
               <div className="error-banner" style={{ marginBottom: 12 }}>
                 Fresh experiments fetch failed ({tabErrors.experiments}); showing dashboard snapshot.
@@ -1969,62 +1984,70 @@ function AppContent({ onRunningChange }) {
               pageSize={experimentsPageSize}
               onPageSizeChange={handleExperimentPageSizeChange}
             />
-          </>
+          </Suspense>
         )}
 
         {activeTab === 'experiment-detail' && selectedExperiment && (
-          <ExperimentDetail
-            experimentId={selectedExperiment}
-            onBack={handleBackFromExperiment}
-            onSelectProgram={handleSelectProgram}
-          />
+          <Suspense fallback={<LazyFallback />}>
+            <ExperimentDetail
+              experimentId={selectedExperiment}
+              onBack={handleBackFromExperiment}
+              onSelectProgram={handleSelectProgram}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'discoveries' && (
-          <Discoveries
-            onSelectProgram={handleSelectProgram}
-            onInvestigate={handleInvestigate}
-            onValidate={handleValidate}
-            highlightResultId={leaderboardHighlight}
-            onHighlightClear={() => setLeaderboardHighlight(null)}
-            onQueueAdd={handleQueueAdd}
-            onQueueRemove={handleQueueRemove}
-            queuedResultIds={investigationQueue.map(item => item.resultId)}
-            eligibilityByResultId={eligibilityByResultId}
-            onOpenInDesigner={openDesignerForResult}
-          />
+          <Suspense fallback={<LazyFallback />}>
+            <Discoveries
+              onSelectProgram={handleSelectProgram}
+              onInvestigate={handleInvestigate}
+              onValidate={handleValidate}
+              highlightResultId={leaderboardHighlight}
+              onHighlightClear={() => setLeaderboardHighlight(null)}
+              onQueueAdd={handleQueueAdd}
+              onQueueRemove={handleQueueRemove}
+              queuedResultIds={investigationQueue.map(item => item.resultId)}
+              eligibilityByResultId={eligibilityByResultId}
+              onOpenInDesigner={openDesignerForResult}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'trends' && (
-          <AnalyticsTab
-            data={data}
-            tabData={tabData}
-            tabErrors={tabErrors}
-            onSelectExperiment={handleSelectExperiment}
-            onRerunExperiment={handleRerunExperiment}
-            onFillGapsExperiment={handleFillGapsExperiment}
-            onNavigateStrategy={handleNavigateStrategy}
-            onStartExperiment={handleStartExperiment}
-          />
+          <Suspense fallback={<LazyFallback />}>
+            <AnalyticsTab
+              data={data}
+              tabData={tabData}
+              tabErrors={tabErrors}
+              onSelectExperiment={handleSelectExperiment}
+              onRerunExperiment={handleRerunExperiment}
+              onFillGapsExperiment={handleFillGapsExperiment}
+              onNavigateStrategy={handleNavigateStrategy}
+              onStartExperiment={handleStartExperiment}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'comparison' && (
-          <CompareView
-            comparisonList={comparisonList}
-            onRemoveProgram={handleRemoveFromComparison}
-            onSelectProgram={handleSelectProgram}
-          />
+          <Suspense fallback={<LazyFallback />}>
+            <CompareView
+              comparisonList={comparisonList}
+              onRemoveProgram={handleRemoveFromComparison}
+              onSelectProgram={handleSelectProgram}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'perf' && (
-          <>
+          <Suspense fallback={<LazyFallback />}>
             <NativeProfilePanel />
             <PerfDashboard />
-          </>
+          </Suspense>
         )}
 
         {activeTab === 'reports' && (
-          <>
+          <Suspense fallback={<LazyFallback />}>
             <ResearchReport
               onSelectProgram={handleSelectProgram}
               onSelectExperiment={handleSelectExperiment}
@@ -2050,15 +2073,17 @@ function AppContent({ onRunningChange }) {
               <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Knowledge Base</h3>
               <KnowledgeBase onSelectExperiment={handleSelectExperiment} />
             </div>
-          </>
+          </Suspense>
         )}
 
         {activeTab === 'log' && (
-          <LogTab
-            entries={tabData.entries || data?.recent_entries}
-            entriesError={tabErrors.entries}
-            onSelectExperiment={handleSelectExperiment}
-          />
+          <Suspense fallback={<LazyFallback />}>
+            <LogTab
+              entries={tabData.entries || data?.recent_entries}
+              entriesError={tabErrors.entries}
+              onSelectExperiment={handleSelectExperiment}
+            />
+          </Suspense>
         )}
       </main>
 
@@ -2071,7 +2096,9 @@ function AppContent({ onRunningChange }) {
               <button onClick={() => setShowChat(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>&times;</button>
             </div>
             <div style={{ flex: 1, overflow: 'auto' }}>
-              <AriaChatPanel isRunning={Boolean(data?.is_running)} autonomousMode={autonomousActive} onAutonomousEnd={() => setAutonomousMode(false)} />
+              <Suspense fallback={<LazyFallback />}>
+                <AriaChatPanel isRunning={Boolean(data?.is_running)} autonomousMode={autonomousActive} onAutonomousEnd={() => setAutonomousMode(false)} />
+              </Suspense>
             </div>
           </div>
         </div>
@@ -2185,26 +2212,30 @@ function AppContent({ onRunningChange }) {
 
       {/* Program Detail Modal (global) */}
       {selectedProgram && (
-        <ProgramDetail
-          resultId={selectedProgram}
-          onClose={() => setSelectedProgram(null)}
-          onActionComplete={handleActionComplete}
-          onSelectExperiment={handleSelectExperiment}
-          onViewInLeaderboard={handleViewInLeaderboard}
-          onSelectCampaign={handleSelectCampaign}
-          onOpenInDesigner={openDesignerForResult}
-          onAddToComparison={handleAddToComparison}
-          eligibilityByResultId={eligibilityByResultId}
-          defaultOverrideIneligible={overrideIneligibleAlways}
-        />
+        <Suspense fallback={<LazyFallback />}>
+          <ProgramDetail
+            resultId={selectedProgram}
+            onClose={() => setSelectedProgram(null)}
+            onActionComplete={handleActionComplete}
+            onSelectExperiment={handleSelectExperiment}
+            onViewInLeaderboard={handleViewInLeaderboard}
+            onSelectCampaign={handleSelectCampaign}
+            onOpenInDesigner={openDesignerForResult}
+            onAddToComparison={handleAddToComparison}
+            eligibilityByResultId={eligibilityByResultId}
+            defaultOverrideIneligible={overrideIneligibleAlways}
+          />
+        </Suspense>
       )}
 
       {/* Architecture Designer Drawer */}
       {designerSession.open && (
-        <ArchitectureDrawer
-          resultId={designerSession.resultId}
-          onClose={closeDesigner}
-        />
+        <Suspense fallback={<LazyFallback />}>
+          <ArchitectureDrawer
+            resultId={designerSession.resultId}
+            onClose={closeDesigner}
+          />
+        </Suspense>
       )}
 
       <footer className="app-footer">

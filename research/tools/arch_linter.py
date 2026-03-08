@@ -63,7 +63,7 @@ Output a JSON object:
                 res_text = res_text.split("```")[1].split("```")[0]
             
             return json.loads(res_text.strip())
-        except:
+        except Exception as e:
             return {"pass": True, "smells": [], "error": "Linter failed to parse"}
 
 if __name__ == "__main__":

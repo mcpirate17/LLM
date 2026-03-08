@@ -125,6 +125,26 @@ def safe_eval_formula(formula: str) -> int:
     return int(_eval(tree))
 
 
+def estimate_op_params(
+    op: PrimitiveOp,
+    d_in: int,
+    d_out: Optional[int] = None,
+) -> int:
+    """Estimate learnable parameter count for a primitive op.
+
+    Uses primitive formula evaluation with conservative fallback when formulas
+    are malformed or unsafe.
+    """
+    if not op.has_params or not op.param_formula or op.param_formula == "0":
+        return 0
+    d_out = d_in if d_out is None else d_out
+    formula = op.param_formula.replace("D_OUT", str(d_out)).replace("D", str(d_in))
+    try:
+        return safe_eval_formula(formula)
+    except Exception:
+        return d_in * d_out
+
+
 # ── The Primitive Registry ────────────────────────────────────────────
 
 PRIMITIVE_REGISTRY: Dict[str, PrimitiveOp] = {}

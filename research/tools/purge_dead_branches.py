@@ -57,7 +57,7 @@ def main():
             if len(reachable) < len(graph.nodes):
                 purge_ids.append(rid)
                 continue
-        except:
+        except Exception as e:
             pass
 
         # Criteria 2: Numerical Collapse

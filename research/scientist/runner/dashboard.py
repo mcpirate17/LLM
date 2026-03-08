@@ -77,6 +77,7 @@ from ..llm.context import (build_rich_context, build_investigation_context,
                           build_campaign_formulation_context,
                           build_manual_start_fallback_context)
 from ..llm.decision import NextExperimentDecisionPlanner
+from ..shared_utils import resolve_device
 
 import logging
 logger = logging.getLogger(__name__)
@@ -638,8 +639,8 @@ class _DashboardMixin:
             fitness_cache: Optional ``Dict[str, float]`` mapping graph fingerprint
                 to fitness.  Cache hits skip compilation entirely.
         """
-        dev_str = config.device if torch.cuda.is_available() else "cpu"
-        dev = torch.device(dev_str)
+        dev = resolve_device(config.device)
+        dev_str = str(dev)
 
         def fitness_fn(graph):
             fp = graph.fingerprint()
@@ -1111,4 +1112,3 @@ class _DashboardMixin:
                     "resolved_from": "leaderboard",
                 },
             )
-

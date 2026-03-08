@@ -18,13 +18,24 @@ from typing import Dict, List, Optional, Set, Tuple
 from .primitives import (
     PrimitiveOp, OpCategory, PRIMITIVE_REGISTRY,
     list_primitives, get_primitive,
-    safe_eval_formula,
+    estimate_op_params,
 )
 from .graph import ComputationGraph, ShapeInfo, OpNode
+from .validator import validate_graph
 
 # Alias for backward compatibility — some test files import Node from grammar
 Node = OpNode
 
+
+
+# Action selection constraints
+ACTION_WEIGHT_UNARY = 2.0
+ACTION_WEIGHT_PARAM = 2.0
+ACTION_WEIGHT_BINARY = 1.5
+ACTION_SPLIT_MULTIPLIER = 3.0
+ACTION_FREQ_MULTIPLIER = 3.0
+ACTION_WEIGHT_TEMPLATE = 0.8
+ACTION_STOP_BASE_WEIGHT = 5.0
 
 @dataclass
 class GrammarConfig:
@@ -286,11 +297,11 @@ class AdaptiveGenerator:
     def _estimate_params(self, op: PrimitiveOp, d_in: int) -> int:
         if self._c_params_estimator:
             # Fast Cython path
-            return self._c_params_estimator(op.name.encode('utf-8'), d_in, d_in)
-        # Fallback
-        formula = op.param_formula.replace("D", str(d_in))
-        try: return safe_eval_formula(formula)
-        except: return d_in * d_in
+            try:
+                return int(self._c_params_estimator(op.name.encode("utf-8"), d_in, d_in))
+            except Exception:
+                pass
+        return estimate_op_params(op, d_in)
 
     def _estimate_flops(self, op: PrimitiveOp, d_in: int) -> int:
         # Simplified estimate for look-ahead (B=1, S=128)
@@ -358,32 +369,15 @@ def generate_layer_graph(
 
 def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
-    n_ops = graph.n_ops()
-    if n_ops > config.max_ops:
-        raise ValueError(f"Too many ops: {n_ops} > {config.max_ops}")
-    depth = graph.depth()
-    # Forced splits add structural depth (split+merge+proj = ~3 per split).
-    # Allow extra depth headroom proportional to min_splits.
-    depth_limit = config.max_depth + config.min_splits * 3
-    if depth > depth_limit:
-        raise ValueError(f"Too deep: {depth} > {depth_limit}")
-
-    D = config.model_dim
-    max_params = int(config.max_params_ratio * D * D)
-    total_params = 0
-    for node in graph.nodes.values():
-        if node.op_name in ("input", "graph_input", "graph_output", "output"):
-            continue
-        op = get_primitive(node.op_name)
-        if op.param_formula and op.param_formula != "0":
-            d_in = node.output_shape.dim if node.output_shape else D
-            formula = op.param_formula.replace("D", str(d_in))
-            try:
-                total_params += safe_eval_formula(formula)
-            except Exception:
-                total_params += d_in * d_in
-    if total_params > max_params:
-        raise ValueError(f"Too many params: ~{total_params} > {max_params}")
+    result = validate_graph(
+        graph,
+        max_ops=config.max_ops,
+        max_depth=config.max_depth,
+        max_params_ratio=config.max_params_ratio,
+        min_splits=config.min_splits,
+    )
+    if not result.valid:
+        raise ValueError(result.errors[0] if result.errors else "Graph validation failed")
 
 
 def _build_subgraph(
@@ -474,37 +468,37 @@ def _choose_action(
 
     # Always available
     actions.append("unary_op")
-    weights.append(2.0)
+    weights.append(ACTION_WEIGHT_UNARY)
 
     actions.append("parameterized")
-    weights.append(2.0)
+    weights.append(ACTION_WEIGHT_PARAM)
 
     # Binary ops need 2+ available nodes
     if n_available >= 2:
         actions.append("binary_op")
-        weights.append(1.5)
+        weights.append(ACTION_WEIGHT_BINARY)
 
     # Split/merge for parallelism
     if depth < config.max_depth - 3 and n_ops < config.max_ops - 4:
         actions.append("split_merge")
-        weights.append(config.split_prob * 3)
+        weights.append(config.split_prob * ACTION_SPLIT_MULTIPLIER)
 
     # Frequency domain detour (disabled when rfft_seq/irfft_seq are excluded —
     # they break causality in autoregressive models)
     if (depth < config.max_depth - 2 and n_ops < config.max_ops - 2
             and "rfft_seq" not in config.excluded_ops):
         actions.append("freq_detour")
-        weights.append(config.freq_domain_prob * 3)
+        weights.append(config.freq_domain_prob * ACTION_FREQ_MULTIPLIER)
 
     # Template action (opinionated seeds from mined survivors)
     if depth < config.max_depth - 3 and n_ops < config.max_ops - 4:
         actions.append("template")
-        weights.append(0.8)
+        weights.append(ACTION_WEIGHT_TEMPLATE)
 
     # Stop (more likely as we go deeper, but never before min_depth)
     if depth >= config.min_depth:
         actions.append("stop")
-        stop_weight = ((depth - config.min_depth) / max(1, config.max_depth - config.min_depth)) ** 2 * 5
+        stop_weight = ((depth - config.min_depth) / max(1, config.max_depth - config.min_depth)) ** 2 * ACTION_STOP_BASE_WEIGHT
         weights.append(stop_weight)
 
     return rng.choices(actions, weights=weights, k=1)[0]
@@ -730,11 +724,7 @@ def _apply_parameterized(graph, config, rng, available_nodes,
             if not _check_shape_compat(op, [shape], D_global):
                 continue
             # Estimate params using actual input dim
-            formula = op.param_formula.replace("D", str(D_actual))
-            try:
-                op_params = safe_eval_formula(formula)
-            except Exception:
-                op_params = D_actual * D_actual
+            op_params = estimate_op_params(op, D_actual)
             if params_so_far + op_params <= max_params:
                 candidates.append((op.name, op_params))
                 cand_cat_weights.append(cat_w)

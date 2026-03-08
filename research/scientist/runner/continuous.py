@@ -77,6 +77,7 @@ from ..llm.context import (build_rich_context, build_investigation_context,
                           build_campaign_formulation_context,
                           build_manual_start_fallback_context)
 from ..llm.decision import NextExperimentDecisionPlanner
+from ..shared_utils import resolve_device
 
 import logging
 logger = logging.getLogger(__name__)
@@ -1134,8 +1135,8 @@ class _ContinuousMixin:
             n_generations=config.n_generations,
             grammar_config=grammar,
         )
-        dev_str = config.device if torch.cuda.is_available() else "cpu"
-        dev = torch.device(dev_str)
+        dev = resolve_device(config.device)
+        dev_str = str(dev)
 
         fitness_cache: dict = {}
         fingerprint_cache: dict = {}
@@ -1421,8 +1422,8 @@ class _ContinuousMixin:
             probe_config.stage1_batch_size = config.investigation_batch_size
             probe_config.n_programs = 1
 
-            dev_str = config.device if torch.cuda.is_available() else "cpu"
-            dev = torch.device(dev_str)
+            dev = resolve_device(config.device)
+            dev_str = str(dev)
 
             from research.synthesis.compiler import compile_model
             model = compile_model(graph_json, probe_config, device=dev)
@@ -1608,8 +1609,8 @@ class _ContinuousMixin:
                 "survivors": [], "investigation_results": [],
             }
 
-            dev_str = config.device if torch.cuda.is_available() else "cpu"
-            dev = torch.device(dev_str)
+            dev = resolve_device(config.device)
+            dev_str = str(dev)
 
             inv_config = RunConfig.from_dict(config.to_dict())
             inv_config.stage1_steps = config.investigation_steps
@@ -2791,8 +2792,8 @@ class _ContinuousMixin:
                 "survivors": [], "validation_results": [],
             }
 
-            dev_str = config.device if torch.cuda.is_available() else "cpu"
-            dev = torch.device(dev_str)
+            dev = resolve_device(config.device)
+            dev_str = str(dev)
 
             val_config = RunConfig.from_dict(config.to_dict())
             val_config.stage1_steps = config.validation_steps
@@ -3103,4 +3104,3 @@ class _ContinuousMixin:
             logger.debug(f"End-of-session automation failed: {e}")
         finally:
             nb.close()
-

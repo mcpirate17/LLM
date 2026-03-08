@@ -1027,10 +1027,87 @@ py::dict propagate_shapes(
     return out;
 }
 
-// ═══ Module registration — 97 bindings ═══
+py::list canonical_topo_sort(
+    int32_t n_nodes,
+    std::vector<std::pair<int32_t, int32_t>> edges,
+    std::vector<std::string> op_names,
+    std::vector<std::string> config_strs,
+    std::vector<std::vector<int32_t>> node_inputs
+) {
+    if (n_nodes == 0) return py::list();
+
+    std::vector<int32_t> in_degree(n_nodes, 0);
+    std::vector<std::vector<int32_t>> children(n_nodes);
+
+    for (const auto& edge : edges) {
+        if (edge.first >= 0 && edge.first < n_nodes && edge.second >= 0 && edge.second < n_nodes) {
+            children[edge.first].push_back(edge.second);
+            in_degree[edge.second]++;
+        }
+    }
+
+    struct CanonicalKey {
+        std::string op_name;
+        std::vector<int32_t> input_ranks;
+        std::string config_str;
+        int32_t node_id;
+
+        bool operator>(const CanonicalKey& other) const {
+            if (op_name != other.op_name) return op_name > other.op_name;
+            if (input_ranks != other.input_ranks) return input_ranks > other.input_ranks;
+            if (config_str != other.config_str) return config_str > other.config_str;
+            return node_id > other.node_id;
+        }
+    };
+
+    std::priority_queue<CanonicalKey, std::vector<CanonicalKey>, std::greater<CanonicalKey>> ready;
+    std::vector<int32_t> canonical_id_map(n_nodes, -1);
+    std::vector<int32_t> order;
+    order.reserve(n_nodes);
+
+    auto push_node = [&](int32_t nid) {
+        CanonicalKey key;
+        key.node_id = nid;
+        key.op_name = op_names[nid];
+        key.config_str = config_strs[nid];
+        for (int32_t iid : node_inputs[nid]) {
+            key.input_ranks.push_back(canonical_id_map[iid]);
+        }
+        ready.push(std::move(key));
+    };
+
+    for (int32_t i = 0; i < n_nodes; i++) {
+        if (in_degree[i] == 0) {
+            push_node(i);
+        }
+    }
+
+    while (!ready.empty()) {
+        CanonicalKey key = std::move(ready.top());
+        ready.pop();
+
+        int32_t u = key.node_id;
+        canonical_id_map[u] = static_cast<int32_t>(order.size());
+        order.push_back(u);
+
+        for (int32_t v : children[u]) {
+            in_degree[v]--;
+            if (in_degree[v] == 0) {
+                push_node(v);
+            }
+        }
+    }
+
+    py::list res;
+    for (int32_t nid : order) res.append(nid);
+    return res;
+}
+
+// ═══ Module registration — 98 bindings ═══
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "aria_core: Unified high-performance kernel library for Aria";
+    m.def("canonical_topo_sort", &canonical_topo_sort, "Stable topological sort for graph fingerprinting");
     m.def("relu_f32", &relu_f32); m.def("gelu_f32", &gelu_f32); m.def("silu_f32", &silu_f32);
     m.def("square_f32", &square_f32); m.def("abs_f32", &abs_f32); m.def("neg_f32", &neg_f32);
     m.def("reciprocal_f32", &reciprocal_f32); m.def("log_f32", &log_f32); m.def("sqrt_f32", &sqrt_f32);

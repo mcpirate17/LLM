@@ -19,5 +19,7 @@
 #include "backward.cpp"
 #include "io.cpp"
 #include "adaptive_routing.cpp"
+#include "routing.c"
+#include "dispatch.c"
 #include "binding_stubs.cpp"
 #include "fp16.cpp"

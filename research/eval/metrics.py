@@ -12,6 +12,26 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
 import numpy as np
+
+# Novelty Metric Constants
+EXPECTED_CATEGORIES = 8.0
+WEIGHT_DIVERSITY = 0.50
+WEIGHT_SPREAD = 0.30
+WEIGHT_EVENNESS = 0.20
+EXOTIC_BONUS_BASE = 1.0
+EXOTIC_BONUS_PER_FLAG = 0.1
+
+STRUCTURAL_BLEND_WEIGHT = 0.3
+BEHAVIORAL_BLEND_WEIGHT = 0.7
+STRUCTURAL_ONLY_WEIGHT = 0.6
+
+CONFIDENCE_FULL = 0.9
+CONFIDENCE_PARTIAL_BASE = 0.4
+CONFIDENCE_PARTIAL_STEP = 0.1
+CONFIDENCE_NONE = 0.3
+CONFIDENCE_NO_FP = 0.2
+
+DUPLICATE_PENALTY_MULTIPLIER = 0.1
 from ..synthesis.graph import ComputationGraph
 from .fingerprint import BehavioralFingerprint
 
@@ -74,7 +94,7 @@ def novelty_score(
 
     # Check against known fingerprints
     if known_fingerprints and metrics.graph_fingerprint in known_fingerprints:
-        metrics.overall_novelty *= 0.1  # Heavily penalize exact duplicates
+        metrics.overall_novelty *= DUPLICATE_PENALTY_MULTIPLIER  # Heavily penalize exact duplicates
 
     if calibration:
         mean = calibration.get("noise_floor_mean")
@@ -140,7 +160,7 @@ def batch_novelty_scores(
         cat_counts[:, cat_to_idx[cat]] += batch_counts[:, code]
         
     unique_cats_per_graph = (cat_counts > 0).sum(axis=1)
-    category_spread = np.clip(unique_cats_per_graph / 8.0, 0, 1.0)
+    category_spread = np.clip(unique_cats_per_graph / EXPECTED_CATEGORIES, 0, 1.0)
     
     # Exotic flags
     math_space_idx = cat_to_idx.get("math_space")
@@ -150,24 +170,17 @@ def batch_novelty_scores(
     
     # Op distribution entropy
     probs = batch_counts.astype(np.float32) / np.maximum(n_ops_per_graph[:, None], 1e-10)
-    # Mask out zeros for log
-    mask = probs > 0
-    entropy = np.zeros(len(graphs), dtype=np.float32)
-    entropy[mask.any(axis=1)] = -np.sum(probs[mask] * np.log(probs[mask] + 1e-10)) # This indexing is slightly wrong for row-sum
-    
-    # Correct row-wise entropy
-    log_probs = np.zeros_like(probs)
-    log_probs[mask] = np.log(probs[mask])
-    entropy = -np.sum(probs * log_probs, axis=1)
+    # Vectorized entropy calculation
+    entropy = -np.sum(probs * np.log(np.clip(probs, 1e-10, 1.0)), axis=1)
     
     max_entropy = np.log(np.maximum(unique_ops_per_graph, 1))
     evenness = np.where(max_entropy > 0, entropy / max_entropy, 0)
     
-    structural_novelty = (0.50 * diversity + 0.30 * category_spread + 0.20 * evenness)
+    structural_novelty = (WEIGHT_DIVERSITY * diversity + WEIGHT_SPREAD * category_spread + WEIGHT_EVENNESS * evenness)
     
     # Multiplicative bonus for exotic
     exotic_count = uses_math.astype(np.int32) + uses_freq.astype(np.int32)
-    structural_novelty = np.clip(structural_novelty * (1.0 + 0.1 * exotic_count), 0, 1.0)
+    structural_novelty = np.clip(structural_novelty * (EXOTIC_BONUS_BASE + EXOTIC_BONUS_PER_FLAG * exotic_count), 0, 1.0)
     
     # 4. Assembly
     results = []
@@ -203,18 +216,18 @@ def batch_novelty_scores(
             }
             metrics.most_similar_to = max(similarities, key=similarities.get)
             metrics.max_cka_similarity = max(similarities.values())
-            metrics.raw_novelty = (0.3 * metrics.structural_novelty + 0.7 * metrics.behavioral_novelty)
+            metrics.raw_novelty = (STRUCTURAL_BLEND_WEIGHT * metrics.structural_novelty + BEHAVIORAL_BLEND_WEIGHT * metrics.behavioral_novelty)
             
             metrics.novelty_reference_version = fp_obj.novelty_reference_version
             metrics.novelty_valid_for_promotion = bool(getattr(fp_obj, "novelty_valid_for_promotion", False))
             metrics.novelty_validity_reason = getattr(fp_obj, "novelty_validity_reason", "missing_reference")
-            if fp_obj.quality == "full": metrics.novelty_confidence = 0.9
-            elif fp_obj.quality == "partial": metrics.novelty_confidence = 0.4 + (fp_obj.analyses_succeeded * 0.1)
-            else: metrics.novelty_confidence = 0.3
+            if fp_obj.quality == "full": metrics.novelty_confidence = CONFIDENCE_FULL
+            elif fp_obj.quality == "partial": metrics.novelty_confidence = CONFIDENCE_PARTIAL_BASE + (fp_obj.analyses_succeeded * CONFIDENCE_PARTIAL_STEP)
+            else: metrics.novelty_confidence = CONFIDENCE_NONE
         else:
             metrics.behavioral_novelty = 0.0
-            metrics.raw_novelty = metrics.structural_novelty * 0.6
-            metrics.novelty_confidence = 0.2
+            metrics.raw_novelty = metrics.structural_novelty * STRUCTURAL_ONLY_WEIGHT
+            metrics.novelty_confidence = CONFIDENCE_NO_FP
             metrics.novelty_valid_for_promotion = False
             metrics.novelty_validity_reason = "structural_only"
 
@@ -226,7 +239,7 @@ def batch_novelty_scores(
         
         # Internal diversity penalty
         if metrics.graph_fingerprint in seen_fps:
-            metrics.overall_novelty *= 0.1
+            metrics.overall_novelty *= DUPLICATE_PENALTY_MULTIPLIER
         seen_fps.add(metrics.graph_fingerprint)
         
         results.append(metrics)
@@ -325,7 +338,7 @@ def _novelty_score_from_ir(
             0.7 * metrics.behavioral_novelty
         )
     else:
-        metrics.raw_novelty = metrics.structural_novelty * 0.6
+        metrics.raw_novelty = metrics.structural_novelty * STRUCTURAL_ONLY_WEIGHT
 
     metrics.overall_novelty = metrics.raw_novelty
 
@@ -343,13 +356,13 @@ def _novelty_score_from_ir(
             fingerprint, "novelty_validity_reason", "missing_reference"
         )
         if fingerprint.quality == "full":
-            metrics.novelty_confidence = 0.9
+            metrics.novelty_confidence = CONFIDENCE_FULL
         elif fingerprint.quality == "partial":
             metrics.novelty_confidence = 0.4 + (fingerprint.analyses_succeeded * 0.1)
         else:
-            metrics.novelty_confidence = 0.3
+            metrics.novelty_confidence = CONFIDENCE_NONE
     else:
-        metrics.novelty_confidence = 0.2
+        metrics.novelty_confidence = CONFIDENCE_NO_FP
         metrics.novelty_valid_for_promotion = False
         metrics.novelty_validity_reason = "structural_only"
 

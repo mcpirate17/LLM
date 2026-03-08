@@ -44,7 +44,7 @@ def main():
                         stats["loss_count"] += 1
                     if row["novelty_score"] is not None:
                         stats["total_nov"] += row["novelty_score"]
-        except:
+        except Exception as e:
             continue
 
     # 2. Update op_success_rates table

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
 import numpy as np
-from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY, safe_eval_formula, OPCODE_MAP
+from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY, estimate_op_params, OPCODE_MAP
 
 
 @dataclass
@@ -183,12 +183,7 @@ class ComputationGraphIR:
             if not op_name:
                 continue
             op = get_primitive(op_name)
-            if op.has_params:
-                formula = op.param_formula.replace("D", str(D))
-                try:
-                    total += safe_eval_formula(formula)
-                except Exception:
-                    total += D * D
+            total += estimate_op_params(op, D)
         return total
 
 
@@ -399,6 +394,37 @@ class ComputationGraph:
         if "topo" in self._cache:
             return self._cache["topo"]
 
+        # 0. Try fast C++ implementation via aria_core
+        try:
+            import aria_core
+            if hasattr(aria_core, "canonical_topo_sort"):
+                n_nodes = self._next_id
+                # Only pass existing nodes (up to max id)
+                op_names = [""] * n_nodes
+                config_strs = [""] * n_nodes
+                node_inputs = [[] for _ in range(n_nodes)]
+                edges = []
+                
+                for nid, node in self.nodes.items():
+                    op_names[nid] = node.op_name
+                    if node.config:
+                        config_items = sorted(f"{k}={v}" for k, v in node.config.items())
+                        config_strs[nid] = f"[{','.join(config_items)}]"
+                    node_inputs[nid] = node.input_ids
+                    for iid in node.input_ids:
+                        edges.append((iid, nid))
+                
+                order = aria_core.canonical_topo_sort(
+                    n_nodes, edges, op_names, config_strs, node_inputs
+                )
+                # Filter out any placeholder indices if necessary (shouldn't be)
+                order = [int(nid) for nid in order if nid in self.nodes]
+                self._cache["topo"] = order
+                return order
+        except Exception as e:
+            # Fallback to Python if C++ fails or is missing
+            pass
+
         # 1. Compute in-degrees
         in_degree = {nid: len(node.input_ids) for nid, node in self.nodes.items()}
         
@@ -409,37 +435,41 @@ class ComputationGraph:
                 children[iid].append(nid)
         
         # 3. Initialize queue with nodes having 0 in-degree
-        # Sort by op_name + original ID as initial stable baseline
-        ready = [nid for nid, deg in in_degree.items() if deg == 0]
+        import heapq
         
+        # Precompute static sort keys
+        static_keys = {}
+        for nid, node in self.nodes.items():
+            config_str = ""
+            if node.config:
+                config_items = sorted(f"{k}={v}" for k, v in node.config.items())
+                config_str = f"[{','.join(config_items)}]"
+            static_keys[nid] = (node.op_name, config_str, nid)
+
         order = []
         canonical_id_map = {} # nid -> position in canonical order
 
-        while ready:
-            # TIE-BREAKER: Sort ready nodes by (op_name, input_canonical_ids, config)
-            # For the very first nodes (inputs), input_canonical_ids is empty.
-            def sort_key(nid):
+        ready = []
+        for nid, deg in in_degree.items():
+            if deg == 0:
                 node = self.nodes[nid]
-                input_keys = [canonical_id_map[iid] for iid in node.input_ids]
-                
-                # Include config in tie-breaker
-                config_str = ""
-                if node.config:
-                    config_items = sorted(f"{k}={v}" for k, v in node.config.items())
-                    config_str = f"[{','.join(config_items)}]"
-                    
-                return (node.op_name, input_keys, config_str, nid)
+                input_keys = tuple(canonical_id_map[iid] for iid in node.input_ids)
+                op_name, config_str, orig_id = static_keys[nid]
+                heapq.heappush(ready, (op_name, input_keys, config_str, orig_id))
+
+        while ready:
+            op_name, input_keys, config_str, u = heapq.heappop(ready)
             
-            ready.sort(key=sort_key)
-            
-            u = ready.pop(0)
             canonical_id_map[u] = len(order)
             order.append(u)
             
             for v in children[u]:
                 in_degree[v] -= 1
                 if in_degree[v] == 0:
-                    ready.append(v)
+                    node = self.nodes[v]
+                    v_input_keys = tuple(canonical_id_map[iid] for iid in node.input_ids)
+                    v_op_name, v_config_str, v_orig_id = static_keys[v]
+                    heapq.heappush(ready, (v_op_name, v_input_keys, v_config_str, v_orig_id))
 
         if len(order) < len(self.nodes):
             # This should not happen in a valid DAG, but if it does, 
@@ -556,17 +586,13 @@ class ComputationGraph:
         desc = []
         for nid in order:
             node = self.nodes[nid]
-            # Map input IDs to their canonical ranks (do not sort, order matters!)
-            ranks = [id_to_rank[iid] for iid in node.input_ids]
-            
-            # Include config in fingerprint
-            config_str = ""
+            ranks = tuple(str(id_to_rank[iid]) for iid in node.input_ids)
             if node.config:
-                # Sort config keys for deterministic string representation
                 config_items = sorted(f"{k}={v}" for k, v in node.config.items())
                 config_str = f"[{','.join(config_items)}]"
-                
-            desc.append(f"{node.op_name}{config_str}({','.join(map(str, ranks))})")
+            else:
+                config_str = ""
+            desc.append(f"{node.op_name}{config_str}({','.join(ranks)})")
         
         # Include model_dim in fingerprint
         # Z13: Include routing/compression policy in fingerprint
