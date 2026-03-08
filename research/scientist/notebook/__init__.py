@@ -27,12 +27,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from .preregistration import PreregistrationError, validate_preregistration
+    from ..preregistration import PreregistrationError, validate_preregistration
 except Exception:  # direct-module loading fallback for test harness
     import importlib.util as _importlib_util
     import sys as _sys
 
-    _prereg_path = Path(__file__).with_name("preregistration.py")
+    _prereg_path = Path(__file__).parent.parent / "preregistration.py"
     _prereg_spec = _importlib_util.spec_from_file_location(
         "_notebook_preregistration_fallback",
         str(_prereg_path),
@@ -899,27 +899,18 @@ class ExperimentEntry:
 
 
 
-from .notebook.notebook_core import _NotebookCoreMixin if 'NotebookCore' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_experiments import _ExperimentsMixin if 'Experiments' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_programs import _ProgramsMixin if 'Programs' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_leaderboard import _LeaderboardMixin if 'Leaderboard' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_campaigns import _CampaignsMixin if 'Campaigns' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_knowledge import _KnowledgeMixin if 'Knowledge' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_healer import _HealerMixin if 'Healer' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_chat import _ChatMixin if 'Chat' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_analytics import _AnalyticsMixin if 'Analytics' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_misc import _MiscMixin if 'Misc' != 'NotebookCore' else '_NotebookCore'
+# --- Mixin Imports ---
+from .notebook_core import _NotebookCore
+from .notebook_experiments import _ExperimentsMixin
+from .notebook_programs import _ProgramsMixin
+from .notebook_leaderboard import _LeaderboardMixin
+from .notebook_campaigns import _CampaignsMixin
+from .notebook_knowledge import _KnowledgeMixin
+from .notebook_healer import _HealerMixin
+from .notebook_chat import _ChatMixin
+from .notebook_analytics import _AnalyticsMixin
+from .notebook_misc import _MiscMixin
 
-from .notebook.notebook_core import _NotebookCore
-from .notebook.notebook_experiments import _ExperimentsMixin
-from .notebook.notebook_programs import _ProgramsMixin
-from .notebook.notebook_leaderboard import _LeaderboardMixin
-from .notebook.notebook_campaigns import _CampaignsMixin
-from .notebook.notebook_knowledge import _KnowledgeMixin
-from .notebook.notebook_healer import _HealerMixin
-from .notebook.notebook_chat import _ChatMixin
-from .notebook.notebook_analytics import _AnalyticsMixin
-from .notebook.notebook_misc import _MiscMixin
 
 class LabNotebook(
     _NotebookCore,
@@ -933,5 +924,8 @@ class LabNotebook(
     _AnalyticsMixin,
     _MiscMixin
 ):
-    """Electronic lab notebook for the AI scientist."""
+    """Electronic lab notebook for the AI scientist.
+
+    Composed from targeted mixins under notebook/ directory.
+    """
     pass

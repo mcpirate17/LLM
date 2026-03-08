@@ -1,3 +1,7 @@
+from __future__ import annotations
+"""
+Auto-extracted mixin for LabNotebook.
+"""
 """
 Electronic Lab Notebook
 
@@ -6,7 +10,7 @@ observations, and conclusions. Stored as SQLite for queryability
 and served to the React dashboard via API.
 """
 
-from __future__ import annotations
+
 
 import json
 import logging
@@ -27,12 +31,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from .preregistration import PreregistrationError, validate_preregistration
+    from ..preregistration import PreregistrationError, validate_preregistration
 except Exception:  # direct-module loading fallback for test harness
     import importlib.util as _importlib_util
     import sys as _sys
 
-    _prereg_path = Path(__file__).with_name("preregistration.py")
+    _prereg_path = Path(__file__).parent.parent / "preregistration.py"
     _prereg_spec = _importlib_util.spec_from_file_location(
         "_notebook_preregistration_fallback",
         str(_prereg_path),
@@ -899,39 +903,95 @@ class ExperimentEntry:
 
 
 
-from .notebook.notebook_core import _NotebookCoreMixin if 'NotebookCore' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_experiments import _ExperimentsMixin if 'Experiments' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_programs import _ProgramsMixin if 'Programs' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_leaderboard import _LeaderboardMixin if 'Leaderboard' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_campaigns import _CampaignsMixin if 'Campaigns' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_knowledge import _KnowledgeMixin if 'Knowledge' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_healer import _HealerMixin if 'Healer' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_chat import _ChatMixin if 'Chat' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_analytics import _AnalyticsMixin if 'Analytics' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_misc import _MiscMixin if 'Misc' != 'NotebookCore' else '_NotebookCore'
+class _ChatMixin:
+    """Chat operations for the Lab Notebook."""
 
-from .notebook.notebook_core import _NotebookCore
-from .notebook.notebook_experiments import _ExperimentsMixin
-from .notebook.notebook_programs import _ProgramsMixin
-from .notebook.notebook_leaderboard import _LeaderboardMixin
-from .notebook.notebook_campaigns import _CampaignsMixin
-from .notebook.notebook_knowledge import _KnowledgeMixin
-from .notebook.notebook_healer import _HealerMixin
-from .notebook.notebook_chat import _ChatMixin
-from .notebook.notebook_analytics import _AnalyticsMixin
-from .notebook.notebook_misc import _MiscMixin
+    # ── Aria Chat Persistence ──────────────────────────────────────
 
-class LabNotebook(
-    _NotebookCore,
-    _ExperimentsMixin,
-    _ProgramsMixin,
-    _LeaderboardMixin,
-    _CampaignsMixin,
-    _KnowledgeMixin,
-    _HealerMixin,
-    _ChatMixin,
-    _AnalyticsMixin,
-    _MiscMixin
-):
-    """Electronic lab notebook for the AI scientist."""
-    pass
+    def save_chat_message(
+        self,
+        session_id: str,
+        role: str,
+        text: str,
+        label: Optional[str] = None,
+        message_id: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+    ) -> str:
+        """Persist a single chat message and return its message_id."""
+        mid = message_id or str(uuid.uuid4())
+        self.conn.execute(
+            """INSERT OR REPLACE INTO aria_chat
+               (message_id, session_id, timestamp, role, text, label, metadata_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (mid, session_id, time.time(), role, text, label,
+             json.dumps(metadata) if metadata else None),
+        )
+        self._maybe_commit()
+        return mid
+
+
+    def get_chat_history(
+        self,
+        session_id: str,
+        limit: int = 50,
+        include_compacted: bool = False,
+    ) -> List[Dict]:
+        """Return chat messages for a session, newest last."""
+        if include_compacted:
+            rows = self.conn.execute(
+                """SELECT * FROM aria_chat
+                   WHERE session_id = ?
+                   ORDER BY timestamp ASC LIMIT ?""",
+                (session_id, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT * FROM aria_chat
+                   WHERE session_id = ? AND compacted = 0
+                   ORDER BY timestamp ASC LIMIT ?""",
+                (session_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+    def mark_messages_compacted(
+        self, message_ids: List[str], summary_message_id: str
+    ) -> None:
+        """Mark messages as compacted (replaced by a summary)."""
+        if not message_ids:
+            return
+        placeholders = ",".join("?" for _ in message_ids)
+        self.conn.execute(
+            f"UPDATE aria_chat SET compacted = 1 WHERE message_id IN ({placeholders})",
+            message_ids,
+        )
+        # Update the summary message to reference what it summarizes
+        self.conn.execute(
+            "UPDATE aria_chat SET summary_of = ? WHERE message_id = ?",
+            (json.dumps(message_ids), summary_message_id),
+        )
+        self._maybe_commit()
+
+
+    def compact_old_chat(self, max_chars: int = 160) -> int:
+        """Truncate and purge old chat messages to keep the DB lean.
+
+        - Truncates all compacted messages to max_chars
+        - Deletes compacted messages older than 7 days
+        Returns number of rows affected.
+        """
+        cutoff = time.time() - 7 * 86400
+        # Delete old compacted messages
+        n1 = self.conn.execute(
+            "DELETE FROM aria_chat WHERE compacted = 1 AND timestamp < ?",
+            (cutoff,),
+        ).rowcount
+        # Truncate long messages that are already compacted
+        self.conn.execute(
+            """UPDATE aria_chat SET text = SUBSTR(text, 1, ?) || '...'
+               WHERE compacted = 1 AND LENGTH(text) > ?""",
+            (max_chars, max_chars),
+        )
+        self._maybe_commit()
+        return n1
+

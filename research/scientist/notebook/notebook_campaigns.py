@@ -1,3 +1,7 @@
+from __future__ import annotations
+"""
+Auto-extracted mixin for LabNotebook.
+"""
 """
 Electronic Lab Notebook
 
@@ -6,7 +10,7 @@ observations, and conclusions. Stored as SQLite for queryability
 and served to the React dashboard via API.
 """
 
-from __future__ import annotations
+
 
 import json
 import logging
@@ -27,12 +31,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from .preregistration import PreregistrationError, validate_preregistration
+    from ..preregistration import PreregistrationError, validate_preregistration
 except Exception:  # direct-module loading fallback for test harness
     import importlib.util as _importlib_util
     import sys as _sys
 
-    _prereg_path = Path(__file__).with_name("preregistration.py")
+    _prereg_path = Path(__file__).parent.parent / "preregistration.py"
     _prereg_spec = _importlib_util.spec_from_file_location(
         "_notebook_preregistration_fallback",
         str(_prereg_path),
@@ -899,39 +903,177 @@ class ExperimentEntry:
 
 
 
-from .notebook.notebook_core import _NotebookCoreMixin if 'NotebookCore' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_experiments import _ExperimentsMixin if 'Experiments' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_programs import _ProgramsMixin if 'Programs' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_leaderboard import _LeaderboardMixin if 'Leaderboard' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_campaigns import _CampaignsMixin if 'Campaigns' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_knowledge import _KnowledgeMixin if 'Knowledge' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_healer import _HealerMixin if 'Healer' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_chat import _ChatMixin if 'Chat' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_analytics import _AnalyticsMixin if 'Analytics' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_misc import _MiscMixin if 'Misc' != 'NotebookCore' else '_NotebookCore'
+class _CampaignsMixin:
+    """Campaigns operations for the Lab Notebook."""
 
-from .notebook.notebook_core import _NotebookCore
-from .notebook.notebook_experiments import _ExperimentsMixin
-from .notebook.notebook_programs import _ProgramsMixin
-from .notebook.notebook_leaderboard import _LeaderboardMixin
-from .notebook.notebook_campaigns import _CampaignsMixin
-from .notebook.notebook_knowledge import _KnowledgeMixin
-from .notebook.notebook_healer import _HealerMixin
-from .notebook.notebook_chat import _ChatMixin
-from .notebook.notebook_analytics import _AnalyticsMixin
-from .notebook.notebook_misc import _MiscMixin
+    # ── Metrics ──
 
-class LabNotebook(
-    _NotebookCore,
-    _ExperimentsMixin,
-    _ProgramsMixin,
-    _LeaderboardMixin,
-    _CampaignsMixin,
-    _KnowledgeMixin,
-    _HealerMixin,
-    _ChatMixin,
-    _AnalyticsMixin,
-    _MiscMixin
-):
-    """Electronic lab notebook for the AI scientist."""
-    pass
+    def log_metric(self, metric_name: str, value: float,
+                   experiment_id: Optional[str] = None,
+                   metadata: Optional[Dict] = None):
+        """Log a time-series metric."""
+        self._submit_write(
+            """INSERT INTO metrics_log
+            (timestamp, experiment_id, metric_name, metric_value, metadata_json)
+            VALUES (?, ?, ?, ?, ?)""",
+            (time.time(), experiment_id, metric_name, value,
+             json.dumps(metadata) if metadata else None),
+        )
+
+
+    def get_metrics(self, metric_name: str,
+                    experiment_id: Optional[str] = None,
+                    limit: int = 1000) -> List[Dict]:
+        query = "SELECT * FROM metrics_log WHERE metric_name = ?"
+        params = [metric_name]
+        if experiment_id:
+            query += " AND experiment_id = ?"
+            params.append(experiment_id)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+    # ── Campaigns ──
+
+    def create_campaign(self, title: str, objective: str,
+                        success_criteria: str,
+                        parent_id: Optional[str] = None) -> str:
+        """Create a new research campaign. Returns campaign_id."""
+        campaign_id = str(uuid.uuid4())[:12]
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO campaigns
+            (campaign_id, timestamp, title, objective, success_criteria,
+             status, parent_campaign_id, started_at)
+            VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
+            (campaign_id, now, title, objective, success_criteria,
+             parent_id, now),
+        )
+        self._maybe_commit()
+        return campaign_id
+
+
+    def get_campaign(self, campaign_id: str) -> Optional[Dict]:
+        """Get a campaign by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM campaigns WHERE campaign_id = ?",
+            (campaign_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+    def get_active_campaigns(self) -> List[Dict]:
+        """Get all active campaigns."""
+        rows = self.conn.execute(
+            "SELECT * FROM campaigns WHERE status = 'active' ORDER BY timestamp DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+    def update_campaign(self, campaign_id: str, **kwargs) -> None:
+        """Update campaign fields."""
+        allowed = {"title", "objective", "success_criteria", "status",
+                    "findings_summary", "completed_at",
+                    "completion_reason", "successor_campaign_id"}
+        sets = []
+        params: List[Any] = []
+        for k, v in kwargs.items():
+            if k in allowed:
+                sets.append(f"{k} = ?")
+                params.append(v)
+        if not sets:
+            return
+        params.append(campaign_id)
+        self.conn.execute(
+            f"UPDATE campaigns SET {', '.join(sets)} WHERE campaign_id = ?",
+            params,
+        )
+        self._maybe_commit()
+
+
+    def get_campaign_hypotheses(self, campaign_id: str) -> List[Dict]:
+        """Get all hypotheses for a campaign."""
+        rows = self.conn.execute(
+            """SELECT * FROM hypotheses WHERE campaign_id = ?
+               ORDER BY timestamp ASC""",
+            (campaign_id,),
+        ).fetchall()
+        hypotheses = []
+        for row in rows:
+            hypothesis = dict(row)
+            raw_meta = hypothesis.get("metadata_json")
+            if isinstance(raw_meta, str) and raw_meta.strip():
+                try:
+                    parsed = json.loads(raw_meta)
+                    hypothesis["metadata"] = parsed if isinstance(parsed, dict) else {}
+                except (json.JSONDecodeError, TypeError):
+                    hypothesis["metadata"] = {}
+            else:
+                hypothesis["metadata"] = {}
+            hypotheses.append(hypothesis)
+        return hypotheses
+
+
+    def get_campaign_decisions(self, campaign_id: str) -> List[Dict]:
+        """Get all decisions for a campaign."""
+        rows = self.conn.execute(
+            """SELECT * FROM decisions WHERE campaign_id = ?
+               ORDER BY timestamp ASC""",
+            (campaign_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+    def evaluate_campaign_criteria(self, campaign_id: str) -> Dict:
+        """Evaluate campaign success criteria against measured data.
+
+        Returns {
+            all_met: bool,        # True if every parseable criterion passes
+            n_criteria: int,
+            n_passing: int,
+            n_at_risk: int,
+            n_not_yet: int,
+            stale: bool,          # True if 10+ experiments with no progress
+            tracker: List[Dict],  # per-criterion status from analytics
+        }
+        """
+        from .analytics import ExperimentAnalytics
+
+        campaign = self.get_campaign(campaign_id)
+        if not campaign:
+            return {"all_met": False, "n_criteria": 0, "n_passing": 0,
+                    "n_at_risk": 0, "n_not_yet": 0, "stale": False,
+                    "tracker": []}
+
+        experiments = self.get_campaign_experiments(campaign_id)
+        hypotheses = self.get_campaign_hypotheses(campaign_id)
+        decisions = self.get_campaign_decisions(campaign_id)
+
+        analytics = ExperimentAnalytics(self)
+        tracker = analytics.campaign_success_criteria_tracker(
+            campaign, experiments, hypotheses, decisions,
+        )
+
+        n_passing = sum(1 for t in tracker if t.get("status") == "pass")
+        n_at_risk = sum(1 for t in tracker if t.get("status") == "at_risk")
+        n_not_yet = sum(1 for t in tracker if t.get("status") == "not_yet")
+        n_criteria = len(tracker)
+
+        # All parseable criteria must pass (ignore unknown/not_yet-only)
+        all_met = n_criteria > 0 and n_passing == n_criteria
+
+        # Stale: 10+ experiments but zero criteria passing
+        stale = len(experiments) >= 10 and n_passing == 0 and n_at_risk > 0
+
+        return {
+            "all_met": all_met,
+            "n_criteria": n_criteria,
+            "n_passing": n_passing,
+            "n_at_risk": n_at_risk,
+            "n_not_yet": n_not_yet,
+            "stale": stale,
+            "tracker": tracker,
+        }
+

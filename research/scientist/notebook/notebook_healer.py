@@ -1,3 +1,7 @@
+from __future__ import annotations
+"""
+Auto-extracted mixin for LabNotebook.
+"""
 """
 Electronic Lab Notebook
 
@@ -6,7 +10,7 @@ observations, and conclusions. Stored as SQLite for queryability
 and served to the React dashboard via API.
 """
 
-from __future__ import annotations
+
 
 import json
 import logging
@@ -27,12 +31,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from .preregistration import PreregistrationError, validate_preregistration
+    from ..preregistration import PreregistrationError, validate_preregistration
 except Exception:  # direct-module loading fallback for test harness
     import importlib.util as _importlib_util
     import sys as _sys
 
-    _prereg_path = Path(__file__).with_name("preregistration.py")
+    _prereg_path = Path(__file__).parent.parent / "preregistration.py"
     _prereg_spec = _importlib_util.spec_from_file_location(
         "_notebook_preregistration_fallback",
         str(_prereg_path),
@@ -899,39 +903,176 @@ class ExperimentEntry:
 
 
 
-from .notebook.notebook_core import _NotebookCoreMixin if 'NotebookCore' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_experiments import _ExperimentsMixin if 'Experiments' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_programs import _ProgramsMixin if 'Programs' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_leaderboard import _LeaderboardMixin if 'Leaderboard' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_campaigns import _CampaignsMixin if 'Campaigns' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_knowledge import _KnowledgeMixin if 'Knowledge' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_healer import _HealerMixin if 'Healer' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_chat import _ChatMixin if 'Chat' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_analytics import _AnalyticsMixin if 'Analytics' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_misc import _MiscMixin if 'Misc' != 'NotebookCore' else '_NotebookCore'
+class _HealerMixin:
+    """Healer operations for the Lab Notebook."""
 
-from .notebook.notebook_core import _NotebookCore
-from .notebook.notebook_experiments import _ExperimentsMixin
-from .notebook.notebook_programs import _ProgramsMixin
-from .notebook.notebook_leaderboard import _LeaderboardMixin
-from .notebook.notebook_campaigns import _CampaignsMixin
-from .notebook.notebook_knowledge import _KnowledgeMixin
-from .notebook.notebook_healer import _HealerMixin
-from .notebook.notebook_chat import _ChatMixin
-from .notebook.notebook_analytics import _AnalyticsMixin
-from .notebook.notebook_misc import _MiscMixin
+    # ── Code Healer ──
 
-class LabNotebook(
-    _NotebookCore,
-    _ExperimentsMixin,
-    _ProgramsMixin,
-    _LeaderboardMixin,
-    _CampaignsMixin,
-    _KnowledgeMixin,
-    _HealerMixin,
-    _ChatMixin,
-    _AnalyticsMixin,
-    _MiscMixin
-):
-    """Electronic lab notebook for the AI scientist."""
-    pass
+    def create_healer_task(
+        self,
+        experiment_id: Optional[str],
+        trigger_type: str,
+        scope: str,
+        reproduction_steps: List[str],
+        acceptance_tests: List[str],
+        model_endpoint: Optional[str],
+        sandbox_policy: Dict[str, Any],
+        trigger_payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        task_id = f"heal-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO healer_tasks
+            (task_id, timestamp, experiment_id, trigger_type, trigger_payload_json,
+             scope, reproduction_steps_json, acceptance_tests_json, model_endpoint,
+             sandbox_policy_json, state)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+            (
+                task_id,
+                now,
+                experiment_id,
+                trigger_type,
+                json.dumps(trigger_payload or {}),
+                scope,
+                json.dumps(reproduction_steps or []),
+                json.dumps(acceptance_tests or []),
+                model_endpoint,
+                json.dumps(sandbox_policy or {}),
+            ),
+        )
+        self._maybe_commit()
+        return task_id
+
+
+    def update_healer_task(
+        self,
+        task_id: str,
+        state: Optional[str] = None,
+        patch_summary: Optional[str] = None,
+        risk_assessment: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+        completed: bool = False,
+    ) -> None:
+        sets: List[str] = []
+        params: List[Any] = []
+        if state is not None:
+            sets.append("state = ?")
+            params.append(state)
+        if patch_summary is not None:
+            sets.append("patch_summary = ?")
+            params.append(patch_summary)
+        if risk_assessment is not None:
+            sets.append("risk_assessment = ?")
+            params.append(risk_assessment)
+        if result is not None:
+            sets.append("result_json = ?")
+            params.append(json.dumps(result))
+        if completed:
+            sets.append("completed_at = ?")
+            params.append(time.time())
+        if not sets:
+            return
+        params.append(task_id)
+        self.conn.execute(
+            f"UPDATE healer_tasks SET {', '.join(sets)} WHERE task_id = ?",
+            params,
+        )
+        self._maybe_commit()
+
+
+    def add_healer_event(
+        self,
+        task_id: str,
+        message: str,
+        state: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        event_id = str(uuid.uuid4())[:12]
+        self.conn.execute(
+            """INSERT INTO healer_task_events
+            (event_id, task_id, timestamp, state, message, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                event_id,
+                task_id,
+                time.time(),
+                state,
+                message,
+                json.dumps(payload or {}),
+            ),
+        )
+        self._maybe_commit()
+        return event_id
+
+
+    def get_healer_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM healer_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        for field in (
+            "trigger_payload_json",
+            "reproduction_steps_json",
+            "acceptance_tests_json",
+            "sandbox_policy_json",
+            "result_json",
+        ):
+            raw = out.get(field)
+            if raw:
+                try:
+                    out[field] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+        return out
+
+
+    def get_recent_healer_tasks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM healer_tasks
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in (
+                "trigger_payload_json",
+                "reproduction_steps_json",
+                "acceptance_tests_json",
+                "sandbox_policy_json",
+                "result_json",
+            ):
+                raw = item.get(key)
+                if raw:
+                    try:
+                        item[key] = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        pass
+            out.append(item)
+        return out
+
+
+    def get_healer_events(self, task_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM healer_task_events
+               WHERE task_id = ?
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (task_id, limit),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw = item.get("payload_json")
+            if raw:
+                try:
+                    item["payload_json"] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            out.append(item)
+        return out
+

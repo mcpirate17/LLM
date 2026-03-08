@@ -1,3 +1,7 @@
+from __future__ import annotations
+"""
+Auto-extracted mixin for LabNotebook.
+"""
 """
 Electronic Lab Notebook
 
@@ -6,7 +10,7 @@ observations, and conclusions. Stored as SQLite for queryability
 and served to the React dashboard via API.
 """
 
-from __future__ import annotations
+
 
 import json
 import logging
@@ -27,12 +31,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from .preregistration import PreregistrationError, validate_preregistration
+    from ..preregistration import PreregistrationError, validate_preregistration
 except Exception:  # direct-module loading fallback for test harness
     import importlib.util as _importlib_util
     import sys as _sys
 
-    _prereg_path = Path(__file__).with_name("preregistration.py")
+    _prereg_path = Path(__file__).parent.parent / "preregistration.py"
     _prereg_spec = _importlib_util.spec_from_file_location(
         "_notebook_preregistration_fallback",
         str(_prereg_path),
@@ -899,39 +903,590 @@ class ExperimentEntry:
 
 
 
-from .notebook.notebook_core import _NotebookCoreMixin if 'NotebookCore' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_experiments import _ExperimentsMixin if 'Experiments' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_programs import _ProgramsMixin if 'Programs' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_leaderboard import _LeaderboardMixin if 'Leaderboard' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_campaigns import _CampaignsMixin if 'Campaigns' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_knowledge import _KnowledgeMixin if 'Knowledge' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_healer import _HealerMixin if 'Healer' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_chat import _ChatMixin if 'Chat' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_analytics import _AnalyticsMixin if 'Analytics' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_misc import _MiscMixin if 'Misc' != 'NotebookCore' else '_NotebookCore'
-
-from .notebook.notebook_core import _NotebookCore
-from .notebook.notebook_experiments import _ExperimentsMixin
-from .notebook.notebook_programs import _ProgramsMixin
-from .notebook.notebook_leaderboard import _LeaderboardMixin
-from .notebook.notebook_campaigns import _CampaignsMixin
-from .notebook.notebook_knowledge import _KnowledgeMixin
-from .notebook.notebook_healer import _HealerMixin
-from .notebook.notebook_chat import _ChatMixin
-from .notebook.notebook_analytics import _AnalyticsMixin
-from .notebook.notebook_misc import _MiscMixin
-
-class LabNotebook(
-    _NotebookCore,
-    _ExperimentsMixin,
-    _ProgramsMixin,
-    _LeaderboardMixin,
-    _CampaignsMixin,
-    _KnowledgeMixin,
-    _HealerMixin,
-    _ChatMixin,
-    _AnalyticsMixin,
-    _MiscMixin
-):
+class _NotebookCore:
+    """Core operations for the Lab Notebook."""
     """Electronic lab notebook for the AI scientist."""
-    pass
+
+    _cached_code_version: Optional[str] = None
+    _last_report_snapshot_cleanup_at: float = 0.0
+
+    # GPT-2 reference metrics (measured on our d_model=256, 6-layer config)
+    _GPT2_REF = {
+        "loss_ratio": 0.2646,
+        "param_count": 9_767_424,
+        "flops_forward": 19_534_848,
+        "throughput_tok_s": 1_200_845,
+        "peak_memory_mb": 115.0,
+        "forward_time_ms": 0.43,
+    }
+
+    @staticmethod
+    def resolve_db_path(db_path: str | Path) -> Path:
+        """Resolve a database path to its absolute path, handling nested research/ cases.
+
+        Ensures that if we are currently inside the research/ directory,
+        a path like 'research/lab_notebook.db' refers to the one in the parent.
+        """
+        path = Path(db_path)
+        if not path.is_absolute():
+            # If we are in /some/path/LLM/research and db_path is 'research/lab_notebook.db'
+            # then path.resolve() would be /some/path/LLM/research/research/lab_notebook.db.
+            # We want /some/path/LLM/research/lab_notebook.db.
+            cwd = Path.cwd()
+            if cwd.name == "research" and path.parts and path.parts[0] == "research":
+                # db_path starts with 'research/' and we are already in research/
+                # assume the user meant the parent's research/ directory
+                return (cwd.parent / db_path).absolute()
+        return path.resolve()
+
+
+    def __init__(self, db_path: str | Path = "research/lab_notebook.db"):
+        self.db_path = self.resolve_db_path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(self.db_path))
+        # Enable WAL mode for high-concurrency performance
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.row_factory = sqlite3.Row
+        self._batch_depth = 0
+        self._program_results_columns: Optional[set[str]] = None
+        self._leaderboard_columns: Optional[set[str]] = None
+        self.conn.executescript(NOTEBOOK_SCHEMA)
+        self._maybe_commit()
+        self._migrate()
+
+        self._write_queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._writer_thread.start()
+
+
+    def _writer_loop(self):
+        """Background thread that handles all database writes."""
+        # Use a separate connection for the writer thread
+        writer_conn = sqlite3.connect(str(self.db_path))
+        writer_conn.execute("PRAGMA journal_mode=WAL")
+        writer_conn.execute("PRAGMA synchronous=NORMAL")
+        
+        batch = []
+        last_commit = time.time()
+        
+        while not self._stop_event.is_set() or not self._write_queue.empty():
+            try:
+                item = self._write_queue.get(timeout=0.1)
+                if item is None: # Sentinel
+                    break
+                
+                sql, params = item
+                if sql == "__flush__":
+                    # Flush request: commit pending batch and signal caller
+                    if batch:
+                        writer_conn.commit()
+                        batch = []
+                        last_commit = time.time()
+                    params.set()  # params is a threading.Event
+                    continue
+                if isinstance(params, list) and params and isinstance(params[0], (list, tuple)):
+                    writer_conn.executemany(sql, params)
+                else:
+                    writer_conn.execute(sql, params)
+                batch.append(item)
+
+                if len(batch) >= 50 or (time.time() - last_commit > 1.0 and batch):
+                    writer_conn.commit()
+                    batch = []
+                    last_commit = time.time()
+                    
+            except queue.Empty:
+                if batch:
+                    writer_conn.commit()
+                    batch = []
+                    last_commit = time.time()
+                continue
+            except Exception as e:
+                LOGGER.error(f"LabNotebook async writer error: {e}")
+        
+        if batch:
+            writer_conn.commit()
+        writer_conn.close()
+
+
+    def _submit_write(self, sql: str, params: Any):
+        """Submit a write task to the background queue."""
+        self._write_queue.put((sql, params))
+
+
+    def flush_writes(self, timeout: float = 5.0):
+        """Block until the async write queue is drained and committed.
+
+        Useful in tests and any code that writes via ``_submit_write`` then
+        immediately reads back via the main ``self.conn``.
+        """
+        # Put a sentinel-like marker and wait for drain
+        flush_event = threading.Event()
+        self._write_queue.put(("__flush__", flush_event))
+        flush_event.wait(timeout=timeout)
+
+
+    def _migrate(self):
+        """Add any missing columns to existing databases."""
+        # Migrate experiments table
+        try:
+            self.conn.execute("SELECT llm_analysis FROM experiments LIMIT 1")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN llm_analysis TEXT")
+            self._maybe_commit()
+
+        # Migrate program_results: add new columns if missing
+        existing = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(program_results)").fetchall()
+        }
+        for col_name, col_type in _PROGRAM_RESULTS_NEW_COLUMNS.items():
+            if col_name not in existing:
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE program_results ADD COLUMN {col_name} {col_type}"
+                    )
+                except sqlite3.OperationalError:
+                    # Column may already exist in older DBs with partial migrations.
+                    pass
+
+        # Migrate program_results: add arch_spec_json if missing
+        if "arch_spec_json" not in existing:
+            self.conn.execute(
+                "ALTER TABLE program_results ADD COLUMN arch_spec_json TEXT"
+            )
+        if "model_source" not in existing:
+            self.conn.execute(
+                "ALTER TABLE program_results ADD COLUMN model_source TEXT"
+            )
+
+        # Ensure leaderboard table exists (created in schema but needed for old DBs)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS leaderboard (
+                entry_id TEXT PRIMARY KEY,
+                result_id TEXT REFERENCES program_results(result_id),
+                timestamp REAL NOT NULL,
+                model_source TEXT NOT NULL,
+                architecture_desc TEXT,
+                screening_loss_ratio REAL,
+                screening_novelty REAL,
+                screening_passed INTEGER DEFAULT 0,
+                investigation_loss_ratio REAL,
+                investigation_robustness REAL,
+                investigation_best_training TEXT,
+                investigation_passed INTEGER DEFAULT 0,
+                validation_loss_ratio REAL,
+                validation_baseline_ratio REAL,
+                validation_multi_seed_std REAL,
+                validation_passed INTEGER DEFAULT 0,
+                composite_score REAL,
+                tier TEXT DEFAULT 'screening',
+                tags TEXT,
+                notes TEXT,
+                is_reference INTEGER DEFAULT 0,
+                reference_name TEXT DEFAULT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_leaderboard_tier ON leaderboard(tier);
+            CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON leaderboard(composite_score);
+            CREATE INDEX IF NOT EXISTS idx_leaderboard_result ON leaderboard(result_id);
+        """)
+        # Migrate decisions: add evidence_pack_json if missing
+        try:
+            decision_cols = {
+                row[1] for row in
+                self.conn.execute("PRAGMA table_info(decisions)").fetchall()
+            }
+        except sqlite3.OperationalError:
+            decision_cols = set()
+        if "evidence_pack_json" not in decision_cols:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE decisions ADD COLUMN evidence_pack_json TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
+        # Migrate op_success_rates: add avg_novelty_confidence if missing
+        osr_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(op_success_rates)").fetchall()
+        }
+        if "avg_novelty_confidence" not in osr_cols:
+            self.conn.execute(
+                "ALTER TABLE op_success_rates ADD COLUMN avg_novelty_confidence REAL"
+            )
+
+        # Migrate experiments: add campaign_id if missing
+        exp_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(experiments)").fetchall()
+        }
+        if "campaign_id" not in exp_cols:
+            self.conn.execute(
+                "ALTER TABLE experiments ADD COLUMN campaign_id TEXT"
+            )
+        if "preregistration_id" not in exp_cols:
+            self.conn.execute(
+                "ALTER TABLE experiments ADD COLUMN preregistration_id TEXT"
+            )
+
+        # Migrate hypotheses: add metadata_json if missing
+        hyp_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(hypotheses)").fetchall()
+        }
+        if "metadata_json" not in hyp_cols:
+            self.conn.execute(
+                "ALTER TABLE hypotheses ADD COLUMN metadata_json TEXT"
+            )
+
+        # Migrate campaigns: add completion_reason and successor_campaign_id
+        camp_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(campaigns)").fetchall()
+        }
+        if "completion_reason" not in camp_cols:
+            self.conn.execute(
+                "ALTER TABLE campaigns ADD COLUMN completion_reason TEXT"
+            )
+        if "successor_campaign_id" not in camp_cols:
+            self.conn.execute(
+                "ALTER TABLE campaigns ADD COLUMN successor_campaign_id TEXT"
+            )
+
+        # Migrate insights: add semantic identity columns and collapse duplicates.
+        insight_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(insights)").fetchall()
+        }
+        if "insight_type" not in insight_cols:
+            self.conn.execute("ALTER TABLE insights ADD COLUMN insight_type TEXT")
+        if "subject_key" not in insight_cols:
+            self.conn.execute("ALTER TABLE insights ADD COLUMN subject_key TEXT")
+        if "semantic_key" not in insight_cols:
+            self.conn.execute("ALTER TABLE insights ADD COLUMN semantic_key TEXT")
+
+        rows = self.conn.execute(
+            """SELECT insight_id, category, content, insight_type, subject_key, semantic_key
+               FROM insights"""
+        ).fetchall()
+        for row in rows:
+            existing_type = str(row["insight_type"] or "").strip() if isinstance(row, sqlite3.Row) else str(row[3] or "").strip()
+            existing_subject = str(row["subject_key"] or "").strip() if isinstance(row, sqlite3.Row) else str(row[4] or "").strip()
+            existing_semantic = str(row["semantic_key"] or "").strip() if isinstance(row, sqlite3.Row) else str(row[5] or "").strip()
+            if existing_type and existing_subject and existing_semantic:
+                continue
+            category = row["category"] if isinstance(row, sqlite3.Row) else row[1]
+            content = row["content"] if isinstance(row, sqlite3.Row) else row[2]
+            inferred_type, inferred_subject, inferred_semantic = infer_insight_identity(
+                str(category or ""),
+                str(content or ""),
+            )
+            self.conn.execute(
+                """UPDATE insights
+                   SET insight_type = COALESCE(NULLIF(insight_type, ''), ?),
+                       subject_key = COALESCE(NULLIF(subject_key, ''), ?),
+                       semantic_key = COALESCE(NULLIF(semantic_key, ''), ?)
+                   WHERE insight_id = ?""",
+                (inferred_type, inferred_subject, inferred_semantic, row["insight_id"] if isinstance(row, sqlite3.Row) else row[0]),
+            )
+
+        def _supersede_active_semantic_duplicates() -> None:
+            active_rows = self.conn.execute(
+                """SELECT insight_id, semantic_key
+                   FROM insights
+                   WHERE status = 'active'
+                     AND semantic_key IS NOT NULL
+                     AND semantic_key != ''
+                   ORDER BY confidence DESC, timestamp DESC"""
+            ).fetchall()
+            seen_semantic: set[str] = set()
+            for row in active_rows:
+                sem = str(row["semantic_key"] if isinstance(row, sqlite3.Row) else row[1])
+                insight_id = row["insight_id"] if isinstance(row, sqlite3.Row) else row[0]
+                if sem in seen_semantic:
+                    self.conn.execute(
+                        "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
+                        (insight_id,),
+                    )
+                    continue
+                seen_semantic.add(sem)
+
+        _supersede_active_semantic_duplicates()
+
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_insights_semantic_key ON insights(semantic_key)"
+        )
+        try:
+            self.conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_active_semantic_unique
+                   ON insights(semantic_key)
+                   WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''"""
+            )
+        except sqlite3.IntegrityError:
+            _supersede_active_semantic_duplicates()
+            self.conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_active_semantic_unique
+                   ON insights(semantic_key)
+                   WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''"""
+            )
+
+        # Migrate leaderboard: add efficiency and robustness columns
+        lb_cols = {
+            row[1] for row in
+            self.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
+        }
+        for col in (
+            "normalized_baseline_ratio REAL",
+            "param_efficiency REAL",
+            "quant_int8_retention REAL",
+            "quant_quality_per_byte REAL",
+            "robustness_long_ctx_score REAL",
+            "robustness_noise_score REAL",
+            "init_sensitivity_std REAL",
+            "fp_jacobian_spectral_norm REAL",
+            "scaling_param_efficiency REAL",
+            "scaling_flop_efficiency REAL",
+            "scaling_gate_passed INTEGER",
+            "scaling_best_family TEXT",
+            "scaling_d512_param_efficiency REAL",
+            "scaling_confidence TEXT",
+            "campaign_id TEXT",
+            "is_pinned INTEGER DEFAULT 0",
+            "routing_savings_ratio REAL",
+            "compression_ratio REAL",
+            "activation_sparsity_score REAL",
+            "dead_neuron_ratio REAL",
+            "routing_collapse_score REAL",
+            "wikitext_perplexity REAL",
+            "wikitext_score REAL",
+            "tinystories_perplexity REAL",
+            "tinystories_score REAL",
+            "cross_task_score REAL",
+            "efficiency_wall_score REAL",
+            "max_viable_seq_len INTEGER",
+            "scaling_regime TEXT",
+            "discovery_loss_ratio REAL",
+            "pre_inv_score REAL",
+            "ncd_score REAL",
+            "robustness_long_ctx_scaling_score REAL",
+            "robustness_long_ctx_assoc_score REAL",
+            "robustness_long_ctx_multi_hop_score REAL",
+            "robustness_long_ctx_passkey_score REAL",
+            "robustness_long_ctx_retrieval_aggregate REAL",
+            "robustness_long_ctx_combined_score REAL",
+            "depth_savings_ratio REAL",
+            "recursion_savings_ratio REAL",
+            "activation_sparsity_score REAL",
+            "routing_expert_count INTEGER",
+            "routing_confidence_mean REAL",
+            "routing_drop_rate REAL",
+            "efficiency_multiple REAL",
+        ):
+            col_name = col.split()[0]
+            if col_name not in lb_cols:
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE leaderboard ADD COLUMN {col}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+        # Migrate leaderboard: add reference/pin columns
+        if "is_reference" not in lb_cols:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE leaderboard ADD COLUMN is_reference INTEGER DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+        if "reference_name" not in lb_cols:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE leaderboard ADD COLUMN reference_name TEXT DEFAULT NULL"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+        self._program_results_columns = None
+        self._leaderboard_columns = None
+        self._maybe_commit()
+
+
+    def _get_program_results_columns(self) -> set[str]:
+        """Return current program_results columns for defensive inserts."""
+        if self._program_results_columns is None:
+            rows = self.conn.execute("PRAGMA table_info(program_results)").fetchall()
+            self._program_results_columns = {str(row[1]) for row in rows}
+        return self._program_results_columns
+
+
+    def _get_leaderboard_columns(self) -> set[str]:
+        """Return current leaderboard columns for defensive updates."""
+        if self._leaderboard_columns is None:
+            rows = self.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
+            self._leaderboard_columns = {str(row[1]) for row in rows}
+        return self._leaderboard_columns
+
+
+    @classmethod
+    def _detect_code_version(cls) -> str:
+        """Detect code version for experiment traceability."""
+        if cls._cached_code_version:
+            return cls._cached_code_version
+
+        env_version = os.environ.get("RESEARCH_CODE_VERSION")
+        if env_version:
+            cls._cached_code_version = env_version
+            return cls._cached_code_version
+
+        repo_root = Path(__file__).resolve().parents[2]
+        try:
+            commit = subprocess.check_output(
+                ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                timeout=1.0,
+                text=True,
+            ).strip()
+            if commit:
+                cls._cached_code_version = commit
+                return cls._cached_code_version
+        except Exception:
+            pass
+
+        cls._cached_code_version = "unknown"
+        return cls._cached_code_version
+
+
+    # ── Knowledge Digests ──
+
+    def store_digest(self, digest_dict: Dict) -> str:
+        """Store a knowledge digest and return its ID."""
+        digest_id = str(uuid.uuid4())
+        ts = digest_dict.get("timestamp", time.time())
+        self.conn.execute(
+            """INSERT OR REPLACE INTO knowledge_digests
+               (digest_id, timestamp, cycle_number, digest_json,
+                narrative_summary, n_experiments_analyzed, n_curves_analyzed)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                digest_id,
+                ts,
+                digest_dict.get("cycle_number"),
+                json.dumps(digest_dict),
+                digest_dict.get("narrative", "")[:2000],
+                digest_dict.get("n_experiments_analyzed"),
+                digest_dict.get("n_curves_analyzed"),
+            ),
+        )
+        self._maybe_commit()
+        return digest_id
+
+
+    def get_latest_digest(self) -> Optional[Dict]:
+        """Return the most recent knowledge digest, or None."""
+        try:
+            row = self.conn.execute(
+                "SELECT digest_json FROM knowledge_digests ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                return json.loads(row[0])
+        except Exception as e:
+            LOGGER.debug("Failed to load latest digest: %s", e)
+        return None
+
+
+    def close(self):
+        if hasattr(self, "_stop_event"):
+            self._stop_event.set()
+        if hasattr(self, "_write_queue"):
+            self._write_queue.put(None) # Sentinel
+        if hasattr(self, "_writer_thread") and self._writer_thread.is_alive():
+            self._writer_thread.join(timeout=2.0)
+        self.conn.close()
+
+
+    def _compress(self, data: Any) -> bytes:
+        """JSON-encode and zlib-compress data."""
+        return zlib.compress(json.dumps(data).encode("utf-8"))
+
+
+    def _decompress(self, blob: Any) -> Any:
+        """Decompress zlib blob and JSON-decode with fallback for raw strings."""
+        if not blob:
+            return None
+        if not isinstance(blob, bytes):
+            # Already a string (old data)
+            try:
+                return json.loads(blob)
+            except (json.JSONDecodeError, TypeError):
+                return blob
+        try:
+            return json.loads(zlib.decompress(blob).decode("utf-8"))
+        except (zlib.error, json.JSONDecodeError, UnicodeDecodeError):
+            # Fallback for old uncompressed bytes data if any
+            return json.loads(blob.decode("utf-8"))
+
+
+    def __enter__(self):
+        return self
+
+
+    def __exit__(self, *args):
+        self.close()
+
+
+    @contextmanager
+    def batch(self):
+        """Context manager to batch multiple writes into a single commit."""
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0:
+                self._maybe_commit()
+
+
+    def _maybe_commit(self):
+        """Commit unless inside a batch() context."""
+        if self._batch_depth == 0:
+            self.conn.commit()
+
+
+    def _sanitize_numeric(self, value: Any) -> Any:
+        """Deep sanitize values for SQLite: convert NumPy/Torch scalars to Python types.
+        
+        Prevents binary blob corruption when NumPy float32/int64 values are 
+        inserted into REAL/INTEGER columns.
+        """
+        if value is None:
+            return None
+        
+        # Handle NumPy/Torch scalars
+        if hasattr(value, 'item') and callable(getattr(value, 'item')):
+            try:
+                # Returns a standard Python float or int
+                return value.item()
+            except Exception:
+                pass
+        
+        # Handle explicit NumPy types
+        if hasattr(value, 'dtype'):
+            try:
+                return float(value)
+            except Exception:
+                pass
+
+        if isinstance(value, dict):
+            return {k: self._sanitize_numeric(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._sanitize_numeric(v) for v in value]
+        
+        # Final pass for floating point safety
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            return None
+            
+        return value
+

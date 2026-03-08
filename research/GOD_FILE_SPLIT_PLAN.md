@@ -12,7 +12,7 @@
 |---|------|-------|----------|--------|--------|
 | 1 | `scientist/runner.py` | 15,795 | Python | **NONE** — already split, delete dead file | HIGH |
 | 2 | `scientist/api.py` | 10,623 | Python | HIGH | CRITICAL |
-| 3 | `scientist/notebook.py` | 6,275 | Python | [IN PROGRESS] | HIGH |
+| 3 | `scientist/notebook.py` | 6,275 | Python | [DONE] | HIGH |
 | 4 | `scientist/runner/execution.py` | 4,563 | Python | MEDIUM | HIGH |
 | 5 | `scientist/analytics.py` | 4,429 | Python | MEDIUM | MEDIUM |
 | 6 | `scientist/persona.py` | 3,346 | Python | MEDIUM | MEDIUM |
