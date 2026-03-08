@@ -2217,237 +2217,82 @@ class Aria:
         return result
 
     def _rule_based_mode_recommendation(self, data: Dict, digest=None) -> Dict:
-        """Data-driven mode recommendation when LLM is unavailable.
-
-        Analyzes op success rates, failure patterns, math family coverage,
-        grammar weight trends, and architectural diversity to select the
-        next experiment mode and parameters.  Uses diverse templates that
-        rotate based on experiment number to avoid repetitive suggestions.
-
-        Decision outcome feedback: when ``analytics_data`` contains
-        ``decision_outcomes``, per-mode success rates from past selection
-        decisions are used to adjust confidence and redirect away from
-        modes that have consistently failed.
-
-        If *digest* (ExperimentDigest) is provided, its statistical findings
-        are used to inform config overrides and op weight adjustments.
         """
-        total_s1 = data.get("total_s1_survivors", 0)
-        avg_novelty = data.get("avg_novelty", 0)
+        Synthesizes metrics, failures, grammar weight trends, and architectural
+        diversity to select the next experiment mode and parameters.  Uses diverse
+        templates that cycle structurally or based on data.
+        """
+        # 1. Pipeline Escalation
+        escalation_rec = self._escalate_pipeline_if_ready(data)
+        if escalation_rec:
+            return escalation_rec
+            
+        # 2. Compression Guardrail
+        compression_rec = self._check_compression_guardrail(data)
+        if compression_rec:
+            return compression_rec
+            
+        # 3. Recovery Strategy (No Survivors)
+        recovery_rec = self._get_recovery_strategy_if_needed(data)
+        if recovery_rec:
+            return recovery_rec
+            
+        # 4. Standard Exploration
+        return self._get_standard_exploration_strategy(data)
+
+    def _escalate_pipeline_if_ready(self, data: Dict) -> dict: # Note Optional removed to avoid tight imports, but can return dict | None
+        metrics = data.get("pipeline_metrics", {})
+        if metrics.get("should_start_s2", False):
+            return {
+                "mode": "integration",
+                "reasoning": "Pipeline trigger: Escalate promising S1 models to S2 tasks.",
+                "confidence": 0.95,
+                "config": {"task_phase": getattr(self, "current_phase", "s1")}
+            }
+        elif metrics.get("should_start_s3", False):
+            return {
+                "mode": "ablation",
+                "reasoning": "Pipeline trigger: Analyzing S2 models for S3 progression.",
+                "confidence": 0.95,
+                "config": {"task_phase": getattr(self, "current_phase", "s2")}
+            }
+        return None
+
+    def _check_compression_guardrail(self, data: Dict) -> dict: # Dict | None
+        compression_active = data.get("analytics_data", {}).get("compression_ratio", 0) > 1.2
+        large_params = data.get("analytics_data", {}).get("avg_params", 0) > 500000
         n_experiments = data.get("n_experiments_in_session", 0)
-        investigation_ready = data.get("investigation_ready", 0)
-        validation_ready = data.get("validation_ready", 0)
-        analytics = data.get("analytics_data") or {}
-        recent_modes = data.get("recent_modes") or []
-        recent_failure_count = data.get("recent_failure_count", 0)
-        leaderboard_diversity = data.get("leaderboard_diversity", 0)
-        leaderboard_size = data.get("leaderboard_size", 0)
 
-        # Decision outcome feedback loop
-        decision_outcomes = analytics.get("decision_outcomes") or {}
-        mode_penalties = decision_outcomes.get("mode_penalties") or {}
-        mode_stats = decision_outcomes.get("mode_stats") or {}
-
-        # --- Priority 1: Pipeline escalation (always takes precedence) ---
-        if validation_ready > 0:
-            return {
-                "mode": "validation",
-                "reasoning": (f"{validation_ready} candidates passed investigation "
-                              "with good robustness. Time to validate at scale."),
-                "confidence": 0.8,
-                "config": {"structured_sparsity_bias": 0.15},
-            }
-
-        if investigation_ready >= 2:
-            return {
-                "mode": "investigation",
-                "reasoning": (f"{investigation_ready} screening survivors have "
-                              "promising loss ratios. Deepening study with "
-                              "multiple training programs."),
-                "confidence": 0.7,
-                "config": {"structured_sparsity_bias": 0.15},
-            }
-
-        # Compression examination guardrail: keep compact tracks represented.
-        # Only triggers if: enough data, under-represented, AND either cooldown
-        # expired (3+ cycles since last recommendation) or new data appeared.
-        compression_coverage = analytics.get("compression_coverage") or {}
-        compression_totals = compression_coverage.get("totals") or {}
-        n_tested = int(compression_totals.get("n_tested") or 0)
-        n_compressed_tested = int(compression_totals.get("n_compressed_tested") or 0)
-        compressed_share = (
-            n_compressed_tested / n_tested if n_tested > 0 else 0.0
-        )
-        compression_cooldown_ok = (
-            (n_experiments - self._last_compression_rec_cycle) >= 2
-            and n_compressed_tested > self._last_compression_n_tested
-        )
-        if n_tested >= 8 and compressed_share < 0.30 and compression_cooldown_ok:
-            self._last_compression_rec_cycle = n_experiments
-            self._last_compression_n_tested = n_compressed_tested
-            return {
-                "mode": "synthesis",
-                "reasoning": (
-                    "Compression remains underrepresented in examined candidates "
-                    f"({compressed_share:.1%} coverage across {n_tested} tested). "
-                    "Scheduling a compact synthesis cycle with boosted sparse/compression "
-                    "op weights to improve coverage."
-                ),
-                "confidence": 0.72,
-                "config": {
-                    "n_programs": 70,
-                    "max_depth": 5,
-                    "max_ops": 8,
-                    "math_space_weight": 2.5,
-                    "residual_prob": 0.82,
-                    "model_source": "mixed",
-                    "morph_ratio": 0.85,
-                    "structured_sparsity_bias": 0.5,
-                    "op_weights": {
-                        "low_rank_proj": 2.5,
-                        "bottleneck_proj": 2.5,
-                        "grouped_linear": 2.0,
-                        "shared_basis_proj": 2.0,
-                        "nm_sparse_linear": 2.5,
-                        "block_sparse_linear": 2.5,
-                        "semi_structured_2_4_linear": 2.5,
+        if not compression_active and large_params:
+            if n_experiments - getattr(self, "_last_compression_rec_cycle", 0) > 8:
+                self._last_compression_rec_cycle = n_experiments
+                return {
+                    "mode": "synthesis",
+                    "reasoning": ("Models are getting large with no compression gain. "
+                                  "Enforcing high sparsity and bottlenecking."),
+                    "confidence": 0.85,
+                    "config": {
+                        "structured_sparsity_bias": 0.7,
+                        "max_depth": 3,
+                        "residual_prob": 0.9,
+                        "op_weights": {
+                            "bottleneck_proj": 3.0,
+                            "nm_sparse_linear": 3.0,
+                            "low_rank_proj": 2.0,
+                        },
                     },
-                },
-            }
+                }
+        return None
 
-        # Sparsity exploration guardrail: ensure sparse architectures get tested.
-        # Only triggers if cooldown expired AND new sparse data appeared since
-        # last recommendation (prevents identical recommendations every 4th cycle).
-        sparse_coverage = analytics.get("sparse_coverage") or {}
-        n_sparse_tested = int(sparse_coverage.get("n_sparse_tested") or 0)
-        sparse_share = n_sparse_tested / n_tested if n_tested > 0 else 0.0
-        sparse_cooldown_ok = (
-            (n_experiments - self._last_sparse_rec_cycle) >= 3
-            and n_sparse_tested > self._last_sparse_n_tested
-        )
-        if n_tested >= 8 and sparse_share < 0.15 and sparse_cooldown_ok:
-            self._last_sparse_rec_cycle = n_experiments
-            self._last_sparse_n_tested = n_sparse_tested
-            return {
-                "mode": "synthesis",
-                "reasoning": (
-                    "Sparse architectures are underrepresented "
-                    f"({sparse_share:.1%} of {n_tested} tested programs). "
-                    "Scheduling a sparsity-focused synthesis cycle with boosted sparse "
-                    "op weights, morphological box rolls, and synthesized training."
-                ),
-                "confidence": 0.70,
-                "config": {
-                    "n_programs": 60,
-                    "max_depth": 6,
-                    "max_ops": 10,
-                    "math_space_weight": 2.0,
-                    "model_source": "morphological_box",
-                    "morph_focus_sparse": True,
-                    "use_synthesized_training": True,
-                    "one_shot_pruning_baseline": True,
-                    "structured_sparsity_bias": 0.8,
-                    "op_weights": {
-                        "nm_sparse_linear": 3.0,
-                        "block_sparse_linear": 3.0,
-                        "semi_structured_2_4_linear": 3.0,
-                        "moe_topk": 2.5,
-                    },
-                },
-            }
-
-        # --- Digest-informed overrides (before Priority 2) ---
-        _digest_config_hints: Dict = {}
-        _digest_op_boosts: Dict = {}
-        _digest_excluded_pairs: list = []
-        _digest_reasoning_parts: list = []
-
-        if digest is not None:
-            # Config effects: use significant findings to adjust parameters
-            for eff in getattr(digest, "config_effects", []):
-                if eff.p_value < 0.05 and eff.target == "s1_count":
-                    if eff.direction == "positive" and eff.param_name in (
-                        "residual_prob", "max_depth", "max_ops", "model_dim",
-                        "math_space_weight", "structured_sparsity_bias",
-                    ):
-                        # Nudge toward higher values
-                        _digest_config_hints[eff.param_name] = "boost"
-                        _digest_reasoning_parts.append(
-                            f"{eff.param_name} positively correlated with S1 (rho={eff.rho:+.2f})"
-                        )
-                    elif eff.direction == "negative" and eff.param_name in (
-                        "max_depth", "max_ops", "model_dim",
-                    ):
-                        _digest_config_hints[eff.param_name] = "reduce"
-                        _digest_reasoning_parts.append(
-                            f"{eff.param_name} negatively correlated with S1 (rho={eff.rho:+.2f})"
-                        )
-
-            # Architecture families: bias op weights toward high-S1 families
-            for fam in getattr(digest, "architecture_families", []):
-                if fam.s1_rate > 0.4 and fam.representative_ops:
-                    for op in fam.representative_ops[:5]:
-                        _digest_op_boosts[op] = max(
-                            _digest_op_boosts.get(op, 1.0), 1.5
-                        )
-                    _digest_reasoning_parts.append(
-                        f"Family {fam.family_id} has {fam.s1_rate:.0%} S1 rate"
-                    )
-
-            # Anti-synergistic pairs: note for exclusion
-            for syn in getattr(digest, "op_synergies", []):
-                if syn.label == "anti_synergistic" and syn.lift < 0.3:
-                    _digest_excluded_pairs.append((syn.op_a, syn.op_b))
-
-        # --- Priority 2: Data-driven analysis to choose mode & config ---
-
-        # Analyze op success rates for targeted grammar adjustments
-        op_rates = analytics.get("op_success_rates") or []
-        failure_patterns = analytics.get("failure_patterns") or {}
-        grammar_weights = analytics.get("grammar_weights") or {}
-        default_weights = analytics.get("default_weights") or {}
-        negative_results = analytics.get("negative_results") or {}
-
-        # Find underexplored op categories
-        underexplored_cats = []
-        overexplored_cats = []
-        for cat, weight in (grammar_weights or {}).items():
-            default_w = (default_weights or {}).get(cat, 1.0)
-            if weight < default_w * 0.6:
-                underexplored_cats.append(cat)
-            elif weight > default_w * 2.0:
-                overexplored_cats.append(cat)
-
-        # Identify top failure mode
-        failure_types = failure_patterns.get("failure_types") or {}
-        top_failure = max(failure_types.items(), key=lambda x: x[1],
-                          default=("unknown", 0))
-
-        # Check recent mode diversity
-        recent_synthesis_count = sum(1 for m in recent_modes if m == "synthesis")
-        recent_evolution_count = sum(1 for m in recent_modes if m == "evolution")
-        mode_stuck = recent_synthesis_count >= 5  # 5+ synthesis in a row
-
-        # Find promising but underexplored ops
-        promising_ops = []
-        for op_data in (op_rates or [])[:20]:
-            op_name = op_data.get("op_name", "")
-            s1_rate = op_data.get("s1_pass_rate", 0)
-            n_uses = op_data.get("total_uses", 0)
-            if 0.3 <= s1_rate <= 0.7 and n_uses < 20:
-                promising_ops.append(op_name)
-
-        # Negative results — ops to avoid
-        failed_ops = negative_results.get("failed_ops") or []
-
-        # --- Decision logic: diverse, data-driven strategies ---
-
-        # No survivors and many experiments — rotate through diverse recovery strategies
+    def _get_recovery_strategy_if_needed(self, data: Dict) -> dict: # Dict | None
+        total_s1 = data.get("total_s1_survivors", 0)
+        n_experiments = data.get("n_experiments_in_session", 0)
+        
         if total_s1 == 0:
+            top_failure_tuple = data.get("analytics_data", {}).get("failure_patterns", {}).get("top", ["", 0])
             failure_hint = ""
-            if top_failure[1] > 0:
-                failure_hint = (f" Top failure: {top_failure[0]} "
-                                f"({top_failure[1]} cases).")
+            if top_failure_tuple[1] > 0:
+                failure_hint = f" Top failure: {top_failure_tuple[0]} ({top_failure_tuple[1]} cases)."
 
             if n_experiments < 3:
                 return {
@@ -2457,14 +2302,11 @@ class Aria:
                     "config": {"structured_sparsity_bias": 0.15},
                 }
 
-            # Rotate through different recovery strategies instead of always
-            # returning the same conservative config
             recovery_idx = n_experiments % 5
             if recovery_idx == 0:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} "
-                                  "Conservative: high residual, shallow depth."),
+                    "reasoning": (f"No S1 survivors.{failure_hint} Conservative: high residual, shallow depth."),
                     "confidence": 0.7,
                     "config": {
                         "residual_prob": 0.85,
@@ -2477,8 +2319,7 @@ class Aria:
             elif recovery_idx == 1:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} "
-                                  "Trying compact sparse architectures."),
+                    "reasoning": (f"No S1 survivors.{failure_hint} Trying compact sparse architectures."),
                     "confidence": 0.65,
                     "config": {
                         "max_depth": 4,
@@ -2496,8 +2337,7 @@ class Aria:
             elif recovery_idx == 2:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} "
-                                  "Trying morphological box for structured diversity."),
+                    "reasoning": (f"No S1 survivors.{failure_hint} Trying morphological box for structured diversity."),
                     "confidence": 0.65,
                     "config": {
                         "model_source": "mixed",
@@ -2511,8 +2351,7 @@ class Aria:
             elif recovery_idx == 3:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} "
-                                  "Boosting frequency/exotic ops for novel designs."),
+                    "reasoning": (f"No S1 survivors.{failure_hint} Boosting frequency/exotic ops for novel designs."),
                     "confidence": 0.6,
                     "config": {
                         "math_space_weight": 3.5,
@@ -2523,12 +2362,9 @@ class Aria:
                     },
                 }
             else:
-                # recovery_idx == 4: evolution from any S0-passing programs
                 return {
                     "mode": "evolution",
-                    "reasoning": (f"No S1 survivors.{failure_hint} "
-                                  "Trying evolution to find viable variants "
-                                  "of S0-passing architectures."),
+                    "reasoning": (f"No S1 survivors.{failure_hint} Trying evolution to find viable variants of S0-passing architectures."),
                     "confidence": 0.55,
                     "config": {
                         "n_generations": 12,
@@ -2537,250 +2373,144 @@ class Aria:
                         "structured_sparsity_bias": 0.15,
                     },
                 }
+        return None
 
-        # --- Rotate between diverse data-driven strategies ---
-        # Use experiment number to cycle through different analysis-driven modes
-        strategy_index = n_experiments % 9
+    def _get_standard_exploration_strategy(self, data: Dict) -> Dict:
+        n_experiments = data.get("n_experiments_in_session", 0)
+        total_s1 = data.get("total_s1_survivors", 0)
+        avg_novelty = data.get("analytics_data", {}).get("avg_novelty", 0)
+        leaderboard_diversity = data.get("leaderboard_diversity", 0)
+        recent_modes = data.get("recent_exploration_modes", [])
+        
+        categories = data.get("analytics_data", {}).get("grammar_trends", {}).get("categories", {})
+        underexplored_cats = [c for c, w in categories.items() if w < 0.2]
+        grammar_hint = f" Focusing on {', '.join(underexplored_cats)}." if underexplored_cats else ""
 
-        if strategy_index == 0 and underexplored_cats:
-            # Strategy: Explore underrepresented op categories
-            boost_cat = self._rng.choice(underexplored_cats)
-            config_override = {"structured_sparsity_bias": 0.15}
-            if boost_cat == "math_space":
-                config_override["math_space_weight"] = 4.0
-            elif boost_cat == "frequency":
-                config_override["freq_domain_prob"] = 0.4
-            elif boost_cat == "functional":
-                config_override["math_space_weight"] = 3.0
+        if avg_novelty < 0.4 and "synthesis" not in recent_modes[-2:]:
             return {
                 "mode": "synthesis",
-                "reasoning": (f"Data analysis: '{boost_cat}' category is underexplored "
-                              f"(weight {grammar_weights.get(boost_cat, 1.0):.2f} vs "
-                              f"default {default_weights.get(boost_cat, 1.0):.2f}). "
-                              f"Boosting to diversify architecture search space."),
-                "confidence": 0.65,
-                "config": config_override,
-            }
-
-        elif strategy_index == 1 and total_s1 >= 3:
-            # Strategy: Evolution to refine existing survivors
-            return {
-                "mode": "evolution",
-                "reasoning": (f"{total_s1} S1 survivors in recent experiments. "
-                              f"Leaderboard has {leaderboard_diversity} unique "
-                              f"architectures. Evolving to find variants "
-                              f"of successful patterns."),
-                "confidence": 0.65,
-                "config": {
-                    "n_generations": 15,
-                    "population_size": 30,
-                    "structured_sparsity_bias": 0.15,
-                },
-            }
-
-        elif strategy_index == 2 and avg_novelty < 0.5:
-            # Strategy: Novelty search to escape local optima
-            return {
-                "mode": "novelty",
-                "reasoning": (f"Avg novelty is only {avg_novelty:.3f} — "
-                              f"architectures are converging. Novelty search "
-                              f"will push toward behaviorally diverse designs. "
-                              f"Leaderboard diversity: {leaderboard_diversity} "
-                              f"unique families out of {leaderboard_size} entries."),
-                "confidence": 0.65,
-                "config": {
-                    "n_generations": 10,
-                    "population_size": 30,
-                    "structured_sparsity_bias": 0.15,
-                },
-            }
-
-        elif strategy_index == 3 and top_failure[1] > 5:
-            # Strategy: Target the dominant failure mode
-            config_override = {"structured_sparsity_bias": 0.15}
-            reasoning_extra = ""
-            if top_failure[0] == "zero_grad":
-                config_override.update({"residual_prob": 0.9, "max_depth": 6})
-                reasoning_extra = ("Increasing residual connections and reducing "
-                                   "depth to ensure gradient flow.")
-            elif top_failure[0] in ("nan", "inf", "RuntimeError"):
-                config_override.update({"risky_op_prob": 0.05, "max_ops": 10})
-                reasoning_extra = ("Reducing risky ops and graph complexity "
-                                   "to avoid numerical instability.")
-            else:
-                config_override.update({"n_programs": 80})
-                reasoning_extra = "Broadening search to find stable regions."
-            return {
-                "mode": "synthesis",
-                "reasoning": (f"Failure analysis: {top_failure[0]} accounts for "
-                              f"{top_failure[1]} failures. {reasoning_extra}"),
-                "confidence": 0.6,
-                "config": config_override,
-            }
-
-        elif strategy_index == 4 and promising_ops:
-            # Strategy: Focus on promising but underexplored ops
-            highlighted = promising_ops[:3]
-            return {
-                "mode": "synthesis",
-                "reasoning": (f"Data analysis found underexplored ops with "
-                              f"promising S1 rates: {', '.join(highlighted)}. "
-                              f"Running targeted synthesis with boosted math_space_weight "
-                              f"to increase exposure to these operators."),
-                "confidence": 0.6,
-                "config": {
-                    "math_space_weight": 3.5,
-                    "n_programs": 60,
-                    "structured_sparsity_bias": 0.15,
-                },
-            }
-
-        elif strategy_index == 5 and mode_stuck:
-            # Strategy: Break mode monotony
-            return {
-                "mode": "evolution",
-                "reasoning": (f"Last {recent_synthesis_count} experiments were all "
-                              f"synthesis. Switching to evolution to refine "
-                              f"existing survivors and break out of screening loop. "
-                              f"Recent failures: {recent_failure_count}/{len(recent_modes)}."),
-                "confidence": 0.6,
-                "config": {
-                    "n_generations": 10,
-                    "population_size": 30,
-                    "structured_sparsity_bias": 0.15,
-                },
-            }
-
-        elif strategy_index == 6:
-            # Strategy: Compact architecture search
-            return {
-                "mode": "synthesis",
-                "reasoning": ("Exploring compact, parameter-efficient architectures. "
-                              "Lower depth and fewer ops with boosted compression/sparse ops "
-                              "to find lightweight designs that may generalize better. "
-                              f"{len(failed_ops)} ops excluded from negative results."),
-                "confidence": 0.55,
-                "config": {
-                    "max_depth": 5,
-                    "max_ops": 8,
-                    "math_space_weight": 2.5,
-                    "residual_prob": 0.8,
-                    "n_programs": 80,
-                    "structured_sparsity_bias": 0.4,
-                    "op_weights": {
-                        "low_rank_proj": 2.0,
-                        "bottleneck_proj": 2.0,
-                        "grouped_linear": 2.0,
-                        "nm_sparse_linear": 2.0,
-                        "block_sparse_linear": 2.0,
-                    },
-                },
-            }
-
-        elif strategy_index == 7:
-            # Strategy: High-risk exotic exploration
-            return {
-                "mode": "synthesis",
-                "reasoning": ("High-exploration run: boosting math space weight, "
-                              "risky ops, and frequency domain probability to "
-                              "discover genuinely exotic architectures outside "
-                              "the current comfort zone."),
-                "confidence": 0.5,
+                "reasoning": (f"S1 survivors found but average novelty is low ({avg_novelty:.2f}). "
+                              f"Boosting to diversify architecture search space.{grammar_hint}"),
+                "confidence": 0.8,
                 "config": {
                     "math_space_weight": 4.0,
-                    "risky_op_prob": 0.3,
-                    "freq_domain_prob": 0.25,
-                    "max_depth": 10,
-                    "n_programs": 50,
+                    "grammar_freq_domain_prob": 0.5,
+                    "model_source": "grammar",
+                    "population_size": 120,
                     "structured_sparsity_bias": 0.15,
-                },
+                }
             }
-
-        elif strategy_index == 8:
-            # Strategy: Explore alternative learning rules
-            optimizer_counts = data.get("optimizer_counts") or {}
-            optimizer_diversity = data.get("optimizer_diversity", 0)
-            total_opt_runs = sum(optimizer_counts.values()) if optimizer_counts else 0
-            adamw_frac = (optimizer_counts.get("AdamW", 0) / total_opt_runs
-                          if total_opt_runs > 0 else 1.0)
-            alternative_rules = [k for k in optimizer_counts
-                                 if k not in ("AdamW", "Adam", "SGD")]
-            hint = ""
-            if adamw_frac > 0.7:
-                hint = (f"AdamW dominates ({adamw_frac:.0%} of runs). ")
-            elif not alternative_rules:
-                hint = "No alternative learning rules tried yet. "
-            else:
-                hint = (f"{len(alternative_rules)} alternative rules tried "
-                        f"({', '.join(alternative_rules[:3])}). ")
+            
+        explore_idx = n_experiments % 8
+        if explore_idx == 0:
             return {
                 "mode": "synthesis",
-                "reasoning": (f"{hint}Exploring alternative learning rules "
-                              "(Hebbian, forward-forward, perturbation, "
-                              "contrastive-local) paired with spiking/event-driven "
-                              "math space ops for a fundamentally different "
-                              "compute paradigm."),
-                "confidence": 0.55,
+                "reasoning": (f"Leaderboard has {leaderboard_diversity} unique "
+                              f"viable archs. Focusing on structured morphology.{grammar_hint}"),
+                "confidence": 0.75,
                 "config": {
-                    "n_programs": 60,
-                    "max_depth": 7,
-                    "max_ops": 12,
-                    "math_space_weight": 3.0,
-                    "residual_prob": 0.7,
-                    "optimizer_preference": "alternative",
+                    "model_source": "mixed",
+                    "morph_ratio": 0.9,
+                    "n_programs": 80,
                     "structured_sparsity_bias": 0.15,
                 },
             }
-
-        # Survivors but low novelty -> novelty search
-        if total_s1 > 0 and avg_novelty < 0.3:
+        elif explore_idx == 1:
+            optimizer_diversity = data.get("optimizer_diversity", 0)
             return {
-                "mode": "novelty",
-                "reasoning": (f"Have {total_s1} S1 survivors but avg novelty "
-                              f"is only {avg_novelty:.3f}. Using novelty search "
-                              "to find behaviorally diverse architectures."),
-                "confidence": 0.7,
+                "mode": "evolution",
+                "reasoning": (f"Evolving S1 architectures with {optimizer_diversity} "
+                              "different optimizers injected into genome."),
+                "confidence": 0.75,
+                "config": {
+                    "n_generations": 20,
+                    "population_size": 40,
+                    "mutation_rate": 0.3,
+                    "structured_sparsity_bias": 0.15,
+                }
+            }
+        elif explore_idx == 2:
+            return {
+                "mode": "ablation",
+                "reasoning": (f"High success (S1={total_s1}). Running ablation test "
+                              "to verify feature importance and extract minimal cores."),
+                "confidence": 0.8,
                 "config": {"structured_sparsity_bias": 0.15},
             }
-
-        # Good survivors -> evolve
-        if total_s1 >= 3:
+        elif explore_idx == 3:
+            return {
+                "mode": "synthesis",
+                "reasoning": (f"Grammar-focused synthesis to boost novelty. "
+                              f"Novelty is currently {avg_novelty:.2f}, "
+                              f"will push toward behaviorally diverse designs. "
+                              f"Leaderboard diversity: {leaderboard_diversity} "
+                              f"distinct S1 architectures.{grammar_hint}"),
+                "confidence": 0.8,
+                "config": {
+                    "model_source": "grammar",
+                    "grammar_freq_domain_prob": 0.4,
+                    "math_space_weight": 2.5,
+                    "max_depth": 7,
+                    "structured_sparsity_bias": 0.15,
+                }
+            }
+        elif explore_idx == 4:
+            return {
+                "mode": "evolution",
+                "reasoning": (f"S1={total_s1}. High mutation evolution to jump out of "
+                              "local optima in continuous space."),
+                "confidence": 0.7,
+                "config": {
+                    "mutation_rate": 0.95,
+                    "n_generations": 15,
+                    "population_size": 50,
+                    "structured_sparsity_bias": 0.15,
+                }
+            }
+        elif explore_idx == 5:
+            return {
+                "mode": "synthesis",
+                "reasoning": (f"S1={total_s1}. Focusing on very deep structures "
+                              "using residual connections to trace gradients.{grammar_hint}"),
+                "confidence": 0.75,
+                "config": {
+                    "max_depth": 10,
+                    "residual_prob": 0.95,
+                    "n_programs": 75,
+                    "structured_sparsity_bias": 0.15,
+                }
+            }
+        elif explore_idx == 6:
+            return {
+                "mode": "synthesis",
+                "reasoning": ("Exploring hybrid approaches. Synthesizing models "
+                              "biased heavily towards structural sparsity."),
+                "confidence": 0.7,
+                "config": {
+                    "structured_sparsity_bias": 0.8,
+                    "max_depth": 4,
+                    "n_programs": 100,
+                    "op_weights": {
+                        "nm_sparse_linear": 3.0,
+                        "low_rank_proj": 2.0,
+                    },
+                }
+            }
+        else:
             return {
                 "mode": "evolution",
                 "reasoning": (f"{total_s1} diverse S1 survivors provide a good "
-                              "seed population. Evolving to optimize."),
-                "confidence": 0.6,
-                "config": {"structured_sparsity_bias": 0.15},
+                              "base for multi-objective optimization evolution "
+                              "targeting both accuracy and compression ratio."),
+                "confidence": 0.85,
+                "config": {
+                    "n_generations": 25,
+                    "population_size": 30,
+                    "mutation_rate": 0.1,
+                    "structured_sparsity_bias": 0.15,
+                }
             }
 
-        # Default: synthesis with variety — rotate configs to avoid repetition
-        default_idx = n_experiments % 3
-        if default_idx == 0:
-            default_config = {
-                "n_programs": 80, "residual_prob": 0.75,
-                "structured_sparsity_bias": 0.15,
-            }
-        elif default_idx == 1:
-            default_config = {
-                "n_programs": 60, "model_source": "mixed", "morph_ratio": 0.5,
-                "structured_sparsity_bias": 0.3,
-            }
-        else:
-            default_config = {
-                "n_programs": 70, "math_space_weight": 3.0,
-                "grammar_freq_domain_prob": 0.2,
-                "structured_sparsity_bias": 0.15,
-            }
-        return {
-            "mode": "synthesis",
-            "reasoning": ("Continuing exploration with varied config. "
-                          f"Leaderboard: {leaderboard_size} entries, "
-                          f"{leaderboard_diversity} unique architectures."),
-            "confidence": 0.5,
-            "config": default_config,
-        }
-
-    # ── Structured Hypothesis Methods ──
 
     def formulate_structured_hypothesis(self, context: str = "") -> Dict:
         """Generate a structured hypothesis with all fields.
