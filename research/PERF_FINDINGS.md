@@ -17,22 +17,22 @@
 - **What**: `_LIVE_LOSS_CURVE_MAX_POINTS` and `_TRAINING_STEP_SSE_EVERY` defined in 11 files
 - **Fix**: Moved to `_types.py`, imported where needed
 
-### A.3 Device Resolution Pattern (15+ locations)
+### A.3 Device Resolution Pattern (15+ locations) [DONE by codex-gpt5]
 - **Files**: `runner/execution.py`, `runner/continuous.py`, `runner/synthesis.py`, `runner/dashboard.py`, `runner/screening.py`
 - **Pattern**: `dev_str = config.device if torch.cuda.is_available() else "cpu"; dev = torch.device(dev_str)`
 - **Fix**: Add `resolve_device(config_device: str) -> torch.device` to `shared_utils.py`
 
-### A.4 Parameter Estimation Duplication
+### A.4 Parameter Estimation Duplication [DONE by codex-gpt5]
 - **Files**: `synthesis/grammar.py` (lines 370-377 and 656-666 — two definitions of `_estimate_params`)
 - **Also**: `synthesis/templates.py` (lines 125-134), `synthesis/graph.py` (lines 187-189) — same formula eval pattern
 - **Fix**: Single `estimate_op_params(op, d_in)` function in `primitives.py`
 
-### A.5 Duplicate Validation Logic
+### A.5 Duplicate Validation Logic [DONE by codex-gpt5]
 - **Files**: `synthesis/grammar.py:606` `_validate_graph()` vs `synthesis/validator.py:84` `validate_graph()`
 - **Both**: Check n_ops, depth, params_ratio, efficiency — similar checks in different ways
 - **Fix**: Have `_validate_graph()` delegate to `validate_graph()` and check `.valid`
 
-### A.6 `_to_safe_float` in api.py Duplicates `shared_utils.safe_float`
+### A.6 `_to_safe_float` in api.py Duplicates `shared_utils.safe_float` [DONE]
 - **File**: `scientist/api.py` (~line 560-588)
 - **Fix**: Replace with `from .shared_utils import safe_float as _to_safe_float`
 
@@ -83,7 +83,7 @@
 - `ShapeInfo`, `OpNode` (graph.py), `BehavioralFingerprint` (fingerprint.py), `RunConfig`, `LiveProgress` (_types.py) already have `@dataclass(slots=True)`
 - **WARNING**: Do NOT add `slots=True` to `GrammarConfig` — dynamically sets `_split_counter` at `grammar.py:442`
 
-### D.3 O(N² log N) Topological Sort
+### D.3 O(N² log N) Topological Sort [DONE]
 - **File**: `synthesis/graph.py:407-446`
 - **What**: `topological_order()` runs `sort()` on ready queue per iteration. Sort key builds strings (op_name, config items) fresh each time.
 - **Fix options**:
@@ -91,27 +91,27 @@
   2. Cache `topological_order()` result (graph is immutable after `set_output()`)
   3. Consider C extension via aria_core for topological sort
 
-### D.4 Unvectorized Influence Matrix in Fingerprinting
+### D.4 Unvectorized Influence Matrix in Fingerprinting [DONE]
 - **File**: `eval/fingerprint.py:338-353`
 - **What**: Python loop perturbing one token at a time, N model forward passes
 - **Fix**: Batch all perturbations as rows in a single tensor, one forward pass via `torch.vmap()` or stacked batch dim
 
-### D.5 String Building in `fingerprint()` Hot Path
+### D.5 String Building in `fingerprint()` Hot Path [DONE]
 - **File**: `synthesis/graph.py:560-573`
 - **What**: Loop builds fingerprint string with f-strings + `sorted()` + `join()` per node. Called per candidate during novelty scoring.
 - **Fix**: Pre-allocate list, minimize string ops, or use hash-based fingerprint (SHA256 of serialized graph)
 
-### D.6 Repeated `list(graph.nodes.items())` Copies
+### D.6 Repeated `list(graph.nodes.items())` Copies [ALREADY DONE]
 - **File**: `synthesis/grammar.py:518, 524, 531`
 - **What**: 3 separate iterations + `list()` copies over same node dict
 - **Fix**: Single pass collecting all needed data; collect delete-IDs first, delete in second pass
 
-### D.7 Inefficient Novelty Metric Computation
+### D.7 Inefficient Novelty Metric Computation [DONE]
 - **File**: `eval/metrics.py:170-175`
 - **What**: Manual zero-masking before log creates extra arrays
 - **Fix**: `np.log(np.clip(probs, 1e-10, 1.0))` — single vectorized operation
 
-### D.8 `BehavioralFingerprint.to_dict()` Incompatible with `slots=True`
+### D.8 `BehavioralFingerprint.to_dict()` Incompatible with `slots=True` [DONE]
 - **File**: `eval/fingerprint.py:112`
 - **What**: `self.__dict__.copy()` doesn't work with `__slots__`
 - **Fix**: `{f.name: getattr(self, f.name) for f in dataclasses.fields(self)}`
@@ -121,7 +121,7 @@
 
 ## E. Code Quality Issues
 
-### E.1 Bare `except:` Clauses
+### E.1 Bare `except:` Clauses [DONE]
 | File | Line | Severity |
 |------|------|----------|
 | `tools/arch_linter.py` | 66 | HIGH — hides JSON/network errors |
@@ -131,11 +131,11 @@
 | `eval/metrics.py` | 193 | MEDIUM |
 | `scientist/analytics.py` | 1587 | MEDIUM |
 
-### E.2 Magic Numbers in Grammar Weights
+### E.2 Magic Numbers in Grammar Weights [DONE]
 - **File**: `synthesis/grammar.py:926-977`
 - **What**: Hardcoded weights (2.0, 1.5, 0.5, 3.0, 4.0, 5.0, 8.0) for action selection with no named constants
 
-### E.3 Magic Numbers in Novelty Scoring
+### E.3 Magic Numbers in Novelty Scoring [DONE]
 - **File**: `eval/metrics.py:143, 166, 170, 206, 216, 225`
 - **What**: Hardcoded blend weights and category divisors
 
@@ -174,6 +174,15 @@ The `ExperimentRunner` class is composed of 10 mixins via multiple inheritance. 
 - Any dataclass that is subclassed with additional fields
 
 **Already using `slots=True` safely:** `ShapeInfo`, `OpNode`, `ComputationGraphIR`, `RunConfig`, `LiveProgress`, `BehavioralFingerprint`
+
+---
+
+## H. Dashboard Performance
+
+### H.1 React Bundle Code-Splitting [DONE]
+- **What**: All 30 component imports were eager — every page load fetched the entire app including ArchitectureDrawer (designer iframe), all tab panels, modals
+- **Fix**: Converted 18 tab/drawer/modal components to `React.lazy()` with `<Suspense>` fallbacks. Removed 4 unused imports (`AriaStatus`, `TopPrograms`, `MetricsChart`, `StrategyAdvisor`). Main bundle: 100KB + 20 lazy chunks loaded on demand.
+- **Impact**: Initial page load only fetches overview components; designer, tabs, drawers load when accessed
 
 ---
 
