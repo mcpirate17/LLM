@@ -51,7 +51,7 @@
 - **Safe to do**: Move shared constants to `_types.py`, move shared helpers to `_helpers.py` (already done)
 - **Unsafe**: Removing any import from a submodule without verifying no other mixin method uses it
 
-### B.3 `_chat_should_use_code_tools()` in api.py
+### B.3 `_chat_should_use_code_tools()` in api.py [DONE]
 - **File**: `scientist/api.py` (~line 884)
 - **What**: Always returns `True` — trivial, called once. Inline and delete.
 
@@ -65,7 +65,7 @@
 | `runner/continuous.py` | `_run_inline_validation()` | 1,025 | HIGH — extract validation sub-phases |
 | `runner/execution.py` | `_run_validation_thread()` | 1,014 | HIGH — extract candidate eval + result aggregation |
 | `runner/execution.py` | `_execute_experiment()` | 771 | HIGH — extract screening loop |
-| `scientist/persona.py` | `_rule_based_mode_recommendation()` | 563 | MEDIUM — extract decision tree branches |
+| `scientist/persona.py` | `_rule_based_mode_recommendation()` | 563 | [DONE] MEDIUM |
 | `scientist/api.py` | `api_strategy_briefing()` | 648 | MEDIUM |
 | `runner/execution.py` | `_micro_train()` | 582 | MEDIUM |
 | `runner/results.py` | `_auto_escalate()` | 487 | MEDIUM |
