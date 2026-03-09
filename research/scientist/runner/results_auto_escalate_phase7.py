@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 from ..evidence import validate_selection_decision_log
 from ..llm.context import build_go_no_go_context
+from ..leaderboard import LeaderboardManager
 from ..notebook import ExperimentEntry, LabNotebook
 from ._types import RunConfig
 
@@ -214,6 +215,16 @@ class _ResultsAutoEscalatePhase7Mixin:
                     "validation",
                 ):
                     continue
+                # Compute efficiency multiple from screening metrics
+                eff_mult = LeaderboardManager.compute_efficiency_multiple(
+                    loss_ratio=p.get("loss_ratio"),
+                    param_count=p.get("param_count"),
+                    flops_forward=p.get("flops_forward"),
+                    throughput_tok_s=p.get("throughput_tok_s"),
+                    peak_memory_mb=p.get("peak_memory_mb"),
+                    forward_time_ms=p.get("forward_time_ms"),
+                )
+                eff_geomean = eff_mult["geomean"] if eff_mult else None
                 nb.upsert_leaderboard(
                     result_id=p["result_id"],
                     model_source=p.get("model_source") or "graph_synthesis",
@@ -224,6 +235,12 @@ class _ResultsAutoEscalatePhase7Mixin:
                     tier="screening",
                     novelty_confidence=p.get("novelty_confidence"),
                     fp_jacobian_spectral_norm=p.get("fp_jacobian_spectral_norm"),
+                    scaling_param_efficiency=eff_geomean,
+                    efficiency_multiple=eff_geomean,
+                    routing_savings_ratio=p.get("routing_savings_ratio"),
+                    activation_sparsity_score=p.get("activation_sparsity_score"),
+                    depth_savings_ratio=p.get("depth_savings_ratio"),
+                    compression_ratio=p.get("compression_ratio"),
                 )
 
         self._pending_investigation = {
