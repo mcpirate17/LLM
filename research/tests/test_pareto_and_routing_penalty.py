@@ -1,10 +1,13 @@
 """Tests for 3D Pareto-front tracking (task 6.3) and routing penalty (task 6.4)."""
 
+import pytest
 import math
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
+
+pytestmark = pytest.mark.unit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 

@@ -1,3 +1,4 @@
+import pytest
 import json
 import os
 import tempfile
@@ -8,6 +9,8 @@ from research.scientist.runner import ExperimentRunner, RunConfig, propose_ablat
 from research.synthesis.compiler import compile_model
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.validator import validate_graph
+
+pytestmark = pytest.mark.unit
 
 
 def _graph_json_for_ops(ops):

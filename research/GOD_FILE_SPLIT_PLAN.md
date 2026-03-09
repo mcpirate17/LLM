@@ -13,13 +13,13 @@
 | 1 | `scientist/runner.py` | 15,795 | Python | **NONE** — already split, delete dead file | HIGH |
 | 2 | `scientist/api.py` | 10,623 | Python | [DONE] | CRITICAL |
 | 3 | `scientist/notebook.py` | 6,275 | Python | [DONE] | HIGH |
-| 4 | `scientist/runner/execution.py` | 4,563 | Python | MEDIUM | HIGH |
-| 5 | `scientist/analytics.py` | 4,429 | Python | MEDIUM | MEDIUM |
-| 6 | `scientist/persona.py` | 3,346 | Python | MEDIUM | MEDIUM |
-| 7 | `scientist/runner/continuous.py` | 3,106 | Python | MEDIUM | HIGH |
-| 8 | `synthesis/compiler.py` | 2,229 | Python+C | LOW | MEDIUM |
-| 9 | `scientist/native_runner.py` | 2,640 | Python+C+Rust | LOW | LOW |
-| 10 | `scientist/runner/results.py` | 2,004 | Python | LOW | MEDIUM |
+| 4 | `scientist/runner/execution.py` | 4,563 | Python | [DONE] | HIGH |
+| 5 | `scientist/analytics.py` | 4,429 | Python | [DONE] | MEDIUM |
+| 6 | `scientist/persona.py` | 3,346 | Python | [DONE] | MEDIUM |
+| 7 | `scientist/runner/continuous.py` | 3,106 | Python | [DONE] | HIGH |
+| 8 | `synthesis/compiler.py` | 2,229 | Python+C | [DONE] | MEDIUM |
+| 9 | `scientist/native_runner.py` | 2,640 | Python+C+Rust | [DONE] | LOW |
+| 10 | `scientist/runner/results.py` | 2,004 | Python | [DONE] | MEDIUM |
 | 11 | `runtime/native/rust/executor.rs` | 1,976 | Rust | LOW | LOW (well-structured) |
 
 ---

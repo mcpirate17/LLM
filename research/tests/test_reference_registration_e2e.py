@@ -11,6 +11,8 @@ from research.synthesis.reference_architectures import (
 )
 from research.synthesis.compiler import compile_model
 
+pytestmark = pytest.mark.e2e
+
 
 def test_pinned_reference_visible_in_tier_filtered_endpoints(tmp_path):
     db_path = str(tmp_path / "reference_e2e.db")

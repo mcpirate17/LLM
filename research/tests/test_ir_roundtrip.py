@@ -7,6 +7,8 @@ from research.synthesis.graph import ComputationGraph
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_to_json, graph_from_json
 
+pytestmark = pytest.mark.unit
+
 def test_ir_roundtrip_equivalence():
     """Test that Graph -> IR (Compiled) produces same output as Graph -> Standard (Compiled)."""
     torch.manual_seed(42)

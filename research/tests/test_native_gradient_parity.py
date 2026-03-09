@@ -10,6 +10,8 @@ import ctypes
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.native
+
 
 ATOL = 2e-5
 RTOL = 2e-5

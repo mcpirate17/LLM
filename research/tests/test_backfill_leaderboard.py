@@ -4,6 +4,8 @@ import pytest
 
 from research.scientist.notebook import LabNotebook
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,6 +215,7 @@ class TestPromoteToTierWhitelist:
             " FROM leaderboard WHERE entry_id = ?",
             (e1,),
         ).fetchone()
+
         assert abs(row["activation_sparsity_score"] - 0.9) < 1e-6
         assert abs(row["wikitext_perplexity"] - 150.0) < 1e-6
         assert abs(row["cross_task_score"] - 0.7) < 1e-6

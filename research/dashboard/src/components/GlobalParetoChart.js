@@ -174,9 +174,9 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
 
     const origin = project(0, 0, 0);
     const axisDefs = [
-      { label: 'Size (M params)', to: [1.2, 0, 0], color: '#58a6ff' },
-      { label: 'Accuracy', to: [0, 1.2, 0], color: '#3fb950' },
-      { label: 'Param Eff.', to: [0, 0, 1.2], color: '#d29922' },
+      { label: 'Size (M params)', to: [1.5, 0, 0], color: '#58a6ff' },
+      { label: 'Accuracy', to: [0, 1.5, 0], color: '#3fb950' },
+      { label: 'Param Eff.', to: [0, 0, 1.5], color: '#d29922' },
     ];
     const axes = axisDefs.map((a) => ({ ...a, end: project(a.to[0], a.to[1], a.to[2]) }));
 
@@ -185,11 +185,11 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
         const pr = project(p.nx, p.ny, p.nz);
         const chartDim = Math.min(size.width, size.height);
         const minR = Math.max(2.5, chartDim * 0.006);
-        const maxR = Math.max(8.0, chartDim * 0.035);
+        const maxR = Math.max(7.0, chartDim * 0.028);
         // p.nscore is between -1 and 1, remap it to 0-1
         const normalizedScore = (p.nscore + 1) / 2;
         let baseR = minR + (normalizedScore || 0) * (maxR - minR);
-        let r = clamp(baseR * (1 + (pr.depth + 1.0) * 0.2), 1.5, maxR * 1.5);
+        let r = clamp(baseR * (1 + (pr.depth + 1.0) * 0.12), 1.5, maxR * 1.3);
         if (selectedSet.has(p.result_id)) r *= 1.3;
         return {
           ...p,
@@ -397,7 +397,7 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
           {projected.origin && projected.axes.map((a) => (
             <g key={a.label}>
               <line x1={projected.origin.sx} y1={projected.origin.sy} x2={a.end.sx} y2={a.end.sy} stroke={a.color} strokeWidth="1.4" />
-              <text x={a.end.sx + 6} y={a.end.sy - 4} fill={a.color} fontSize="11" fontFamily="monospace">{a.label}</text>
+              <text x={a.end.sx + 6} y={a.end.sy - 4} fill={a.color} fontSize="14" fontFamily="monospace">{a.label}</text>
             </g>
           ))}
 

@@ -13,78 +13,39 @@ Supports background execution controlled from the dashboard.
 
 from __future__ import annotations
 
-import gc
-import hashlib
 import json
-import copy
-import math
-import os
-import queue
-import random
 import re
-import shlex
-import threading
 import time
-import traceback
-import uuid
-import functools
-from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ...synthesis.grammar import GrammarConfig, generate_layer_graph, batch_generate
-from ..native_runner import (
-    compile_model_native_first as compile_model,
-    record_native_abi_parity_result,
-    reset_native_runner_telemetry,
-)
-from ...synthesis.validator import validate_graph
-from ...synthesis.serializer import graph_to_json, graph_from_json, graph_summary
-from ...synthesis.primitives import get_primitive, list_primitives, PROTECTED_OPS
-from ...eval.sandbox import safe_eval
-from ...eval.metrics import novelty_score
-from ...eval.flops import estimate_flops
-from ...eval.baseline import TransformerBaseline
-from ...eval.fingerprint import compute_fingerprint, BehavioralFingerprint
-from ...eval.diagnostic_tasks import run_diagnostic_suite
-from ...eval.perf_budget import evaluate_perf_budget_gate
-from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ...training.training_program import synthesize_training_program, synthesize_training_program_batch
-from ...training.data_pipeline import CorpusConfig, CorpusTokenBatcher
-from ...training.checkpointing import CheckpointManager
-from ...orchestrator.executor import WorkerPoolOrchestrator
-from ..persona import Aria, get_aria
+from ..native_runner import reset_native_runner_telemetry
+from ...synthesis.serializer import graph_to_json
+from ...synthesis.primitives import get_primitive, PROTECTED_OPS
 from ..notebook import LabNotebook, ExperimentEntry
 from ..evidence import (
     build_evidence_pack,
-    validate_selection_decision_log,
 )
 from ..preregistration import (
     HypothesisPreregistration,
     PreregistrationError,
     validate_preregistration,
 )
-from ...healer import CodeHealer
-from ...healer.core import HealerTaskSpec
-from ..llm.context import (build_rich_context, build_investigation_context,
-                          build_validation_context, build_mode_selection_context,
-                          build_hypothesis_context, build_go_no_go_context,
-                          build_knowledge_extraction_context,
-                          build_campaign_formulation_context,
-                          build_manual_start_fallback_context)
+from ..llm.context import (
+    build_knowledge_extraction_context,
+    build_campaign_formulation_context,
+)
 from ..llm.decision import NextExperimentDecisionPlanner
 
 import logging
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig, LiveProgress, _LIVE_LOSS_CURVE_MAX_POINTS, _TRAINING_STEP_SSE_EVERY
+from ._types import RunConfig
+from .results_auto_escalate_phase7 import _ResultsAutoEscalatePhase7Mixin
 
-
-class _ResultsMixin:
+class _ResultsMixin(_ResultsAutoEscalatePhase7Mixin):
     """Auto-escalation, scoring, analysis, recommendations."""
 
     def _auto_escalate(self, results: Dict, config: RunConfig,
@@ -94,486 +55,9 @@ class _ResultsMixin:
         Called after screening or investigation completes.
         """
         if phase == "screening" or phase == "experiment":
-            # After screening: queue investigation if enough survivors
-            if not config.auto_investigate:
-                return
-            s1_count = results.get("stage1_passed", 0)
-            if s1_count < config.auto_investigate_min_survivors:
-                return
-
-            # Select top performers from the CURRENT experiment only
-            # (not global top-N, which would re-promote the same candidates)
-            exp_id = results.get("experiment_id")
-            if exp_id:
-                rows = nb.conn.execute(
-                    """SELECT * FROM program_results
-                       WHERE experiment_id = ? AND stage1_passed = 1
-                       ORDER BY loss_ratio ASC NULLS LAST
-                       LIMIT ?""",
-                    (exp_id, config.auto_investigate_top_n),
-                ).fetchall()
-                top = [dict(r) for r in rows]
-            else:
-                # Fallback for callers that don't set experiment_id in results
-                top = nb.get_top_programs(
-                    config.auto_investigate_top_n, sort_by="loss_ratio")
-
-            # Global sweep: also pull top screening candidates from leaderboard
-            # so high-scoring models from past experiments get investigated too
-            try:
-                global_rows = nb.conn.execute(
-                    """SELECT pr.* FROM leaderboard l
-                       JOIN program_results pr ON l.result_id = pr.result_id
-                       WHERE l.tier = 'screening' AND l.screening_passed = 1
-                         AND COALESCE(l.is_reference, 0) = 0
-                         AND l.investigation_loss_ratio IS NULL
-                       ORDER BY l.composite_score DESC
-                       LIMIT ?""",
-                    (config.auto_investigate_top_n,)
-                ).fetchall()
-                seen = {p.get("result_id") for p in top}
-                for r in global_rows:
-                    d = dict(r)
-                    if d.get("result_id") not in seen:
-                        top.append(d)
-                        seen.add(d.get("result_id"))
-                if global_rows:
-                    n_added = sum(1 for r in global_rows if dict(r).get("result_id") not in
-                                  {p.get("result_id") for p in top[:len(top) - len(global_rows)]})
-                    logger.info("Auto-escalate: global sweep found %d leaderboard candidates", len(global_rows))
-            except Exception as e:
-                logger.warning("Auto-escalate global sweep failed: %s", e)
-
-            # Filter out architectures already investigated
-            investigated_fps = nb.get_investigated_fingerprints()
-            if investigated_fps:
-                before = len(top)
-                top = [p for p in top
-                       if p.get("graph_fingerprint") not in investigated_fps]
-                skipped = before - len(top)
-                if skipped:
-                    logger.info("Auto-escalate: skipped %d already-investigated archs", skipped)
-            selection = self._score_candidate_pool(
-                candidates=top,
-                config=config,
-                nb=nb,
-                context="auto_investigate_screening",
-                experiment_id=exp_id,
-            )
-            scored_by_id = {s["result_id"]: s for s in selection.get("scored", [])}
-            ranked = selection.get("selected", [])
-            candidate_ids = []
-            for item in ranked:
-                row = next((p for p in top if p.get("result_id") == item["result_id"]), None)
-                if row is None:
-                    continue
-                if not row.get("stage1_passed"):
-                    continue
-                if row.get("loss_ratio") is not None and float(row.get("loss_ratio")) >= 0.50:
-                    continue
-                candidate_ids.append(item["result_id"])
-                if len(candidate_ids) >= config.auto_investigate_top_n:
-                    break
-
-            if len(candidate_ids) < config.auto_investigate_min_survivors:
-                return
-            selected_rows = [p for p in top if p.get("result_id") in candidate_ids]
-            decision_payload = {
-                "decision_id": str(uuid.uuid4())[:12],
-                "timestamp": time.time(),
-                "context": "auto_investigate_screening",
-                "experiment_id": exp_id,
-                "candidate_pool_summary": selection.get("summary", {}),
-                "score_breakdown": selection.get("scored", []),
-                "policy": selection.get("policy", {}),
-                "reason": selection.get("reason", ""),
-                "chosen_experiments": [
-                    {
-                        "result_id": rid,
-                        "family": scored_by_id.get(rid, {}).get("family"),
-                        "score": scored_by_id.get(rid, {}).get("score"),
-                    }
-                    for rid in candidate_ids
-                ],
-                "trigger": None,
-            }
-            try:
-                validate_selection_decision_log(decision_payload)
-                decision_id = nb.record_selection_decision(
-                    context=decision_payload["context"],
-                    experiment_id=decision_payload["experiment_id"],
-                    candidate_pool_summary=decision_payload["candidate_pool_summary"],
-                    score_breakdown=decision_payload["score_breakdown"],
-                    policy=decision_payload["policy"],
-                    reason=decision_payload["reason"],
-                    chosen_experiments=decision_payload["chosen_experiments"],
-                    trigger=None,
-                )
-                supporting_insight_ids = selection.get("supporting_insight_ids") or []
-                if supporting_insight_ids:
-                    nb.record_selection_insight_trial(
-                        decision_id=decision_id,
-                        context=decision_payload["context"],
-                        insight_ids=supporting_insight_ids,
-                        chosen_result_ids=candidate_ids,
-                        source_experiment_id=exp_id,
-                    )
-            except Exception as sel_err:
-                logger.debug("Auto-investigate selection logging failed: %s", sel_err)
-
-            # Go/no-go decision for each candidate
-            if config.auto_go_no_go and config.enable_campaigns:
-                approved_ids = []
-                for p in selected_rows:
-                    if p["result_id"] not in candidate_ids:
-                        continue
-                    try:
-                        # Skip if decision already exists for this result_id
-                        existing_decisions = nb.get_decisions(
-                            campaign_id=self._active_campaign_id)
-                        already_decided = any(
-                            p["result_id"] in (d.get("evidence_ids") or [])
-                            for d in existing_decisions
-                        )
-                        if already_decided:
-                            approved_ids.append(p["result_id"])
-                            continue
-
-                        go_context = build_go_no_go_context(
-                            candidate=p,
-                            campaign_criteria=(
-                                nb.get_campaign(self._active_campaign_id or "")
-                                or {}
-                            ).get("success_criteria", ""),
-                        )
-                        decision = self.aria.generate_go_no_go(
-                            subject=f"Promote {p['result_id'][:8]} to investigation",
-                            evidence=f"loss_ratio={p.get('loss_ratio', '?')}, "
-                                     f"novelty={p.get('novelty_score', '?')}",
-                            context=go_context,
-                        )
-                        evidence_pack = self._safe_build_evidence_pack(
-                            nb,
-                            recommendation={"mode": "investigation"},
-                            decision_type="go_no_go",
-                        )
-                        nb.record_decision(
-                            campaign_id=self._active_campaign_id,
-                            decision_type=decision["decision"],
-                            subject=f"Promote {p['result_id'][:8]} to investigation",
-                            rationale=decision["rationale"],
-                            evidence_ids=[p["result_id"]],
-                            alternatives=[{"considered": decision.get("alternatives", "")}],
-                            evidence_pack=evidence_pack,
-                        )
-                        self._emit_event("decision_recorded", {
-                            "decision_type": decision["decision"],
-                            "subject": p["result_id"][:8],
-                            "rationale": decision["rationale"][:200],
-                            "evidence_pack": evidence_pack,
-                        })
-                        if decision["decision"] in ("go", "pivot"):
-                            approved_ids.append(p["result_id"])
-                    except Exception as e:
-                        logger.debug(f"Go/no-go failed for {p['result_id']}: {e}")
-                        approved_ids.append(p["result_id"])
-
-                candidate_ids = approved_ids if approved_ids else candidate_ids
-                selected_rows = [p for p in selected_rows if p.get("result_id") in candidate_ids]
-
-            for rid in candidate_ids:
-                score_row = scored_by_id.get(rid)
-                if not score_row:
-                    continue
-                reward = score_row.get("base_score", 0.0)
-                nb.update_selection_family_stats(
-                    score_row.get("family", "Unknown"),
-                    reward=float(reward),
-                )
-
-            # Add to leaderboard as screening tier (skip if already at screening or above)
-            existing_lb = {
-                e["result_id"]: e["tier"]
-                for e in nb.get_leaderboard(limit=500)
-            }
-            for p in selected_rows:
-                if p["result_id"] in candidate_ids:
-                    if p["result_id"] in existing_lb and existing_lb[p["result_id"]] in (
-                        "screening", "investigation", "validation"
-                    ):
-                        continue
-                    nb.upsert_leaderboard(
-                        result_id=p["result_id"],
-                        model_source=p.get("model_source") or "graph_synthesis",
-                        architecture_desc=p.get("graph_fingerprint", "")[:40],
-                        screening_loss_ratio=p.get("loss_ratio"),
-                        screening_novelty=p.get("novelty_score"),
-                        screening_passed=True,
-                        tier="screening",
-                        novelty_confidence=p.get("novelty_confidence"),
-                        fp_jacobian_spectral_norm=p.get("fp_jacobian_spectral_norm"),
-                    )
-
-            self._pending_investigation = {
-                "result_ids": candidate_ids,
-                "config": config,
-                "hypothesis": (
-                    f"Auto-investigation: testing robustness of top "
-                    f"{len(candidate_ids)} screening survivors with "
-                    f"{config.n_training_programs} training programs each."
-                ),
-            }
-            evidence_pack = self._safe_build_evidence_pack(
-                nb,
-                recommendation={"mode": "investigation"},
-                decision_type="auto_investigate",
-            )
-            self._pending_investigation["evidence_pack"] = evidence_pack
-
-            self._emit_event("auto_investigate_queued", {
-                "result_ids": candidate_ids,
-                "n_candidates": len(candidate_ids),
-                "reason": f"{s1_count} S1 survivors with loss_ratio < 0.5",
-                "evidence_pack": evidence_pack,
-            })
-
-            nb.add_entry(ExperimentEntry(
-                entry_type="decision",
-                title="Auto-Investigation Triggered",
-                content=(
-                    f"Automatically queuing investigation for {len(candidate_ids)} "
-                    f"top performers. Criteria: {s1_count} S1 survivors."
-                ),
-                metadata={"result_ids": candidate_ids, "evidence_pack": evidence_pack},
-            ))
-
-            # Z7: Algorithmic Sparsity Bias Learning
-            try:
-                sparse_wins = [p for p in top if (p.get("sparsity_ratio") or 0) > 0.3]
-                dense_wins = [p for p in top if (p.get("sparsity_ratio") or 0) <= 0.3]
-                if sparse_wins and dense_wins:
-                    avg_sparse_loss = sum(p.get("loss_ratio", 1.0) for p in sparse_wins) / len(sparse_wins)
-                    avg_dense_loss = sum(p.get("loss_ratio", 1.0) for p in dense_wins) / len(dense_wins)
-                    
-                    if avg_sparse_loss < avg_dense_loss * 0.95: # 5% better
-                        delta = 0.1
-                        old_bias = config.grammar_config.structured_sparsity_bias
-                        config.grammar_config.update_bias(delta)
-                        nb.log_learning_event(
-                            event_type="grammar_adjustment",
-                            description=f"Boosted structured_sparsity_bias by {delta} due to sparse dominance.",
-                            old_weights={"bias": old_bias},
-                            new_weights={"bias": config.grammar_config.structured_sparsity_bias},
-                            evidence=f"avg_sparse_loss={avg_sparse_loss:.4f}, avg_dense_loss={avg_dense_loss:.4f}"
-                        )
-            except Exception as z7_err:
-                logger.debug("Z7 learning logic failed: %s", z7_err)
-
+            self._auto_escalate_screening(results, config, nb)
         elif phase == "investigation":
-            # After investigation: queue validation if strong candidates
-            if not config.auto_validate:
-                return
-
-            inv_results = results.get("investigation_results", [])
-            inv_ids = [r.get("result_id") for r in inv_results if r.get("result_id")]
-            novelty_meta: Dict[str, Dict[str, Any]] = {}
-            if inv_ids:
-                placeholders = ",".join("?" for _ in inv_ids)
-                rows = nb.conn.execute(
-                    f"""SELECT result_id, novelty_valid_for_promotion, cka_source
-                        FROM program_results
-                        WHERE result_id IN ({placeholders})""",
-                    tuple(inv_ids),
-                ).fetchall()
-                novelty_meta = {row["result_id"]: dict(row) for row in rows}
-
-            # Determine minimum composite_score for validation promotion
-            min_score = config.auto_validate_min_composite_score
-            if min_score <= 0:
-                # Dynamic floor: must beat the best reference
-                best_ref_row = nb.conn.execute(
-                    "SELECT MAX(composite_score) FROM leaderboard WHERE COALESCE(is_reference, 0) = 1"
-                ).fetchone()
-                min_score = float(best_ref_row[0]) if best_ref_row and best_ref_row[0] else 0.0
-
-            # Look up composite scores for investigation candidates
-            inv_id_list = [r.get("result_id") for r in inv_results if r.get("result_id")]
-            composite_scores: Dict[str, float] = {}
-            if inv_id_list:
-                ph = ",".join("?" for _ in inv_id_list)
-                score_rows = nb.conn.execute(
-                    f"SELECT result_id, composite_score FROM leaderboard WHERE result_id IN ({ph})",
-                    tuple(inv_id_list),
-                ).fetchall()
-                composite_scores = {row["result_id"]: float(row["composite_score"] or 0) for row in score_rows}
-
-            strong = []
-            for r in inv_results:
-                rid = r.get("result_id")
-                meta = novelty_meta.get(rid or "", {})
-                if not meta:
-                    novelty_valid = True  # legacy records pre-date novelty validity fields
-                else:
-                    novelty_valid = bool(meta.get("novelty_valid_for_promotion"))
-                    if not novelty_valid and meta.get("cka_source") == "artifact":
-                        novelty_valid = True
-                if not novelty_valid and config.allow_heuristic_novelty_promotion:
-                    novelty_valid = bool(str(config.heuristic_novelty_justification or "").strip())
-                # Composite score gate: must beat best reference (or configured minimum)
-                candidate_score = composite_scores.get(rid, 0.0)
-                if min_score > 0 and candidate_score < min_score:
-                    logger.info("Auto-validate: %s rejected (score %.1f < min %.1f)",
-                                (rid or "?")[:12], candidate_score, min_score)
-                    continue
-                if (
-                    r.get("robustness", 0) >= config.auto_validate_min_robustness
-                    and (r.get("best_loss_ratio") or 1.0) < 0.25
-                    and r.get("baseline_loss_ratio") is not None
-                    and r.get("baseline_loss_ratio") < config.auto_validate_max_baseline_ratio
-                    and r.get("novelty_confidence") is not None
-                    and r.get("novelty_confidence") >= config.auto_validate_min_novelty_confidence
-                    and novelty_valid
-                    and not r.get("brittle_risk", False)
-                    and (
-                        r.get("loss_ratio_multiplier") is None
-                        or r.get("loss_ratio_multiplier") <= config.investigation_max_loss_ratio_multiplier
-                    )
-                ):
-                    strong.append(r)
-
-            if not strong:
-                return
-
-            result_ids_all = [r.get("result_id") for r in strong if r.get("result_id")]
-            graph_meta: Dict[str, Dict[str, Any]] = {}
-            if result_ids_all:
-                placeholders = ",".join("?" for _ in result_ids_all)
-                rows = nb.conn.execute(
-                    f"""SELECT result_id, graph_json, routing_mode
-                        FROM program_results
-                        WHERE result_id IN ({placeholders})""",
-                    tuple(result_ids_all),
-                ).fetchall()
-                graph_meta = {row["result_id"]: dict(row) for row in rows}
-
-            prepared_candidates: List[Dict[str, Any]] = []
-            for r in strong:
-                rid = r.get("result_id")
-                if not rid:
-                    continue
-                meta = graph_meta.get(rid, {})
-                prepared_candidates.append({
-                    "result_id": rid,
-                    "graph_json": meta.get("graph_json"),
-                    "routing_mode": meta.get("routing_mode"),
-                    "loss_ratio": r.get("best_loss_ratio"),
-                    "baseline_loss_ratio": r.get("baseline_loss_ratio"),
-                    "novelty_score": r.get("novelty_confidence"),
-                    "throughput_tok_s": r.get("throughput_tok_s"),
-                    "flops_per_token": r.get("flops_per_token"),
-                    "peak_memory_mb": r.get("peak_memory_mb"),
-                    "stage0_passed": 1,
-                    "stage05_passed": 1,
-                    "stage1_passed": 1,
-                    "stability_score": r.get("robustness"),
-                    "has_nan_grad": 0,
-                    "has_zero_grad": 0,
-                })
-
-            selection = self._score_candidate_pool(
-                candidates=prepared_candidates,
-                config=config,
-                nb=nb,
-                context="auto_validate_investigation",
-                experiment_id=results.get("experiment_id"),
-            )
-            scored_by_id = {s["result_id"]: s for s in selection.get("scored", [])}
-            ranked = selection.get("selected", [])
-            candidate_ids = [item["result_id"] for item in ranked[:config.auto_validate_top_n]]
-            decision_payload = {
-                "decision_id": str(uuid.uuid4())[:12],
-                "timestamp": time.time(),
-                "context": "auto_validate_investigation",
-                "experiment_id": results.get("experiment_id"),
-                "candidate_pool_summary": selection.get("summary", {}),
-                "score_breakdown": selection.get("scored", []),
-                "policy": selection.get("policy", {}),
-                "reason": selection.get("reason", ""),
-                "chosen_experiments": [
-                    {
-                        "result_id": rid,
-                        "family": scored_by_id.get(rid, {}).get("family"),
-                        "score": scored_by_id.get(rid, {}).get("score"),
-                    }
-                    for rid in candidate_ids
-                ],
-                "trigger": None,
-            }
-            try:
-                validate_selection_decision_log(decision_payload)
-                decision_id = nb.record_selection_decision(
-                    context=decision_payload["context"],
-                    experiment_id=decision_payload["experiment_id"],
-                    candidate_pool_summary=decision_payload["candidate_pool_summary"],
-                    score_breakdown=decision_payload["score_breakdown"],
-                    policy=decision_payload["policy"],
-                    reason=decision_payload["reason"],
-                    chosen_experiments=decision_payload["chosen_experiments"],
-                    trigger=None,
-                )
-                supporting_insight_ids = selection.get("supporting_insight_ids") or []
-                if supporting_insight_ids:
-                    nb.record_selection_insight_trial(
-                        decision_id=decision_id,
-                        context=decision_payload["context"],
-                        insight_ids=supporting_insight_ids,
-                        chosen_result_ids=candidate_ids,
-                        source_experiment_id=str(results.get("experiment_id") or ""),
-                    )
-            except Exception as sel_err:
-                logger.debug("Auto-validate selection logging failed: %s", sel_err)
-
-            for rid in candidate_ids:
-                score_row = scored_by_id.get(rid)
-                if not score_row:
-                    continue
-                nb.update_selection_family_stats(
-                    score_row.get("family", "Unknown"),
-                    reward=float(score_row.get("base_score", 0.0)),
-                )
-
-            self._pending_validation = {
-                "result_ids": candidate_ids,
-                "config": config,
-                "hypothesis": (
-                    f"Auto-validation: publication-grade testing of "
-                    f"{len(candidate_ids)} robust investigation survivors."
-                ),
-            }
-            evidence_pack = self._safe_build_evidence_pack(
-                nb,
-                recommendation={"mode": "validation"},
-                decision_type="auto_validate",
-            )
-            self._pending_validation["evidence_pack"] = evidence_pack
-
-            self._emit_event("auto_validate_queued", {
-                "result_ids": candidate_ids,
-                "n_candidates": len(candidate_ids),
-                "reason": f"{len(strong)} candidates with robustness >= "
-                          f"{config.auto_validate_min_robustness}",
-                "evidence_pack": evidence_pack,
-            })
-
-            nb.add_entry(ExperimentEntry(
-                entry_type="decision",
-                title="Auto-Validation Triggered",
-                content=(
-                    f"Automatically queuing validation for {len(candidate_ids)} "
-                    f"robust investigation survivors."
-                ),
-                metadata={"result_ids": candidate_ids, "evidence_pack": evidence_pack},
-            ))
+            self._auto_escalate_investigation(results, config, nb)
 
     def _on_program_evaluated(self, graph, fitness, sandbox_result, s1_result, 
                               eval_counters, nb, exp_id, model_source="evolution"):
@@ -890,11 +374,21 @@ class _ResultsMixin:
             if nm_total > 0: metrics["sparse_nm_compliance"] = nm_compliant / nm_total
             # Compression ratio = effective params / dense params
             if sparse_active_params_estimate > 0:
-                total_weight_params = sum(
-                    float(getattr(op, "weight", torch.empty(0)).numel())
-                    for layer_ops in layers for op in layer_ops.values()
-                    if hasattr(op, "weight")
-                )
+                total_weight_params = 0.0
+                for layer in layers:
+                    ops = getattr(layer, "ops", None)
+                    if ops is None:
+                        continue
+                    if isinstance(ops, dict):
+                        op_values = ops.values()
+                    else:
+                        try:
+                            op_values = list(ops)
+                        except Exception:
+                            continue
+                    for op in op_values:
+                        if hasattr(op, "weight"):
+                            total_weight_params += float(getattr(op, "weight", torch.empty(0)).numel())
                 if total_weight_params > 0:
                     metrics["compression_ratio"] = sparse_active_params_estimate / total_weight_params
 
@@ -1963,24 +1457,29 @@ class _ResultsMixin:
     def _check_stale_screening_candidates(self, nb: LabNotebook, config: RunConfig):
         """Force investigation if top screening models beat references but are uninvestigated."""
         try:
-            best_ref = nb.conn.execute(
-                "SELECT MAX(composite_score) FROM leaderboard WHERE COALESCE(is_reference, 0) = 1"
+            # Compare screening_loss_ratio directly against best reference
+            # screening_loss_ratio (tier-neutral metric, not discounted composite).
+            best_ref_lr = nb.conn.execute(
+                "SELECT MIN(l.screening_loss_ratio) FROM leaderboard l"
+                " WHERE COALESCE(l.is_reference, 0) = 1"
+                " AND l.screening_loss_ratio IS NOT NULL"
             ).fetchone()[0]
-            if not best_ref:
+            if best_ref_lr is None:
                 return None
             stale = nb.conn.execute(
                 """SELECT l.result_id FROM leaderboard l
                    WHERE l.tier = 'screening' AND l.screening_passed = 1
                      AND COALESCE(l.is_reference, 0) = 0
-                     AND l.composite_score > ?
+                     AND l.screening_loss_ratio IS NOT NULL
+                     AND l.screening_loss_ratio <= ?
                      AND l.investigation_loss_ratio IS NULL
-                   ORDER BY l.composite_score DESC LIMIT ?""",
-                (best_ref, config.auto_investigate_top_n)
+                   ORDER BY l.screening_loss_ratio ASC LIMIT ?""",
+                (best_ref_lr, config.auto_investigate_top_n)
             ).fetchall()
             if stale:
                 result_ids = [r["result_id"] for r in stale]
-                logger.info("Stale screening check: %d models beat best reference (%.1f) but are uninvestigated",
-                            len(result_ids), best_ref)
+                logger.info("Stale screening check: %d models beat best reference loss_ratio (%.4f) but are uninvestigated",
+                            len(result_ids), best_ref_lr)
                 return result_ids
         except Exception as e:
             logger.warning("Stale screening check failed: %s", e)
@@ -2001,4 +1500,3 @@ class _ResultsMixin:
         if config.allow_heuristic_novelty_promotion and str(config.heuristic_novelty_justification or "").strip():
             return True, f"override:{resolved_reason}", True
         return False, resolved_reason, requires_justification
-

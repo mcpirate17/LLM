@@ -13,6 +13,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+pytestmark = pytest.mark.unit
+
 from research.synthesis.primitives import PROTECTED_OPS, get_primitive, list_primitives
 from research.synthesis.grammar import GrammarConfig
 

@@ -1,7 +1,10 @@
+import pytest
 import torch
 
 from research.eval.pruning import run_dense_vs_structured_sparse_ablation
 from research.synthesis.kernels import validate_numerical_stability
+
+pytestmark = pytest.mark.unit
 
 
 def test_dense_vs_structured_sparse_ablation_reports_accuracy_and_speed():

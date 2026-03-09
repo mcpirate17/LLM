@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from research.scientist.api import create_app
 from research.scientist.notebook import LabNotebook
+
+pytestmark = pytest.mark.api
 
 
 def test_recommendation_signals_endpoint_returns_aggregate_payload(tmp_path):

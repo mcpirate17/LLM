@@ -14,78 +14,41 @@ Supports background execution controlled from the dashboard.
 from __future__ import annotations
 
 import gc
-import hashlib
 import json
-import copy
-import math
-import os
-import queue
-import random
-import re
-import shlex
-import threading
 import time
-import traceback
 import uuid
-import functools
-from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ...synthesis.grammar import GrammarConfig, generate_layer_graph, batch_generate
-from ..native_runner import (
-    compile_model_native_first as compile_model,
-    record_native_abi_parity_result,
-    reset_native_runner_telemetry,
-)
-from ...synthesis.validator import validate_graph
-from ...synthesis.serializer import graph_to_json, graph_from_json, graph_summary
-from ...synthesis.primitives import get_primitive, list_primitives, PROTECTED_OPS
-from ...eval.sandbox import safe_eval
+from ..native_runner import compile_model_native_first as compile_model
+from ...synthesis.serializer import graph_from_json
 from ...eval.metrics import novelty_score
-from ...eval.flops import estimate_flops
-from ...eval.baseline import TransformerBaseline
-from ...eval.fingerprint import compute_fingerprint, BehavioralFingerprint
-from ...eval.diagnostic_tasks import run_diagnostic_suite
+from ...eval.fingerprint import compute_fingerprint
 from ...eval.perf_budget import evaluate_perf_budget_gate
-from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
 from ...training.training_program import synthesize_training_program, synthesize_training_program_batch
-from ...training.data_pipeline import CorpusConfig, CorpusTokenBatcher
 from ...training.checkpointing import CheckpointManager
-from ...orchestrator.executor import WorkerPoolOrchestrator
-from ..persona import Aria, get_aria
 from ..notebook import LabNotebook, ExperimentEntry
 from ..evidence import (
     build_evidence_pack,
     validate_selection_decision_log,
 )
-from ..preregistration import (
-    HypothesisPreregistration,
-    PreregistrationError,
-    validate_preregistration,
+from ..llm.context import (
+    build_investigation_context,
+    build_validation_context,
+    build_mode_selection_context,
+    build_hypothesis_context,
 )
-from ...healer import CodeHealer
-from ...healer.core import HealerTaskSpec
-from ..llm.context import (build_rich_context, build_investigation_context,
-                          build_validation_context, build_mode_selection_context,
-                          build_hypothesis_context, build_go_no_go_context,
-                          build_knowledge_extraction_context,
-                          build_campaign_formulation_context,
-                          build_manual_start_fallback_context)
-from ..llm.decision import NextExperimentDecisionPlanner
 from ..shared_utils import resolve_device
 
 import logging
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig, LiveProgress, _LIVE_LOSS_CURVE_MAX_POINTS, _TRAINING_STEP_SSE_EVERY
+from ._types import RunConfig, LiveProgress
+from .continuous_inline_validation_phase7 import _ContinuousInlineValidationPhase7Mixin
 
-
-class _ContinuousMixin:
+class _ContinuousMixin(_ContinuousInlineValidationPhase7Mixin):
     """Continuous mode thread, mode selection, inline phases."""
 
     def _run_continuous_thread(self, config: RunConfig):
@@ -2711,98 +2674,28 @@ class _ContinuousMixin:
                                 leaderboard: list, n_experiments: int,
                                 limit_str: str, mode_reasoning: str):
         """Execute validation phase inline (not threaded) for continuous mode."""
-        # Find investigation survivors with robustness
-        candidates = [
-            e for e in leaderboard
-            if e.get("tier") == "investigation"
-            and e.get("investigation_robustness") is not None
-            and e["investigation_robustness"] >= config.investigation_robustness_threshold
-        ]
-        if not candidates:
+        result_ids = self._inline_validation_candidate_ids(config, leaderboard)
+        if not result_ids:
             logger.info("No validation candidates, falling back to synthesis")
             self._run_continuous_synthesis(
                 config, nb, n_experiments, limit_str, mode_reasoning)
             return
 
-        result_ids = [c["result_id"] for c in candidates[:config.auto_validate_top_n]
-                      if c.get("result_id")]
-        if not result_ids:
-            self._run_continuous_synthesis(
-                config, nb, n_experiments, limit_str, mode_reasoning)
-            return
-
-        # Build context for hypothesis formulation
-        val_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-        val_map = {d.get("result_id"): d for d in val_details if d.get("result_id")}
-        val_context = build_validation_context(
-            val_details,
-            [e for e in leaderboard if e.get("result_id") in result_ids],
-        )
-        hypothesis = self.aria.formulate_validation_hypothesis(
-            context=val_context)
-        exp_id = self._start_preregistered_experiment(
+        exp_id, hypothesis = self._inline_validation_bootstrap(
+            config=config,
             nb=nb,
-            experiment_type="validation",
-            config=self._validation_config_with_result_ids(
-                config,
-                result_ids,
-                "continuous_auto",
-            ),
-            hypothesis=hypothesis,
-            hypothesis_metadata=self._build_hypothesis_metadata(
-                source="llm_context",
-                llm_used=True,
-                fallback_used=False,
-                used_context=True,
-            ),
-            created_by="inline_validation",
+            leaderboard=leaderboard,
+            result_ids=result_ids,
+            limit_str=limit_str,
         )
-        self._live_training_context = {"exp_id": exp_id, "phase": "validation"}
-
-        with self._lock:
-            self._progress = LiveProgress(
-                experiment_id=exp_id,
-                status="validating",
-                total_programs=len(result_ids),
-                estimated_cost=self.aria.total_cost,
-                total_tokens=self.aria.total_tokens,
-                aria_message=(f"[{limit_str}|validation] "
-                              f"Validating {len(result_ids)} candidates"),
-            )
-
-        self._emit_event("validation_started", {
-            "experiment_id": exp_id,
-            "n_candidates": len(result_ids),
-        })
-
-        # Tier promotion: mark as validation tier immediately so other cycles don't pick them up
-        for rid in result_ids:
-            try:
-                # result_id is typically the entry_id in the leaderboard
-                nb.promote_to_tier(rid, "validation")
-            except Exception as e:
-                logger.debug("Failed to promote %s to validation tier: %s", rid, e)
 
         try:
             # ── Inline validation logic (from _run_validation_thread) ──
-            results = {
-                "total": len(result_ids), "stage0_passed": 0, "stage05_passed": 0,
-                "stage1_passed": 0, "novel_count": 0,
-                "best_loss_ratio": None, "best_novelty_score": None,
-                "survivors": [], "validation_results": [],
-            }
-
-            dev = resolve_device(config.device)
-            dev_str = str(dev)
-
-            val_config = RunConfig.from_dict(config.to_dict())
-            val_config.stage1_steps = config.validation_steps
-            val_config.stage1_batch_size = config.validation_batch_size
-            val_config.max_seq_len = config.validation_seq_len
-
-            # Fetch all sources at once to avoid N+1 queries
-            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+            results, dev, dev_str, val_config, source_map = self._inline_validation_prepare_runtime(
+                config=config,
+                nb=nb,
+                result_ids=result_ids,
+            )
 
             for prog_idx, source_result_id in enumerate(result_ids):
                 if self._stop_event.is_set():

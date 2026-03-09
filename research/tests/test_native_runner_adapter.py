@@ -23,6 +23,8 @@ from research.scientist.native_runner import (
 from research.scientist.native_runner_adapter import capability_handshake
 from research.tests.conftest import make_fake_graph
 
+pytestmark = pytest.mark.native
+
 
 def test_native_runner_enabled_by_default():
     with patch("research.scientist.native_runner_adapter.os.environ", {}), patch(
@@ -1297,7 +1299,7 @@ def test_check_native_op_support_partial():
 def test_check_native_op_support_no_lib():
     """When native_lib is None and Cython bridge unavailable, all ops are unsupported."""
     graphs = [make_fake_graph(["matmul", "relu"])]
-    with patch("research.scientist.native_runner._try_import_cython_bridge", return_value=None):
+    with patch("research.scientist.native.dispatch._try_import_cython_bridge", return_value=None):
         result = _check_native_op_support(graphs, None)
 
     assert result["native_coverage"] == 0.0

@@ -12,6 +12,8 @@ import ctypes
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.native
+
 
 # fp16 tolerances — wider than f32 due to representation limits
 ATOL_F16 = 1e-2

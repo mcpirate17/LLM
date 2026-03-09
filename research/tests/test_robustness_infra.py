@@ -1,4 +1,5 @@
 
+import pytest
 import os
 import sys
 import unittest
@@ -10,6 +11,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from research.scientist.notebook import LabNotebook
+
+pytestmark = pytest.mark.unit
 
 class TestRobustnessInfrastructure(unittest.TestCase):
     def setUp(self):

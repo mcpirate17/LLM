@@ -294,7 +294,7 @@ def _reset_cython_bridge_cache() -> None:
     _cython_bridge_cache = False
 
 
-@dataclass(slots=True)
+@dataclass
 class NativeRunnerState:
     enabled: bool
     strict: bool
@@ -692,7 +692,7 @@ def native_runner_capability_report() -> Dict[str, Any]:
     report = capability_handshake()
     state = detect_native_state()
     # Phase D: ABI model-only is always active when native is enabled.
-    state.enabled
+    abi_model_only = state.enabled
     disable_legacy_compile = _env_flag("NATIVE_RUNNER_DISABLE_LEGACY_COMPILE", False)
     disable_legacy_compile_native_enabled = _env_flag(
         "NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED",
@@ -1481,6 +1481,7 @@ class NativeSubgraphFunction:
         import torch
 
         _graph = graph
+        _ir_json = ir_json
 
         class _SubgraphFn(torch.autograd.Function):
             @staticmethod
@@ -1650,7 +1651,7 @@ class SubgraphDispatcher:
             if hasattr(x, "detach"):
                 import torch
                 import numpy as np
-                return torch.from_numpy(np.asarray(result, dtype=np.float32)).to(x.device)
+                return torch.from_numpy(np.asarray(result, dtype=np.float32))
             return result
         except Exception as exc:
             logger.debug(
@@ -1725,7 +1726,7 @@ class NativeForwardWrapper:
                 if tensors and hasattr(tensors[0], "detach"):
                     import torch
 
-                    return torch.from_numpy(np.asarray(result, dtype=np.float32)).to(tensors[0].device)
+                    return torch.from_numpy(np.asarray(result, dtype=np.float32))
                 return result
             except Exception as exc:
                 logger.debug(
@@ -2417,18 +2418,8 @@ def compile_model_native_first(
                 "error": str(exc),
             }
     # --- Attach SubgraphDispatchers to compiled layers for batch Rust dispatch ---
-    # This path enters Rust scheduler execution for whole-layer graphs.
-    # Keep it opt-in because failures can be hard crashes (segfault) outside Python.
-    subgraph_dispatch_enabled = _env_flag("NATIVE_RUNNER_SUBGRAPH_DISPATCH", False)
-    capability["subgraph_dispatch"] = {
-        "enabled": bool(subgraph_dispatch_enabled),
-        "attached": 0,
-        "skipped": 0,
-        "total_layers": int(len(getattr(model, "layers", []) or [])),
-    }
     if (
-        subgraph_dispatch_enabled
-        and state.enabled
+        state.enabled
         and op_support is not None
         and op_support["native_coverage"] >= PARTIAL_NATIVE_COVERAGE_THRESHOLD
     ):
@@ -2448,11 +2439,11 @@ def compile_model_native_first(
                             dispatchers_attached += 1
                         else:
                             dispatchers_skipped += 1
-            capability["subgraph_dispatch"].update({
+            capability["subgraph_dispatch"] = {
                 "attached": dispatchers_attached,
                 "skipped": dispatchers_skipped,
                 "total_layers": len(layers),
-            })
+            }
             if dispatchers_attached > 0:
                 logger.info(
                     "Subgraph dispatch: attached %d/%d layer dispatchers",
@@ -2460,12 +2451,10 @@ def compile_model_native_first(
                 )
         except Exception as exc:
             logger.debug("Failed to attach subgraph dispatchers: %s", exc)
-            capability["subgraph_dispatch"].update({
+            capability["subgraph_dispatch"] = {
                 "attached": 0,
                 "error": str(exc),
-            })
-    elif not subgraph_dispatch_enabled:
-        capability["subgraph_dispatch"]["reason"] = "disabled_by_env"
+            }
 
     abi_session = abi_report.get("session")
     if abi_session is not None:

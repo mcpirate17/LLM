@@ -21,6 +21,8 @@ if _root not in sys.path:
 from research.synthesis.graph import ComputationGraph, OpNode, ShapeInfo
 from research.scientist.native_runner import SubgraphDispatcher, dispatch_graph_native_cached
 
+pytestmark = pytest.mark.native
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -1,16 +1,36 @@
 """experiments API route registration."""
 from __future__ import annotations
 
-import functools
+import json
+import logging
+import threading
 import time
-import datetime
-from flask import jsonify, request, Response
+import traceback
+from typing import Any, Dict, List, Optional
+
+from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ..runner import RunConfig
+from ..persona import get_aria
+from ..code_agent import _should_autospawn_self_repair, _spawn_code_agent_task
+from ._helpers import (
+    get_runner, normalize_result_ids, record_run_trigger,
+    _BATCH_RERUN_STATE,
+)
+from ._strategy import (
+    normalize_start_mode, run_launch_preflight,
+    apply_compact_synthesis_bias, apply_sparse_morph_bias,
+    extract_hypothesis_missing_fields,
+    build_start_mode_eligibility, resolve_scale_up_result_ids,
+)
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_experiments_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/experiments")
     def api_experiments():
@@ -31,7 +51,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/experiments/<experiment_id>")
     def api_experiment_detail(experiment_id):
@@ -59,7 +78,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/experiments/<experiment_id>/programs")
     def api_experiment_programs(experiment_id):
         """All programs for an experiment (not just S1 survivors)."""
@@ -72,7 +90,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/experiments/<experiment_id>/failures")
     def api_failure_analysis(experiment_id):
@@ -87,7 +104,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/experiments/<experiment_id>/analysis")
     def api_experiment_analysis(experiment_id):
         """LLM-generated analysis (stored or on-demand)."""
@@ -98,19 +114,16 @@ def register_experiments_routes(app, context: ApiRouteContext):
             if exp is None:
                 return jsonify({"error": "Not found"}), 404
 
-            # Return stored analysis if available
             stored = exp.get("llm_analysis")
             if stored:
                 return jsonify({"analysis": stored, "source": "stored"})
 
-            # Try generating on-demand
             results = exp.get("results") or {}
-            from .llm.context import build_experiment_context
+            from ..llm.context import build_experiment_context
             ctx = build_experiment_context(results)
             analysis = aria.analyze_results(results, context=ctx)
 
             if analysis:
-                # Cache it
                 try:
                     nb.conn.execute(
                         "UPDATE experiments SET llm_analysis = ? WHERE experiment_id = ?",
@@ -130,14 +143,13 @@ def register_experiments_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/experiments/preflight", methods=["POST"])
     def api_preflight_experiment():
         """Run preflight checks without launching an experiment."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         body = request.get_json(silent=True) or {}
         auto_harden = bool(body.pop("auto_harden", True))
-        mode = _normalize_start_mode(body.pop("mode", "single"))
+        mode = normalize_start_mode(body.pop("mode", "single"))
         sample_n = int(body.pop("preflight_sample_n", body.pop("sample_n", 4)) or 4)
         config = RunConfig.from_dict(body) if body else RunConfig()
         config, prescreen = runner.prescreen_run_config(
@@ -145,7 +157,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
             mode=mode,
             auto_harden=auto_harden,
         )
-        preflight = _run_launch_preflight(
+        preflight = run_launch_preflight(
             config=config,
             mode=mode,
             prescreen=prescreen,
@@ -161,11 +173,10 @@ def register_experiments_routes(app, context: ApiRouteContext):
             "can_start_without_override": preflight.get("verdict") == "pass",
         })
 
-
     @app.route("/api/experiments/start", methods=["POST"])
     def api_start_experiment():
         """Start a new experiment. Accepts RunConfig fields + optional hypothesis."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         if runner.is_running:
             return jsonify({"error": "An experiment is already running"}), 409
 
@@ -178,7 +189,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
         preregistration = body.pop("preregistration", None)
         exploratory = bool(body.pop("exploratory", False))
         refine_analysis_json = body.pop("refine_analysis_json", "")
-        mode = _normalize_start_mode(body.pop("mode", "single"))
+        mode = normalize_start_mode(body.pop("mode", "single"))
 
         config = RunConfig.from_dict(body) if body else RunConfig()
         if refine_analysis_json:
@@ -189,10 +200,10 @@ def register_experiments_routes(app, context: ApiRouteContext):
         compact_changes: Dict[str, Any] = {}
         sparse_morph_changes: Dict[str, Any] = {}
         if mode == "compact_synthesis":
-            compact_changes = _apply_compact_synthesis_bias(config)
+            compact_changes = apply_compact_synthesis_bias(config)
             mode = "single"
         if mode == "sparse_morph":
-            sparse_morph_changes = _apply_sparse_morph_bias(config)
+            sparse_morph_changes = apply_sparse_morph_bias(config)
             mode = "single"
 
         config, prescreen = runner.prescreen_run_config(
@@ -200,7 +211,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
             mode=mode,
             auto_harden=auto_harden,
         )
-        preflight = _run_launch_preflight(
+        preflight = run_launch_preflight(
             config=config,
             mode=mode,
             prescreen=prescreen,
@@ -243,14 +254,14 @@ def register_experiments_routes(app, context: ApiRouteContext):
                     exploratory=exploratory,
                 )
             elif mode == "investigation":
-                result_ids = _normalize_result_ids(body.get("result_ids", []))
+                result_ids = normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
                     return jsonify({"error": "result_ids required for investigation mode"}), 400
                 force_reinvestigate = bool(body.get("force") or body.get("force_reinvestigate"))
                 if not force_reinvestigate:
                     nb = LabNotebook(notebook_path)
                     try:
-                        eligibility = _build_start_mode_eligibility(nb, "investigation", result_ids)
+                        eligibility = build_start_mode_eligibility(nb, "investigation", result_ids)
                     finally:
                         nb.close()
                     if not eligibility.get("all_eligible"):
@@ -267,7 +278,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
                     force=force_reinvestigate,
                 )
             elif mode == "validation":
-                result_ids = _normalize_result_ids(body.get("result_ids", []))
+                result_ids = normalize_result_ids(body.get("result_ids", []))
                 if not result_ids:
                     return jsonify({"error": "result_ids required for validation mode"}), 400
                 force_validation = bool(
@@ -280,7 +291,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
                 if not force_validation:
                     nb = LabNotebook(notebook_path)
                     try:
-                        eligibility = _build_start_mode_eligibility(nb, "validation", result_ids)
+                        eligibility = build_start_mode_eligibility(nb, "validation", result_ids)
                     finally:
                         nb.close()
                     if not eligibility.get("all_eligible"):
@@ -297,13 +308,13 @@ def register_experiments_routes(app, context: ApiRouteContext):
                     force=force_validation,
                 )
             elif mode == "scale_up":
-                result_ids = _normalize_result_ids(body.get("result_ids", []))
-                graph_fingerprints = _normalize_result_ids(
+                result_ids = normalize_result_ids(body.get("result_ids", []))
+                graph_fingerprints = normalize_result_ids(
                     body.get("graph_fingerprints", body.get("fingerprints", [])),
                 )
                 nb = LabNotebook(notebook_path)
                 try:
-                    scale_up_resolution = _resolve_scale_up_result_ids(
+                    scale_up_resolution = resolve_scale_up_result_ids(
                         nb,
                         result_ids=result_ids,
                         graph_fingerprints=graph_fingerprints,
@@ -326,13 +337,13 @@ def register_experiments_routes(app, context: ApiRouteContext):
                     exploratory=exploratory,
                 )
             elif mode == "refine_fingerprint":
-                result_ids = _normalize_result_ids(body.get("result_ids", []))
-                graph_fingerprints = _normalize_result_ids(
+                result_ids = normalize_result_ids(body.get("result_ids", []))
+                graph_fingerprints = normalize_result_ids(
                     body.get("graph_fingerprints", body.get("fingerprints", [])),
                 )
                 nb = LabNotebook(notebook_path)
                 try:
-                    refine_resolution = _resolve_scale_up_result_ids(
+                    refine_resolution = resolve_scale_up_result_ids(
                         nb,
                         result_ids=result_ids,
                         graph_fingerprints=graph_fingerprints,
@@ -360,7 +371,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
                     exploratory=exploratory,
                 )
 
-            _record_run_trigger(
+            record_run_trigger(
                 experiment_id=exp_id,
                 source="ui_start",
                 mode=mode,
@@ -374,7 +385,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
                 if isinstance(runner.progress.hypothesis_critique, dict)
                 else None
             )
-            missing_fields = _extract_hypothesis_missing_fields(critique)
+            missing_fields = extract_hypothesis_missing_fields(critique)
 
             return jsonify({
                 "experiment_id": exp_id,
@@ -419,11 +430,10 @@ def register_experiments_routes(app, context: ApiRouteContext):
                 "auto_repair_task": auto_repair_task,
             }), 500
 
-
     @app.route("/api/experiments/stop", methods=["POST"])
     def api_stop_experiment():
         """Stop the currently running experiment."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         if not runner.is_running:
             return jsonify({"error": "No experiment is running"}), 409
 
@@ -432,7 +442,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
             "status": "stopping",
             "aria_message": runner.progress.aria_message,
         })
-
 
     @app.route("/api/experiments/<experiment_id>/cancel", methods=["POST"])
     def api_cancel_experiment(experiment_id):
@@ -448,11 +457,10 @@ def register_experiments_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/experiments/<experiment_id>/rerun", methods=["POST"])
     def api_rerun_experiment(experiment_id):
         """Relaunch an experiment using its stored config and mode."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         if runner.is_running:
             return jsonify({"error": "An experiment is already running"}), 409
 
@@ -472,7 +480,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
             hypothesis = source.get("hypothesis")
             exp_type = str(source.get("experiment_type") or "synthesis").strip().lower()
 
-            # If it is still marked running from a stale reboot state, mark it cancelled first.
             if str(source.get("status") or "").strip().lower() == "running":
                 nb.cancel_experiment(experiment_id)
 
@@ -487,11 +494,10 @@ def register_experiments_routes(app, context: ApiRouteContext):
                 new_id = runner.start_novelty_search(config, hypothesis=hypothesis)
                 mode = "novelty"
             else:
-                # Fallback to single synthesis-style rerun.
                 new_id = runner.start_experiment(config, hypothesis=hypothesis)
                 mode = "single"
 
-            _record_run_trigger(
+            record_run_trigger(
                 experiment_id=new_id,
                 source="ui_rerun",
                 mode=mode,
@@ -516,7 +522,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/experiments/batch-rerun", methods=["POST"])
     def api_batch_rerun():
         """Queue multiple experiments for sequential rerun."""
@@ -525,14 +530,13 @@ def register_experiments_routes(app, context: ApiRouteContext):
         if not experiment_ids or not isinstance(experiment_ids, list):
             return jsonify({"error": "experiment_ids must be a non-empty list"}), 400
 
-        if _batch_rerun_state["active"]:
+        if _BATCH_RERUN_STATE["active"]:
             return jsonify({"error": "A batch rerun is already in progress"}), 409
 
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         if runner.is_running:
             return jsonify({"error": "An experiment is already running"}), 409
 
-        # Validate all experiment IDs exist before starting
         nb = LabNotebook(notebook_path)
         try:
             for eid in experiment_ids:
@@ -545,7 +549,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
         queue = list(experiment_ids)
         first_id = queue.pop(0)
 
-        _batch_rerun_state.update({
+        _BATCH_RERUN_STATE.update({
             "active": True,
             "total": len(experiment_ids),
             "completed": 0,
@@ -556,7 +560,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
 
         def _run_single(eid):
             """Rerun a single experiment, return new_id or None on error."""
-            r = _get_runner(notebook_path)
+            r = get_runner(notebook_path)
             nb2 = LabNotebook(notebook_path)
             try:
                 source = nb2.get_resumable_experiment(eid) or nb2.get_experiment(eid)
@@ -583,7 +587,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
                 else:
                     new_id = r.start_experiment(config, hypothesis=hypothesis)
 
-                _record_run_trigger(
+                record_run_trigger(
                     experiment_id=new_id,
                     source="ui_batch_rerun",
                     mode=exp_type,
@@ -599,45 +603,42 @@ def register_experiments_routes(app, context: ApiRouteContext):
         def _batch_worker():
             """Background thread: run first, then poll and run remaining."""
             try:
-                # Run the first experiment
                 new_id = _run_single(first_id)
-                _batch_rerun_state["results"].append({
+                _BATCH_RERUN_STATE["results"].append({
                     "source_id": first_id,
                     "new_id": new_id,
                     "ok": new_id is not None,
                 })
 
-                for next_id in list(_batch_rerun_state["remaining"]):
-                    # Wait for current experiment to finish
-                    r = _get_runner(notebook_path)
+                for next_id in list(_BATCH_RERUN_STATE["remaining"]):
+                    r = get_runner(notebook_path)
                     while r.is_running:
                         time.sleep(5)
 
-                    _batch_rerun_state["completed"] += 1
-                    _batch_rerun_state["current"] = next_id
-                    _batch_rerun_state["remaining"] = [
-                        x for x in _batch_rerun_state["remaining"] if x != next_id
+                    _BATCH_RERUN_STATE["completed"] += 1
+                    _BATCH_RERUN_STATE["current"] = next_id
+                    _BATCH_RERUN_STATE["remaining"] = [
+                        x for x in _BATCH_RERUN_STATE["remaining"] if x != next_id
                     ]
 
                     new_id = _run_single(next_id)
-                    _batch_rerun_state["results"].append({
+                    _BATCH_RERUN_STATE["results"].append({
                         "source_id": next_id,
                         "new_id": new_id,
                         "ok": new_id is not None,
                     })
 
-                # Wait for the last one to finish
-                r = _get_runner(notebook_path)
+                r = get_runner(notebook_path)
                 while r.is_running:
                     time.sleep(5)
-                _batch_rerun_state["completed"] += 1
+                _BATCH_RERUN_STATE["completed"] += 1
 
             except Exception as e:
                 logger.error(f"Batch rerun worker error: {e}\n{traceback.format_exc()}")
             finally:
-                _batch_rerun_state["active"] = False
-                _batch_rerun_state["current"] = None
-                _batch_rerun_state["remaining"] = []
+                _BATCH_RERUN_STATE["active"] = False
+                _BATCH_RERUN_STATE["current"] = None
+                _BATCH_RERUN_STATE["remaining"] = []
 
         t = threading.Thread(target=_batch_worker, daemon=True)
         t.start()
@@ -649,33 +650,30 @@ def register_experiments_routes(app, context: ApiRouteContext):
             "queued": queue,
         })
 
-
     @app.route("/api/experiments/batch-rerun/status", methods=["GET"])
     def api_batch_rerun_status():
         """Poll batch rerun progress."""
         return jsonify({
-            "active": _batch_rerun_state["active"],
-            "total": _batch_rerun_state["total"],
-            "completed": _batch_rerun_state["completed"],
-            "current": _batch_rerun_state["current"],
-            "remaining": _batch_rerun_state["remaining"],
-            "results": _batch_rerun_state["results"],
+            "active": _BATCH_RERUN_STATE["active"],
+            "total": _BATCH_RERUN_STATE["total"],
+            "completed": _BATCH_RERUN_STATE["completed"],
+            "current": _BATCH_RERUN_STATE["current"],
+            "remaining": _BATCH_RERUN_STATE["remaining"],
+            "results": _BATCH_RERUN_STATE["results"],
         })
-
 
     @app.route("/api/experiments/batch-rerun/cancel", methods=["POST"])
     def api_batch_rerun_cancel():
         """Cancel remaining batch reruns. Current experiment keeps running."""
-        if not _batch_rerun_state["active"]:
+        if not _BATCH_RERUN_STATE["active"]:
             return jsonify({"status": "no_batch_active"})
-        cancelled = list(_batch_rerun_state["remaining"])
-        _batch_rerun_state["remaining"] = []
+        cancelled = list(_BATCH_RERUN_STATE["remaining"])
+        _BATCH_RERUN_STATE["remaining"] = []
         return jsonify({
             "status": "cancelled",
             "cancelled_count": len(cancelled),
-            "completed_so_far": _batch_rerun_state["completed"],
+            "completed_so_far": _BATCH_RERUN_STATE["completed"],
         })
-
 
     @app.route("/api/experiments/<experiment_id>/fill-gaps", methods=["POST"])
     def api_fill_experiment_gaps(experiment_id):
@@ -696,7 +694,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/experiments/cleanup-stale", methods=["POST"])
     def api_cleanup_stale():
         """Clean up stale running experiments that are no longer active."""
@@ -706,5 +703,3 @@ def register_experiments_routes(app, context: ApiRouteContext):
             return jsonify({"cleaned": count})
         finally:
             nb.close()
-
-

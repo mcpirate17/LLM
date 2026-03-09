@@ -1,30 +1,31 @@
 """actions API route registration."""
 from __future__ import annotations
 
-import functools
-import time
-import datetime
-from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
+import logging
+from flask import jsonify, request
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ._helpers import get_autonomy, _DISMISSED_ACTIONS
+from ._strategy import compute_action_queue
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_actions_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/actions")
     def api_actions():
         """Aggregated prioritized action list for the dashboard."""
         nb = LabNotebook(notebook_path)
         try:
-            actions = _compute_action_queue(nb)
+            actions = compute_action_queue(nb)
             return jsonify(actions)
         except Exception as e:
             logger.error(f"Error in /api/actions: {e}")
             return jsonify([]), 500
         finally:
             nb.close()
-
 
     @app.route("/api/actions/<action_id>/dismiss", methods=["POST"])
     def api_action_dismiss(action_id):
@@ -35,12 +36,11 @@ def register_actions_routes(app, context: ApiRouteContext):
         _DISMISSED_ACTIONS.add(clean_id)
         return jsonify({"dismissed": clean_id, "total_dismissed": len(_DISMISSED_ACTIONS)})
 
-
     @app.route("/api/actions/<action_id>/approve", methods=["POST"])
     def api_action_approve(action_id):
         """User approves a pending autonomous action."""
         try:
-            autonomy, store = _get_autonomy(notebook_path)
+            autonomy, store = get_autonomy(notebook_path)
             action = autonomy.approve(action_id)
             if not action:
                 return jsonify({"error": "Action not found or not pending"}), 404
@@ -54,12 +54,11 @@ def register_actions_routes(app, context: ApiRouteContext):
             logger.error(f"Error approving action {action_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
-
     @app.route("/api/actions/<action_id>/undo", methods=["POST"])
     def api_action_undo(action_id):
         """Undo a recently executed autonomous action (within 5 min window)."""
         try:
-            autonomy, store = _get_autonomy(notebook_path)
+            autonomy, store = get_autonomy(notebook_path)
             action = autonomy.undo(action_id)
             if not action:
                 return jsonify({"error": "Action not found or undo window expired"}), 404
@@ -68,5 +67,3 @@ def register_actions_routes(app, context: ApiRouteContext):
         except Exception as e:
             logger.error(f"Error undoing action {action_id}: {e}")
             return jsonify({"error": str(e)}), 500
-
-

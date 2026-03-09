@@ -4,6 +4,8 @@ import pytest
 import numpy as np
 import torch
 
+pytestmark = pytest.mark.unit
+
 
 def test_gromov_delta_tree_metric():
     """Gromov delta of a perfect tree metric should be ~0."""

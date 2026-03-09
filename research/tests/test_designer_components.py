@@ -1,4 +1,5 @@
 
+import pytest
 import sys
 import os
 from pathlib import Path
@@ -8,6 +9,8 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from research.scientist.designer_utils import get_designer_components
+
+pytestmark = pytest.mark.designer
 
 def test_get_components():
     components = get_designer_components()

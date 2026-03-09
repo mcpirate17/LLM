@@ -1,8 +1,11 @@
+import pytest
 import os
 import tempfile
 import unittest
 
 from research.scientist.runner import ExperimentRunner, RunConfig
+
+pytestmark = pytest.mark.unit
 
 
 class _NotebookBreakthrough:

@@ -3,6 +3,8 @@ import pytest
 from research.scientist.api import create_app
 from research.scientist.notebook import LabNotebook
 
+pytestmark = pytest.mark.e2e
+
 def test_dashboard_pinning_api_and_sorting(tmp_path):
     db_path = str(tmp_path / "pinning_test.db")
     nb = LabNotebook(db_path)

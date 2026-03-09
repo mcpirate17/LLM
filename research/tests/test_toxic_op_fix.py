@@ -5,6 +5,8 @@ import time
 import pytest
 from research.scientist.notebook import LabNotebook
 
+pytestmark = pytest.mark.unit
+
 
 def _make_graph_json(ops):
     """Build a minimal graph JSON with the given op-pair bigrams.

@@ -3,6 +3,8 @@ import torch.nn.functional as F
 import pytest
 import numpy as np
 
+pytestmark = pytest.mark.native
+
 try:
     import aria_core
     HAS_ARIA_CORE = True

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from research.scientist.native_runner_soak import run_native_runner_fallback_soak
+
+pytestmark = pytest.mark.native
 
 
 def test_soak_harness_keeps_telemetry_coherent_for_success_probe():

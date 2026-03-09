@@ -11,6 +11,8 @@ from research.mathspaces.compression import (
     execute_tied_proj
 )
 
+pytestmark = pytest.mark.native
+
 try:
     import aria_core
     HAS_ARIA_CORE = True

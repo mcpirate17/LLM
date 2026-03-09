@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 import json
 from pathlib import Path
+
+pytestmark = pytest.mark.native
 
 
 def _read(path: Path) -> str:

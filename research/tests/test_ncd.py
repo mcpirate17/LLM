@@ -2,6 +2,8 @@
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 def test_compute_ncd_basic():
     """NCD returns values in [0, 1] range and behaves sensibly."""
@@ -85,5 +87,6 @@ def test_composite_score_backwards_compat():
         screening_lr=0.5,
         screening_nov=0.7,
     )
+
     # Should be 100*(1-0.5) + 40*0.7 = 50 + 28 = 78
     assert abs(score - 78.0) < 0.01

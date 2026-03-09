@@ -39,6 +39,8 @@ from research.scientist.native_runner import (
     SubgraphDispatcher,
 )
 
+pytestmark = pytest.mark.native
+
 
 # ---------------------------------------------------------------------------
 # Graph builders

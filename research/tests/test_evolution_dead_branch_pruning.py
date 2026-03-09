@@ -1,9 +1,12 @@
+import pytest
 import random
 from unittest.mock import patch
 
 from research.search.evolution import _crossover_graphs, _mutate_graph
 from research.synthesis.grammar import GrammarConfig
 from research.synthesis.graph import ComputationGraph
+
+pytestmark = pytest.mark.unit
 
 
 def _make_parent_graph(model_dim: int = 64) -> ComputationGraph:

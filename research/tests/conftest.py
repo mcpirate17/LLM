@@ -8,6 +8,33 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+# ── Require marker selection ─────────────────────────────────────────
+# Prevents `pytest tests/` from running all 1800+ tests at once.
+# Use: pytest -m unit, pytest -m native, pytest -m "unit or api", etc.
+
+_KNOWN_MARKS = {"unit", "native", "api", "pipeline", "e2e", "designer", "slow"}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Abort if no marker filter is specified — forces category selection."""
+    marker_expr = config.getoption("-m", default="")
+    if not marker_expr:
+        # Allow running a single file without -m
+        specified_paths = config.args
+        if specified_paths and all(
+            os.path.isfile(p) or (not os.path.isdir(p)) for p in specified_paths
+        ):
+            return  # Single file mode — allow
+        pytest.exit(
+            "ERROR: Running all tests at once is not allowed.\n"
+            "Use a marker filter:  pytest -m unit  |  pytest -m native  |  "
+            "pytest -m api  |  pytest -m pipeline  |  pytest -m e2e  |  "
+            "pytest -m designer\n"
+            "Or combine:  pytest -m 'unit or api'\n"
+            "Or run a single file:  pytest tests/test_notebook.py",
+            returncode=4,
+        )
+
 # ── Native library loading ────────────────────────────────────────────
 
 _NATIVE_LIB_PATH = os.path.join(

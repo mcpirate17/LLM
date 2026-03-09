@@ -20,10 +20,10 @@ except ImportError:
     except ImportError:
         HAS_RUST_SCHEDULER = False
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.native, pytest.mark.skipif(
     not HAS_RUST_SCHEDULER,
     reason="aria_scheduler Rust module not available",
-)
+)]
 
 
 def _make_graph_json(nodes, edges, output_node_id):

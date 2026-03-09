@@ -13,6 +13,8 @@ from research.scientist.evidence import (
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner import ExperimentRunner, RunConfig
 
+pytestmark = pytest.mark.unit
+
 
 def _make_notebook_with_novelty():
     tmpdir = tempfile.mkdtemp()
@@ -117,6 +119,7 @@ def test_mode_selection_entry_includes_evidence_pack():
             "confidence": 0.7,
             "config": {},
         })
+
         rec = runner._select_next_mode(RunConfig(device="cpu"), nb, n_experiments=1)
 
     assert rec.get("evidence_pack") is not None

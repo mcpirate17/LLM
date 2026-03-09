@@ -13,76 +13,23 @@ Supports background execution controlled from the dashboard.
 
 from __future__ import annotations
 
-import gc
-import hashlib
 import json
-import copy
-import math
 import os
-import queue
-import random
-import re
-import shlex
-import threading
 import time
-import traceback
-import uuid
 import functools
-from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ...synthesis.grammar import GrammarConfig, generate_layer_graph, batch_generate
-from ..native_runner import (
-    compile_model_native_first as compile_model,
-    record_native_abi_parity_result,
-    reset_native_runner_telemetry,
-)
-from ...synthesis.validator import validate_graph
-from ...synthesis.serializer import graph_to_json, graph_from_json, graph_summary
-from ...synthesis.primitives import get_primitive, list_primitives, PROTECTED_OPS
+from ..native_runner import compile_model_native_first as compile_model, record_native_abi_parity_result
+from ...synthesis.serializer import graph_from_json
 from ...eval.sandbox import safe_eval
-from ...eval.metrics import novelty_score
-from ...eval.flops import estimate_flops
-from ...eval.baseline import TransformerBaseline
-from ...eval.fingerprint import compute_fingerprint, BehavioralFingerprint
-from ...eval.diagnostic_tasks import run_diagnostic_suite
-from ...eval.perf_budget import evaluate_perf_budget_gate
-from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ...training.training_program import synthesize_training_program, synthesize_training_program_batch
-from ...training.data_pipeline import CorpusConfig, CorpusTokenBatcher
-from ...training.checkpointing import CheckpointManager
-from ...orchestrator.executor import WorkerPoolOrchestrator
-from ..persona import Aria, get_aria
-from ..notebook import LabNotebook, ExperimentEntry
-from ..evidence import (
-    build_evidence_pack,
-    validate_selection_decision_log,
-)
-from ..preregistration import (
-    HypothesisPreregistration,
-    PreregistrationError,
-    validate_preregistration,
-)
-from ...healer import CodeHealer
-from ...healer.core import HealerTaskSpec
-from ..llm.context import (build_rich_context, build_investigation_context,
-                          build_validation_context, build_mode_selection_context,
-                          build_hypothesis_context, build_go_no_go_context,
-                          build_knowledge_extraction_context,
-                          build_campaign_formulation_context,
-                          build_manual_start_fallback_context)
-from ..llm.decision import NextExperimentDecisionPlanner
 
 import logging
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig, LiveProgress, _LIVE_LOSS_CURVE_MAX_POINTS, _TRAINING_STEP_SSE_EVERY
-
+from ._types import RunConfig
 
 class _ScreeningMixin:
     """Config validation, CUDA health, prescreening."""

@@ -37,6 +37,10 @@ class RunConfig:
     optimizer_foreach: bool = True
     starvation_check_interval: int = 8
     enable_cuda_graphs: bool = False
+    # Early stopping: halt training when loss plateaus
+    early_stop_patience: int = 300       # steps without improvement before stopping
+    early_stop_min_delta: float = 1e-3   # minimum loss improvement to reset patience
+    early_stop_min_steps: int = 100      # don't early-stop before this many steps
     cuda_graph_warmup_steps: int = 3
     loss_check_interval: int = 8
     enable_kernel_profiling: bool = False

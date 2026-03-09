@@ -8,6 +8,8 @@ import pytest
 
 from research.scientist.native_runner import NativeForwardWrapper
 
+pytestmark = pytest.mark.native
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -670,18 +670,28 @@ export function candidateScore(entry) {
   let utility = 0.0;
 
   // 1. Performance Utility (Primary)
-  // Use validation_baseline_ratio if available, otherwise fallback
-  const perfLR = entry.validation_baseline_ratio ?? 
-                 entry.validation_loss_ratio ?? 
-                 entry.investigation_loss_ratio ?? 
-                 entry.screening_loss_ratio ??
-                 entry.loss_ratio;
+  // Use validation_baseline_ratio if available, otherwise fallback.
+  // Apply confidence discount: screening-only metrics are less trustworthy.
+  let perfLR, perfConfidence;
+  if (entry.validation_baseline_ratio != null) {
+    perfLR = entry.validation_baseline_ratio; perfConfidence = 1.0;
+  } else if (entry.validation_loss_ratio != null) {
+    perfLR = entry.validation_loss_ratio; perfConfidence = 1.0;
+  } else if (entry.investigation_loss_ratio != null) {
+    perfLR = entry.investigation_loss_ratio; perfConfidence = 0.85;
+  } else if (entry.screening_loss_ratio != null) {
+    perfLR = entry.screening_loss_ratio; perfConfidence = 0.65;
+  } else if (entry.loss_ratio != null) {
+    perfLR = entry.loss_ratio; perfConfidence = 0.65;
+  } else {
+    perfLR = null; perfConfidence = 0;
+  }
 
   if (perfLR != null) {
     // Nonlinear utility curve: heavily reward strong loss ratios and
     // suppress mediocre survivors that only look good on novelty.
     const perfNorm = clamp01(1.0 - Number(perfLR));
-    utility += 100.0 * Math.pow(perfNorm, 1.6);
+    utility += 100.0 * Math.pow(perfNorm, 1.6) * perfConfidence;
   }
   
   // Discovery channel (random tokens)

@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner import RunConfig, ExperimentRunner
 
+pytestmark = pytest.mark.unit
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -351,6 +353,7 @@ class TestIntegration:
         entry = {"tier": "screening", "pre_inv_score": 25.0,
                  "screening_loss_ratio": 0.9, "screening_novelty": 0.0,
                  "result_id": "test", "graph_fingerprint": "fp1"}
+
         # With legacy rules, LR=0.9 and Nov=0 would NOT be worth it
         # But pre_inv_score=25 >= 20 should make it worth it
         pis = entry.get("pre_inv_score")

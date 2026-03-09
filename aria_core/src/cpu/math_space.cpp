@@ -18,14 +18,12 @@ void aria_tropical_center_f32(const float *x, float *y,
 #endif
     for (int64_t b = 0; b < batch; b++) {
         for (int64_t d = 0; d < dim; d++) {
-            float max_val = -INFINITY;
-            for (int64_t s = 0; s < seq; s++) {
-                float v = x[(b * seq + s) * dim + d];
-                if (v > max_val) max_val = v;
-            }
+            float running_min = INFINITY;
             for (int64_t s = 0; s < seq; s++) {
                 int64_t idx = (b * seq + s) * dim + d;
-                y[idx] = x[idx] - max_val;
+                float v = x[idx];
+                if (v < running_min) running_min = v;
+                y[idx] = v - running_min;
             }
         }
     }

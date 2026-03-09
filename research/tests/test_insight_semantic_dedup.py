@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 import sqlite3
 import time
 
 from research.scientist.notebook import LabNotebook
+
+pytestmark = pytest.mark.unit
 
 
 def test_record_insight_supersedes_semantic_duplicate(tmp_path):

@@ -1,4 +1,7 @@
+import pytest
 from research.eval.perf_budget import evaluate_perf_budget_gate
+
+pytestmark = pytest.mark.unit
 
 
 def test_perf_budget_gate_passes_under_limits():

@@ -1,27 +1,84 @@
 """misc API route registration."""
 from __future__ import annotations
 
-import functools
+import csv
+import io
+import json
+import logging
+import os
+import traceback
 import time
-import datetime
-from flask import jsonify, request, Response
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from flask import jsonify, request, Response, send_from_directory
 from ..json_utils import json_safe as _json_safe
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ..runner import RunConfig
+from ..persona import get_aria
+from ..native_runner import native_runner_capability_report
+from ..code_agent import _spawn_code_agent_task
+from ..evidence import build_evidence_pack
+from ..designer_utils import get_designer_components
+from ._helpers import (
+    get_runner, with_native_runner_progress, get_run_trigger_snapshot,
+    deduplicate_insights, normalize_result_ids, record_run_trigger,
+    get_autonomy, native_runner_canary_status_payload,
+)
+from ._strategy import (
+    parse_report_date, report_program_matches_theme,
+    report_experiment_matches_trend, build_filtered_report_summary,
+    build_report_snapshot_key, build_report_action_eligibility,
+    annotate_qkv_usage, compute_cross_run_stability,
+    compute_breakthrough_production_readiness, compute_recommendation,
+    normalize_start_mode, build_start_mode_eligibility,
+    compute_compression_opportunities, compute_sparse_evidence,
+    sparse_coverage_summary, diagnose_research_issues,
+    run_pipeline_sample_check, run_launch_preflight,
+    normalize_entries, parse_bool_query,
+    normalize_briefing_mode, briefing_action_from_mode,
+    briefing_action_label, augment_sparse_action_config,
+)
+from ._designer import (
+    designer_service_status, designer_touch_activity, designer_idle_state,
+    start_designer_services, stop_designer_services,
+    designer_proxy, proxy_or_error, proxy_stream,
+)
+from ._chat import (
+    chat_requests_detailed_response, chat_requests_summary_response,
+    chat_requests_brief_response, chat_requests_self_fix_now,
+    chat_requests_codebase_fix,
+    record_chat_guardrail_event, chat_guardrail_snapshot,
+    code_agent_task_snapshot, summarize_agent_task,
+    run_local_chat_agent, chat_workspace_root, query_file_index,
+    parse_action_contract_response, truncate_summary, estimate_tokens,
+    local_ollama_helper_status, get_local_ollama_settings,
+)
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
+# Designer dist path for static serving
+_designer_dist = str(Path(__file__).resolve().parents[3] / "aria_designer" / "ui" / "dist")
+
 
 def register_misc_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
+    _dashboard_index_path = context.dashboard_index_path
+    _dashboard_missing_response = context.dashboard_missing_response
+    _is_asset_path = context.is_asset_path
 
     @app.route("/api/status")
     def api_status():
         """Get Aria's current status and dashboard summary."""
         nb = LabNotebook(notebook_path)
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         aria = get_aria()
         try:
             summary = nb.get_dashboard_summary()
-            progress_payload = _with_native_runner_progress(runner.progress.to_dict())
-            trigger = _get_run_trigger_snapshot(progress_payload.get("experiment_id"))
+            progress_payload = with_native_runner_progress(runner.progress.to_dict())
+            trigger = get_run_trigger_snapshot(progress_payload.get("experiment_id"))
             progress_payload["run_trigger_source"] = trigger.get("source")
             progress_payload["run_trigger"] = trigger
             return jsonify({
@@ -131,7 +188,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             entries = nb.get_entries(
                 experiment_id=exp_id, entry_type=entry_type, limit=n
             )
-            return jsonify(_normalize_entries(entries))
+            return jsonify(normalize_entries(entries))
         except Exception as e:
             logger.error(f"Error in /api/entries: {e}")
             return jsonify({"error": str(e)}), 500
@@ -156,7 +213,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/dashboard")
     def api_dashboard():
         """Get all dashboard data in one call."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
@@ -178,11 +235,11 @@ def register_misc_routes(app, context: ApiRouteContext):
                 logger.warning("Failed enriching dashboard campaign metadata: %s", e)
 
             recent_experiments = nb.get_recent_experiments(30)
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             top_programs = nb.get_top_programs(10)
-            _annotate_qkv_usage(top_programs, analytics)
-            production_readiness = _compute_breakthrough_production_readiness(nb, analytics)
+            annotate_qkv_usage(top_programs, analytics)
+            production_readiness = compute_breakthrough_production_readiness(nb, analytics)
 
             data = {
                 "aria": aria.get_status(db_summary=summary),
@@ -190,10 +247,10 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "recent_experiments": recent_experiments,
                 "top_programs": top_programs,
                 "production_readiness": production_readiness,
-                "insights": _deduplicate_insights(nb.get_insights(limit=50)),
-                "recent_entries": _normalize_entries(nb.get_entries(limit=20)),
+                "insights": deduplicate_insights(nb.get_insights(limit=50)),
+                "recent_entries": normalize_entries(nb.get_entries(limit=20)),
                 "is_running": runner.is_running,
-                "progress": _with_native_runner_progress(runner.progress.to_dict()),
+                "progress": with_native_runner_progress(runner.progress.to_dict()),
             }
 
             # Compute deltas from latest completed experiment
@@ -250,15 +307,15 @@ def register_misc_routes(app, context: ApiRouteContext):
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
 
-            fast_mode = _parse_bool_query(request.args.get("fast"), default=False)
-            include_heavy = _parse_bool_query(
+            fast_mode = parse_bool_query(request.args.get("fast"), default=False)
+            include_heavy = parse_bool_query(
                 request.args.get("include_heavy"),
                 default=not fast_mode,
             )
-            include_narrative = _parse_bool_query(
+            include_narrative = parse_bool_query(
                 request.args.get("include_narrative"),
                 default=not fast_mode,
             )
@@ -309,7 +366,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "top_fingerprint_concentration": float(learning_diagnostics.get("top_fingerprint_concentration") or 0.0),
                 "weighting_mode": str(learning_diagnostics.get("mode") or "unknown"),
             }
-            data["action_eligibility"] = _build_report_action_eligibility(
+            data["action_eligibility"] = build_report_action_eligibility(
                 nb,
                 [
                     row.get("result_id")
@@ -317,8 +374,8 @@ def register_misc_routes(app, context: ApiRouteContext):
                     if row.get("result_id")
                 ],
             )
-            _annotate_qkv_usage(data["top_programs"], analytics)
-            _annotate_qkv_usage(data["top_programs_expanded"], analytics)
+            annotate_qkv_usage(data["top_programs"], analytics)
+            annotate_qkv_usage(data["top_programs_expanded"], analytics)
 
             expanded_by_fingerprint: Dict[str, List[Dict[str, Any]]] = {}
             for row in data["top_programs_expanded"]:
@@ -340,7 +397,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     row["group_repeat_index"] = repeat_index
                     row["grouped_fingerprint_rank"] = grouped_rank
 
-            data["cross_run_stability"] = _compute_cross_run_stability(
+            data["cross_run_stability"] = compute_cross_run_stability(
                 nb, data["top_programs"]
             )
             stability_by_result = {
@@ -390,14 +447,14 @@ def register_misc_routes(app, context: ApiRouteContext):
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
 
-            start_ts = _parse_report_date(request.args.get("start_date"), end_of_day=False)
-            end_ts = _parse_report_date(request.args.get("end_date"), end_of_day=True)
+            start_ts = parse_report_date(request.args.get("start_date"), end_of_day=False)
+            end_ts = parse_report_date(request.args.get("end_date"), end_of_day=True)
             theme = str(request.args.get("theme") or "all").strip().lower()
             trend = str(request.args.get("trend") or "all").strip().lower()
-            include_narrative = _parse_bool_query(
+            include_narrative = parse_bool_query(
                 request.args.get("include_narrative"),
                 default=False,
             )
@@ -416,7 +473,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "include_narrative": bool(include_narrative),
             }
             latest_completed_ts = nb.get_latest_completed_experiment_timestamp()
-            snapshot_key = _build_report_snapshot_key("report_query", snapshot_query)
+            snapshot_key = build_report_snapshot_key("report_query", snapshot_query)
 
             if not include_narrative:
                 cached = nb.get_report_snapshot(
@@ -442,7 +499,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                         continue
                     if end_ts is not None and ts > end_ts:
                         continue
-                if not _report_experiment_matches_trend(exp, trend):
+                if not report_experiment_matches_trend(exp, trend):
                     continue
                 filtered_experiments.append(exp)
 
@@ -456,7 +513,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                         continue
                     if end_ts is not None and ts > end_ts:
                         continue
-                if not _report_program_matches_theme(program, theme):
+                if not report_program_matches_theme(program, theme):
                     continue
                 filtered_programs.append(program)
 
@@ -473,7 +530,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     break
 
             base_summary = nb.get_dashboard_summary()
-            summary = _build_filtered_report_summary(base_summary, filtered_experiments)
+            summary = build_filtered_report_summary(base_summary, filtered_experiments)
 
             data = {
                 "summary": summary,
@@ -581,7 +638,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             cross_run = {"trend": "unknown", "seen_runs": 0}
             try:
                 top = nb.get_top_programs(20, sort_by="loss_ratio")
-                stability = _compute_cross_run_stability(nb, top)
+                stability = compute_cross_run_stability(nb, top)
                 for c in stability.get("candidates", []):
                     if c.get("result_id") == result_id:
                         cross_run = {
@@ -639,10 +696,10 @@ def register_misc_routes(app, context: ApiRouteContext):
             }
 
             # Recommendation
-            recommendation = _compute_recommendation(program, leaderboard_entry)
+            recommendation = compute_recommendation(program, leaderboard_entry)
 
             # Evidence flags
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             packet_status = analytics.reproducibility_packet_status(
                 leaderboard_entry if leaderboard_entry else program
@@ -684,7 +741,7 @@ def register_misc_routes(app, context: ApiRouteContext):
         """Exportable reproducibility manifest for a program result."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             program = nb.get_program_detail(result_id)
             if program is None:
@@ -802,7 +859,7 @@ def register_misc_routes(app, context: ApiRouteContext):
         """Get pinned reference architectures."""
         nb = LabNotebook(notebook_path)
         try:
-            from .naming import annotate_display_names
+            from ..naming import annotate_display_names
             refs = nb.get_references()
             annotate_display_names(refs)
             return jsonify({
@@ -983,7 +1040,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/worker/evaluate", methods=["POST"])
     def api_worker_evaluate():
         """Z12: Distributed worker endpoint for evaluating a computation graph."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         body = request.get_json(silent=True) or {}
         
         graph_json = body.get("graph_json")
@@ -1030,9 +1087,9 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/progress")
     def api_progress():
         """Get current experiment progress (poll-based alternative to SSE)."""
-        runner = _get_runner(notebook_path)
-        progress_payload = _with_native_runner_progress(runner.progress.to_dict())
-        trigger = _get_run_trigger_snapshot(progress_payload.get("experiment_id"))
+        runner = get_runner(notebook_path)
+        progress_payload = with_native_runner_progress(runner.progress.to_dict())
+        trigger = get_run_trigger_snapshot(progress_payload.get("experiment_id"))
         progress_payload["run_trigger_source"] = trigger.get("source")
         progress_payload["run_trigger"] = trigger
         return jsonify({
@@ -1053,17 +1110,17 @@ def register_misc_routes(app, context: ApiRouteContext):
         """
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             summary = nb.get_dashboard_summary()
             recent = nb.get_recent_experiments(10)
             trajectory = analytics.learning_trajectory() or {}
             compression_coverage = analytics.compression_coverage() or {}
-            compression_opportunities = _compute_compression_opportunities(compression_coverage)
+            compression_opportunities = compute_compression_opportunities(compression_coverage)
             primitive_effectiveness = analytics.compression_primitive_effectiveness() or {}
-            sparse_evidence = _compute_sparse_evidence(nb)
+            sparse_evidence = compute_sparse_evidence(nb)
             sparse_coverage_data = analytics.sparse_coverage() or {}
-            sparse_coverage_summary = _sparse_coverage_summary(sparse_coverage_data)
+            sparse_coverage_overview = sparse_coverage_summary(sparse_coverage_data)
 
             # Optional: highlight a just-completed experiment
             just_completed_id = request.args.get("just_completed")
@@ -1163,7 +1220,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "compression": compression_summary,
                 "compression_primitives": primitive_effectiveness.get("primitives", []),
                 "sparse": sparse_evidence,
-                "sparse_coverage": sparse_coverage_summary,
+                "sparse_coverage": sparse_coverage_overview,
             }
 
             # --- Try LLM-powered briefing first ---
@@ -1182,7 +1239,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     fallback_reason = "llm_unreachable"
             ref_comparison = None
             try:
-                from .llm.context import build_briefing_context
+                from ..llm.context import build_briefing_context
 
                 # Gather extra context for LLM
                 try:
@@ -1286,8 +1343,8 @@ def register_misc_routes(app, context: ApiRouteContext):
                 ai_briefing = aria.generate_briefing(context=briefing_context)
                 if ai_briefing and ai_briefing.get("briefing_text"):
                     suggested = ai_briefing.get("suggested_action") or {}
-                    normalized_mode = _normalize_briefing_mode(suggested.get("mode"))
-                    action_key = _briefing_action_from_mode(normalized_mode)
+                    normalized_mode = normalize_briefing_mode(suggested.get("mode"))
+                    action_key = briefing_action_from_mode(normalized_mode)
                     suggested_config = dict(suggested.get("config") or {})
                     hypothesis = suggested.get("hypothesis")
                     if normalized_mode:
@@ -1307,8 +1364,8 @@ def register_misc_routes(app, context: ApiRouteContext):
                         suggested_config["result_ids"] = _rids
 
                     if normalized_mode in ("investigation", "validation"):
-                        _requested = _normalize_result_ids(suggested_config.get("result_ids", []))
-                        _eligibility = _build_start_mode_eligibility(nb, normalized_mode, _requested)
+                        _requested = normalize_result_ids(suggested_config.get("result_ids", []))
+                        _eligibility = build_start_mode_eligibility(nb, normalized_mode, _requested)
                         _eligible = _eligibility.get("eligible_result_ids") or []
                         if _eligible:
                             suggested_config["result_ids"] = _eligible
@@ -1324,7 +1381,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                             if _hypothesis:
                                 suggested_config["hypothesis"] = _hypothesis
 
-                    suggested_config = _augment_sparse_action_config(
+                    suggested_config = augment_sparse_action_config(
                         suggested_config,
                         normalized_mode,
                         sparse_coverage_data,
@@ -1332,7 +1389,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     return jsonify({
                         "briefing": ai_briefing["briefing_text"],
                         "action": action_key or normalized_mode or "continuous",
-                        "action_label": _briefing_action_label(
+                        "action_label": briefing_action_label(
                             normalized_mode, hypothesis),
                         "action_rationale": suggested.get("reasoning", ""),
                         "ai_powered": True,
@@ -1524,10 +1581,10 @@ def register_misc_routes(app, context: ApiRouteContext):
                     "Compression techniques are underexplored in this campaign. "
                     "Run a compactness-focused synthesis batch to improve model efficiency coverage."
                 )
-            elif sparse_coverage_summary.get("below_target") and total_exp >= 3:
-                sparse_share = float(sparse_coverage_summary.get("sparse_share") or 0.0)
-                sparse_survival = float(sparse_coverage_summary.get("sparse_survival_rate") or 0.0)
-                target_share = float(sparse_coverage_summary.get("target_share") or 0.15)
+            elif sparse_coverage_overview.get("below_target") and total_exp >= 3:
+                sparse_share = float(sparse_coverage_overview.get("sparse_share") or 0.0)
+                sparse_survival = float(sparse_coverage_overview.get("sparse_survival_rate") or 0.0)
+                target_share = float(sparse_coverage_overview.get("target_share") or 0.15)
                 action = "novelty_search"
                 action_label = "Run Sparse-Focused Novelty Search"
                 action_rationale = (
@@ -1557,7 +1614,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 screening_candidate_ids = [r["result_id"] for r in screening_rows if r["result_id"]]
                 screening_result_ids = []
                 if screening_candidate_ids:
-                    screening_eligibility = _build_start_mode_eligibility(
+                    screening_eligibility = build_start_mode_eligibility(
                         nb,
                         "investigation",
                         screening_candidate_ids,
@@ -1641,7 +1698,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     "residual_prob": 0.85,
                     "n_programs": 80,
                 }
-            elif action == "novelty_search" and sparse_coverage_summary.get("below_target"):
+            elif action == "novelty_search" and sparse_coverage_overview.get("below_target"):
                 det_config = {
                     "mode": "novelty",
                     "model_source": "mixed",
@@ -1667,7 +1724,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     else None
                 )
 
-            det_config = _augment_sparse_action_config(
+            det_config = augment_sparse_action_config(
                 det_config,
                 det_config.get("mode") if isinstance(det_config, dict) else det_mode,
                 sparse_coverage_data,
@@ -1696,7 +1753,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/cycle-status")
     def api_aria_cycle_status():
         """Get Aria continuous-cycle status (planning/running/analyzing)."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         try:
             return jsonify(runner.get_aria_cycle_status())
         except Exception as e:
@@ -1714,7 +1771,7 @@ def register_misc_routes(app, context: ApiRouteContext):
         output_format = str(request.args.get("format") or "json").strip().lower()
         nb = LabNotebook(notebook_path)
         try:
-            entries = _normalize_entries(nb.get_entries(entry_type="live_feed", limit=n * 4))
+            entries = normalize_entries(nb.get_entries(entry_type="live_feed", limit=n * 4))
             history: List[Dict[str, Any]] = []
             for entry in reversed(entries):
                 metadata = entry.get("metadata") or {}
@@ -1789,7 +1846,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/cycle-control", methods=["POST"])
     def api_aria_cycle_control():
         """Control Aria cycle policy: start, pause, resume."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         body = request.get_json(silent=True) or {}
         action = str(body.get("action") or "").strip().lower()
 
@@ -1820,7 +1877,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     auto_harden=auto_harden,
                 )
                 exp_id = runner.start_continuous(config)
-                _record_run_trigger(
+                record_run_trigger(
                     experiment_id=exp_id,
                     source="cycle_control",
                     mode="continuous",
@@ -1850,14 +1907,14 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/recommendation")
     def api_aria_recommendation():
         """Get Aria's experiment recommendation based on all data."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
             analytics_data = runner._gather_analytics_data(nb)
             history = nb.get_recent_experiments(10)
             past_hypotheses = runner._get_past_hypotheses(nb)
-            from .llm.context import build_rich_context
+            from ..llm.context import build_rich_context
             context = build_rich_context(
                 results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
                          "stage1_passed": 0, "novel_count": 0},
@@ -1887,14 +1944,14 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/strategy")
     def api_aria_strategy():
         """Get Aria's research strategy recommendation."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
             analytics_data = runner._gather_analytics_data(nb)
             history = nb.get_recent_experiments(10)
             past_hypotheses = runner._get_past_hypotheses(nb)
-            from .llm.context import build_rich_context
+            from ..llm.context import build_rich_context
             context = build_rich_context(
                 results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
                          "stage1_passed": 0, "novel_count": 0},
@@ -1917,7 +1974,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/tools")
     def api_aria_tools():
         """Report Aria tool capabilities and current operational readiness."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         aria = get_aria()
         llm = aria._get_llm()
         llm_available = False
@@ -1931,7 +1988,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 llm_reason = "unreachable"
 
         cycle_status = runner.get_aria_cycle_status()
-        ollama_helper = _local_ollama_helper_status(llm)
+        ollama_helper = local_ollama_helper_status(llm)
         return jsonify({
             "codebase_agent": {
                 "spawn_endpoint": True,
@@ -1940,13 +1997,13 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "allow_write_default": True,
                 "execution_first_for_fix_requests": True,
                 "small_model_swarm_enabled": True,
-                "small_model_swarm_max_workers": _get_local_ollama_settings().get("max_small_workers", 3),
+                "small_model_swarm_max_workers": get_local_ollama_settings().get("max_small_workers", 3),
                 "simple_task_policy": "prefer_3b_swarm_then_7b",
                 "complex_task_policy": "prefer_7b_single",
             },
             "local_ollama_helper": ollama_helper,
             "chat_actions": ["adjust_config", "adjust_grammar", "start_experiment", "edit_file", "spawn_agent"],
-            "chat_guardrails": _chat_guardrail_snapshot(window=200),
+            "chat_guardrails": chat_guardrail_snapshot(window=200),
             "local_context_tools": ["runner.progress", "notebook.get_recent_experiments", "workspace.search"],
             "llm": {
                 "available": llm_available,
@@ -1956,7 +2013,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "is_running": bool(runner.is_running),
                 "progress_status": (runner.progress.to_dict() or {}).get("status"),
             },
-            "run_trigger": _get_run_trigger_snapshot((runner.progress.to_dict() or {}).get("experiment_id")),
+            "run_trigger": get_run_trigger_snapshot((runner.progress.to_dict() or {}).get("experiment_id")),
             "continuous": {
                 "active": bool(cycle_status.get("continuous_active")),
                 "phase": cycle_status.get("phase"),
@@ -1971,7 +2028,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             window = int(request.args.get("window", 200))
         except Exception:
             window = 200
-        return jsonify(_chat_guardrail_snapshot(window=window))
+        return jsonify(chat_guardrail_snapshot(window=window))
 
 
     @app.route("/api/aria/agent/spawn", methods=["POST"])
@@ -1997,14 +2054,14 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/agent/status/<task_id>")
     def api_aria_agent_status(task_id: str):
         """Get status/result for a background Aria codebase agent task."""
-        task = _code_agent_task_snapshot(task_id)
+        task = code_agent_task_snapshot(task_id)
         if not task:
             return jsonify({"error": "task not found"}), 404
         detail = str(request.args.get("detail") or "").strip().lower()
         if detail != "full":
             task = {
                 **task,
-                **_summarize_agent_task(task),
+                **summarize_agent_task(task),
             }
         return jsonify({"ok": True, "task": task})
 
@@ -2012,16 +2069,16 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/agent/status/<task_id>/summary")
     def api_aria_agent_status_summary(task_id: str):
         """Get concise milestone summary for a background Aria codebase agent task."""
-        task = _code_agent_task_snapshot(task_id)
+        task = code_agent_task_snapshot(task_id)
         if not task:
             return jsonify({"error": "task not found"}), 404
-        return jsonify({"ok": True, "task": _summarize_agent_task(task)})
+        return jsonify({"ok": True, "task": summarize_agent_task(task)})
 
 
     @app.route("/api/aria/diagnose", methods=["POST"])
     def api_aria_diagnose():
         """Run Aria's self-diagnosis: gather analytics, identify issues, apply fixes."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         try:
             analytics_data = {}
@@ -2030,7 +2087,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             except Exception as exc:
                 logger.debug(f"Analytics gather failed during diagnosis: {exc}")
 
-            diagnosed_issues = _diagnose_research_issues(analytics_data, nb)
+            diagnosed_issues = diagnose_research_issues(analytics_data, nb)
             actions_applied: List[Dict[str, Any]] = []
 
             for issue in diagnosed_issues:
@@ -2076,7 +2133,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/aria/chat", methods=["POST"])
     def api_aria_chat():
         """Interactive Aria chat response grounded in current research context."""
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
 
@@ -2087,16 +2144,16 @@ def register_misc_routes(app, context: ApiRouteContext):
             session_id = str(body.get("session_id") or "").strip()
             spawn_agent = bool(body.get("spawn_agent", False))
             allow_code_writes = bool(body.get("allow_code_writes", True))
-            explicit_detailed = _chat_requests_detailed_response(question)
-            summary_requested = _chat_requests_summary_response(question)
+            explicit_detailed = chat_requests_detailed_response(question)
+            summary_requested = chat_requests_summary_response(question)
             brief_response_requested = (
                 bool(body.get("brief_response", False))
-                or _chat_requests_brief_response(question)
+                or chat_requests_brief_response(question)
             )
             concise_default_mode = not explicit_detailed and not summary_requested
             brief_response = bool(brief_response_requested or concise_default_mode)
-            self_fix_now = _chat_requests_self_fix_now(question)
-            fix_request = spawn_agent or _chat_requests_codebase_fix(question) or self_fix_now
+            self_fix_now = chat_requests_self_fix_now(question)
+            fix_request = spawn_agent or chat_requests_codebase_fix(question) or self_fix_now
             execution_first_mode = bool(fix_request)
             fallback_reason: Optional[str] = None
             local_agent_result: Dict[str, Any] = {"tools_used": [], "summary": "", "code_hits": []}
@@ -2113,7 +2170,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 except Exception as exc:
                     logger.debug(f"Analytics gather failed during diagnosis: {exc}")
 
-                diagnosed_issues = _diagnose_research_issues(analytics_data, nb)
+                diagnosed_issues = diagnose_research_issues(analytics_data, nb)
                 actions_taken: List[str] = []
                 config_keys_applied: List[str] = []
 
@@ -2176,7 +2233,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                         )
                     except Exception:
                         pass
-                _record_chat_guardrail_event(
+                record_chat_guardrail_event(
                     actionable=bool(actions_taken or code_agent_task),
                     advice_only=not bool(actions_taken or code_agent_task),
                     summary_text=concise_reply,
@@ -2248,7 +2305,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 past_hypotheses = []
 
             try:
-                from .llm.context import build_rich_context
+                from ..llm.context import build_rich_context
                 context = build_rich_context(
                     results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
                              "stage1_passed": 0, "novel_count": 0},
@@ -2264,7 +2321,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     f"- Past hypotheses: {len(past_hypotheses) if isinstance(past_hypotheses, list) else 0}"
                 )
 
-            local_agent_result = _run_local_chat_agent(
+            local_agent_result = run_local_chat_agent(
                 question=question,
                 runner=runner,
                 nb=nb,
@@ -2294,7 +2351,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 except Exception:
                     fallback_reason = "llm_unreachable"
                 try:
-                    from .llm.prompts import SYSTEM_PROMPT, CHAT_PROMPT
+                    from ..llm.prompts import SYSTEM_PROMPT, CHAT_PROMPT
                     prompt_question = question
                     prompt_question = (
                         f"{prompt_question}\n\n"
@@ -2319,7 +2376,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     aria._track_cost(resp)
                     text = (resp.text or "").strip()
                     if text:
-                        parsed = _parse_action_contract_response(text)
+                        parsed = parse_action_contract_response(text)
                         actions = parsed.get("actions") or []
                         advice_only = bool(parsed.get("advice_only"))
                         actions_taken = []
@@ -2341,8 +2398,8 @@ def register_misc_routes(app, context: ApiRouteContext):
                                             )
                                             context_lines.append(f"Relevant code hits: {top_hits}")
                                         try:
-                                            ws = _chat_workspace_root(notebook_path)
-                                            idx_hits = _query_file_index(goal, ws, max_results=6)
+                                            ws = chat_workspace_root(notebook_path)
+                                            idx_hits = query_file_index(goal, ws, max_results=6)
                                             if idx_hits:
                                                 files_hint = ", ".join(h["rel_path"] for h in idx_hits[:6])
                                                 context_lines.append(f"Indexed files: {files_hint}")
@@ -2361,7 +2418,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                                         result = {
                                             "status": "spawned",
                                             "task_id": agent_task.get("task_id"),
-                                            "goal": _truncate_summary(str(action.get("goal") or question), 120),
+                                            "goal": truncate_summary(str(action.get("goal") or question), 120),
                                         }
                                         if not code_agent_task:
                                             code_agent_task = agent_task
@@ -2374,7 +2431,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                                     and str(result.get("status") or "").strip() == "started"
                                     and result.get("experiment_id")
                                 ):
-                                    _record_run_trigger(
+                                    record_run_trigger(
                                         experiment_id=str(result.get("experiment_id")),
                                         source="chat_action",
                                         mode=str(result.get("mode") or "single").strip() or "single",
@@ -2407,7 +2464,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                                 t = str(item.get("type") or "?")
                                 s = str(item.get("status") or "unknown")
                                 status_bits.append(f"{t}:{s}")
-                            reply_text = _truncate_summary(
+                            reply_text = truncate_summary(
                                 f"Action started: {action_types}. "
                                 f"Status: {'; '.join(status_bits[:4])}. "
                                 f"Next checkpoint: monitor task progress and report completion.",
@@ -2415,18 +2472,18 @@ def register_misc_routes(app, context: ApiRouteContext):
                             )
                         else:
                             summary = str(parsed.get("summary") or "").strip()
-                            reply_text = _truncate_summary(
+                            reply_text = truncate_summary(
                                 summary or "advice_only: no valid executable actions were produced.",
                                 220,
                             )
                             advice_only = True
                         if code_agent_task and code_agent_task.get("task_id"):
-                            snap = _summarize_agent_task(code_agent_task)
-                            reply_text = _truncate_summary(
+                            snap = summarize_agent_task(code_agent_task)
+                            reply_text = truncate_summary(
                                 f"{reply_text} Task {snap.get('task_id')} queued ({snap.get('milestone_summary')}).",
                                 260,
                             )
-                        _record_chat_guardrail_event(
+                        record_chat_guardrail_event(
                             actionable=actionable,
                             advice_only=advice_only,
                             summary_text=reply_text,
@@ -2484,7 +2541,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     )
                 except Exception:
                     pass
-            _record_chat_guardrail_event(
+            record_chat_guardrail_event(
                 actionable=False,
                 advice_only=True,
                 summary_text=fallback_reply,
@@ -2572,7 +2629,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 return jsonify({"compacted": False, "reason": "no messages"})
 
             # Calculate tokens for active messages
-            total_tokens = sum(_estimate_tokens(m.get("text", "")) for m in messages)
+            total_tokens = sum(estimate_tokens(m.get("text", "")) for m in messages)
             if total_tokens <= token_budget:
                 return jsonify({"compacted": False, "reason": "within budget",
                                 "total_tokens": total_tokens})
@@ -2582,7 +2639,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             keep_tokens = 0
             keep_from = len(messages)
             for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = _estimate_tokens(messages[i].get("text", ""))
+                msg_tokens = estimate_tokens(messages[i].get("text", ""))
                 if keep_tokens + msg_tokens > token_budget * 0.7:  # Keep 70% budget for recent
                     keep_from = i + 1
                     break
@@ -2603,7 +2660,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             llm = aria._get_llm()
             if llm:
                 try:
-                    from .llm.prompts import SYSTEM_PROMPT, CHAT_COMPACTION_PROMPT
+                    from ..llm.prompts import SYSTEM_PROMPT, CHAT_COMPACTION_PROMPT
                     prompt = CHAT_COMPACTION_PROMPT.format(messages=compact_text[:3000])
                     resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=300)
                     aria._track_cost(resp)
@@ -2641,7 +2698,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "compacted": True,
                 "messages_compacted": len(compact_ids),
                 "summary_id": summary_id,
-                "summary_tokens": _estimate_tokens(summary_text),
+                "summary_tokens": estimate_tokens(summary_text),
                 "original_tokens": total_tokens,
             })
         except Exception as e:
@@ -2655,10 +2712,10 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_system_status():
         """Report system status: CUDA, LLM, database, runner state."""
         import torch
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
-        refresh_canary = _parse_bool_query(request.args.get("refresh_canary"), default=False)
+        refresh_canary = parse_bool_query(request.args.get("refresh_canary"), default=False)
         try:
             # CUDA info
             cuda_available = torch.cuda.is_available()
@@ -2702,7 +2759,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "llm": llm_info,
                 "database": db_info,
                 "native_runner": native_runner_capability_report(),
-                "native_runner_canary": _native_runner_canary_status_payload(force_refresh=refresh_canary),
+                "native_runner_canary": native_runner_canary_status_payload(force_refresh=refresh_canary),
                 "is_running": runner.is_running,
             })
         except Exception as e:
@@ -2726,7 +2783,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_native_runner_canary_refresh():
         """Force-refresh native runner canary payload (bypass TTL cache)."""
         try:
-            payload = _native_runner_canary_status_payload(force_refresh=True)
+            payload = native_runner_canary_status_payload(force_refresh=True)
             return jsonify(
                 {
                     "status": "ok",
@@ -2745,7 +2802,6 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_native_runner_telemetry():
         """Return native runner fallback metrics for dashboard consumption."""
         try:
-            from .native_runner import native_runner_capability_report
             report = native_runner_capability_report()
             return jsonify({
                 "status": "ok",
@@ -2768,9 +2824,9 @@ def register_misc_routes(app, context: ApiRouteContext):
         """Validate the synthesis pipeline by generating and testing programs."""
         body = request.get_json(silent=True) or {}
         n = min(int(body.get("n", body.get("sample_n", 5)) or 5), 20)
-        mode = _normalize_start_mode(body.pop("mode", "single"))
+        mode = normalize_start_mode(body.pop("mode", "single"))
         auto_harden = bool(body.pop("auto_harden", True))
-        runner = _get_runner(notebook_path)
+        runner = get_runner(notebook_path)
         config = RunConfig.from_dict(body) if body else RunConfig()
         config, prescreen = runner.prescreen_run_config(
             config,
@@ -2779,8 +2835,8 @@ def register_misc_routes(app, context: ApiRouteContext):
         )
 
         try:
-            sample = _run_pipeline_sample_check(config=config, sample_n=n)
-            preflight = _run_launch_preflight(
+            sample = run_pipeline_sample_check(config=config, sample_n=n)
+            preflight = run_launch_preflight(
                 config=config,
                 mode=mode,
                 prescreen=prescreen,
@@ -2816,8 +2872,8 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/designer/lifecycle")
     def api_designer_lifecycle():
         """Return current aria_designer service status."""
-        payload = _designer_service_status()
-        payload.update(_designer_idle_state())
+        payload = designer_service_status()
+        payload.update(designer_idle_state())
         return jsonify(payload)
 
 
@@ -2826,9 +2882,9 @@ def register_misc_routes(app, context: ApiRouteContext):
         """Ensure aria_designer API+UI are running for seamless UX."""
         body = request.get_json(silent=True) or {}
         force_restart = bool(body.get("force_restart", False))
-        result = _start_designer_services(force_restart=force_restart)
+        result = start_designer_services(force_restart=force_restart)
         if result.get("ok"):
-            result.update(_designer_touch_activity("ensure-running"))
+            result.update(designer_touch_activity("ensure-running"))
         status = 200 if result.get("ok") else 503
         return jsonify(result), status
 
@@ -2836,7 +2892,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/designer/stop", methods=["POST"])
     def api_designer_stop():
         """Stop aria_designer API+UI services."""
-        result = _stop_designer_services()
+        result = stop_designer_services()
         status = 200 if result.get("ok") else 500
         return jsonify(result), status
 
@@ -2847,8 +2903,8 @@ def register_misc_routes(app, context: ApiRouteContext):
         body = request.get_json(silent=True) or {}
         reason = str(body.get("reason") or "manual-touch")
         payload = {"ok": True}
-        payload.update(_designer_touch_activity(reason))
-        payload.update(_designer_idle_state())
+        payload.update(designer_touch_activity(reason))
+        payload.update(designer_idle_state())
         return jsonify(payload), 200
 
 
@@ -2861,8 +2917,8 @@ def register_misc_routes(app, context: ApiRouteContext):
 
         # Proxy: POST /api/v1/workflows/compile
         proxy_body = {"workflow": workflow_json, "target": "auto"}
-        proxied = _proxy_or_error(
-            _designer_proxy("POST", "/api/v1/workflows/compile", json_body=proxy_body)
+        proxied = proxy_or_error(
+            designer_proxy("POST", "/api/v1/workflows/compile", json_body=proxy_body)
         )
         if proxied is not None:
             return proxied
@@ -2879,8 +2935,8 @@ def register_misc_routes(app, context: ApiRouteContext):
 
         # Proxy: POST /api/v1/workflows/validate
         proxy_body = {"workflow": workflow_json}
-        proxied = _proxy_or_error(
-            _designer_proxy("POST", "/api/v1/workflows/validate", json_body=proxy_body)
+        proxied = proxy_or_error(
+            designer_proxy("POST", "/api/v1/workflows/validate", json_body=proxy_body)
         )
         if proxied is not None:
             return proxied
@@ -2899,8 +2955,8 @@ def register_misc_routes(app, context: ApiRouteContext):
 
         # Proxy: POST /api/v1/workflows/run
         proxy_body = {"workflow": workflow_json, "budget": {"device": device}}
-        proxied = _proxy_or_error(
-            _designer_proxy("POST", "/api/v1/workflows/run", json_body=proxy_body)
+        proxied = proxy_or_error(
+            designer_proxy("POST", "/api/v1/workflows/run", json_body=proxy_body)
         )
         if proxied is not None:
             return proxied
@@ -2912,8 +2968,8 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_designer_components():
         """Return all available primitives formatted for the designer."""
         # Proxy: GET /api/v1/components
-        proxied = _proxy_or_error(
-            _designer_proxy("GET", "/api/v1/components")
+        proxied = proxy_or_error(
+            designer_proxy("GET", "/api/v1/components")
         )
         if proxied is not None:
             return proxied
@@ -2939,8 +2995,8 @@ def register_misc_routes(app, context: ApiRouteContext):
             "edges": body.get("edges", []),
             "metadata": body.get("metadata", {}),
         }
-        proxied = _proxy_or_error(
-            _designer_proxy("PUT", f"/api/v1/workflows/{workflow_id}", json_body=proxy_body)
+        proxied = proxy_or_error(
+            designer_proxy("PUT", f"/api/v1/workflows/{workflow_id}", json_body=proxy_body)
         )
         if proxied is not None:
             return proxied
@@ -2959,8 +3015,8 @@ def register_misc_routes(app, context: ApiRouteContext):
         # Proxy: POST /api/v1/workflows/evaluate
         # Note: evaluate is effectively a commit to the evaluation database in the designer
         # which our dashboard syncs from.
-        proxied = _proxy_or_error(
-            _designer_proxy("POST", "/api/v1/workflows/evaluate", json_body={"workflow": workflow})
+        proxied = proxy_or_error(
+            designer_proxy("POST", "/api/v1/workflows/evaluate", json_body={"workflow": workflow})
         )
         if proxied is not None:
             return proxied
@@ -2971,8 +3027,8 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
     def designer_v1_proxy(path):
         """Catch-all proxy for designer API v1 routes when embedded."""
-        result = _proxy_or_error(
-            _designer_proxy(request.method, f"/api/v1/{path}",
+        result = proxy_or_error(
+            designer_proxy(request.method, f"/api/v1/{path}",
                             json_body=request.get_json(silent=True) if request.method in ("POST", "PUT") else None,
                             params=request.args)
         )
@@ -2985,8 +3041,8 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_designer_load(workflow_id):
         """Load a specific workflow definition."""
         # Proxy: GET /api/v1/workflows/{workflow_id}
-        proxied = _proxy_or_error(
-            _designer_proxy("GET", f"/api/v1/workflows/{workflow_id}")
+        proxied = proxy_or_error(
+            designer_proxy("GET", f"/api/v1/workflows/{workflow_id}")
         )
         if proxied is not None:
             return proxied
@@ -2998,8 +3054,8 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_designer_list_workflows():
         """List all saved workflows."""
         # Proxy: GET /api/v1/workflows
-        proxied = _proxy_or_error(
-            _designer_proxy("GET", "/api/v1/workflows")
+        proxied = proxy_or_error(
+            designer_proxy("GET", "/api/v1/workflows")
         )
         if proxied is not None:
             return proxied
@@ -3064,7 +3120,7 @@ def register_misc_routes(app, context: ApiRouteContext):
         if not workflow_json:
             return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
 
-        from .designer_utils import generate_python_module
+        from ..designer_utils import generate_python_module
         code = generate_python_module(workflow_json)
         return jsonify({"success": True, "code": code})
 
@@ -3075,8 +3131,8 @@ def register_misc_routes(app, context: ApiRouteContext):
         n = request.args.get("n", 20, type=int)
 
         # Proxy: GET /api/v1/import/survivors
-        proxied = _proxy_or_error(
-            _designer_proxy("GET", "/api/v1/import/survivors", params={"n": n})
+        proxied = proxy_or_error(
+            designer_proxy("GET", "/api/v1/import/survivors", params={"n": n})
         )
         if proxied is not None:
             return proxied
@@ -3093,8 +3149,8 @@ def register_misc_routes(app, context: ApiRouteContext):
             return jsonify({"success": False, "error": "Missing result_id"}), 400
 
         # Proxy: POST /api/v1/import/survivors/{result_id}
-        proxied = _proxy_or_error(
-            _designer_proxy("POST", f"/api/v1/import/survivors/{result_id}")
+        proxied = proxy_or_error(
+            designer_proxy("POST", f"/api/v1/import/survivors/{result_id}")
         )
         if proxied is not None:
             return proxied
@@ -3202,7 +3258,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_aria_autonomy_get():
         """Get current autonomy trust level and per-decision-type settings."""
         try:
-            autonomy, _ = _get_autonomy(notebook_path)
+            autonomy, _ = get_autonomy(notebook_path)
             return jsonify(autonomy.get_config())
         except Exception as e:
             logger.error(f"Error in GET /api/aria/autonomy: {e}")
@@ -3213,7 +3269,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_aria_autonomy_put():
         """Update autonomy trust level or per-decision-type overrides."""
         try:
-            autonomy, _ = _get_autonomy(notebook_path)
+            autonomy, _ = get_autonomy(notebook_path)
             body = request.get_json(force=True, silent=True) or {}
             config = autonomy.update_config(body)
             return jsonify(config)
@@ -3226,7 +3282,7 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_aria_activity():
         """Get Aria's recent autonomous decisions and their outcomes."""
         try:
-            autonomy, store = _get_autonomy(notebook_path)
+            autonomy, store = get_autonomy(notebook_path)
             limit = request.args.get("limit", 20, type=int)
             # Combine in-memory actions with persisted ones
             memory_actions = autonomy.get_recent_activity(limit)
@@ -3250,8 +3306,8 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/v1/components", methods=["GET"])
     def api_v1_components():
         """Return designer components — proxy to designer API or fallback to local DB."""
-        proxied = _proxy_or_error(
-            _designer_proxy("GET", "/api/v1/components", params=dict(request.args))
+        proxied = proxy_or_error(
+            designer_proxy("GET", "/api/v1/components", params=dict(request.args))
         )
         if proxied is not None:
             return proxied
@@ -3280,8 +3336,8 @@ def register_misc_routes(app, context: ApiRouteContext):
         sort_by = request.args.get("sort_by", "loss_ratio")
         min_novelty = request.args.get("min_novelty", 0.0, type=float)
 
-        proxied = _proxy_or_error(
-            _designer_proxy("GET", "/api/v1/import/survivors",
+        proxied = proxy_or_error(
+            designer_proxy("GET", "/api/v1/import/survivors",
                             params={"n": n, "sort_by": sort_by, "min_novelty": min_novelty})
         )
         if proxied is not None:
@@ -3307,8 +3363,8 @@ def register_misc_routes(app, context: ApiRouteContext):
     @app.route("/api/v1/import/survivors/<result_id>", methods=["POST"])
     def api_v1_import_single(result_id):
         """Import a single survivor — proxy to designer or local fallback."""
-        proxied = _proxy_or_error(
-            _designer_proxy("POST", f"/api/v1/import/survivors/{result_id}")
+        proxied = proxy_or_error(
+            designer_proxy("POST", f"/api/v1/import/survivors/{result_id}")
         )
         if proxied is not None:
             return proxied
@@ -3337,10 +3393,10 @@ def register_misc_routes(app, context: ApiRouteContext):
 
         # SSE streaming endpoints need special handling — don't buffer the response
         if "stream" in subpath:
-            return _proxy_stream(method, f"/api/v1/{subpath}", json_body=json_body, params=params)
+            return proxy_stream(method, f"/api/v1/{subpath}", json_body=json_body, params=params)
 
-        resp = _designer_proxy(method, f"/api/v1/{subpath}", json_body=json_body, params=params)
-        result = _proxy_or_error(resp)
+        resp = designer_proxy(method, f"/api/v1/{subpath}", json_body=json_body, params=params)
+        result = proxy_or_error(resp)
         if result is not None:
             return result
         return jsonify({"error": f"Designer backend unavailable for /api/v1/{subpath}"}), 502
@@ -3388,5 +3444,4 @@ def register_misc_routes(app, context: ApiRouteContext):
         if index_path and not _is_asset_path(path):
             return send_from_directory(app.static_folder, "index.html")
         return "Not found", 404
-
 

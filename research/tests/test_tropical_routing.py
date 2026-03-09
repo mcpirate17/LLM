@@ -4,6 +4,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+pytestmark = pytest.mark.unit
+
 
 def test_tropical_router_and_moe_in_registry():
     """Verify tropical_router and tropical_moe are registered primitives."""

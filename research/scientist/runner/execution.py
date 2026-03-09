@@ -14,78 +14,46 @@ Supports background execution controlled from the dashboard.
 from __future__ import annotations
 
 import gc
-import hashlib
 import json
 import copy
 import math
 import os
-import queue
-import random
-import re
-import shlex
-import threading
 import time
 import traceback
-import uuid
-import functools
 from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ...synthesis.grammar import GrammarConfig, generate_layer_graph, batch_generate
-from ..native_runner import (
-    compile_model_native_first as compile_model,
-    record_native_abi_parity_result,
-    reset_native_runner_telemetry,
-)
+from ...synthesis.grammar import GrammarConfig, batch_generate
+from ..native_runner import compile_model_native_first as compile_model
 from ...synthesis.validator import validate_graph
 from ...synthesis.serializer import graph_to_json, graph_from_json, graph_summary
-from ...synthesis.primitives import get_primitive, list_primitives, PROTECTED_OPS
-from ...eval.sandbox import safe_eval
+from ...synthesis.primitives import PROTECTED_OPS
 from ...eval.metrics import novelty_score
 from ...eval.flops import estimate_flops
-from ...eval.baseline import TransformerBaseline
-from ...eval.fingerprint import compute_fingerprint, BehavioralFingerprint
+from ...eval.fingerprint import compute_fingerprint
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.perf_budget import evaluate_perf_budget_gate
 from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ...training.training_program import synthesize_training_program, synthesize_training_program_batch
-from ...training.data_pipeline import CorpusConfig, CorpusTokenBatcher
+from ...training.training_program import synthesize_training_program_batch
 from ...training.checkpointing import CheckpointManager
-from ...orchestrator.executor import WorkerPoolOrchestrator
-from ..persona import Aria, get_aria
 from ..notebook import LabNotebook, ExperimentEntry
-from ..evidence import (
-    build_evidence_pack,
-    validate_selection_decision_log,
-)
-from ..preregistration import (
-    HypothesisPreregistration,
-    PreregistrationError,
-    validate_preregistration,
-)
-from ...healer import CodeHealer
-from ...healer.core import HealerTaskSpec
-from ..llm.context import (build_rich_context, build_investigation_context,
-                          build_validation_context, build_mode_selection_context,
-                          build_hypothesis_context, build_go_no_go_context,
-                          build_knowledge_extraction_context,
-                          build_campaign_formulation_context,
-                          build_manual_start_fallback_context)
-from ..llm.decision import NextExperimentDecisionPlanner
+from ..llm.context import build_validation_context
 from ..shared_utils import resolve_device
 
 import logging
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig, LiveProgress, _LIVE_LOSS_CURVE_MAX_POINTS, _TRAINING_STEP_SSE_EVERY
+from ._types import RunConfig, LiveProgress
 
 from ._helpers import _native_proactive_gating
-
+from .execution_experiment_phase3 import _ExecutionExperimentPhase3Mixin
+from .execution_validation_phase3 import _ExecutionValidationPhase3Mixin
+from .execution_micro_train_phase3 import _ExecutionMicroTrainPhase3Mixin
 
 @dataclass(slots=True)
 class ModelCandidate:
@@ -100,10 +68,11 @@ class ModelCandidate:
     arch_spec_json: Optional[str] = None
     fingerprint: str = ""
 
-
-
-
-class _ExecutionMixin:
+class _ExecutionMixin(
+    _ExecutionExperimentPhase3Mixin,
+    _ExecutionValidationPhase3Mixin,
+    _ExecutionMicroTrainPhase3Mixin,
+):
     """Experiment/investigation/validation/scale-up threads, micro-train."""
 
     def _run_experiment_thread(self, exp_id: str, config: RunConfig,
@@ -485,98 +454,7 @@ class _ExecutionMixin:
 
         # Generate graphs
         if config.model_source == "morphological_box":
-            # Morphological box evaluation path (arch_builder models, no graph JSON)
-            candidates = self._generate_candidates(config, config.n_programs, "morphological_box")
-            results["total"] = len(candidates)
-
-            dev = resolve_device(config.device)
-            dev_str = str(dev)
-
-            for i, cand in enumerate(candidates):
-                if self._stop_event.is_set():
-                    break
-
-                with self._lock:
-                    self._progress.current_program = i + 1
-                    self._progress.current_fingerprint = (cand.fingerprint or "")[:10]
-                    self._progress.elapsed_seconds = time.time() - t_start
-
-                model = cand.model
-                if model is None:
-                    continue
-
-                # Stage 0/0.5
-                try:
-                    sandbox_result = self._safe_eval_for_stage(
-                        model,
-                        stage_tag="morph_candidate_screening",
-                        batch_size=2,
-                        seq_len=min(128, config.max_seq_len),
-                        vocab_size=config.vocab_size,
-                        device=dev_str,
-                    )
-                except Exception as e:
-                    logger.error("Error evaluating morph candidate %d: %s", i, e)
-                    continue
-
-                s0_passed = bool(sandbox_result.passed)
-                s05_passed = (sandbox_result.stability_score >= config.stage05_stability_threshold
-                              and sandbox_result.causality_passed)
-                if s0_passed:
-                    results["stage0_passed"] += 1
-                    with self._lock: self._progress.stage0_passed += 1
-                if s05_passed:
-                    results["stage05_passed"] += 1
-                    with self._lock: self._progress.stage05_passed += 1
-
-                if not s0_passed or not s05_passed:
-                    continue
-
-                # Stage 1 (sync, since we already have a compiled model)
-                s1_result = self._micro_train(
-                    model,
-                    config,
-                    dev,
-                    seed=self._stable_seed(exp_id, i, "morphology"),
-                )
-                s1_passed = bool(s1_result.get("passed", False))
-                if s1_passed:
-                    results["stage1_passed"] += 1
-                    with self._lock: self._progress.stage1_passed += 1
-
-                program_metrics: Dict[str, Any] = {}
-                try:
-                    program_metrics.update(self._extract_sandbox_metrics(sandbox_result))
-                except Exception:
-                    pass
-                try:
-                    program_metrics["param_count"] = sandbox_result.param_count
-                except Exception:
-                    pass
-
-                # Merge S1 metrics
-                for k in ("initial_loss", "final_loss", "min_loss", "loss_ratio",
-                          "throughput", "avg_step_time_ms", "total_train_time_ms",
-                          "validation_loss", "validation_loss_ratio", "generalization_gap",
-                          "discovery_loss", "discovery_loss_ratio"):
-                    if k in s1_result:
-                        program_metrics[k] = s1_result.get(k)
-                self._merge_s1_telemetry(program_metrics, s1_result)
-
-                nb.record_program_result(
-                    experiment_id=exp_id,
-                    graph_fingerprint=cand.fingerprint,
-                    graph_json="{}",
-                    stage0_passed=s0_passed,
-                    stage05_passed=s05_passed,
-                    stage1_passed=s1_passed,
-                    loss_ratio=s1_result.get("loss_ratio"),
-                    final_loss=s1_result.get("final_loss"),
-                    model_source="morphological_box",
-                    arch_spec_json=cand.arch_spec_json,
-                    **program_metrics,
-                )
-
+            self._run_morphological_screening(exp_id, config, nb, results, t_start)
             return results
 
         if config.model_source == "fingerprint_refine":
@@ -629,120 +507,16 @@ class _ExecutionMixin:
                     evidence=json.dumps({"op_distribution": op_distribution}, sort_keys=True),
                 )
 
-        with self._lock:
-            self._progress.total_programs = len(graphs)
-            self._progress.status = "evaluating"
-
-        logger.info(
-            "Experiment %s: generated %d graphs (depth=%d, ops=%d, dim=%d, device=%s)",
-            exp_id[:8], len(graphs), grammar.max_depth, grammar.max_ops,
-            config.model_dim, config.device,
+        self._log_generated_graph_observation(nb, exp_id, graphs, grammar, config)
+        dev, dev_str, orchestrator, candidate_batch_size = self._prepare_screening_orchestrator(config, results)
+        graphs, _existing_fps = self._dedup_graph_candidates(
+            nb=nb,
+            graphs=graphs,
+            grammar=grammar,
+            config=config,
+            exp_id=exp_id,
+            results=results,
         )
-
-        nb.add_entry(ExperimentEntry(
-            entry_type="observation",
-            title=f"Generated {len(graphs)} computation graphs",
-            content=f"Grammar: depth={grammar.max_depth}, ops={grammar.max_ops}, "
-                    f"dim={config.model_dim}, math_space_weight={config.math_space_weight}",
-            experiment_id=exp_id,
-        ))
-
-        dev = resolve_device(config.device)
-        dev_str = str(dev)
-
-        # Z12: Detect available GPUs for distributed search
-        if torch.cuda.is_available():
-            num_gpus = torch.cuda.device_count()
-            devices = [f"cuda:{i}" for i in range(num_gpus)]
-            # 2 workers per GPU usually helps overlap data loading
-            num_workers = num_gpus * 2
-        else:
-            devices = ["cpu"]
-            num_workers = 1
-
-        # Z12: Multi-node distributed workers
-        remote_workers = [
-            w.strip() for w in os.environ.get("ARIA_REMOTE_WORKERS", "").split(",")
-            if w.strip()
-        ]
-
-        # Z6: Initialize asynchronous program orchestrator
-        orchestrator = WorkerPoolOrchestrator(
-            train_fn=lambda m, c, s, d: self._micro_train_async(m, c, s, d),
-            num_workers=num_workers,
-            max_queue_size=config.n_programs,
-            devices=devices,
-            remote_workers=remote_workers
-        )
-        candidate_batch_size = max(1, min(32, int(math.sqrt(max(1, config.n_programs)))))
-        results["candidate_batch_size"] = candidate_batch_size
-
-        time.time()
-
-        # Dedup: load fingerprints already evaluated in previous experiments
-        # to avoid wasting compute re-testing identical architectures.
-        try:
-            _existing_fps = {
-                r[0] for r in nb.conn.execute(
-                    "SELECT DISTINCT graph_fingerprint FROM program_results"
-                ).fetchall() if r[0]
-            }
-        except Exception:
-            _existing_fps = set()
-
-        # Pre-filter known fingerprints and adaptively generate more if needed
-        original_count = len(graphs)
-        _dedup_max_rounds = 3
-        _dedup_target = max(1, int(original_count * 0.5))  # want at least 50% novel
-        for _dedup_round in range(_dedup_max_rounds):
-            novel = []
-            seen_this_batch = set()
-            for g in graphs:
-                fp = g.fingerprint()
-                if fp not in _existing_fps and fp not in seen_this_batch:
-                    novel.append(g)
-                    seen_this_batch.add(fp)
-            graphs = novel
-            if len(graphs) >= _dedup_target or config.model_source == "fingerprint_refine":
-                break
-            # Generate extra graphs to compensate for high dedup rate
-            shortfall = original_count - len(graphs)
-            if shortfall <= 0:
-                break
-            extra = batch_generate(min(shortfall * 2, original_count), grammar)
-            graphs.extend(extra)
-            logger.info(
-                "Experiment %s dedup round %d: %d novel / %d generated, "
-                "added %d extra candidates",
-                exp_id[:8], _dedup_round + 1, len(novel), original_count,
-                len(extra),
-            )
-
-        # Mark all novel fingerprints as seen for within-run dedup
-        for g in graphs:
-            _existing_fps.add(g.fingerprint())
-
-        dedup_rate = 1.0 - (len(graphs) / max(original_count, 1))
-        results["skipped_dedup"] = original_count - len(graphs)
-        results["dedup_rate"] = round(dedup_rate, 3)
-        results["dedup_novel_count"] = len(graphs)
-        results["dedup_known_fingerprints"] = len(_existing_fps)
-        results["total"] = len(graphs)  # update to reflect actual novel count
-
-        if dedup_rate > 0.1:
-            logger.info(
-                "Experiment %s dedup: %d/%d candidates were duplicates (%.0f%% dedup rate), "
-                "%d novel candidates remain, %d known fingerprints in DB",
-                exp_id[:8], original_count - len(graphs), original_count,
-                dedup_rate * 100, len(graphs), len(_existing_fps),
-            )
-        if dedup_rate > 0.8:
-            logger.warning(
-                "Experiment %s: grammar diversity exhaustion — %.0f%% dedup rate. "
-                "Consider increasing grammar depth/ops or switching to refinement mode.",
-                exp_id[:8], dedup_rate * 100,
-            )
-
         with self._lock:
             self._progress.total_programs = len(graphs)
 
@@ -1451,24 +1225,11 @@ class _ExecutionMixin:
             logger.info("Resuming validation from candidate %d", resume_from_candidate)
 
         try:
-            results = {
-                "total": len(result_ids), "stage0_passed": 0, "stage05_passed": 0,
-                "stage1_passed": 0, "novel_count": 0,
-                "best_loss_ratio": None, "best_novelty_score": None,
-                "survivors": [], "validation_results": [],
-            }
-
-            dev = resolve_device(config.device)
-            dev_str = str(dev)
-
-            val_config = RunConfig.from_dict(config.to_dict())
-            val_config.stage1_steps = config.validation_steps
-            val_config.stage1_batch_size = config.validation_batch_size
-            val_config.max_seq_len = config.validation_seq_len
-
-            # Fetch all sources at once to avoid N+1 queries
-            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+            results, dev, dev_str, val_config, source_map = self._prepare_validation_state(
+                config=config,
+                result_ids=result_ids,
+                nb=nb,
+            )
 
             for prog_idx, source_result_id in enumerate(result_ids):
                 if prog_idx < resume_from_candidate:
@@ -1504,120 +1265,25 @@ class _ExecutionMixin:
                 arch_spec_json_str = source.get("arch_spec_json")
                 model_source = source.get("model_source") or "graph_synthesis"
 
-                # Get best training program from investigation
-                leaderboard_entries = nb.get_leaderboard()
-                best_tp_json = None
-                for entry in leaderboard_entries:
-                    if entry.get("result_id") == source_result_id:
-                        best_tp_json = entry.get("investigation_best_training")
-                        break
+                best_tp_json = self._get_validation_best_training_json(nb, source_result_id)
 
-                # Multi-seed evaluation (threaded validation)
-                seed_results = []
-                for seed in range(config.validation_n_seeds):
-                    if self._stop_event.is_set():
-                        break
-
-                    torch.manual_seed(seed * 42 + 7)
-
-                    # Reconstruct model fresh
-                    init_scheme = "default"
-                    try:
-                        if model_source == "morphological_box" and arch_spec_json_str:
-                            from ...morphological_box import ArchSpec
-                            from ...arch_builder import build_model, BuildConfig
-                            spec_data = self._cached_json_load(arch_spec_json_str)
-                            spec = ArchSpec(**spec_data)
-                            build_cfg = BuildConfig(
-                                dim=config.model_dim,
-                                n_layers=config.n_layers,
-                                vocab_size=config.vocab_size,
-                                max_seq_len=config.validation_seq_len,
-                            )
-                            model = build_model(spec, build_cfg)
-                        elif graph_json_str:
-                            graph = graph_from_json(graph_json_str)
-                            layer_graphs = [graph] * config.n_layers
-                            model = compile_model(
-                                layer_graphs,
-                                vocab_size=config.vocab_size,
-                                max_seq_len=config.validation_seq_len,
-                            )
-                        else:
-                            continue
-                        # Multi-init: use Xavier uniform for the last seed
-                        if seed == config.validation_n_seeds - 1:
-                            init_scheme = "xavier_uniform"
-                            for p in model.parameters():
-                                if p.dim() >= 2:
-                                    nn.init.xavier_uniform_(p)
-                    except Exception as e:
-                        logger.debug(f"Model reconstruction failed: {e}")
-                        continue
-
-                    self._emit_event("validation_progress", {
+                seed_results = self._run_validation_seed_sweep(
+                    exp_id=exp_id,
+                    source_result_id=source_result_id,
+                    model_source=model_source,
+                    arch_spec_json_str=arch_spec_json_str,
+                    graph_json_str=graph_json_str,
+                    config=config,
+                    val_config=val_config,
+                    dev=dev,
+                    best_tp_json=best_tp_json,
+                    progress_payload={
                         "experiment_id": exp_id,
                         "current": prog_idx + 1,
                         "total": len(result_ids),
                         "source_result_id": source_result_id,
-                        "seed": seed + 1,
-                        "total_seeds": config.validation_n_seeds,
-                        "status": f"seed {seed + 1}/{config.validation_n_seeds}",
-                    })
-
-                    # Train (use best training program if available)
-                    if best_tp_json:
-                        try:
-                            tp_data = self._cached_json_load(best_tp_json)
-                            tp = synthesize_training_program(
-                                n_steps=config.validation_steps,
-                                max_seq_len=config.validation_seq_len,
-                                seed=tp_data.get("seed", seed),
-                            )
-                            s1_result = self._train_with_program(
-                                model,
-                                tp,
-                                val_config,
-                                dev,
-                                seed=self._stable_seed(exp_id, source_result_id, seed, "validation_inline_tp"),
-                            )
-                        except Exception:
-                            s1_result = self._micro_train(
-                                model,
-                                val_config,
-                                dev,
-                                seed=self._stable_seed(exp_id, source_result_id, seed, "validation_inline_micro"),
-                            )
-                    else:
-                        s1_result = self._micro_train(
-                            model,
-                            val_config,
-                            dev,
-                            seed=self._stable_seed(exp_id, source_result_id, seed, "validation_inline_micro"),
-                        )
-
-                    seed_results.append({
-                        "seed": seed,
-                        "init_scheme": init_scheme,
-                        "passed": s1_result.get("passed", False),
-                        "loss_ratio": s1_result.get("loss_ratio"),
-                        "final_loss": s1_result.get("final_loss"),
-                        "n_train_steps": s1_result.get("n_train_steps"),
-                        "final_lr": s1_result.get("final_lr"),
-                        "training_program_json": s1_result.get("training_program_json"),
-                        "optimizer_class": s1_result.get("optimizer_class"),
-                        "optimizer_lr": s1_result.get("optimizer_lr"),
-                        "optimizer_weight_decay": s1_result.get("optimizer_weight_decay"),
-                        "optimizer_momentum": s1_result.get("optimizer_momentum"),
-                        "optimizer_beta1": s1_result.get("optimizer_beta1"),
-                        "optimizer_beta2": s1_result.get("optimizer_beta2"),
-                    })
-
-                    del model
-                    if dev.type == "cuda":
-                        torch.cuda.empty_cache()
-                    gc.collect()
-
+                    },
+                )
 
                 # Skip candidates where no seed could reconstruct the model
                 if not seed_results:
@@ -3386,33 +3052,17 @@ class _ExecutionMixin:
             random_mode = str(config.data_mode or "random").strip().lower() == "random"
             _seed_int = int(seed)
 
-            def _make_random_batch(step: int) -> torch.Tensor:
-                """Generate a deterministic random batch for a given step."""
-                torch.manual_seed(_seed_int * 100_000 + step)
-                return torch.randint(
-                    0, int(config.vocab_size),
-                    (config.stage1_batch_size, seq_len),
-                    device=dev,
-                )
-
             # --- Part 1: Discovery Evaluation (Fast) ---
-            # Evaluate on a few random batches to get "discovery_loss"
-            discovery_steps = min(5, config.stage1_steps // 10)
-            discovery_losses = []
-            model.eval()
-            with torch.no_grad():
-                for ds in range(discovery_steps):
-                    d_batch = _make_random_batch(ds + 9999) # different offset
-                    with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=True):
-                        d_logits = model(d_batch)
-                        d_loss = F.cross_entropy(d_logits[:, :-1].reshape(-1, config.vocab_size), d_batch[:, 1:].reshape(-1))
-                    discovery_losses.append(d_loss.item())
-            
-            if discovery_losses:
-                result["discovery_loss"] = sum(discovery_losses) / len(discovery_losses)
+            discovery_loss_fast = self._micro_train_discovery_eval(
+                model=model,
+                config=config,
+                dev=dev,
+                seed_int=_seed_int,
+                seq_len=seq_len,
+            )
+            if discovery_loss_fast is not None:
+                result["discovery_loss"] = discovery_loss_fast
                 # Note: discovery_loss_ratio needs a baseline; we'll compute it in _execute_experiment
-            
-            model.train()
             # --- Part 2: Main Training (Validation Channel) ---
             
             # Implementation of train/val split for Stage 1
@@ -3460,7 +3110,17 @@ class _ExecutionMixin:
                         return loss_t, grad_norm_t
 
                     for wi in range(min(warmup_steps, int(config.stage1_steps))):
-                        static_input_ids.copy_(_make_random_batch(wi), non_blocking=True)
+                        static_input_ids.copy_(
+                            self._micro_train_make_random_batch(
+                                seed_int=_seed_int,
+                                step=wi,
+                                batch_size=config.stage1_batch_size,
+                                seq_len=seq_len,
+                                vocab_size=config.vocab_size,
+                                dev=dev,
+                            ),
+                            non_blocking=True,
+                        )
                         loss_t, grad_norm_t = _graph_step()
                         captured_loss.copy_(loss_t.detach())
                         captured_grad_norm.copy_(torch.as_tensor(grad_norm_t, device=dev).detach())
@@ -3477,7 +3137,17 @@ class _ExecutionMixin:
                         if self._stop_event.is_set():
                             break
                         t_step = time.perf_counter()
-                        static_input_ids.copy_(_make_random_batch(step), non_blocking=True)
+                        static_input_ids.copy_(
+                            self._micro_train_make_random_batch(
+                                seed_int=_seed_int,
+                                step=step,
+                                batch_size=config.stage1_batch_size,
+                                seq_len=seq_len,
+                                vocab_size=config.vocab_size,
+                                dev=dev,
+                            ),
+                            non_blocking=True,
+                        )
                         graph.replay()
                         t_step_end = time.perf_counter()
                         step_time_ms = (t_step_end - t_step) * 1000.0
@@ -3504,12 +3174,27 @@ class _ExecutionMixin:
                             return result
                         if step == 0:
                             initial_loss = loss_val
+                            _es_best_loss_cg = loss_val
+                            _es_no_improve_cg = 0
                         final_loss = loss_val
                         min_loss = min(min_loss, loss_val)
                         grad_norm_sum += grad_norm
                         grad_norm_sq_sum += grad_norm * grad_norm
                         grad_norm_max = max(grad_norm_max, grad_norm)
                         grad_norm_count += 1
+
+                        # Early stopping (CUDA graph path)
+                        if loss_val < _es_best_loss_cg - config.early_stop_min_delta:
+                            _es_best_loss_cg = loss_val
+                            _es_no_improve_cg = 0
+                        else:
+                            _es_no_improve_cg += check_interval
+                        if (step >= config.early_stop_min_steps
+                                and _es_no_improve_cg >= config.early_stop_patience):
+                            result["early_stopped"] = True
+                            result["early_stop_step"] = step
+                            step_count = step + 1
+                            break
                     ran_cuda_graph = True
                 except Exception as e:
                     result["cuda_graph_fallback_reason"] = str(e)
@@ -3525,7 +3210,14 @@ class _ExecutionMixin:
                     data_t0 = time.perf_counter()
                     with _trace_ctx("data_sampling"):
                         if random_mode:
-                            input_ids = _make_random_batch(step)
+                            input_ids = self._micro_train_make_random_batch(
+                                seed_int=_seed_int,
+                                step=step,
+                                batch_size=config.stage1_batch_size,
+                                seq_len=seq_len,
+                                vocab_size=config.vocab_size,
+                                dev=dev,
+                            )
                         else:
                             input_ids = self._sample_training_input_ids(
                                 config=config,
@@ -3606,9 +3298,28 @@ class _ExecutionMixin:
                     loss_val = loss.item()
                     if step == 0:
                         initial_loss = loss_val
+                        _es_best_loss = loss_val
+                        _es_steps_since_improve = 0
                     final_loss = loss_val
                     min_loss = min(min_loss, loss_val)
                     total_tokens += input_ids.numel()
+
+                    # Early stopping: break if loss plateaus
+                    if loss_val < _es_best_loss - config.early_stop_min_delta:
+                        _es_best_loss = loss_val
+                        _es_steps_since_improve = 0
+                    else:
+                        _es_steps_since_improve += 1
+                    if (step >= config.early_stop_min_steps
+                            and _es_steps_since_improve >= config.early_stop_patience):
+                        result["early_stopped"] = True
+                        result["early_stop_step"] = step
+                        logger.debug(
+                            "    early stop at step %d/%d: loss=%.4f plateau for %d steps",
+                            step, config.stage1_steps, loss_val, config.early_stop_patience,
+                        )
+                        step_count += 1
+                        break
 
                     step_count += 1
                     step_time_sum_ms += step_time_ms
@@ -3655,76 +3366,30 @@ class _ExecutionMixin:
             validation_loss = None
             validation_loss_ratio = None
             generalization_gap = None
-            val_batches = max(1, int(getattr(config, "stage1_val_batches", 0) or 0))
-            compute_val = bool(getattr(config, "stage1_compute_val_loss", True))
-            val_batch_size = int(getattr(config, "stage1_val_batch_size", 0) or config.stage1_batch_size)
-            val_frac = float(getattr(config, "corpus_val_fraction", 0.0) or 0.0)
-            if compute_val and val_batches > 0 and val_frac > 0.0:
-                if str(config.data_mode or "random").strip().lower() == "corpus":
-                    try:
-                        model.eval()
-                        losses = []
-                        with torch.no_grad():
-                            for i in range(val_batches):
-                                input_ids = self._sample_training_input_ids(
-                                    config=config,
-                                    dev=dev,
-                                    batch_size=val_batch_size,
-                                    seq_len=seq_len,
-                                    seed=seed + 10_000 + i,
-                                    split="val",
-                                )
-                                if input_ids is None:
-                                    continue
-                                with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
-                                                        enabled=(dev.type == "cuda")):
-                                    logits = model(input_ids)
-                                    loss = F.cross_entropy(
-                                        logits[:, :-1].reshape(-1, logits.shape[-1]),
-                                        input_ids[:, 1:].reshape(-1),
-                                    )
-                                if loss is not None and torch.isfinite(loss):
-                                    losses.append(float(loss.item()))
-                        if losses:
-                            validation_loss = sum(losses) / len(losses)
-                    except Exception as e:
-                        result["validation_loss_error"] = str(e)
-                    finally:
-                        model.train()
+            try:
+                validation_loss = self._micro_train_optional_validation_loss(
+                    model=model,
+                    config=config,
+                    dev=dev,
+                    seq_len=seq_len,
+                    seed=seed,
+                )
+            except Exception as e:
+                result["validation_loss_error"] = str(e)
 
             # Optional discovery loss on random tokens (fast triage signal)
             discovery_loss = None
             discovery_loss_ratio = None
-            discovery_batches = max(1, int(getattr(config, "stage1_discovery_batches", 0) or 0))
-            compute_discovery = bool(getattr(config, "stage1_compute_discovery_loss", True))
-            discovery_batch_size = int(getattr(config, "stage1_discovery_batch_size", 0) or config.stage1_batch_size)
-            if compute_discovery and discovery_batches > 0:
-                try:
-                    model.eval()
-                    losses = []
-                    with torch.no_grad():
-                        for i in range(discovery_batches):
-                            torch.manual_seed(int(seed) * 10_000 + 3_000 + i)
-                            input_ids = torch.randint(
-                                0, int(config.vocab_size),
-                                (discovery_batch_size, seq_len),
-                                device=dev,
-                            )
-                            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
-                                                    enabled=(dev.type == "cuda")):
-                                logits = model(input_ids)
-                                loss = F.cross_entropy(
-                                    logits[:, :-1].reshape(-1, logits.shape[-1]),
-                                    input_ids[:, 1:].reshape(-1),
-                                )
-                            if loss is not None and torch.isfinite(loss):
-                                losses.append(float(loss.item()))
-                    if losses:
-                        discovery_loss = sum(losses) / len(losses)
-                except Exception as e:
-                    result["discovery_loss_error"] = str(e)
-                finally:
-                    model.train()
+            try:
+                discovery_loss = self._micro_train_optional_discovery_loss(
+                    model=model,
+                    config=config,
+                    dev=dev,
+                    seq_len=seq_len,
+                    seed=seed,
+                )
+            except Exception as e:
+                result["discovery_loss_error"] = str(e)
 
             if validation_loss is not None and initial_loss:
                 validation_loss_ratio = validation_loss / max(initial_loss, 1e-6)
@@ -4029,9 +3694,27 @@ class _ExecutionMixin:
                 loss_val = loss.item()
                 if step == 0:
                     initial_loss = loss_val
+                    _es_best_loss = loss_val
+                    _es_steps_since_improve = 0
                 final_loss = loss_val
                 min_loss = min(min_loss, loss_val)
                 total_tokens += input_ids.numel()
+
+                # Early stopping: break if loss plateaus
+                if loss_val < _es_best_loss - config.early_stop_min_delta:
+                    _es_best_loss = loss_val
+                    _es_steps_since_improve = 0
+                else:
+                    _es_steps_since_improve += 1
+                if (step >= config.early_stop_min_steps
+                        and _es_steps_since_improve >= config.early_stop_patience):
+                    result["early_stopped"] = True
+                    result["early_stop_step"] = step
+                    logger.debug(
+                        "    early stop at step %d/%d: loss=%.4f plateau for %d steps",
+                        step, n_steps, loss_val, config.early_stop_patience,
+                    )
+                    break
 
                 step_times.append(step_time_ms)
                 grad_norms.append(grad_norm)

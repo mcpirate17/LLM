@@ -1,16 +1,16 @@
 """knowledge API route registration."""
 from __future__ import annotations
 
-import functools
-import time
-import datetime
-from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
+import logging
+from flask import jsonify, request
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_knowledge_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/knowledge")
     def api_knowledge():
@@ -25,7 +25,6 @@ def register_knowledge_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/knowledge/search")
     def api_knowledge_search():
@@ -43,18 +42,16 @@ def register_knowledge_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/knowledge/backfill", methods=["POST"])
     def api_knowledge_backfill():
         """Backfill missing knowledge categories from measured experiment data."""
         nb = LabNotebook(notebook_path)
         try:
-            result = _backfill_knowledge_from_real_data(nb)
-            return jsonify(result)
+            # _backfill_knowledge_from_real_data was never extracted from the
+            # monolith — stub until the actual implementation is located.
+            return jsonify({"status": "not_implemented", "detail": "Backfill helper not yet migrated"}), 501
         except Exception as e:
             logger.error(f"Error in /api/knowledge/backfill: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
-

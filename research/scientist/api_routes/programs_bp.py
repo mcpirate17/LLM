@@ -1,16 +1,25 @@
 """programs API route registration."""
 from __future__ import annotations
 
-import functools
+import json
+import logging
 import time
-import datetime
-from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
+import traceback
+from pathlib import Path
+from flask import jsonify, request
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ..runner import RunConfig
+from ..persona import get_aria
+from ..llm.context import build_program_context
+from ._helpers import get_runner, json_safe
+from ._strategy import annotate_qkv_usage, enrich_program_detail, program_lineage_chain
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_programs_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/programs/<result_id>")
     def api_program_detail(result_id):
@@ -22,14 +31,12 @@ def register_programs_routes(app, context: ApiRouteContext):
             if program is None:
                 return jsonify({"error": "Not found"}), 404
 
-            # Include training curve availability flag
             try:
                 curve = nb.get_training_curve(result_id)
                 program["has_training_curve"] = len(curve) > 0
             except Exception:
                 program["has_training_curve"] = False
 
-            # Try LLM explanation of fingerprint (non-critical)
             try:
                 ctx = build_program_context(program)
                 explanation = aria.explain_fingerprint(ctx)
@@ -38,20 +45,19 @@ def register_programs_routes(app, context: ApiRouteContext):
             except Exception as e:
                 logger.debug(f"LLM fingerprint explanation failed for {result_id}: {e}")
 
-            program = _enrich_program_detail(nb, program)
+            program = enrich_program_detail(nb, program)
 
             try:
-                program["lineage_chain"] = _program_lineage_chain(nb, result_id)
+                program["lineage_chain"] = program_lineage_chain(nb, result_id)
             except Exception:
                 program["lineage_chain"] = []
 
-            return jsonify(_json_safe(program))
+            return jsonify(json_safe(program))
         except Exception as e:
             logger.error(f"Error in /api/programs/{result_id}: {e}\n{traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/programs/<result_id>/lineage")
     def api_program_lineage(result_id: str):
@@ -61,8 +67,8 @@ def register_programs_routes(app, context: ApiRouteContext):
             program = nb.get_program_detail(result_id)
             if program is None:
                 return jsonify({"error": "Not found"}), 404
-            chain = _program_lineage_chain(nb, result_id)
-            return jsonify(_json_safe({
+            chain = program_lineage_chain(nb, result_id)
+            return jsonify(json_safe({
                 "result_id": result_id,
                 "lineage_chain": chain,
                 "depth": len(chain),
@@ -73,13 +79,11 @@ def register_programs_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/programs/<result_id>/refine-analysis")
     def api_program_refine_analysis(result_id):
-        """Data-driven refinement analysis for a program."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics, RefinementAnalyzer
+            from ..analytics import ExperimentAnalytics, RefinementAnalyzer
 
             program = nb.get_program_detail(result_id)
             if program is None:
@@ -88,34 +92,25 @@ def register_programs_routes(app, context: ApiRouteContext):
             analytics = ExperimentAnalytics(nb)
             analyzer = RefinementAnalyzer(analytics)
             analysis = analyzer.analyze_program_for_refinement(result_id, program)
-            return jsonify(_json_safe(analysis))
+            return jsonify(json_safe(analysis))
         except Exception as e:
             logger.error(f"Error in /api/programs/{result_id}/refine-analysis: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
 
-
     @app.route("/api/programs/<result_id>/morph", methods=["POST"])
     def api_program_morph(result_id):
-        """Generate scored mutation candidates for a program.
-
-        Request JSON:
-            intent: str — quality|compression|sparsity|novelty|balanced (default: balanced)
-            n_candidates: int — number of candidates to return (default: 5, max: 20)
-
-        Returns top-N mutation candidates ranked by intent score, with op diffs
-        and score breakdowns. No training or eval — fast, synchronous, <2s.
-        """
+        """Generate scored mutation candidates for a program."""
         nb = LabNotebook(notebook_path)
         try:
+            import math as _math
             import random as _random
             from ..synthesis.grammar import GrammarConfig
             from ..synthesis.serializer import graph_from_json, graph_to_json
             from ..synthesis.validator import validate_graph
             from ..search.evolution import _mutate_graph
 
-            # Import workflow converter for aria_designer format
             try:
                 import sys as _sys
                 _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
@@ -145,7 +140,6 @@ def register_programs_routes(app, context: ApiRouteContext):
             except Exception as e:
                 return jsonify({"error": f"Could not reconstruct graph: {e}"}), 400
 
-            # Get grammar and op success rates for scoring
             grammar = GrammarConfig()
             op_success: dict = {}
             try:
@@ -157,11 +151,9 @@ def register_programs_routes(app, context: ApiRouteContext):
             except Exception:
                 pass
 
-            # Optionally apply analysis-driven grammar hints
-            analysis_data = None
             if body.get("use_analysis"):
                 try:
-                    from .analytics import ExperimentAnalytics, RefinementAnalyzer
+                    from ..analytics import ExperimentAnalytics, RefinementAnalyzer
                     analytics = ExperimentAnalytics(nb)
                     analyzer = RefinementAnalyzer(analytics)
                     analysis_data = analyzer.analyze_program_for_refinement(result_id, program)
@@ -175,9 +167,8 @@ def register_programs_routes(app, context: ApiRouteContext):
                 except Exception as e:
                     logger.warning("Morph: analysis hint application failed: %s", e)
 
-            # Generate mutation pool
             rng = _random.Random(hash((result_id, intent, time.time())))
-            pool_size = n_candidates * 4  # oversample then pick top-N
+            pool_size = n_candidates * 4
             candidates = []
             seen_fps = set()
             parent_ops = sorted(set(
@@ -189,11 +180,7 @@ def register_programs_routes(app, context: ApiRouteContext):
                     child = _mutate_graph(parent_graph, grammar, rng)
                 except Exception:
                     continue
-                
-                # Z15: Prune dead branches (unreachable nodes) before validation 
-                # to prevent redundant complexity from bloat mutations.
                 child.prune_dead_branches()
-                
                 validation = validate_graph(child, max_ops=30, max_depth=20)
                 if not validation.valid:
                     continue
@@ -202,16 +189,12 @@ def register_programs_routes(app, context: ApiRouteContext):
                     continue
                 seen_fps.add(fp)
 
-                # Score using runner's scoring logic (inline for speed)
-                child_ops_list = [
-                    str(n.op_name) for n in child.nodes.values() if not n.is_input
-                ]
+                child_ops_list = [str(n.op_name) for n in child.nodes.values() if not n.is_input]
                 n_ops = max(1, int(child.n_ops()))
                 depth = max(1, int(child.depth()))
                 params = max(1.0, float(child.n_params_estimate()))
                 unique_ops = len(set(child_ops_list))
 
-                import math as _math
                 learned_quality = 0.5
                 if child_ops_list:
                     learned_quality = sum(op_success.get(op, 0.5) for op in child_ops_list) / len(child_ops_list)
@@ -242,7 +225,6 @@ def register_programs_routes(app, context: ApiRouteContext):
                 added_ops = [op for op in child_ops if op not in parent_ops]
                 removed_ops = [op for op in parent_ops if op not in child_ops]
 
-                # Convert to workflow format for designer loading
                 workflow_json = None
                 if _graph_to_workflow:
                     try:
@@ -288,10 +270,8 @@ def register_programs_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/programs/<result_id>/external-benchmarks", methods=["POST"])
     def api_program_external_benchmarks(result_id):
-        """Attach external benchmark scores to a program result."""
         nb = LabNotebook(notebook_path)
         try:
             payload = request.get_json(silent=True) or {}
@@ -307,24 +287,19 @@ def register_programs_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/programs/<result_id>/backfill-metrics", methods=["POST"])
     def api_program_backfill_metrics(result_id):
-        """Recompute missing metrics (fingerprint, novelty, spectral, quantization, etc.) for a program."""
         nb = LabNotebook(notebook_path)
         try:
             program = nb.get_program_detail(result_id)
             if not program:
                 return jsonify({"error": "Program not found"}), 404
-
-            # Build the row shape that backfill_entry expects
             leaderboard = nb.conn.execute(
                 "SELECT entry_id, screening_loss_ratio FROM leaderboard WHERE result_id = ?",
                 (result_id,),
             ).fetchone()
             if not leaderboard:
                 return jsonify({"error": "No leaderboard entry for this result_id"}), 404
-
             lb = dict(leaderboard)
             row = {
                 "result_id": result_id,
@@ -332,7 +307,6 @@ def register_programs_routes(app, context: ApiRouteContext):
                 "entry_id": lb["entry_id"],
                 "screening_loss_ratio": lb.get("screening_loss_ratio"),
             }
-
             from ..tools.backfill_metrics import backfill_entry
             body = request.get_json(silent=True) or {}
             device = str(body.get("device", "cpu"))
@@ -344,10 +318,8 @@ def register_programs_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/programs/<result_id>/backfill-loss", methods=["POST"])
     def api_program_backfill_loss(result_id):
-        """Recompute discovery_loss and validation_loss for a program by rebuilding + evaluating."""
         nb = LabNotebook(notebook_path)
         try:
             program = nb.get_program_detail(result_id)
@@ -360,7 +332,6 @@ def register_programs_routes(app, context: ApiRouteContext):
             if not initial_loss:
                 return jsonify({"error": "No initial_loss recorded — cannot compute ratios"}), 400
 
-            # Load experiment config for model params
             exp_id = program.get("experiment_id")
             config_json = None
             if exp_id:
@@ -377,7 +348,6 @@ def register_programs_routes(app, context: ApiRouteContext):
             config = RunConfig(**filtered)
 
             import torch
-            import torch.nn.functional as F
 
             body = request.get_json(silent=True) or {}
             device = str(body.get("device", "cpu"))
@@ -389,7 +359,7 @@ def register_programs_routes(app, context: ApiRouteContext):
             if graph_dim and config.model_dim != graph_dim:
                 config.model_dim = int(graph_dim)
 
-            from .native_runner import compile_model_native_first as _compile
+            from ..native_runner import compile_model_native_first as _compile
             layer_graphs = [graph] * config.n_layers
             model = _compile(layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len)
             model = model.to(dev).eval()
@@ -397,7 +367,6 @@ def register_programs_routes(app, context: ApiRouteContext):
             seq_len = min(128, config.max_seq_len)
             updates = {}
 
-            # Discovery loss (random tokens)
             try:
                 losses = []
                 with torch.no_grad():
@@ -420,11 +389,10 @@ def register_programs_routes(app, context: ApiRouteContext):
             except Exception as e:
                 updates["discovery_loss_error"] = str(e)
 
-            # Validation loss (heldout corpus split, if corpus/HF mode)
             data_mode = str(config.data_mode or "random").strip().lower()
             if data_mode in ("corpus", "huggingface"):
                 try:
-                    runner = _get_runner(notebook_path)
+                    runner = get_runner(notebook_path)
                     if data_mode == "huggingface":
                         batcher = runner._get_hf_batcher(config)
                     else:
@@ -465,7 +433,6 @@ def register_programs_routes(app, context: ApiRouteContext):
             if device != "cpu":
                 torch.cuda.empty_cache()
 
-            # Write updates to DB (both program_results and leaderboard)
             if updates:
                 db_updates = {k: v for k, v in updates.items() if not k.endswith("_error")}
                 if db_updates:
@@ -475,7 +442,6 @@ def register_programs_routes(app, context: ApiRouteContext):
                         f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
                         vals,
                     )
-                    # Mirror to leaderboard table (only cols that exist there)
                     lb_cols = {c[1] for c in nb.conn.execute("PRAGMA table_info(leaderboard)").fetchall()}
                     lb_updates = {k: v for k, v in db_updates.items() if k in lb_cols}
                     if lb_updates:
@@ -494,29 +460,25 @@ def register_programs_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/programs")
     def api_programs():
-        """List top programs."""
         n = request.args.get("n", 20, type=int)
         sort_by = request.args.get("sort", "novelty_score")
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             programs = nb.get_top_programs(n, sort_by)
-            _annotate_qkv_usage(programs, analytics)
-            return jsonify(_json_safe(programs))
+            annotate_qkv_usage(programs, analytics)
+            return jsonify(json_safe(programs))
         except Exception as e:
             logger.error(f"Error in /api/programs: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
 
-
     @app.route("/api/programs/<result_id>/training-curve")
     def api_training_curve(result_id):
-        """Per-step training data for a program."""
         nb = LabNotebook(notebook_path)
         try:
             curve = nb.get_training_curve(result_id)
@@ -527,10 +489,8 @@ def register_programs_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/programs/purge-junk", methods=["POST"])
     def api_purge_junk_programs():
-        """Purge Stage 0 failure program results that carry no useful data."""
         dry_run = True
         if request.is_json and request.json:
             dry_run = request.json.get("dry_run", True)
@@ -543,5 +503,3 @@ def register_programs_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
-

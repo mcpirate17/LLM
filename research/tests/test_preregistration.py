@@ -6,6 +6,8 @@ import pytest
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner import ExperimentRunner, RunConfig
 
+pytestmark = pytest.mark.unit
+
 
 def test_runner_blocks_when_preregistration_required_but_auto_disabled():
     tmpdir = tempfile.mkdtemp()
@@ -52,6 +54,7 @@ def test_notebook_preregistration_round_trip_and_experiment_link():
             preregistration_id=prereg_id,
             require_preregistration=True,
         )
+
         linked = nb.get_preregistration_for_experiment(exp_id)
         assert linked is not None
         assert linked["preregistration_id"] == prereg_id

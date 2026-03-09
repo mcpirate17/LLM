@@ -1,9 +1,12 @@
+import pytest
 import os
 import tempfile
 from unittest.mock import MagicMock
 
 from research.scientist.runner import ExperimentRunner, RunConfig
 from research.synthesis.graph import ComputationGraph
+
+pytestmark = pytest.mark.unit
 
 
 def _simple_graph() -> ComputationGraph:

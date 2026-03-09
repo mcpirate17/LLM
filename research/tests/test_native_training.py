@@ -39,9 +39,9 @@ try:
 except Exception:
     _HAS_NATIVE = False
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.native, pytest.mark.skipif(
     not _HAS_NATIVE, reason="Native Cython bridge unavailable"
-)
+)]
 
 
 # ---------------------------------------------------------------------------

@@ -1,16 +1,19 @@
 """campaigns API route registration."""
 from __future__ import annotations
 
-import functools
+import logging
 import time
-import datetime
-from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
+from flask import jsonify, request
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ..persona import get_aria
+from ._helpers import get_runner
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_campaigns_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/campaigns")
     def api_campaigns():
@@ -23,7 +26,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             campaigns = []
             for r in rows:
                 d = dict(r)
-                # Add summary stats
                 d["n_experiments"] = nb.conn.execute(
                     "SELECT COUNT(*) FROM experiments WHERE campaign_id = ?",
                     (d["campaign_id"],),
@@ -44,7 +46,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/campaigns/<campaign_id>")
     def api_campaign_detail(campaign_id):
         """Full campaign detail with experiments, hypotheses, decisions."""
@@ -54,9 +55,9 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             if campaign is None:
                 return jsonify({"error": "Not found"}), 404
             experiments = nb.get_campaign_experiments(campaign_id)
-            hypotheses = _normalize_hypotheses(nb.get_campaign_hypotheses(campaign_id))
+            hypotheses = nb.get_campaign_hypotheses(campaign_id)
             decisions = nb.get_campaign_decisions(campaign_id)
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             success_criteria_tracker = analytics.campaign_success_criteria_tracker(
                 campaign=campaign,
@@ -77,7 +78,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/campaigns/<campaign_id>/report")
     def api_campaign_report(campaign_id):
         """Compiled campaign report (LLM-generated narrative)."""
@@ -89,10 +89,10 @@ def register_campaigns_routes(app, context: ApiRouteContext):
                 return jsonify({"error": "Not found"}), 404
 
             experiments = nb.get_campaign_experiments(campaign_id)
-            hypotheses = _normalize_hypotheses(nb.get_campaign_hypotheses(campaign_id))
+            hypotheses = nb.get_campaign_hypotheses(campaign_id)
             decisions = nb.get_campaign_decisions(campaign_id)
             knowledge = nb.get_knowledge()
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             success_criteria_tracker = analytics.campaign_success_criteria_tracker(
                 campaign=campaign,
@@ -101,12 +101,12 @@ def register_campaigns_routes(app, context: ApiRouteContext):
                 decisions=decisions,
             )
 
-            from .llm.context import build_campaign_report_context
-            context = build_campaign_report_context(
+            from ..llm.context import build_campaign_report_context
+            ctx = build_campaign_report_context(
                 campaign, experiments, hypotheses, decisions, knowledge)
             report = aria.compile_campaign_report(
                 campaign, experiments, hypotheses, decisions, knowledge,
-                context=context)
+                context=ctx)
 
             return jsonify({
                 "campaign": campaign,
@@ -126,7 +126,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/campaigns/<campaign_id>/hypotheses")
     def api_campaign_hypotheses(campaign_id):
         """Hypothesis chain for a campaign."""
@@ -140,7 +139,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/campaigns/<campaign_id>/decisions")
     def api_campaign_decisions(campaign_id):
         """Decision log for a campaign."""
@@ -153,7 +151,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/campaigns", methods=["POST"])
     def api_create_campaign():
@@ -183,7 +180,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/campaigns/<campaign_id>/pause", methods=["POST"])
     def api_pause_campaign(campaign_id):
         """Pause a campaign."""
@@ -197,7 +193,6 @@ def register_campaigns_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/campaigns/<campaign_id>/complete", methods=["POST"])
     def api_complete_campaign(campaign_id):
         """Complete a campaign."""
@@ -206,7 +201,7 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             campaign = nb.get_campaign(campaign_id)
             nb.update_campaign(campaign_id, status="completed",
                                completed_at=time.time())
-            runner = _get_runner(notebook_path)
+            runner = get_runner(notebook_path)
             runner._emit_event("campaign_completed", {
                 "campaign_id": campaign_id,
                 "title": (campaign or {}).get("title", ""),
@@ -217,5 +212,3 @@ def register_campaigns_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
-

@@ -1,3 +1,4 @@
+import pytest
 import json
 import os
 import tempfile
@@ -5,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 from research.scientist.notebook import LabNotebook
 from research.scientist.runner import ExperimentRunner, RunConfig
+
+pytestmark = pytest.mark.unit
 
 
 def _graph_json(op_name: str = "linear_proj") -> str:
@@ -337,7 +340,7 @@ def test_auto_recommend_records_next_experiment_plan_decision():
                 "planner": {"source": "local", "backend": "ollama"},
             }
 
-    with patch("research.scientist.runner.NextExperimentDecisionPlanner.from_run_config", return_value=_FakePlanner()):
+    with patch("research.scientist.runner.results.NextExperimentDecisionPlanner.from_run_config", return_value=_FakePlanner()):
         runner._auto_recommend(
             {"experiment_id": exp_id, "total": 3, "stage0_passed": 3, "stage05_passed": 3, "stage1_passed": 3},
             RunConfig(),

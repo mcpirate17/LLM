@@ -6,6 +6,8 @@ from research.scientist.notebook import LabNotebook
 from research.synthesis.reference_architectures import build_reference
 from research.synthesis.compiler import compile_model
 
+pytestmark = pytest.mark.e2e
+
 def test_full_nas_pipeline_flow(tmp_path):
     """
     Simulate full lifecycle:

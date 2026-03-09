@@ -530,10 +530,16 @@ def _op_selective_scan(module, inputs, _):
 @register_op("conv1d_seq")
 def _op_conv1d_seq(module, inputs, _):
     if not hasattr(module, 'conv_weight'): return inputs[0]
-    B, S, D = inputs[0].shape
+    x = inputs[0]
+    B, S, D = x.shape
+    if _c(x):
+        conv_bias = getattr(module, "conv_bias", None)
+        if conv_bias is None:
+            conv_bias = torch.zeros(D, device=x.device, dtype=x.dtype)
+        return aria_core.conv1d_seq_f32(x, module.conv_weight, conv_bias)
     # Causal padding: pad (kernel_size - 1) on the left
     kernel_size = module.conv_weight.shape[2]
-    x_padded = F.pad(inputs[0].transpose(1, 2), (kernel_size - 1, 0))
+    x_padded = F.pad(x.transpose(1, 2), (kernel_size - 1, 0))
     out = F.conv1d(x_padded, module.conv_weight, groups=D)
     return out.transpose(1, 2)
 
@@ -542,6 +548,20 @@ def _op_topk_gate(module, inputs, _):
     if not hasattr(module, 'gate_proj'): return inputs[0]
     x = inputs[0]
     B, S, D = x.shape
+    if (
+        _c(x)
+        and hasattr(aria_core, "topk_gate_f32")
+        and isinstance(module.gate_proj, torch.Tensor)
+        and module.gate_proj.dim() == 2
+        and module.gate_proj.shape[0] >= 2
+        and module.gate_proj.shape[1] == D
+    ):
+        try:
+            native_out = aria_core.topk_gate_f32(x, module.gate_proj, 2)
+            if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
+                return native_out
+        except Exception:
+            pass
     logits = F.linear(x, module.gate_proj)
     gate_weights = F.softmax(logits, dim=-1)
     
@@ -945,6 +965,25 @@ def _op_rwkv_time_mixing(module, inputs, _):
     """RWKV WKV attention optimized with parallel scan semantics."""
     if not hasattr(module, 'W_k'): return inputs[0]
     x = inputs[0]
+    if (
+        _c(x)
+        and hasattr(aria_core, "rwkv_time_mixing_f32")
+        and hasattr(module, "w_decay")
+        and hasattr(module, "u_bonus")
+        and hasattr(module, "W_k")
+        and hasattr(module, "W_v")
+        and hasattr(module, "W_r")
+        and hasattr(module, "W_o")
+    ):
+        out_native = aria_core.rwkv_time_mixing_f32(
+            x,
+            module.w_decay,
+            module.u_bonus,
+            module.W_k,
+            module.W_v,
+            module.W_r,
+        )
+        return F.linear(out_native, module.W_o)
     B, S, D = x.shape
     
     k = F.linear(x, module.W_k)
@@ -1033,13 +1072,30 @@ def _op_adaptive_lane_mixer(module, inputs, config):
 
 @register_op("embedding_lookup")
 def _op_embedding_lookup(module, inputs, _):
-    # In compiled model context, input is already embedded — pass through
-    if not hasattr(module, 'embed_table'): return inputs[0]
-    return inputs[0]
+    # In compiled model context, input is usually already embedded — pass through.
+    if not hasattr(module, 'embed_table'):
+        return inputs[0]
+    x = inputs[0]
+    if (
+        HAS_ARIA_CORE
+        and hasattr(aria_core, "embedding_lookup_f32")
+        and isinstance(x, torch.Tensor)
+        and x.device.type == "cpu"
+        and x.dtype in (torch.int32, torch.int64)
+    ):
+        try:
+            native_out = aria_core.embedding_lookup_f32(module.embed_table, x)
+            if isinstance(native_out, torch.Tensor):
+                return native_out
+        except Exception:
+            pass
+    return x
 
 @register_op("rope_rotate")
 def _op_rope_rotate(_, inputs, __):
     x = inputs[0]
+    if _c(x) and hasattr(aria_core, "rope_rotate_f32"):
+        return aria_core.rope_rotate_f32(x, 10000.0)
     B, S, D = x.shape
     pos = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
     dim_pairs = D // 2
@@ -1056,6 +1112,20 @@ def _op_rope_rotate(_, inputs, __):
 @register_op("cosine_similarity")
 def _op_cosine_similarity(_, inputs, __):
     a, b = inputs[0], inputs[1]
+    if (
+        _c(a)
+        and _c(b)
+        and a.dim() == 3
+        and b.dim() == 3
+        and a.shape == b.shape
+        and hasattr(aria_core, "cosine_similarity_f32")
+    ):
+        native_sim = aria_core.cosine_similarity_f32(a, b)
+        if isinstance(native_sim, torch.Tensor):
+            if native_sim.dim() == 2 and native_sim.shape == a.shape[:2]:
+                return native_sim.unsqueeze(-1)
+            if native_sim.dim() == 3 and native_sim.shape[-1] == 1 and native_sim.shape[:2] == a.shape[:2]:
+                return native_sim
     sim = F.cosine_similarity(a, b, dim=-1)
     return sim.unsqueeze(-1)
 
@@ -1098,19 +1168,37 @@ def _op_causal_mask(_, inputs, __):
     This is a strictly causal 'mixing' operation that prevents future lookahead.
     """
     x = inputs[0]  # (B, S, D)
+    if _c(x) and hasattr(aria_core, "causal_mask_f32"):
+        return aria_core.causal_mask_f32(x)
     # Using cumulative sum / counts is O(S) and strictly causal
     return torch.cumsum(x, dim=1) / torch.arange(1, x.shape[1] + 1, device=x.device).view(1, -1, 1)
 
 @register_op("sort_seq")
 def _op_sort_seq(_, inputs, __):
     x = inputs[0]
+    if _c(x) and hasattr(aria_core, "sort_seq_f32"):
+        native_sorted = aria_core.sort_seq_f32(x)
+        if isinstance(native_sorted, tuple):
+            native_sorted = native_sorted[0]
+        if isinstance(native_sorted, torch.Tensor) and native_sorted.shape == x.shape:
+            return native_sorted
     indices = x.mean(dim=-1).argsort(dim=-1)
     indices = indices.clamp(0, x.shape[1] - 1)
     return x.gather(1, indices.unsqueeze(-1).expand_as(x))
 
 @register_op("argsort_seq")
 def _op_argsort_seq(_, inputs, __):
-    return inputs[0].mean(dim=-1).argsort(dim=-1).unsqueeze(-1).expand_as(inputs[0]).float()
+    x = inputs[0]
+    if _c(x) and hasattr(aria_core, "argsort_seq_f32"):
+        native_indices = aria_core.argsort_seq_f32(x)
+        if isinstance(native_indices, tuple):
+            native_indices = native_indices[0]
+        if isinstance(native_indices, torch.Tensor):
+            if native_indices.dim() == 2:
+                return native_indices.unsqueeze(-1).expand_as(x).float()
+            if native_indices.shape == x.shape:
+                return native_indices.float()
+    return x.mean(dim=-1).argsort(dim=-1).unsqueeze(-1).expand_as(x).float()
 
 @register_op("local_window_attn")
 def _op_local_window_attn(_, inputs, config):
@@ -1157,6 +1245,8 @@ def _op_sliding_window_mask(_, inputs, config):
 @register_op("token_pool_restore")
 def _op_token_pool_restore(_, inputs, __):
     x = inputs[0]
+    if _c(x):
+        return aria_core.token_pool_restore_f32(x)
     if x.shape[1] < 2: return x
     S_half = x.shape[1] // 2
     restored = ((x[:, 0::2, :][:, :S_half] + x[:, 1::2, :][:, :S_half]) / 2.0).repeat_interleave(2, dim=1)
@@ -1251,19 +1341,20 @@ def _op_mod_topk(module, inputs, config):
     x = inputs[0]
     B, S, D = x.shape
     capacity = float(config.get("capacity_factor", 0.75))
-    k = max(1, int(S * capacity))
     scores = _routing_scores_from_x(x)
-    if HAS_ARIA_CORE and scores.device.type == "cpu" and scores.dtype == torch.float32:
-        indices, weights = aria_core.route_topk_indices_f32(scores, k)
-    else:
-        weights, indices = scores.topk(k, dim=-1)
-        weights = F.softmax(weights, dim=-1)
-    # Ensure indices are within bounds for CUDA safety
-    indices = indices.clamp(0, S - 1)
-    _record_routing_telemetry(module, S, indices, logits=scores)
-    mask = torch.zeros((B, S), device=x.device, dtype=weights.dtype)
-    mask.scatter_(1, indices, weights)
-    return x * mask.unsqueeze(-1)
+    # Causal gating: use cumulative mean as a running threshold so each
+    # position's gate depends only on current and past scores.
+    cumsum = torch.cumsum(scores, dim=-1)
+    counts = torch.arange(1, S + 1, device=x.device, dtype=scores.dtype).unsqueeze(0)
+    running_mean = cumsum / counts
+    # Gate: positions whose score exceeds capacity * running_mean are kept;
+    # others are attenuated via sigmoid for smooth gradients.
+    threshold = running_mean * capacity
+    gate = torch.sigmoid(4.0 * (scores - threshold))  # soft gate
+    _record_routing_telemetry(module, S,
+                              (gate > 0.5).nonzero(as_tuple=False)[:, 1:],
+                              logits=scores)
+    return x * gate.unsqueeze(-1)
 
 @register_op("early_exit")
 def _op_early_exit(module, inputs, config):
@@ -1512,6 +1603,20 @@ def _op_ternary_projection(module, inputs, config):
 @register_op("basis_expansion")
 def _op_basis_expansion(module, inputs, _):
     if not hasattr(module, 'weight'): return inputs[0]
+    x = inputs[0]
+    if (
+        _c(x)
+        and hasattr(aria_core, "basis_expansion_f32")
+        and isinstance(module.weight, torch.Tensor)
+    ):
+        freqs = module.weight
+        n_bases = int(freqs.shape[0]) if freqs.dim() > 0 else 1
+        try:
+            native_out = aria_core.basis_expansion_f32(x, freqs, n_bases)
+            if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
+                return native_out
+        except Exception:
+            pass
     w = module.weight
     expanded = torch.sin(inputs[0] * w[0]) + torch.cos(inputs[0] * w[1]) + \
                torch.sin(inputs[0] * w[2]) + torch.cos(inputs[0] * w[3])
@@ -1559,6 +1664,8 @@ def _op_irfft_seq(_, inputs, __):
 def _op_tropical_center(_, inputs, __):
     """Causal min centering: subtract cumulative minimum to preserve causality."""
     x = inputs[0]
+    if _c(x):
+        return aria_core.tropical_center_f32(x)
     # torch.cummin(x, dim=1).values is causal
     return x - torch.cummin(x, dim=1).values
 
@@ -1780,150 +1887,13 @@ class CompiledOp(nn.Module):
         # Avoid division by zero for symbolic or unset shapes
         std = 1.0 / math.sqrt(D_in) if D_in > 0 else 0.02
 
-        if op.name in ("linear_proj", "linear_proj_down", "linear_proj_up"):
-            self.weight = self._make_param((D_out, D_in), std=0.02)
-        elif op.name == "fused_linear_gelu":
-            self.weight = self._make_param((D_out, D_in), std=0.02)
-            self.bias = nn.Parameter(torch.zeros(D_out))
-        elif op.name == "learnable_scale":
-            self.scale = nn.Parameter(torch.ones(D_in))
-        elif op.name == "learnable_bias":
-            self.bias = nn.Parameter(torch.zeros(D_in))
-        elif op.name == "selective_scan":
-            self.A_log = self._make_param((D_in,), std=0.1)
-            self.dt_proj = self._make_param((D_in,), std=0.1)
-            self.B_proj = nn.Linear(D_in, D_in, bias=False)
-            self.C_proj = nn.Linear(D_in, D_in, bias=False)
-            self.B_proj.weight.data.normal_(std=0.02)
-            self.C_proj.weight.data.normal_(std=0.02)
-        elif op.name == "conv1d_seq":
-            self.conv_weight = self._make_param((D_in, 1, 3), std=1.0 / math.sqrt(3))
-        elif op.name == "topk_gate":
-            self.gate_proj = self._make_param((2, D_in), std=0.02)
-        elif op.name == "moe_topk":
-            n_experts = int(config.get("num_experts", 4))
-            self.gate_weight = self._make_param((n_experts, D_in), std=0.02)
-            # Create a minimal MLP for each expert to keep CompiledOp self-contained
-            hidden = int(D_in * float(config.get("mlp_ratio", 2.0)))
-            self.experts = nn.ModuleList([
-                nn.Sequential(
-                    nn.Linear(D_in, hidden, bias=False),
-                    nn.GELU(),
-                    nn.Linear(hidden, D_in, bias=False)
-                ) for _ in range(n_experts)
-            ])
-            # Custom initialization matching project style
-            for expert in self.experts:
-                expert[0].weight.data.normal_(mean=0.0, std=0.02)
-                expert[2].weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
-        elif op.name == "moe_2expert":
-            self.gate_proj = self._make_param((2, D_in), std=0.02)
-            self.expert_0_weight = self._make_param((D_in, D_in), std=0.02)
-            self.expert_1_weight = self._make_param((D_in, D_in), std=0.02)
-        elif op.name == "nm_sparse_linear":
-            self.weight = self._make_param((D_out, D_in), std=0.02)
-            self.sparsity_n = int(config.get("n", 2))
-            self.sparsity_m = int(config.get("m", 4))
-        elif op.name == "block_sparse_linear":
-            self.weight = self._make_param((D_out, D_in), std=0.02)
-            self.block_size = max(1, int(config.get("block_size", 16)))
-            self.block_density = float(max(0.05, min(1.0, config.get("block_density", 0.25))))
-        elif op.name == "rmsnorm":
-            self.weight = nn.Parameter(torch.ones(D_in))
-        elif op.name == "layernorm":
-            self.weight = nn.Parameter(torch.ones(D_in))
-            self.bias = nn.Parameter(torch.zeros(D_in))
-        elif op.name == "gated_linear":
-            self.linear_weight = self._make_param((D_out, D_in), std=0.02)
-            self.gate_weight = self._make_param((D_out, D_in), std=0.02)
-            self.linear_bias = nn.Parameter(torch.zeros(D_out))
-            self.gate_bias = nn.Parameter(torch.zeros(D_out))
-        elif op.name == "rwkv_time_mixing":
-            self.w_decay = nn.Parameter(torch.ones(D_in) * -0.5)
-            self.u_bonus = nn.Parameter(torch.zeros(D_in))
-            self.W_k = self._make_param((D_in, D_in), std=0.02)
-            self.W_v = self._make_param((D_in, D_in), std=0.02)
-            self.W_r = self._make_param((D_in, D_in), std=0.02)
-            self.W_o = self._make_param((D_in, D_in), std=0.02)
-        elif op.name == "embedding_lookup":
-            vocab = int(config.get("vocab_size", 32000))
-            self.embed_table = nn.Embedding(vocab, D_in)
-        elif op.name == "rope_rotate":
-            pass  # no learnable params, just position encoding
-        elif op.name == "cosine_similarity":
-            pass  # no learnable params
-        elif op.name == "gather_topk":
-            pass  # no learnable params
-        elif op.name == "semi_structured_2_4_linear":
-            self.weight = self._make_param((D_out, D_in), std=0.02)
-            self.sparse_kernel_ready = bool(D_in % 4 == 0 and D_out % 4 == 0)
-        elif op.name == "basis_expansion":
-            self.weight = nn.Parameter(torch.randn(4, D_in) * 0.5)
-        elif op.name == "integral_kernel":
-            self.weight = nn.Parameter(torch.randn(D_in, D_in) * 0.02)
-        elif op.name == "fixed_point_iter":
-            self.weight = nn.Parameter(torch.randn(D_in + 1, D_in) * 0.02)
-        elif op.name == "low_rank_proj":
-            rank = max(D_in // 4, 1)
-            self.U = nn.Parameter(torch.randn(D_in, rank) * 0.02)
-            self.V = nn.Parameter(torch.randn(rank, D_in) * 0.02)
-        elif op.name == "grouped_linear":
-            g = 4
-            group_dim = max(D_in // g, 1)
-            self.weight = nn.Parameter(torch.randn(g, group_dim, group_dim) * 0.02)
-            self.n_groups = g
-        elif op.name == "bottleneck_proj":
-            rank = max(D_in // 4, 1)
-            self.down = nn.Parameter(torch.randn(rank, D_in) * 0.02)
-            self.up = nn.Parameter(torch.randn(D_in, rank) * 0.02)
-        elif op.name == "shared_basis_proj":
-            k = 8
-            self.basis = nn.Parameter(torch.randn(k, D_in) * 0.02)
-            self.mixing = nn.Parameter(torch.randn(D_in, k) * 0.02)
-        elif op.name == "tied_proj":
-            rank = max(D_in // 4, 1)
-            self.tied_weight = nn.Parameter(torch.randn(rank, D_in) * 0.02)
-        elif op.name == "swiglu_mlp":
-            # SwiGLU MLP: gated linear unit with SiLU activation
-            hidden = int(D_in * float(config.get("mlp_ratio", 3.0)))
-            self.gate_proj = nn.Linear(D_in, hidden, bias=False)
-            self.up_proj = nn.Linear(D_in, hidden, bias=False)
-            self.down_proj = nn.Linear(hidden, D_in, bias=False)
-            # Match project initialization style
-            self.gate_proj.weight.data.normal_(mean=0.0, std=0.02)
-            self.up_proj.weight.data.normal_(mean=0.0, std=0.02)
-            self.down_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
-        elif op.name == "rwkv_channel":
-            # RWKV-style channel mixing: time-shift + gated update
-            hidden = int(D_in * float(config.get("mlp_ratio", 3.0)))
-            self.mix_k = nn.Parameter(torch.ones(D_in) * 0.5)
-            self.mix_r = nn.Parameter(torch.ones(D_in) * 0.5)
-            self.key_proj = nn.Linear(D_in, hidden, bias=False)
-            self.receptance_proj = nn.Linear(D_in, D_in, bias=False)
-            self.value_proj = nn.Linear(hidden, D_in, bias=False)
-            # Match project initialization style
-            self.key_proj.weight.data.normal_(mean=0.0, std=0.02)
-            self.receptance_proj.weight.data.normal_(mean=0.0, std=0.02)
-            self.value_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
-        elif op.name == "softmax_attention":
-            n_heads = max(1, D_in // 64)  # 64 head_dim default
-            head_dim = D_in // n_heads
-            self.n_heads = n_heads
-            self.head_dim = head_dim
-            self.attn_scale = head_dim ** -0.5
-            self.q_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
-            self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
-            self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
-            self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
-            self.q_proj.weight.data.normal_(std=0.02)
-            self.k_proj.weight.data.normal_(std=0.02)
-            self.v_proj.weight.data.normal_(std=0.02)
-            self.o_proj.weight.data.normal_(std=0.02)
-        elif op.name == "linear_attention":
+        def _init_attention_stack(op_name: str) -> None:
             n_heads = max(1, D_in // 64)
             head_dim = D_in // n_heads
             self.n_heads = n_heads
             self.head_dim = head_dim
+            if op_name in ("softmax_attention", "graph_attention"):
+                self.attn_scale = head_dim ** -0.5
             self.q_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
             self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
             self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
@@ -1932,119 +1902,16 @@ class CompiledOp(nn.Module):
             self.k_proj.weight.data.normal_(std=0.02)
             self.v_proj.weight.data.normal_(std=0.02)
             self.o_proj.weight.data.normal_(std=0.02)
-        elif op.name == "graph_attention":
-            n_heads = max(1, D_in // 64)
-            head_dim = D_in // n_heads
-            self.n_heads = n_heads
-            self.head_dim = head_dim
-            self.attn_scale = head_dim ** -0.5
-            self.q_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
-            self.k_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
-            self.v_proj = nn.Linear(D_in, n_heads * head_dim, bias=False)
-            self.o_proj = nn.Linear(n_heads * head_dim, D_in, bias=False)
-            self.edge_proj = nn.Linear(D_in, D_in, bias=False)
-            self.q_proj.weight.data.normal_(std=0.02)
-            self.k_proj.weight.data.normal_(std=0.02)
-            self.v_proj.weight.data.normal_(std=0.02)
-            self.o_proj.weight.data.normal_(std=0.02)
-            self.edge_proj.weight.data.normal_(std=0.02)
-        elif op.name == "state_space":
-            state_dim = 16
-            self.ssm_state_dim = state_dim
-            self.ssm_A = nn.Parameter(torch.randn(D_in, state_dim) * 0.01)
-            self.ssm_B = nn.Linear(D_in, D_in * state_dim, bias=False)
-            self.ssm_C = nn.Linear(D_in * state_dim, D_in, bias=False)
-            self.ssm_D = nn.Parameter(torch.ones(D_in))
-            self.ssm_dt = nn.Linear(D_in, D_in)
-            self.ssm_B.weight.data.normal_(std=0.02)
-            self.ssm_C.weight.data.normal_(std=0.02)
-            self.ssm_dt.weight.data.normal_(std=0.02)
-        elif op.name == "conv_only":
-            self.conv_dw = nn.Conv1d(D_in, D_in, 3, padding=2, groups=D_in)
-            self.conv_proj = nn.Linear(D_in, D_in, bias=False)
-            self.conv_proj.weight.data.normal_(std=0.02)
-        elif op.name == "stdp_attention":
-            # Learnable temporal decay: tau = exp(log_tau), init to log(S/8) ~ log(1) = 0
-            self.log_tau = nn.Parameter(torch.tensor(0.0))
-        elif op.name == "adaptive_lane_mixer":
-            # 3 paths: [Fast (skip), Medium (LowRank), Hard (MLP)]
-            self.gate_proj = self._make_param((3, D_in), std=0.02)
-            
-            # Medium experts
-            rank = max(D_in // 4, 1)
-            self.U_mid = self._make_param((rank, D_in), std=0.02)
-            self.V_mid = self._make_param((D_in, rank), std=0.02)
-            
-            # Hard experts: 2-layer MLP
-            hidden = D_in * 2
-            self.heavy_mlp = nn.Sequential(
-                nn.Linear(D_in, hidden),
-                nn.GELU(),
-                nn.Linear(hidden, D_in)
-            )
-            # Custom init
-            self.heavy_mlp[0].weight.data.normal_(std=0.02)
-            self.heavy_mlp[2].weight.data.normal_(std=0.02)
-        elif op.name == "mixed_recursion_gate":
-            max_depth = int(config.get("max_depth", 3))
-            projs = []
-            for _ in range(max_depth):
-                p = nn.Parameter(torch.empty(D_in, D_in))
-                p.data.normal_(std=0.02)
-                projs.append(p)
-            self.step_projs = nn.ParameterList(projs)
-        elif op.name == "token_type_classifier":
-            n_classes = int(config.get("n_classes", 2))
-            self.classifier_weight = self._make_param((n_classes, D_in), std=0.02)
-            self.classifier_proj_back = self._make_param((D_in, n_classes), std=0.02)
-        elif op.name == "progressive_compression_gate":
-            self.weight_full = self._make_param((D_out, D_in), std=0.02)
-            self.compress_param = nn.Parameter(torch.zeros(1)) # Initial 50/50
-            rank = max(D_in // 8, 1)
-            self.U_comp = self._make_param((rank, D_in), std=0.02)
-            self.V_comp = self._make_param((D_out, rank), std=0.02)
-        elif op.name == "compression_mixture_experts":
-            # Just a placeholder to signal we have experts
-            self.expert_weights = nn.Parameter(torch.ones(2)) 
-            
-            # Expert 0: Low-Rank
-            rank = max(D_in // 8, 1)
-            self.U_lr = self._make_param((rank, D_in), std=0.02)
-            self.V_lr = self._make_param((D_out, rank), std=0.02)
-            
-            # Expert 1: Bottleneck
-            rank_bn = max(D_in // 4, 1)
-            self.W_down = self._make_param((rank_bn, D_in), std=0.02)
-            self.W_up = self._make_param((D_out, rank_bn), std=0.02)
-        elif op.name == "relu_gate_routing":
-            n_experts = int(config.get("n_experts", 8))
-            self.gate_proj = self._make_param((n_experts, D_in), std=0.02)
-        elif op.name == "ternary_projection":
-            self.weight = self._make_param((D_out, D_in), std=0.02)
-            # Default to no bias for ternary to keep it addition-heavy
-            if config.get("bias"):
-                self.bias = nn.Parameter(torch.zeros(D_out))
-        elif op.name == "latent_attention_compressor":
-            # MLA style: compress KV to latent dim
-            latent_dim = max(D_in // 4, 16)
-            self.kv_compress = self._make_param((latent_dim, D_in), std=0.02)
-            self.kv_up = self._make_param((D_in * 2, latent_dim), std=0.02)
-        elif op.name == "routing_conditioned_compression":
-            self.weight_full = self._make_param((D_in, D_in), std=0.02)
-            rank = max(D_in // 8, 1)
-            self.U_comp = self._make_param((rank, D_in), std=0.02)
-            self.V_comp = self._make_param((D_in, rank), std=0.02)
-        elif op.category.value == "math_space":
-            # Generic initialization for math space ops that use 'weight'
-            # (e.g., tropical_attention, tropical_gate, hyp_linear)
+            if op_name == "graph_attention":
+                self.edge_proj = nn.Linear(D_in, D_in, bias=False)
+                self.edge_proj.weight.data.normal_(std=0.02)
+
+        def _init_math_space() -> None:
             if op.has_params:
                 self.weight = self._make_param((D_out, D_in), std=0.02)
-            
-            # Special cases for math space ops with specific param names
-            if op.name == "padic_expand" or op.name == "padic_residual":
+            if op.name in ("padic_expand", "padic_residual"):
                 self.weight = self._make_param((D_in, D_in * 2), std=0.02)
             elif op.name == "rotor_transform":
-                # Clifford rotors in 3D/4D need 8-16 params
                 self.rotor = nn.Parameter(torch.randn(8) * 0.02)
             elif op.name == "poincare_add":
                 self.bias = nn.Parameter(torch.zeros(D_in))
@@ -2053,11 +1920,247 @@ class CompiledOp(nn.Module):
             elif op.name == "tropical_router":
                 n_exp = int(config.get("n_experts", 8))
                 self.centroids = nn.Parameter(torch.randn(n_exp, D_in) * 0.02)
-        else:
-            if hasattr(op, 'init_params'):
-                op.init_params(self, D_in)
-            else:
-                self.weight = nn.Parameter(torch.randn(D_in, D_in) * (1.0 / math.sqrt(D_in)))
+
+        dispatch: Dict[str, Callable[[], None]] = {
+            "linear_proj": lambda: setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
+            "linear_proj_down": lambda: setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
+            "linear_proj_up": lambda: setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
+            "fused_linear_gelu": lambda: (
+                setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
+                setattr(self, "bias", nn.Parameter(torch.zeros(D_out))),
+            ),
+            "learnable_scale": lambda: setattr(self, "scale", nn.Parameter(torch.ones(D_in))),
+            "learnable_bias": lambda: setattr(self, "bias", nn.Parameter(torch.zeros(D_in))),
+            "selective_scan": lambda: (
+                setattr(self, "A_log", self._make_param((D_in,), std=0.1)),
+                setattr(self, "dt_proj", self._make_param((D_in,), std=0.1)),
+                setattr(self, "B_proj", nn.Linear(D_in, D_in, bias=False)),
+                setattr(self, "C_proj", nn.Linear(D_in, D_in, bias=False)),
+                self.B_proj.weight.data.normal_(std=0.02),
+                self.C_proj.weight.data.normal_(std=0.02),
+            ),
+            "conv1d_seq": lambda: setattr(self, "conv_weight", self._make_param((D_in, 1, 3), std=1.0 / math.sqrt(3))),
+            "topk_gate": lambda: setattr(self, "gate_proj", self._make_param((2, D_in), std=0.02)),
+            "moe_topk": lambda: self._init_moe_topk(config, D_in),
+            "moe_2expert": lambda: (
+                setattr(self, "gate_proj", self._make_param((2, D_in), std=0.02)),
+                setattr(self, "expert_0_weight", self._make_param((D_in, D_in), std=0.02)),
+                setattr(self, "expert_1_weight", self._make_param((D_in, D_in), std=0.02)),
+            ),
+            "nm_sparse_linear": lambda: (
+                setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
+                setattr(self, "sparsity_n", int(config.get("n", 2))),
+                setattr(self, "sparsity_m", int(config.get("m", 4))),
+            ),
+            "block_sparse_linear": lambda: (
+                setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
+                setattr(self, "block_size", max(1, int(config.get("block_size", 16)))),
+                setattr(self, "block_density", float(max(0.05, min(1.0, config.get("block_density", 0.25))))),
+            ),
+            "rmsnorm": lambda: setattr(self, "weight", nn.Parameter(torch.ones(D_in))),
+            "layernorm": lambda: (
+                setattr(self, "weight", nn.Parameter(torch.ones(D_in))),
+                setattr(self, "bias", nn.Parameter(torch.zeros(D_in))),
+            ),
+            "gated_linear": lambda: (
+                setattr(self, "linear_weight", self._make_param((D_out, D_in), std=0.02)),
+                setattr(self, "gate_weight", self._make_param((D_out, D_in), std=0.02)),
+                setattr(self, "linear_bias", nn.Parameter(torch.zeros(D_out))),
+                setattr(self, "gate_bias", nn.Parameter(torch.zeros(D_out))),
+            ),
+            "rwkv_time_mixing": lambda: (
+                setattr(self, "w_decay", nn.Parameter(torch.ones(D_in) * -0.5)),
+                setattr(self, "u_bonus", nn.Parameter(torch.zeros(D_in))),
+                setattr(self, "W_k", self._make_param((D_in, D_in), std=0.02)),
+                setattr(self, "W_v", self._make_param((D_in, D_in), std=0.02)),
+                setattr(self, "W_r", self._make_param((D_in, D_in), std=0.02)),
+                setattr(self, "W_o", self._make_param((D_in, D_in), std=0.02)),
+            ),
+            "embedding_lookup": lambda: setattr(self, "embed_table", nn.Embedding(int(config.get("vocab_size", 32000)), D_in)),
+            "rope_rotate": lambda: None,
+            "cosine_similarity": lambda: None,
+            "gather_topk": lambda: None,
+            "semi_structured_2_4_linear": lambda: (
+                setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
+                setattr(self, "sparse_kernel_ready", bool(D_in % 4 == 0 and D_out % 4 == 0)),
+            ),
+            "basis_expansion": lambda: setattr(self, "weight", nn.Parameter(torch.randn(4, D_in) * 0.5)),
+            "integral_kernel": lambda: setattr(self, "weight", nn.Parameter(torch.randn(D_in, D_in) * 0.02)),
+            "fixed_point_iter": lambda: setattr(self, "weight", nn.Parameter(torch.randn(D_in + 1, D_in) * 0.02)),
+            "low_rank_proj": lambda: self._init_low_rank_proj(D_in),
+            "grouped_linear": lambda: self._init_grouped_linear(D_in),
+            "bottleneck_proj": lambda: self._init_bottleneck_proj(D_in),
+            "shared_basis_proj": lambda: self._init_shared_basis_proj(D_in),
+            "tied_proj": lambda: self._init_tied_proj(D_in),
+            "swiglu_mlp": lambda: self._init_swiglu_mlp(config, D_in),
+            "rwkv_channel": lambda: self._init_rwkv_channel(config, D_in),
+            "softmax_attention": lambda: _init_attention_stack("softmax_attention"),
+            "linear_attention": lambda: _init_attention_stack("linear_attention"),
+            "graph_attention": lambda: _init_attention_stack("graph_attention"),
+            "state_space": lambda: self._init_state_space(D_in),
+            "conv_only": lambda: self._init_conv_only(D_in),
+            "stdp_attention": lambda: setattr(self, "log_tau", nn.Parameter(torch.tensor(0.0))),
+            "adaptive_lane_mixer": lambda: self._init_adaptive_lane_mixer(D_in),
+            "mixed_recursion_gate": lambda: self._init_mixed_recursion_gate(config, D_in),
+            "token_type_classifier": lambda: self._init_token_type_classifier(config, D_in),
+            "progressive_compression_gate": lambda: self._init_progressive_compression_gate(D_in, D_out),
+            "compression_mixture_experts": lambda: self._init_compression_mixture_experts(D_in, D_out),
+            "relu_gate_routing": lambda: setattr(self, "gate_proj", self._make_param((int(config.get("n_experts", 8)), D_in), std=0.02)),
+            "ternary_projection": lambda: self._init_ternary_projection(config, D_in, D_out),
+            "latent_attention_compressor": lambda: self._init_latent_attention_compressor(D_in),
+            "routing_conditioned_compression": lambda: self._init_routing_conditioned_compression(D_in),
+        }
+
+        handler = dispatch.get(op.name)
+        if handler is not None:
+            handler()
+            return
+
+        if op.category.value == "math_space":
+            _init_math_space()
+            return
+
+        if hasattr(op, 'init_params'):
+            op.init_params(self, D_in)
+            return
+        self.weight = nn.Parameter(torch.randn(D_in, D_in) * std)
+
+    def _init_moe_topk(self, config: Dict, d_in: int) -> None:
+        n_experts = int(config.get("num_experts", 4))
+        self.gate_weight = self._make_param((n_experts, d_in), std=0.02)
+        hidden = int(d_in * float(config.get("mlp_ratio", 2.0)))
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_in, hidden, bias=False),
+                nn.GELU(),
+                nn.Linear(hidden, d_in, bias=False),
+            ) for _ in range(n_experts)
+        ])
+        for expert in self.experts:
+            expert[0].weight.data.normal_(mean=0.0, std=0.02)
+            expert[2].weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
+
+    def _init_low_rank_proj(self, d_in: int) -> None:
+        rank = max(d_in // 4, 1)
+        self.U = nn.Parameter(torch.randn(d_in, rank) * 0.02)
+        self.V = nn.Parameter(torch.randn(rank, d_in) * 0.02)
+
+    def _init_grouped_linear(self, d_in: int) -> None:
+        g = 4
+        group_dim = max(d_in // g, 1)
+        self.weight = nn.Parameter(torch.randn(g, group_dim, group_dim) * 0.02)
+        self.n_groups = g
+
+    def _init_bottleneck_proj(self, d_in: int) -> None:
+        rank = max(d_in // 4, 1)
+        self.down = nn.Parameter(torch.randn(rank, d_in) * 0.02)
+        self.up = nn.Parameter(torch.randn(d_in, rank) * 0.02)
+
+    def _init_shared_basis_proj(self, d_in: int) -> None:
+        k = 8
+        self.basis = nn.Parameter(torch.randn(k, d_in) * 0.02)
+        self.mixing = nn.Parameter(torch.randn(d_in, k) * 0.02)
+
+    def _init_tied_proj(self, d_in: int) -> None:
+        rank = max(d_in // 4, 1)
+        self.tied_weight = nn.Parameter(torch.randn(rank, d_in) * 0.02)
+
+    def _init_swiglu_mlp(self, config: Dict, d_in: int) -> None:
+        hidden = int(d_in * float(config.get("mlp_ratio", 3.0)))
+        self.gate_proj = nn.Linear(d_in, hidden, bias=False)
+        self.up_proj = nn.Linear(d_in, hidden, bias=False)
+        self.down_proj = nn.Linear(hidden, d_in, bias=False)
+        self.gate_proj.weight.data.normal_(mean=0.0, std=0.02)
+        self.up_proj.weight.data.normal_(mean=0.0, std=0.02)
+        self.down_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
+
+    def _init_rwkv_channel(self, config: Dict, d_in: int) -> None:
+        hidden = int(d_in * float(config.get("mlp_ratio", 3.0)))
+        self.mix_k = nn.Parameter(torch.ones(d_in) * 0.5)
+        self.mix_r = nn.Parameter(torch.ones(d_in) * 0.5)
+        self.key_proj = nn.Linear(d_in, hidden, bias=False)
+        self.receptance_proj = nn.Linear(d_in, d_in, bias=False)
+        self.value_proj = nn.Linear(hidden, d_in, bias=False)
+        self.key_proj.weight.data.normal_(mean=0.0, std=0.02)
+        self.receptance_proj.weight.data.normal_(mean=0.0, std=0.02)
+        self.value_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
+
+    def _init_state_space(self, d_in: int) -> None:
+        state_dim = 16
+        self.ssm_state_dim = state_dim
+        self.ssm_A = nn.Parameter(torch.randn(d_in, state_dim) * 0.01)
+        self.ssm_B = nn.Linear(d_in, d_in * state_dim, bias=False)
+        self.ssm_C = nn.Linear(d_in * state_dim, d_in, bias=False)
+        self.ssm_D = nn.Parameter(torch.ones(d_in))
+        self.ssm_dt = nn.Linear(d_in, d_in)
+        self.ssm_B.weight.data.normal_(std=0.02)
+        self.ssm_C.weight.data.normal_(std=0.02)
+        self.ssm_dt.weight.data.normal_(std=0.02)
+
+    def _init_conv_only(self, d_in: int) -> None:
+        self.conv_dw = nn.Conv1d(d_in, d_in, 3, padding=2, groups=d_in)
+        self.conv_proj = nn.Linear(d_in, d_in, bias=False)
+        self.conv_proj.weight.data.normal_(std=0.02)
+
+    def _init_adaptive_lane_mixer(self, d_in: int) -> None:
+        self.gate_proj = self._make_param((3, d_in), std=0.02)
+        rank = max(d_in // 4, 1)
+        self.U_mid = self._make_param((rank, d_in), std=0.02)
+        self.V_mid = self._make_param((d_in, rank), std=0.02)
+        hidden = d_in * 2
+        self.heavy_mlp = nn.Sequential(
+            nn.Linear(d_in, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, d_in),
+        )
+        self.heavy_mlp[0].weight.data.normal_(std=0.02)
+        self.heavy_mlp[2].weight.data.normal_(std=0.02)
+
+    def _init_mixed_recursion_gate(self, config: Dict, d_in: int) -> None:
+        max_depth = int(config.get("max_depth", 3))
+        projs = []
+        for _ in range(max_depth):
+            p = nn.Parameter(torch.empty(d_in, d_in))
+            p.data.normal_(std=0.02)
+            projs.append(p)
+        self.step_projs = nn.ParameterList(projs)
+
+    def _init_token_type_classifier(self, config: Dict, d_in: int) -> None:
+        n_classes = int(config.get("n_classes", 2))
+        self.classifier_weight = self._make_param((n_classes, d_in), std=0.02)
+        self.classifier_proj_back = self._make_param((d_in, n_classes), std=0.02)
+
+    def _init_progressive_compression_gate(self, d_in: int, d_out: int) -> None:
+        self.weight_full = self._make_param((d_out, d_in), std=0.02)
+        self.compress_param = nn.Parameter(torch.zeros(1))
+        rank = max(d_in // 8, 1)
+        self.U_comp = self._make_param((rank, d_in), std=0.02)
+        self.V_comp = self._make_param((d_out, rank), std=0.02)
+
+    def _init_compression_mixture_experts(self, d_in: int, d_out: int) -> None:
+        self.expert_weights = nn.Parameter(torch.ones(2))
+        rank = max(d_in // 8, 1)
+        self.U_lr = self._make_param((rank, d_in), std=0.02)
+        self.V_lr = self._make_param((d_out, rank), std=0.02)
+        rank_bn = max(d_in // 4, 1)
+        self.W_down = self._make_param((rank_bn, d_in), std=0.02)
+        self.W_up = self._make_param((d_out, rank_bn), std=0.02)
+
+    def _init_ternary_projection(self, config: Dict, d_in: int, d_out: int) -> None:
+        self.weight = self._make_param((d_out, d_in), std=0.02)
+        if config.get("bias"):
+            self.bias = nn.Parameter(torch.zeros(d_out))
+
+    def _init_latent_attention_compressor(self, d_in: int) -> None:
+        latent_dim = max(d_in // 4, 16)
+        self.kv_compress = self._make_param((latent_dim, d_in), std=0.02)
+        self.kv_up = self._make_param((d_in * 2, latent_dim), std=0.02)
+
+    def _init_routing_conditioned_compression(self, d_in: int) -> None:
+        self.weight_full = self._make_param((d_in, d_in), std=0.02)
+        rank = max(d_in // 8, 1)
+        self.U_comp = self._make_param((rank, d_in), std=0.02)
+        self.V_comp = self._make_param((d_in, rank), std=0.02)
 
     def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
         """Execute this primitive operation."""

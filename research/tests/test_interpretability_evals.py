@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 # ── Activation Sparsity ──────────────────────────────────────────────
 
@@ -527,4 +529,5 @@ class TestEfficiencyWallEval:
         result = evaluate_efficiency_wall(
             model, vocab_size=256, device=torch.device("cpu"),
             seq_lens=(32, 64), batch_size=2, memory_budget_mb=10000)
+
         assert result["max_viable_seq_len"] >= 32

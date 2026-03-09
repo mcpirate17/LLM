@@ -9,6 +9,8 @@ torch = pytest.importorskip("torch")
 
 from research.eval.sandbox import safe_eval
 
+pytestmark = pytest.mark.native
+
 
 @contextmanager
 def _env(**values):

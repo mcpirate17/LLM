@@ -1,8 +1,11 @@
+import pytest
 import math
 import unittest
 
 from research.eval.fingerprint import BehavioralFingerprint
 from research.search.novelty_search import BehaviorArchive, _behavior_distance
+
+pytestmark = pytest.mark.unit
 
 
 class TestNoveltySearchScaling(unittest.TestCase):

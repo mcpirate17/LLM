@@ -57,6 +57,8 @@ except ImportError:
 
 from research.runtime.native.ir_validator import validate_ir
 
+pytestmark = pytest.mark.unit
+
 # ---------------------------------------------------------------------------
 # Graph builders
 # ---------------------------------------------------------------------------

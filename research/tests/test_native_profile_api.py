@@ -1,8 +1,11 @@
 """Tests for the /api/native-profile/v2/data endpoints."""
 
+import pytest
 import json
 import unittest
 from unittest.mock import patch, MagicMock
+
+pytestmark = pytest.mark.api
 
 
 class TestNativeProfileApiEndpoints(unittest.TestCase):

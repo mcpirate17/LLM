@@ -1,29 +1,29 @@
 """config API route registration."""
 from __future__ import annotations
 
-import functools
-import time
-import datetime
-from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
-from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+import logging
+from flask import jsonify, request
+from ..runner import RunConfig
+from ..persona import get_aria
+from ._helpers import save_llm_config
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_config_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/config", methods=["GET"])
     def api_get_config():
         """Get the default RunConfig."""
         return jsonify(RunConfig().to_dict())
 
-
     @app.route("/api/llm/config")
     def api_llm_config():
         """Get current LLM backend configuration."""
         aria = get_aria()
         return jsonify(aria.get_llm_config())
-
 
     @app.route("/api/llm/config", methods=["POST"])
     def api_llm_configure():
@@ -47,7 +47,6 @@ def register_config_routes(app, context: ApiRouteContext):
         )
 
         if success:
-            # Quick health check: try a minimal LLM call to verify the key works
             health_ok = True
             health_error = None
             llm = aria._get_llm()
@@ -65,15 +64,13 @@ def register_config_routes(app, context: ApiRouteContext):
                     health_error = f"{type(e).__name__}: {str(e)[:150]}"
                     logger.warning(f"LLM health check failed: {health_error}")
 
-            # Persist config so it survives server restarts
-            _save_llm_config(notebook_path, {
+            save_llm_config(notebook_path, {
                 "backend": backend_name,
                 "api_key": api_key,
                 "model": model,
                 "host": host,
             })
 
-            # Clear any cached deterministic briefing so AI takes over
             if hasattr(aria, "_briefing_cache"):
                 aria._briefing_cache = None
 
@@ -87,5 +84,3 @@ def register_config_routes(app, context: ApiRouteContext):
             return jsonify(result)
         else:
             return jsonify({"error": "Failed to configure LLM backend"}), 500
-
-

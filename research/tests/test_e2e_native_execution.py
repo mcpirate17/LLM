@@ -35,6 +35,8 @@ from research.synthesis.native_ir_converter import (
     graph_to_native_ir_json,
 )
 
+pytestmark = pytest.mark.e2e
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -1,3 +1,4 @@
+import pytest
 import os
 import sys
 import tempfile
@@ -16,6 +17,8 @@ if _WORKSPACE_ROOT not in sys.path:
 
 from research.scientist.notebook import LabNotebook, ExperimentEntry
 from research.scientist.runner import ExperimentRunner, RunConfig
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeCursor:

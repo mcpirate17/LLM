@@ -5,6 +5,8 @@ import pytest
 from research.synthesis.compiler import compile_graph
 from research.synthesis.graph import ComputationGraph
 
+pytestmark = pytest.mark.unit
+
 def test_mixed_recursion_gate():
     B, S, D = 2, 4, 8
     max_depth = 3

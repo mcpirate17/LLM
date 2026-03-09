@@ -48,7 +48,7 @@ try:
 except Exception:
     _HAS_NATIVE = False
 
-pytestmark = pytest.mark.skipif(not _HAS_NATIVE, reason="Native Cython bridge unavailable")
+pytestmark = [pytest.mark.native, pytest.mark.skipif(not _HAS_NATIVE, reason="Native Cython bridge unavailable")]
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +320,8 @@ class TestDispatchRegistry:
     def test_supported_ops_set(self):
         expected = {"relu", "sigmoid", "tanh", "gelu", "silu",
                     "add", "mul", "sub", "matmul",
-                    "softmax", "layernorm", "rmsnorm"}
+                    "softmax", "layernorm", "rmsnorm",
+                    "minimum", "maximum", "div_safe", "sign_ste"}
         assert NATIVE_AUTOGRAD_SUPPORTED_OPS == expected
 
 

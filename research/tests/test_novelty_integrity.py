@@ -1,3 +1,4 @@
+import pytest
 import os
 import tempfile
 
@@ -9,6 +10,8 @@ from research.eval.novelty_calibration import (
 )
 from research.scientist.notebook import LabNotebook
 from research.tools.novelty_integrity_check import run_integrity_check
+
+pytestmark = pytest.mark.unit
 
 
 def test_reference_version_scheme_is_stable():

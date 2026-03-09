@@ -1,16 +1,25 @@
 """analytics API route registration."""
 from __future__ import annotations
 
-import functools
+import importlib.util
+import json
+import logging
 import time
-import datetime
-from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from flask import jsonify, request
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ..persona import get_aria
+from ..shared_utils import safe_float as _to_safe_float
+from ._helpers import deduplicate_insights, native_runner_canary_status_payload
+from ._strategy import compute_compression_opportunities
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_analytics_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/trends")
     def api_trends():
@@ -23,7 +32,6 @@ def register_analytics_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/trends/context")
     def api_trends_context():
@@ -110,7 +118,6 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/insights")
     def api_insights():
         """List active insights, deduplicated by content (keeps latest)."""
@@ -118,13 +125,12 @@ def register_analytics_routes(app, context: ApiRouteContext):
         nb = LabNotebook(notebook_path)
         try:
             raw = nb.get_insights(category=category, limit=200)
-            return jsonify(_deduplicate_insights(raw))
+            return jsonify(deduplicate_insights(raw))
         except Exception as e:
             logger.error(f"Error in /api/insights: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/insights/boost", methods=["POST"])
     def api_insights_boost():
@@ -159,13 +165,12 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/op-success")
     def api_op_success():
         """Op success rate table."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.op_success_rates())
         except Exception as e:
@@ -174,13 +179,12 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/recommendation-signals")
     def api_recommendation_signals():
         """Aggregate compact, data-driven recommendation signals for Designer."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
 
             analytics = ExperimentAnalytics(nb)
             op_rates = analytics.op_success_rates() or {}
@@ -197,7 +201,7 @@ def register_analytics_routes(app, context: ApiRouteContext):
             op_priors.sort(key=lambda r: (r.get("s1_rate", 0.0), r.get("n_used", 0)), reverse=True)
 
             toxic_pairs = nb.get_failure_signature_blocklist(min_seen=5, max_fail_rate=0.85)
-            toxic_op_names: set[str] = set()
+            toxic_op_names: set = set()
             toxic_signatures = []
             for signature, penalty in toxic_pairs.items():
                 toks = [tok.strip() for tok in str(signature).split("->") if tok.strip()]
@@ -209,8 +213,8 @@ def register_analytics_routes(app, context: ApiRouteContext):
             toxic_signatures.sort(key=lambda r: r.get("penalty", 1.0))
 
             compression_coverage = analytics.compression_coverage() or {}
-            compression_opportunities = _compute_compression_opportunities(compression_coverage)
-            top_techniques = (compression_opportunities or {}).get("top_techniques") or []
+            comp_opps = compute_compression_opportunities(compression_coverage)
+            top_techniques = (comp_opps or {}).get("top_techniques") or []
             compression_techniques = [
                 str(item.get("technique") or "").strip()
                 for item in top_techniques
@@ -236,7 +240,7 @@ def register_analytics_routes(app, context: ApiRouteContext):
                 reverse=True,
             )
 
-            insights = _deduplicate_insights(nb.get_insights(limit=120))
+            insights = deduplicate_insights(nb.get_insights(limit=120))
             compressed_insights = [
                 {
                     "insight_id": row.get("insight_id"),
@@ -257,11 +261,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
                 "op_priors": op_priors[:80],
                 "toxic_signatures": toxic_signatures[:80],
                 "toxic_ops": sorted(toxic_op_names),
-                "compression_opportunities": compression_opportunities,
+                "compression_opportunities": comp_opps,
                 "compression_techniques": compression_techniques[:20],
                 "insights": compressed_insights[:80],
                 "insight_interactions": interactions[:60],
-                "native_runner": _native_runner_canary_status_payload(force_refresh=False),
+                "native_runner": native_runner_canary_status_payload(force_refresh=False),
                 "aria_core": {
                     "available": bool(importlib.util.find_spec("aria_core")),
                     "proactive_gating_in_research_runner": True,
@@ -274,13 +278,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/failure-patterns")
     def api_failure_patterns():
-        """Failure analysis by error type and stage."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.failure_patterns())
         except Exception as e:
@@ -289,14 +291,12 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/grammar-weights")
     def api_grammar_weights():
-        """Current vs learned grammar weights."""
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             defaults = analytics.get_current_grammar_weights()
             learned = analytics.compute_grammar_weights()
@@ -326,13 +326,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/efficiency-frontier")
     def api_efficiency_frontier():
-        """Pareto-optimal programs on loss vs FLOPs."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.efficiency_frontier())
         except Exception as e:
@@ -341,13 +339,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/efficiency-frontier-3d")
     def api_efficiency_frontier_3d():
-        """Pareto-optimal programs on loss vs FLOPs vs compression (3D)."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.efficiency_frontier_3d())
         except Exception as e:
@@ -356,42 +352,29 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/regression-vs-baseline")
     def api_regression_vs_baseline():
-        """Accuracy/speed tradeoff view based on baseline ratio vs throughput."""
         limit = request.args.get("limit", 200, type=int)
         nb = LabNotebook(notebook_path)
         try:
             rows = nb.conn.execute(
                 """
-                SELECT
-                    result_id,
-                    experiment_id,
-                    timestamp,
-                    loss_ratio,
-                    baseline_loss_ratio,
-                    throughput_tok_s,
-                    flops_per_token,
-                    novelty_score
+                SELECT result_id, experiment_id, timestamp, loss_ratio,
+                       baseline_loss_ratio, throughput_tok_s, flops_per_token, novelty_score
                 FROM program_results
                 WHERE stage1_passed = 1
                   AND baseline_loss_ratio IS NOT NULL
                   AND throughput_tok_s IS NOT NULL
                   AND throughput_tok_s > 0
-                ORDER BY timestamp DESC
-                LIMIT ?
+                ORDER BY timestamp DESC LIMIT ?
                 """,
                 (max(20, int(limit)),),
             ).fetchall()
-
             points = []
             for row in rows:
                 item = dict(row)
                 item["baseline_beats_reference"] = float(item.get("baseline_loss_ratio") or 0.0) < 1.0
                 points.append(item)
-
-            # Pareto frontier for (maximize throughput, minimize baseline ratio)
             frontier = []
             best_ratio = float("inf")
             for item in sorted(points, key=lambda p: float(p.get("throughput_tok_s") or 0.0), reverse=True):
@@ -399,39 +382,27 @@ def register_analytics_routes(app, context: ApiRouteContext):
                 if ratio <= best_ratio:
                     frontier.append(item)
                     best_ratio = ratio
-
             summary = {
                 "n_points": len(points),
                 "n_beating_baseline": sum(1 for p in points if p["baseline_beats_reference"]),
                 "best_baseline_ratio": min(
-                    (float(p.get("baseline_loss_ratio") or float("inf")) for p in points),
-                    default=None,
-                ),
+                    (float(p.get("baseline_loss_ratio") or float("inf")) for p in points), default=None),
                 "best_throughput_tok_s": max(
-                    (float(p.get("throughput_tok_s") or 0.0) for p in points),
-                    default=0.0,
-                ),
+                    (float(p.get("throughput_tok_s") or 0.0) for p in points), default=0.0),
                 "frontier_count": len(frontier),
             }
-
-            return jsonify({
-                "points": points,
-                "pareto_frontier": frontier,
-                "summary": summary,
-            })
+            return jsonify({"points": points, "pareto_frontier": frontier, "summary": summary})
         except Exception as e:
             logger.error(f"Error in regression-vs-baseline: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/experiment-clusters")
     def api_experiment_clusters():
-        """Deterministic experiment clustering summary and stability signal."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.experiment_clusters())
         except Exception as e:
@@ -440,13 +411,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/routing-health")
     def api_routing_health():
-        """Routing telemetry health summary grouped by routing mode."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             payload = analytics.routing_health() or {}
             payload.setdefault("available", False)
@@ -459,13 +428,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/routing-comparison")
     def api_routing_comparison():
-        """Consolidated routing-mode comparison with confidence/sample labels."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             payload = analytics.routing_mode_comparison() or {}
             payload.setdefault("available", False)
@@ -482,13 +449,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/gating-diagnostics")
     def api_gating_diagnostics():
-        """Canonical gating behavior diagnostics (entropy/collapse/retention)."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             payload = analytics.gating_behavior_diagnostics() or {}
             payload.setdefault("available", False)
@@ -505,13 +470,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/gate-health")
     def api_gate_health():
-        """Causality gate performance: daily failure rate + loss correlation."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             n_days = request.args.get("days", 14, type=int)
             return jsonify(analytics.gate_health_daily(n_days=n_days))
@@ -521,13 +484,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/math-family-coverage")
     def api_math_family_coverage():
-        """Coverage of evaluated/surviving programs by mathematical family."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.math_family_coverage())
         except Exception as e:
@@ -536,13 +497,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/mathspace-impact")
     def api_mathspace_impact():
-        """Impact of math-space operators/families on S1/validation/novelty."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             payload = analytics.mathspace_operator_impact() or {}
             payload.setdefault("available", False)
@@ -562,13 +521,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/compression-coverage")
     def api_compression_coverage():
-        """Coverage of compression techniques across tested and surviving programs."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.compression_coverage())
         except Exception as e:
@@ -577,29 +534,25 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/compression-opportunities")
     def api_compression_opportunities():
-        """Ranked compactness opportunities with actionable next-run suggestions."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             coverage = analytics.compression_coverage() or {}
-            return jsonify(_compute_compression_opportunities(coverage))
+            return jsonify(compute_compression_opportunities(coverage))
         except Exception as e:
             logger.error(f"Error in compression-opportunities: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/negative-results")
     def api_negative_results():
-        """Aggregated negative results: failed ops, error types, anti-patterns."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.negative_results_synthesis())
         except Exception as e:
@@ -608,13 +561,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/learning-trajectory")
     def api_learning_trajectory():
-        """S1 rate trend over time with regression analysis."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.learning_trajectory())
         except Exception as e:
@@ -623,13 +574,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/strategy-backtest")
     def api_strategy_backtest():
-        """Aggregate cross-experiment outcomes by search intent."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             return jsonify(analytics.strategy_backtest())
         except Exception as e:
@@ -638,13 +587,11 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/control-comparison")
     def api_control_comparison():
-        """Compare control (default weights) vs learned-weight experiments."""
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             result = analytics.control_experiment_comparison()
             if result is None:
@@ -657,16 +604,13 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/learning-summary")
     def api_learning_summary():
-        """Aria-generated 3-5 bullet summary of what the system has learned."""
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
-
             payload = aria.summarize_learning_bullets({
                 "summary": nb.get_dashboard_summary(),
                 "grammar_default": analytics.get_current_grammar_weights(),
@@ -685,10 +629,8 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/learning-log")
     def api_learning_log():
-        """Audit trail of grammar weight changes."""
         n = request.args.get("n", 100, type=int)
         nb = LabNotebook(notebook_path)
         try:
@@ -699,10 +641,8 @@ def register_analytics_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/analytics/insight-interactions")
     def api_insight_interactions():
-        """Pairwise insight synergy/antagonism learned from selection outcomes."""
         nb = LabNotebook(notebook_path)
         try:
             limit = request.args.get("limit", 80, type=int)
@@ -772,5 +712,3 @@ def register_analytics_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
-

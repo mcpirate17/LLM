@@ -4,6 +4,8 @@ import json
 from research.scientist.notebook import LabNotebook
 from research.scientist.analytics import ExperimentAnalytics
 
+pytestmark = pytest.mark.unit
+
 def test_pareto_logic(tmp_path):
     db_path = str(tmp_path / "test_brain.db")
     nb = LabNotebook(db_path)
@@ -44,7 +46,7 @@ def test_instability_attribution(tmp_path):
         g = {"nodes": [{"op_name": "softmax_attention", "input_ids": []}]}
         nb.record_program_result(exp_id, f"fp_{i}", json.dumps(g), 
                                  stage0_passed=1, stage1_passed=1, fp_jacobian_spectral_norm=100.0)
-    
+
     nb.flush_writes()
         
     analytics = ExperimentAnalytics(nb)

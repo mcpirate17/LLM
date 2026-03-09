@@ -16,6 +16,8 @@ from research.scientist.native_runner import (
 )
 from research.tests.conftest import make_fake_graph
 
+pytestmark = pytest.mark.native
+
 
 # ---------------------------------------------------------------------------
 # Helpers

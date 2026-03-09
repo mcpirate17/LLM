@@ -12,6 +12,8 @@ from research.synthesis.native_ir_converter import (
     graph_to_native_ir_json,
 )
 
+pytestmark = pytest.mark.native
+
 
 def _make_simple_graph(model_dim: int = 64) -> ComputationGraph:
     """input -> relu -> output (3 nodes: input, relu, identity-as-output)."""

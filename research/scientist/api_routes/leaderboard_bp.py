@@ -1,16 +1,21 @@
 """leaderboard API route registration."""
 from __future__ import annotations
 
-import functools
-import time
-import datetime
-from flask import jsonify, request, Response
+import logging
+from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ._strategy import (
+    annotate_qkv_usage, attach_long_context_breakdown,
+    compute_cross_run_stability, infer_tier_for_program, count_discovery_tiers,
+)
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_leaderboard_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/leaderboard")
     def api_leaderboard():
@@ -20,11 +25,11 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         sort_by = request.args.get("sort", "composite_score")
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
             entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
-            _attach_long_context_breakdown(nb, entries)
-            stability = _compute_cross_run_stability(
+            attach_long_context_breakdown(nb, entries)
+            stability = compute_cross_run_stability(
                 nb, nb.get_top_programs(20, sort_by="loss_ratio")
             )
             stability_by_result = {
@@ -35,16 +40,10 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             for entry in entries:
                 entry["cross_run_stability"] = stability_by_result.get(
                     entry.get("result_id"),
-                    {
-                        "trend": "unknown",
-                        "seen_runs": 0,
-                        "latest_rank": None,
-                        "previous_rank": None,
-                        "rank_delta": None,
-                    },
+                    {"trend": "unknown", "seen_runs": 0,
+                     "latest_rank": None, "previous_rank": None, "rank_delta": None},
                 )
-            _annotate_qkv_usage(entries, analytics)
-            # Group by tier for the dashboard
+            annotate_qkv_usage(entries, analytics)
             tiers = {}
             for entry in entries:
                 t = entry.get("tier", "screening")
@@ -64,10 +63,8 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/leaderboard/status", methods=["POST"])
     def api_leaderboard_update_status():
-        """Update status (tier) for an existing leaderboard record."""
         body = request.get_json(silent=True) or {}
         tier = str(body.get("tier") or "").strip().lower()
         entry_id = str(body.get("entry_id") or "").strip()
@@ -113,10 +110,8 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/leaderboard/pin", methods=["POST"])
     def api_leaderboard_pin():
-        """Pin or unpin a leaderboard entry."""
         body = request.get_json(silent=True) or {}
         entry_id = str(body.get("entry_id") or "").strip()
         result_id = str(body.get("result_id") or "").strip()
@@ -135,7 +130,6 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 ).fetchone()
                 if row:
                     resolved_entry_id = row["entry_id"]
-            
             if not resolved_entry_id:
                 return jsonify({"error": "Leaderboard entry not found"}), 404
 
@@ -147,18 +141,10 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/discoveries")
     def api_discoveries():
-        """Unified discoveries endpoint merging leaderboard + raw candidates.
-
-        Query params:
-          tier: filter by tier (screening/investigation/validation/breakthrough)
-          limit: max results (default 100)
-          sort: sort key (default composite_score)
-          view: 'all' for raw candidates, 'ranked' for leaderboard (default ranked)
-        """
-        from .naming import annotate_display_names
+        """Unified discoveries endpoint merging leaderboard + raw candidates."""
+        from ..naming import annotate_display_names
 
         tier = request.args.get("tier")
         limit = request.args.get("limit", 100, type=int)
@@ -166,30 +152,26 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         view = request.args.get("view", "ranked")
         nb = LabNotebook(notebook_path)
         try:
-            from .analytics import ExperimentAnalytics
+            from ..analytics import ExperimentAnalytics
             analytics = ExperimentAnalytics(nb)
 
             if view == "all":
-                # Raw S1 survivors from program_results
                 programs = nb.get_top_programs(limit, sort_by="loss_ratio")
-                _attach_long_context_breakdown(nb, programs)
-                _annotate_qkv_usage(programs, analytics)
-                # Add family classification + display names
+                attach_long_context_breakdown(nb, programs)
+                annotate_qkv_usage(programs, analytics)
                 for p in programs:
                     p["architecture_family"] = nb._classify_architecture_family(
                         graph_json=p.get("graph_json"),
                         routing_mode=p.get("routing_mode"),
                     )
-                    p["tier"] = _infer_tier_for_program(nb, p)
+                    p["tier"] = infer_tier_for_program(nb, p)
                 annotate_display_names(programs)
-                # Strip large fields from response
                 for p in programs:
                     p.pop("graph_json", None)
                     p.pop("_graph_json", None)
                     p.pop("loss_curve", None)
 
-                # Compute tier counts from all S1 survivors
-                tier_counts = _count_discovery_tiers(nb)
+                tier_counts = count_discovery_tiers(nb)
 
                 return jsonify({
                     "entries": _json_safe(programs),
@@ -198,10 +180,9 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                     "view": "all",
                 })
 
-            # Default: ranked leaderboard view
             entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
-            _attach_long_context_breakdown(nb, entries)
-            stability = _compute_cross_run_stability(
+            attach_long_context_breakdown(nb, entries)
+            stability = compute_cross_run_stability(
                 nb, nb.get_top_programs(20, sort_by="loss_ratio")
             )
             stability_by_result = {
@@ -215,11 +196,10 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                     {"trend": "unknown", "seen_runs": 0,
                      "latest_rank": None, "previous_rank": None, "rank_delta": None},
                 )
-            _annotate_qkv_usage(entries, analytics)
+            annotate_qkv_usage(entries, analytics)
             annotate_display_names(entries)
 
-            # Summary counts
-            tier_counts = _count_discovery_tiers(nb)
+            tier_counts = count_discovery_tiers(nb)
 
             return jsonify({
                 "entries": _json_safe(entries),
@@ -234,5 +214,3 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
-

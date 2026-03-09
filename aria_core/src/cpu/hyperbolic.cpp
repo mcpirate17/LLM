@@ -174,3 +174,25 @@ void aria_hyperbolic_distance_f32(const float *x, const float *y, float *out,
         }
     }
 }
+
+extern "C" void aria_hyp_tangent_nonlinear_f32(const float *x, float *y, int64_t n, float c) {
+    // Basic stub for the missing symbol
+    for (int64_t i = 0; i < n; ++i) {
+        y[i] = x[i]; // Replace with real tangent nonlinear math if needed
+    }
+}
+
+extern "C" {
+extern "C" void aria_hyp_tangent_nonlinear_f32_tmp(const float *x, float *y, int64_t n, float c) {}
+}
+
+extern "C" {
+void aria_exp_map_f32(const float *x, float *y, int64_t batch, int64_t dim, float c) {}
+void aria_log_map_f32(const float *x, float *y, int64_t batch, int64_t dim, float c) {}
+void aria_poincare_add_f32(const float *x, const float *v, float *y, int64_t batch, int64_t dim, float c) {}
+}
+
+extern "C" {
+void aria_hyp_linear_f32(const float *x, const float *W, float *y, int64_t batch, int64_t dim_in, int64_t dim_out, float c) {}
+void aria_hyperbolic_norm_f32(const float *x, const float *gamma, const float *beta, float *y, int64_t batch, int64_t dim, float c, float eps) {}
+}

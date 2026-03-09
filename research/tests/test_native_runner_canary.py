@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from research.scientist.native_runner_canary import run_selective_canary_latency_benchmark
+
+pytestmark = pytest.mark.native
 
 
 def test_selective_canary_benchmark_reports_probe_vs_selective_latency_shapes():

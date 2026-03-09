@@ -24,6 +24,8 @@ from research.scientist.native_runner import (
     _reset_native_lib_cache,
 )
 
+pytestmark = pytest.mark.native
+
 
 @pytest.fixture(autouse=True)
 def clean_state():
@@ -72,13 +74,13 @@ def _compile_with_mocks(env, n_compiles=1):
             patch("research.scientist.native_runner._maybe_prepare_runner_abi_session",
                   return_value=fake_abi_report))
         extra_patches.append(
-            patch("research.scientist.native_runner._build_native_abi_only_model",
+            patch("research.scientist.native.compiler._build_native_abi_only_model",
                   return_value=DummyModel()))
 
     with patch("research.scientist.native_runner_adapter.os.environ", env), \
          patch("research.scientist.native_runner.os.environ", env), \
          patch("research.scientist.native_runner_adapter.Path.exists", return_value=True), \
-         patch("research.scientist.native_runner.try_designer_runtime_probe",
+         patch("research.scientist.native.compiler.try_designer_runtime_probe",
                return_value={"attempted": True, "succeeded": True, "parity_ok": True, "reason": "ok"}), \
          patch("research.scientist.native_runner._try_load_native_lib", return_value=None), \
          patch("research.scientist.native_runner._legacy_compile_model", return_value=DummyModel()):

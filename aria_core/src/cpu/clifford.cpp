@@ -38,7 +38,7 @@ static inline void _transpose8_ps(__m256 &v0, __m256 &v1, __m256 &v2, __m256 &v3
 }
 #endif
 
-static inline void _gp_cl30_single(const float *ai, const float *bi, float *yi) {
+extern "C" void _gp_cl30_single(const float *ai, const float *bi, float *yi) {
     float a0 = ai[0], a1 = ai[1], a2 = ai[2], a3 = ai[3];
     float a12 = ai[4], a13 = ai[5], a23 = ai[6], a123 = ai[7];
 

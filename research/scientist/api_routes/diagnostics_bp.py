@@ -1,16 +1,17 @@
 """diagnostics API route registration."""
 from __future__ import annotations
 
-import functools
-import time
-import datetime
-from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
+import logging
+import os
+from flask import jsonify, request
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_diagnostics_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/diagnostics/fingerprint")
     def api_fingerprint_diagnostics():
@@ -32,7 +33,6 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
                 },
                 "error": str(e),
             }), 500
-
 
     @app.route("/api/diagnostics/report-cache")
     def api_report_cache_diagnostics():
@@ -80,5 +80,3 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
             }), 500
         finally:
             nb.close()
-
-

@@ -7,6 +7,8 @@ from research.healer import CodeHealer
 from research.healer.core import HealerTaskSpec
 from research.scientist.notebook import LabNotebook
 
+pytestmark = pytest.mark.unit
+
 
 def test_code_healer_state_machine_completes_with_allowed_commands():
     tmpdir = tempfile.mkdtemp()

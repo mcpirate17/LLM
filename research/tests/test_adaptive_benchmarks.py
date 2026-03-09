@@ -6,6 +6,7 @@ E1: FLOPs/token and throughput comparison.
 E2: Quality parity check on micro_corpus.txt (TinyStories/WikiText proxy).
 """
 
+import pytest
 import time
 import torch
 import torch.nn as nn
@@ -13,6 +14,8 @@ import torch.nn as nn
 from research.morphological_box import ArchSpec
 from research.arch_builder import build_model, BuildConfig
 from research.evaluator import stage1_micro_train
+
+pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
 # 1. Define Architecture Specs

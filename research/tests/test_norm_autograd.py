@@ -29,7 +29,7 @@ _research_dir = str(Path(__file__).resolve().parents[1])
 if _research_dir not in sys.path:
     sys.path.insert(0, _research_dir)
 
-pytestmark = pytest.mark.skipif(not HAS_BRIDGE, reason="Cython bridge not available")
+pytestmark = [pytest.mark.native, pytest.mark.skipif(not HAS_BRIDGE, reason="Cython bridge not available")]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

@@ -1,6 +1,9 @@
+import pytest
 import torch
 import torch.nn as nn
 from research.eval.sandbox import safe_eval
+
+pytestmark = pytest.mark.unit
 
 
 class CausalCopyModel(nn.Module):

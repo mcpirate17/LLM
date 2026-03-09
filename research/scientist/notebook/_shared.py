@@ -1,51 +1,18 @@
-"""
-Electronic Lab Notebook
+"""Shared constants, schema, helpers, and dataclass for notebook package.
 
-Persistent, structured record of all experiments, hypotheses,
-observations, and conclusions. Stored as SQLite for queryability
-and served to the React dashboard via API.
+Single source of truth — all notebook_*.py mixins import from here.
 """
-
 from __future__ import annotations
 
-import json
 import logging
 import math
-import os
-import queue
 import re
-import sqlite3
-import subprocess
-import threading
-import time
-import uuid
-import zlib
-from contextlib import contextmanager
-from datetime import datetime
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    from .preregistration import PreregistrationError, validate_preregistration
-except Exception:  # direct-module loading fallback for test harness
-    import importlib.util as _importlib_util
-    import sys as _sys
+LOGGER = logging.getLogger("research.scientist.notebook")
 
-    _prereg_path = Path(__file__).with_name("preregistration.py")
-    _prereg_spec = _importlib_util.spec_from_file_location(
-        "_notebook_preregistration_fallback",
-        str(_prereg_path),
-    )
-    _prereg_mod = _importlib_util.module_from_spec(_prereg_spec)
-    assert _prereg_spec is not None and _prereg_spec.loader is not None
-    _sys.modules[_prereg_spec.name] = _prereg_mod
-    _prereg_spec.loader.exec_module(_prereg_mod)
-    PreregistrationError = _prereg_mod.PreregistrationError
-    validate_preregistration = _prereg_mod.validate_preregistration
-
-LOGGER = logging.getLogger(__name__)
-
+# --- Compiled regex patterns (compiled once, shared across all mixins) ---
 _INSIGHT_TOP_OPS_RE = re.compile(r"^Top-performing ops \(S1 rate\):\s*(.+?)\.\s")
 _INSIGHT_WINNING_COMBO_RE = re.compile(r"^Winning combination:\s*(.+?)\s+appears in\s+\d+\s+survivors")
 _INSIGHT_FAILING_OPS_RE = re.compile(r"^Consistently failing ops:\s*(.+?)\.\s")
@@ -115,6 +82,47 @@ def infer_insight_identity(category: str, content: str) -> Tuple[str, str, str]:
     normalized = _INSIGHT_STANDALONE_NUM_RE.sub("#", text)
     semantic = f"text:{cat}:{normalized[:240]}"
     return (f"text_{cat}", normalized[:120], semantic)
+
+
+def sanitize_for_db(value: Any) -> Any:
+    """Deep-sanitize values for SQLite/JSON storage.
+
+    Handles numpy scalars, torch tensors, NaN/Inf, and nested containers.
+    Replaces both ``_sanitize_numeric`` and ``_json_clean``.
+    """
+    if value is None:
+        return None
+    # numpy/torch scalar → Python native
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if hasattr(value, "dtype"):
+        try:
+            return float(value)
+        except Exception:
+            return None
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {k: sanitize_for_db(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [sanitize_for_db(v) for v in value]
+    return value
+
+
+@dataclass(slots=True)
+class ExperimentEntry:
+    """A single lab notebook entry."""
+    entry_type: str
+    title: str
+    content: str
+    experiment_id: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    metadata: Dict = field(default_factory=dict)
 
 
 NOTEBOOK_SCHEMA = """
@@ -885,53 +893,3 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     # Efficiency multiple (geomean of per-dimension ratios vs GPT-2)
     "efficiency_multiple": "REAL",
 }
-
-
-@dataclass
-class ExperimentEntry:
-    """A single lab notebook entry."""
-    entry_type: str
-    title: str
-    content: str
-    experiment_id: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    metadata: Dict = field(default_factory=dict)
-
-
-
-from .notebook.notebook_core import _NotebookCoreMixin if 'NotebookCore' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_experiments import _ExperimentsMixin if 'Experiments' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_programs import _ProgramsMixin if 'Programs' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_leaderboard import _LeaderboardMixin if 'Leaderboard' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_campaigns import _CampaignsMixin if 'Campaigns' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_knowledge import _KnowledgeMixin if 'Knowledge' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_healer import _HealerMixin if 'Healer' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_chat import _ChatMixin if 'Chat' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_analytics import _AnalyticsMixin if 'Analytics' != 'NotebookCore' else '_NotebookCore'
-from .notebook.notebook_misc import _MiscMixin if 'Misc' != 'NotebookCore' else '_NotebookCore'
-
-from .notebook.notebook_core import _NotebookCore
-from .notebook.notebook_experiments import _ExperimentsMixin
-from .notebook.notebook_programs import _ProgramsMixin
-from .notebook.notebook_leaderboard import _LeaderboardMixin
-from .notebook.notebook_campaigns import _CampaignsMixin
-from .notebook.notebook_knowledge import _KnowledgeMixin
-from .notebook.notebook_healer import _HealerMixin
-from .notebook.notebook_chat import _ChatMixin
-from .notebook.notebook_analytics import _AnalyticsMixin
-from .notebook.notebook_misc import _MiscMixin
-
-class LabNotebook(
-    _NotebookCore,
-    _ExperimentsMixin,
-    _ProgramsMixin,
-    _LeaderboardMixin,
-    _CampaignsMixin,
-    _KnowledgeMixin,
-    _HealerMixin,
-    _ChatMixin,
-    _AnalyticsMixin,
-    _MiscMixin
-):
-    """Electronic lab notebook for the AI scientist."""
-    pass

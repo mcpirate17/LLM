@@ -11,6 +11,8 @@ from research.synthesis.compiler import compile_model
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.eval.sandbox import safe_eval
 
+pytestmark = pytest.mark.unit
+
 
 def _build_single_op_model(op_name: str, model_dim: int = 16):
     """Build a minimal model with: input -> op -> output (with proj if needed)."""

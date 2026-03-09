@@ -22,6 +22,8 @@ from typing import Callable, List
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.e2e
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

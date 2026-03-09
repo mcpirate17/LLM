@@ -18,7 +18,7 @@ try:
 except ImportError:
     HAS_BRIDGE = False
 
-pytestmark = pytest.mark.skipif(not HAS_BRIDGE, reason="aria_bridge not built")
+pytestmark = [pytest.mark.native, pytest.mark.skipif(not HAS_BRIDGE, reason="aria_bridge not built")]
 
 
 # ── Unary ops ────────────────────────────────────────────────────────

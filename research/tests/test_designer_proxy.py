@@ -10,11 +10,14 @@ Verifies that /api/designer/* endpoints:
 Run: cd /path/to/LLM/research && python -m pytest tests/test_designer_proxy.py -v
 """
 
+import pytest
 import json
 import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
+
+pytestmark = pytest.mark.designer
 
 # Ensure the research package is importable
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

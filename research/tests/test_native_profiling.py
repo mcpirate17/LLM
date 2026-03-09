@@ -12,6 +12,8 @@ import json
 import os
 import pytest
 
+pytestmark = pytest.mark.native
+
 # Skip entire module if the Rust scheduler is not available.
 try:
     from scientist import native_runner

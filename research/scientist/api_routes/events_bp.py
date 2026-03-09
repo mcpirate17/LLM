@@ -1,16 +1,18 @@
 """events API route registration."""
 from __future__ import annotations
 
-import functools
-import time
-import datetime
+import json
+import logging
 from flask import jsonify, request, Response
-from ..json_utils import json_safe as _json_safe
 from ..notebook import LabNotebook
-from .deps import ApiRouteContext, install_legacy_symbols
+from ._helpers import get_runner, get_sse_timeout_seconds, json_safe
+from .deps import ApiRouteContext
+
+logger = logging.getLogger(__name__)
+
 
 def register_events_routes(app, context: ApiRouteContext):
-    install_legacy_symbols(globals(), context)
+    notebook_path = context.notebook_path
 
     @app.route("/api/live-feed")
     def api_live_feed():
@@ -26,9 +28,6 @@ def register_events_routes(app, context: ApiRouteContext):
                 limit=query_limit,
             )
 
-            # Default behavior should show a coherent experiment stream.
-            # Without this, mixed cross-experiment rows can look like broken
-            # generation timelines (e.g., Gen 3 -> Gen 13 with unrelated runs).
             if not exp_id:
                 latest_exp_id = next(
                     (
@@ -59,34 +58,30 @@ def register_events_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/live-loss-curve")
     def api_live_loss_curve():
         """Return the in-memory training loss curve for the live chart."""
-        if _runner is None:
-            return jsonify([])
+        runner = get_runner(notebook_path)
         try:
-            return jsonify(_runner.get_live_loss_curve())
+            return jsonify(runner.get_live_loss_curve())
         except Exception as e:
             logger.error("Error in /api/live-loss-curve: %s", e)
             return jsonify([])
 
-
     @app.route("/api/events")
     def api_events():
         """SSE endpoint for real-time experiment events."""
-        runner = _get_runner(notebook_path)
-        sse_timeout = _get_sse_timeout_seconds()
+        runner = get_runner(notebook_path)
+        sse_timeout = get_sse_timeout_seconds()
 
         def event_stream():
             while True:
                 for event in runner.get_events(timeout=sse_timeout):
                     data = json.dumps(
-                        _json_safe(event.get("data", {})),
+                        json_safe(event.get("data", {})),
                         allow_nan=False,
                     )
                     yield f"event: {event['type']}\ndata: {data}\n\n"
-                # After timeout, check if client is still connected
                 yield f"event: keepalive\ndata: {{}}\n\n"
 
         return Response(
@@ -100,3 +95,28 @@ def register_events_routes(app, context: ApiRouteContext):
         )
 
 
+def _entry_to_live_feed_event(entry: dict):
+    """Convert a notebook entry to a live-feed event dict, or None if not applicable."""
+    if not isinstance(entry, dict):
+        return None
+    content = entry.get("content", "")
+    metadata = entry.get("metadata") or entry.get("metadata_json") or {}
+    if isinstance(metadata, str):
+        try:
+            import json as _json
+            metadata = _json.loads(metadata)
+        except Exception:
+            metadata = {}
+    ret = {
+        "type": metadata.get("event_type") or metadata.get("live_feed_type", "info"),
+        "content": content,
+        "timestamp": entry.get("timestamp"),
+        "experiment_id": entry.get("experiment_id"),
+        "metadata": metadata,
+    }
+    payload = metadata.get("payload")
+    if isinstance(payload, dict):
+        for k, v in payload.items():
+            if k not in ret:
+                ret[k] = v
+    return ret

@@ -13,6 +13,8 @@ import time
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.native
+
 # Perf gates are intended to catch kernel regressions, not thread runtime noise.
 # Default to single-thread OpenMP unless caller explicitly overrides env vars.
 os.environ.setdefault("OMP_NUM_THREADS", "1")

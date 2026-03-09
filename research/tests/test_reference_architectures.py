@@ -11,6 +11,8 @@ from research.synthesis.reference_architectures import (
 from research.synthesis.compiler import compile_model
 from research.synthesis.graph import ComputationGraph
 
+pytestmark = pytest.mark.unit
+
 
 class TestReferenceArchitectureBuilders:
     """Test that each reference architecture builds valid graphs."""

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.native
+
 
 class NrCompileRequest(ctypes.Structure):
     _fields_ = [

@@ -14,6 +14,8 @@ from research.synthesis.compiler import (
     _record_routing_telemetry,
 )
 
+pytestmark = pytest.mark.unit
+
 # Check if aria_core is available
 try:
     import aria_core

@@ -8,6 +8,8 @@ from research.synthesis.primitives import PRIMITIVE_REGISTRY, OpCategory, get_pr
 from research.synthesis.compiler import _execute_op
 from research.mathspaces.registry import register_all_mathspaces
 
+pytestmark = pytest.mark.unit
+
 # Ensure all ops are registered
 register_all_mathspaces()
 

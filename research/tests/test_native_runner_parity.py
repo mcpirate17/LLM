@@ -9,6 +9,8 @@ from research.scientist.native_runner import compile_model_native_first, reset_n
 from research.synthesis.compiler import compile_model as compile_model_legacy
 from research.synthesis.graph import ComputationGraph
 
+pytestmark = pytest.mark.native
+
 
 def _graph_simple(model_dim: int = 32) -> ComputationGraph:
     g = ComputationGraph(model_dim=model_dim)

@@ -1,4 +1,5 @@
 
+import pytest
 import unittest
 import torch
 import torch.nn as nn
@@ -7,6 +8,8 @@ import time
 from research.synthesis.grammar import GrammarConfig, AdaptiveGenerator, EfficiencyPrior, batch_generate
 from research.synthesis.primitives import OPCODE_MAP
 from research.eval.fingerprint import compute_lightning_fingerprint
+
+pytestmark = pytest.mark.unit
 
 class TestHephaestusBehavior(unittest.TestCase):
     def setUp(self):

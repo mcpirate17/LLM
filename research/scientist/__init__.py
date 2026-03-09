@@ -1,16 +1,22 @@
 """
-Dr. Aria Nexus — AI Research Scientist
-
-An autonomous AI scientist with personality, an electronic lab notebook,
-experiment tracking, and the ability to work continuously on novel
-architecture discovery.
+Dr. Aria Nexus — AI Research Scientist.
 """
 
-from .persona import Aria, get_aria
 from .notebook import LabNotebook, ExperimentEntry
+
+__all__ = [
+    "Aria",
+    "get_aria",
+    "LabNotebook",
+    "ExperimentEntry",
+    "ExperimentRunner",
+]
 
 
 def __getattr__(name):
+    if name in {"Aria", "get_aria"}:
+        from .persona import Aria, get_aria
+        return Aria if name == "Aria" else get_aria
     if name == "ExperimentRunner":
         from .runner import ExperimentRunner
         return ExperimentRunner

@@ -45,11 +45,11 @@
 - **What**: `_sync_fingerprint_leaderboard(result_id)` called in `add_entry()` but `result_id` not in scope — crashes at runtime
 - **Fix**: Removed the broken sync call (it belongs in `record_program_result`, not `add_entry`)
 
-### B.2 Runner Submodule Import Bloat [DEFERRED]
-- **What**: Each of 10 runner submodules has ~80 identical imports copied from the original monolith. Most files use only 5-20.
-- **Why deferred**: Mixin pattern means any method can be called on `ExperimentRunner` which combines all mixins. Tests use `unittest.mock.patch("research.scientist.runner.<symbol>")` which requires symbols at the package level. Aggressive pruning breaks patch targets.
-- **Safe to do**: Move shared constants to `_types.py`, move shared helpers to `_helpers.py` (already done)
-- **Unsafe**: Removing any import from a submodule without verifying no other mixin method uses it
+### B.2 Runner Submodule Import Bloat [DONE]
+- **What**: Each of 10 runner submodules had ~47 identical imports copied from the original monolith.
+- **Original concern (WRONG)**: "Mixin pattern means methods reference names from other mixin's imports." False — Python resolves globals per-module, not per-class.
+- **Bug found & fixed**: Tests used `patch("research.scientist.runner.threading.Thread")` etc., which patched `__init__.py`'s namespace — NOT the submodule where the call happens. Fixed 14 broken patch targets across 4 test files.
+- **Import pruning**: AST-based removal of 599 unused imports across 10 submodules. Each file now imports only what it uses (11-34 imports, down from 47-48).
 
 ### B.3 `_chat_should_use_code_tools()` in api.py [DONE]
 - **File**: `scientist/api.py` (~line 884)
@@ -57,20 +57,49 @@
 
 ---
 
-## C. God Functions / God Files
+## C. God Functions / God Files [PLANNED — see `GOD_FILE_SPLIT_PLAN.md`]
 
-| File | Function | Lines | Priority |
-|------|----------|-------|----------|
-| `scientist/api.py` | `create_app()` | 6,369 | CRITICAL — split into Flask Blueprints |
-| `runner/continuous.py` | `_run_inline_validation()` | 1,025 | HIGH — extract validation sub-phases |
-| `runner/execution.py` | `_run_validation_thread()` | 1,014 | HIGH — extract candidate eval + result aggregation |
-| `runner/execution.py` | `_execute_experiment()` | 771 | HIGH — extract screening loop |
-| `scientist/persona.py` | `_rule_based_mode_recommendation()` | 563 | [DONE] MEDIUM |
-| `scientist/api.py` | `api_strategy_briefing()` | 648 | MEDIUM |
-| `runner/execution.py` | `_micro_train()` | 582 | MEDIUM |
-| `runner/results.py` | `_auto_escalate()` | 487 | MEDIUM |
-| `synthesis/compiler.py` | `_init_params()` | 310 | MEDIUM — use dispatch table |
-| `scientist/native_runner.py` | `compile_model_native_first()` | 591 | LOW |
+Split plan created and prioritized. Remaining god functions are tracked in `GOD_FILE_SPLIT_PLAN.md` (Phases 1-7).
+
+### C.1 `synthesis/compiler.py:_init_params()` Dispatch Refactor [DONE by codex-gpt5]
+- **What**: 300+ line monolithic `if/elif` initializer chain.
+- **Fix**: Replace with dispatch-table driven entry + grouped helper initializers.
+
+### C.2 `runner/execution.py:_execute_experiment()` Phase Split [DONE by codex-gpt5]
+- **What**: 700+ line orchestration method.
+- **Fix**: Extract morphology path + orchestrator/dedup helpers into child phase mixin module, parent delegates.
+
+### C.3 `runner/execution.py:_run_validation_thread()` Phase Split [DONE by codex-gpt5]
+- **What**: 1000+ line validation orchestration method.
+- **Fix**: Extract seed-sweep/model-reconstruction helpers into child validation phase mixin, parent delegates.
+
+### C.4 `runner/execution.py:_micro_train()` Phase Split [DONE by codex-gpt5]
+- **What**: 500+ line training worker method.
+- **Fix**: Extract deterministic batch, discovery eval, and optional heldout/discovery loss helpers into child micro-train mixin, parent delegates.
+
+### C.5 `runner/continuous.py:_run_inline_validation()` Phase Split [DONE by codex-gpt5]
+- **What**: 1000+ line inline validation orchestration method.
+- **Fix**: Extract candidate-selection/bootstrap/runtime-prep helpers into child validation phase mixin, parent delegates.
+
+### C.6 `runner/results.py:_auto_escalate()` Phase Split [DONE by codex-gpt5]
+- **What**: 400+ line escalation orchestration method handling both screening and investigation branches.
+- **Fix**: Extract branch-specific orchestration into child phase mixin helpers, parent dispatcher delegates.
+
+| File | Function | Lines | Status |
+|------|----------|-------|--------|
+| `scientist/api.py` | `create_app()` | 6,369 | PLANNED — Phase 1: Flask Blueprints (partial work in `api_routes/`) |
+| `runner/continuous.py` | `_run_inline_validation()` | 1,025 | [DONE] — Phase 7 |
+| `runner/execution.py` | `_run_validation_thread()` | 1,014 | [DONE] — Phase 3 |
+| `runner/execution.py` | `_execute_experiment()` | 771 | [DONE] — Phase 3 |
+| `scientist/persona.py` | `_rule_based_mode_recommendation()` | 563 | [DONE] — split into decision-tree branches (d6be57b) |
+| `scientist/api.py` | `api_strategy_briefing()` | 648 | PLANNED — Phase 1 |
+| `runner/execution.py` | `_micro_train()` | 582 | [DONE] — Phase 3 |
+| `runner/results.py` | `_auto_escalate()` | 487 | [DONE] — Phase 7 |
+| `synthesis/compiler.py` | `_init_params()` | 310 | [DONE] — Phase 6 (dispatch table) |
+| `scientist/native_runner.py` | `compile_model_native_first()` | 591 | LOW — well-structured, defer |
+| `scientist/notebook/` | (151 methods) | 6,591 | [DONE] — 10 mixin files + `_shared.py`, `__slots__`, `sanitize_for_db` |
+| `scientist/analytics/` | (68 methods) | 4,487 | [DONE] — 6 mixin files, `__slots__`, `@staticmethod`, np.percentile |
+| `scientist/runner.py` | (dead monolith) | 15,795 | [DONE] — deleted `_runner_dead.py` |
 
 ---
 
@@ -115,7 +144,7 @@
 - **File**: `eval/fingerprint.py:112`
 - **What**: `self.__dict__.copy()` doesn't work with `__slots__`
 - **Fix**: `{f.name: getattr(self, f.name) for f in dataclasses.fields(self)}`
-- **Status**: NEEDS VERIFICATION — may already be fixed
+- **Status**: Verified fixed
 
 ---
 
@@ -156,16 +185,75 @@ Native fast-paths in `synthesis/compiler.py`:
 
 Coverage: 66 native-backed handlers, 87 Python-only.
 
+### F.1 `conv1d_seq` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("conv1d_seq")` currently always uses Python/PyTorch path.
+- **Fix**: Use `aria_core.conv1d_seq_f32` on CPU float32 non-grad path, keep PyTorch fallback for autograd/CUDA.
+
+### F.2 `token_pool_restore` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("token_pool_restore")` currently always uses Python path.
+- **Fix**: Use `aria_core.token_pool_restore_f32` on CPU float32 non-grad path, keep PyTorch fallback for autograd/CUDA.
+
+### F.3 `tropical_center` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("tropical_center")` currently always uses Python `cummin` path.
+- **Fix**: Use `aria_core.tropical_center_f32` on CPU float32 non-grad path, keep `cummin` fallback.
+
+### F.4 `rope_rotate` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("rope_rotate")` currently always uses Python trig/reshape path.
+- **Fix**: Use `aria_core.rope_rotate_f32` on CPU float32 non-grad path, keep current Python fallback.
+
+### F.5 `rwkv_time_mixing` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("rwkv_time_mixing")` currently runs Python-heavy recurrence/approximation path.
+- **Fix**: Use `aria_core.rwkv_time_mixing_f32` on CPU float32 non-grad path when module params are available; keep existing fallback.
+
+### F.6 `causal_mask` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("causal_mask")` currently always uses Python `cumsum` path.
+- **Fix**: Use `aria_core.causal_mask_f32` on CPU float32 non-grad path with fallback.
+
+### F.7 `sort_seq` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("sort_seq")` currently always uses Python `argsort` + `gather`.
+- **Fix**: Use `aria_core.sort_seq_f32` on CPU float32 non-grad path with validated output-shape fallback.
+
+### F.8 `argsort_seq` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("argsort_seq")` currently always uses Python `argsort`.
+- **Fix**: Use `aria_core.argsort_seq_f32` on CPU float32 non-grad path with output-normalization fallback.
+
+### F.9 `topk_gate` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("topk_gate")` currently always uses Python linear + softmax + split path.
+- **Fix**: Use `aria_core.topk_gate_f32` on CPU float32 non-grad path when `gate_proj` has expected shape; keep Python fallback.
+
+### F.10 `cosine_similarity` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("cosine_similarity")` currently always uses `F.cosine_similarity`.
+- **Fix**: Use `aria_core.cosine_similarity_f32` on CPU float32 non-grad path with output-shape validation; keep fallback.
+
+### F.11 `embedding_lookup` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("embedding_lookup")` currently pass-through only.
+- **Fix**: Add guarded native `aria_core.embedding_lookup_f32` when input is integer token IDs and `embed_table` exists; keep pass-through fallback.
+
+### F.12 `basis_expansion` Native Dispatch in Compiler [DONE by codex-gpt5]
+- **File**: `synthesis/compiler.py`
+- **What**: `@register_op("basis_expansion")` currently always uses Python trig expansion.
+- **Fix**: Add guarded `aria_core.basis_expansion_f32` fast path with strict shape validation and fallback.
+
 ---
 
 ## G. Architecture Notes
 
-### G.1 Runner Mixin Pattern — Import Constraints
-The `ExperimentRunner` class is composed of 10 mixins via multiple inheritance. Each mixin is in its own file (`scientist/runner/*.py`). Implications:
-- **Cannot prune imports per-file** without full cross-mixin analysis
-- **Tests patch** `research.scientist.runner.<symbol>` — `__init__.py` must re-export `torch`, `threading`, etc.
-- **Safe optimizations**: shared constants → `_types.py`, shared helpers → `_helpers.py`
-- **Unsafe**: removing any import without verifying no other mixin's method uses it at runtime
+### G.1 Runner Mixin Pattern — Import Rules [UPDATED]
+The `ExperimentRunner` class is composed of 10 mixins via multiple inheritance. Each mixin is in its own file (`scientist/runner/*.py`).
+- **Imports ARE per-module** — Python resolves globals per-module, not per-class. Each submodule only needs its own imports. (599 unused imports pruned in B.2.)
+- **Test patches must target submodules** — `patch("research.scientist.runner.control.threading.Thread")`, NOT `patch("research.scientist.runner.threading.Thread")`. The latter patches `__init__.py`, not the submodule where the call happens.
+- `__init__.py` re-exports `RunConfig`, `LiveProgress`, `propose_ablation_suite`, `torch`, `threading` for backward compatibility.
 
 ### G.2 `slots=True` Safety Rules
 **Cannot use `slots=True`:**
@@ -188,11 +276,8 @@ The `ExperimentRunner` class is composed of 10 mixins via multiple inheritance. 
 
 ## Priority Order for Remaining Work
 
-1. **D.3** Topological sort optimization (perf, medium effort)
-2. **D.4** Vectorize influence matrix (perf, medium effort)
-3. **A.3** Device resolution helper (DRY, low effort)
-4. **A.4** Parameter estimation consolidation (DRY, medium effort)
-5. **A.6** api.py `_to_safe_float` dedup [DONE] (DRY, low effort)
-6. **E.1** Fix bare except clauses (quality, low effort)
-7. **C.1** Split api.py `create_app()` (architecture, high effort)
-8. **C.5** Split `_rule_based_mode_recommendation()` [DONE] (architecture, medium effort)
+All A, B, D, E, H items are DONE. Most C items are DONE. Remaining:
+
+1. **C — `scientist/api.py`** `create_app()` + `api_strategy_briefing()` (Phase 1: Flask Blueprints — in progress by claude-opus)
+2. **C — `scientist/native_runner.py`** `compile_model_native_first()` 591 lines (LOW — well-structured, defer)
+3. **F** Native-first migration — 87 Python-only handlers remaining (long-tail)

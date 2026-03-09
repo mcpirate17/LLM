@@ -15,6 +15,8 @@ if _root not in sys.path:
 from research.synthesis.compiler import CompiledOp, _execute_op
 from research.synthesis.graph import ShapeInfo
 
+pytestmark = pytest.mark.native
+
 
 def _make_compiled_op(op_name: str = "relu", dim: int = 8) -> CompiledOp:
     """Helper to build a minimal CompiledOp for testing."""
