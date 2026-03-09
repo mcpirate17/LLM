@@ -152,7 +152,7 @@ def compute_fingerprint(
 
         if reps is not None and len(reps) > 0:
             # Token interaction pattern
-            interaction = _analyze_interactions(model, probe_ids, dev, seq_len)
+            interaction = _analyze_interactions(model, probe_ids, dev, seq_len, vocab_size)
             fp.interaction_locality = interaction["locality"]
             fp.interaction_sparsity = interaction["sparsity"]
             fp.interaction_symmetry = interaction["symmetry"]
@@ -307,6 +307,7 @@ def _get_representations(model: nn.Module, input_ids: torch.Tensor,
 def _analyze_interactions(
     model: nn.Module, input_ids: torch.Tensor,
     dev: torch.device, seq_len: int,
+    vocab_size: int = 32000,
 ) -> Dict[str, float]:
     """Analyze token-to-token interaction patterns."""
     result = {"locality": 0.5, "sparsity": 0.5, "symmetry": 0.5, "hierarchy": 0.5,

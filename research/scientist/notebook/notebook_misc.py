@@ -107,6 +107,7 @@ class _MiscMixin:
     # ── Failure Signatures ──
 
     
+    @staticmethod
     def _extract_op_bigrams(graph_json: str) -> List[str]:
         """Extract sorted op-pair bigrams from a graph JSON.
 
