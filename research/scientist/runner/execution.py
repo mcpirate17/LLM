@@ -1074,7 +1074,7 @@ class _ExecutionMixin(
                     except Exception as e:
                         logger.debug("Investigation TinyStories eval skipped: %s", e)
 
-                # Compute efficiency multiple from screening-stage measurements
+                # Compute efficiency multiple (geomean vs GPT-2) from screening metrics
                 _eff = LeaderboardManager.compute_efficiency_multiple(
                     loss_ratio=source.get("loss_ratio"),
                     param_count=source.get("param_count"),
@@ -1083,7 +1083,6 @@ class _ExecutionMixin(
                     peak_memory_mb=source.get("peak_memory_mb"),
                     forward_time_ms=source.get("forward_time_ms"),
                 )
-                _eff_geo = _eff["geomean"] if _eff else None
                 nb.upsert_leaderboard(
                     result_id=source_result_id,
                     model_source=model_source,
@@ -1102,12 +1101,12 @@ class _ExecutionMixin(
                     wikitext_score=inv_wikitext_score,
                     tinystories_perplexity=inv_tinystories_ppl,
                     tinystories_score=inv_tinystories_score,
-                    scaling_param_efficiency=_eff_geo,
-                    efficiency_multiple=_eff_geo,
+                    efficiency_multiple=_eff["geomean"] if _eff else None,
                     routing_savings_ratio=source.get("routing_savings_ratio"),
                     activation_sparsity_score=source.get("activation_sparsity_score"),
                     depth_savings_ratio=source.get("depth_savings_ratio"),
                     compression_ratio=source.get("compression_ratio"),
+                    loss_improvement_rate=source.get("loss_improvement_rate"),
                 )
 
                 # Record result

@@ -578,10 +578,9 @@ class LeaderboardManager:
             # Only penalize truly unfocused routing, not healthy multi-lane distribution
             score -= 5.0 * (entropy - 0.95)
 
-        # Scaling gate: stricter penalty for sub-baseline efficiency.
-        # Models below 1x efficiency vs GPT-2 should be heavily suppressed —
-        # they cannot plausibly beat GPT/Mamba by 5x.
-        if scaling_param_efficiency is not None and scaling_param_efficiency < 1.0:
+        # Scaling gate: penalize sub-baseline efficiency for non-reference models.
+        # References ARE the baseline — never penalize them.
+        if not is_reference and scaling_param_efficiency is not None and scaling_param_efficiency < 1.0:
             # 0.5x → 50% score, 0.1x → 10% score
             score *= max(0.1, scaling_param_efficiency)
 
@@ -661,7 +660,7 @@ class LeaderboardManager:
             val_baseline=d.get("validation_baseline_ratio"),
             val_std=d.get("validation_multi_seed_std"),
             novelty_confidence=nov_conf,
-            scaling_param_efficiency=d.get("scaling_param_efficiency"),
+            scaling_param_efficiency=d.get("scaling_param_efficiency") or d.get("efficiency_multiple"),
             is_reference=bool(is_reference),
             routing_savings=d.get("routing_savings_ratio"),
             compression_ratio=d.get("compression_ratio"),
@@ -1376,7 +1375,7 @@ class LeaderboardManager:
                 val_baseline=d.get("validation_baseline_ratio"),
                 val_std=d.get("validation_multi_seed_std"),
                 novelty_confidence=nov_conf,
-                scaling_param_efficiency=d.get("scaling_param_efficiency"),
+                scaling_param_efficiency=d.get("scaling_param_efficiency") or d.get("efficiency_multiple"),
                 is_reference=bool(d.get("is_reference")),
                 routing_savings=d.get("routing_savings_ratio"),
                 compression_ratio=d.get("compression_ratio"),
@@ -1461,7 +1460,7 @@ class LeaderboardManager:
             val_baseline=d.get("validation_baseline_ratio"),
             val_std=d.get("validation_multi_seed_std"),
             novelty_confidence=nov_conf,
-            scaling_param_efficiency=d.get("scaling_param_efficiency"),
+            scaling_param_efficiency=d.get("scaling_param_efficiency") or d.get("efficiency_multiple"),
             is_reference=bool(is_reference),
             routing_savings=d.get("routing_savings_ratio"),
             compression_ratio=d.get("compression_ratio"),

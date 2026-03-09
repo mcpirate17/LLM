@@ -215,8 +215,10 @@ class _ResultsAutoEscalatePhase7Mixin:
                     "validation",
                 ):
                     continue
-                # Compute efficiency multiple from screening metrics
-                eff_mult = LeaderboardManager.compute_efficiency_multiple(
+                # Compute efficiency multiple (geomean vs GPT-2) from screening metrics.
+                # NOTE: scaling_param_efficiency is NOT set here — that requires
+                # actual scaling experiments which only happen at validation.
+                _eff = LeaderboardManager.compute_efficiency_multiple(
                     loss_ratio=p.get("loss_ratio"),
                     param_count=p.get("param_count"),
                     flops_forward=p.get("flops_forward"),
@@ -224,7 +226,6 @@ class _ResultsAutoEscalatePhase7Mixin:
                     peak_memory_mb=p.get("peak_memory_mb"),
                     forward_time_ms=p.get("forward_time_ms"),
                 )
-                eff_geomean = eff_mult["geomean"] if eff_mult else None
                 nb.upsert_leaderboard(
                     result_id=p["result_id"],
                     model_source=p.get("model_source") or "graph_synthesis",
@@ -235,8 +236,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                     tier="screening",
                     novelty_confidence=p.get("novelty_confidence"),
                     fp_jacobian_spectral_norm=p.get("fp_jacobian_spectral_norm"),
-                    scaling_param_efficiency=eff_geomean,
-                    efficiency_multiple=eff_geomean,
+                    efficiency_multiple=_eff["geomean"] if _eff else None,
                     routing_savings_ratio=p.get("routing_savings_ratio"),
                     activation_sparsity_score=p.get("activation_sparsity_score"),
                     depth_savings_ratio=p.get("depth_savings_ratio"),
