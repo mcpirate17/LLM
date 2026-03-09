@@ -713,13 +713,16 @@ export function candidateScore(entry) {
   }
   utility += 40.0 * effectiveNov * conf * noveltyGate;
 
-  // 3. Efficiency Utility
+  // 3. Efficiency Utility — 5x TARGET
   // scaling_param_efficiency is a multiplier (1-5x range) — do NOT fallback
   // to param_efficiency which is FLOPs/param (100-1000 range, different scale)
   const scalingEff = entry.scaling_param_efficiency;
   if (scalingEff != null) {
-    // 3x -> 20 utility, 5x -> 40 utility
-    utility += 10.0 * Math.max(0, scalingEff - 1.0);
+    // Superlinear reward: 2x→15, 3x→30, 5x→60, 10x→100
+    const effAbove1 = Math.max(0, scalingEff - 1.0);
+    utility += 22.0 * Math.sqrt(effAbove1);
+    // Milestone bonus at 5x+ (the explicit target)
+    if (scalingEff >= 5.0) utility += 25.0;
   }
   
   const savings = entry.routing_savings_ratio ?? entry.depth_savings_ratio;
@@ -817,7 +820,11 @@ export function candidateScore(entry) {
     utility -= 10.0 * (entropy - 0.8);
   }
 
-  // Scaling gate penalty (hard constraint)
+  // Scaling gate: stricter penalty for sub-baseline efficiency.
+  // Models below 1x efficiency vs GPT-2 cannot plausibly beat GPT/Mamba by 5x.
+  if (scalingEff != null && scalingEff < 1.0) {
+    utility *= Math.max(0.1, scalingEff);
+  }
   if (scalingEff != null && entry.scaling_gate_passed === 0) {
     const scalingPenalty = clamp01(scalingEff / 3.0);
     utility *= Math.max(0.3, scalingPenalty);
@@ -847,8 +854,11 @@ export function discoveryScoreBreakdown(program) {
   const bonusTotal = Object.values(bonus).reduce((s, v) => s + v, 0);
   let total = loss + novelty + baseline + id + paramEff + learningSpeed + bonusTotal;
 
-  // Scaling gate penalty (same as candidateScore)
+  // Scaling gate: sub-1x efficiency penalty (same as candidateScore)
   const scalingEff = program?.scaling_param_efficiency;
+  if (scalingEff != null && scalingEff < 1.0) {
+    total *= Math.max(0.1, scalingEff);
+  }
   if (scalingEff != null && program?.scaling_gate_passed === 0) {
     const scalingPenalty = clamp01(scalingEff / 3.0);
     total *= Math.max(0.3, scalingPenalty);

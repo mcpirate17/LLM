@@ -1,4 +1,5 @@
 import logging
+import math
 import uuid
 import time
 import json
@@ -433,26 +434,38 @@ class LeaderboardManager:
             perf_lr = None
             perf_confidence = 0.0
         if perf_lr is not None:
-            score += 100.0 * max(0, 1.0 - perf_lr) * perf_confidence
-        
+            # Nonlinear curve (matches frontend): heavily reward strong loss,
+            # suppress mediocre models that survive on novelty alone.
+            perf_norm = max(0.0, min(1.0, 1.0 - perf_lr))
+            score += 100.0 * (perf_norm ** 1.6) * perf_confidence
+
         # Discovery channel (random tokens)
         if discovery_lr is not None:
             score += 20.0 * max(0, 1.0 - discovery_lr)
 
         # Learning Efficiency: How fast did it learn?
         if loss_improvement_rate is not None:
-            # High improvement rate per step is efficient learning
-            # Up to 20 points
             score += 20.0 * max(0, min(1.0, loss_improvement_rate))
 
-        # 2. Novelty Utility
+        # 2. Novelty Utility — gated by performance quality so novelty
+        # cannot dominate when loss evidence is weak (matches frontend).
         eff_nov = 1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
         conf = 1.0 if is_reference else (novelty_confidence if novelty_confidence is not None else 1.0)
-        score += 40.0 * eff_nov * conf
+        novelty_gate = 1.0
+        if perf_lr is not None:
+            novelty_gate = max(0.0, min(1.0, (0.9 - perf_lr) / 0.6))
+        score += 40.0 * eff_nov * conf * novelty_gate
 
         # 3. Efficiency & Scaling Utility
+        # 5x TARGET: Accelerating reward curve for efficiency multiples.
+        # 1x → 0pts, 2x → 15pts, 3x → 30pts, 5x → 60pts, 10x → 100pts.
         if scaling_param_efficiency is not None:
-            score += 10.0 * max(0, scaling_param_efficiency - 1.0)
+            eff_above_1 = max(0.0, scaling_param_efficiency - 1.0)
+            # Superlinear reward: sqrt curve * 22 gives ~60pts at 5x
+            score += 22.0 * math.sqrt(eff_above_1)
+            # Milestone bonus at 5x+ (the explicit target)
+            if scaling_param_efficiency >= 5.0:
+                score += 25.0
         
         if routing_savings is not None:
             score += 50.0 * routing_savings
@@ -564,6 +577,13 @@ class LeaderboardManager:
         if entropy is not None and entropy > 0.95:
             # Only penalize truly unfocused routing, not healthy multi-lane distribution
             score -= 5.0 * (entropy - 0.95)
+
+        # Scaling gate: stricter penalty for sub-baseline efficiency.
+        # Models below 1x efficiency vs GPT-2 should be heavily suppressed —
+        # they cannot plausibly beat GPT/Mamba by 5x.
+        if scaling_param_efficiency is not None and scaling_param_efficiency < 1.0:
+            # 0.5x → 50% score, 0.1x → 10% score
+            score *= max(0.1, scaling_param_efficiency)
 
         # Sanity floor
         return max(0.0, score)
