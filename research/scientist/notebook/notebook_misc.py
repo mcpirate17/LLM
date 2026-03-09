@@ -925,7 +925,8 @@ class _MiscMixin:
 
 
     
-    def _classify_architecture_family(self, 
+    @staticmethod
+    def _classify_architecture_family(
         graph_json: Optional[str],
         routing_mode: Optional[str],
     ) -> str:
