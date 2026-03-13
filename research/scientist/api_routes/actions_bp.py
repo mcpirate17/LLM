@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import logging
-from flask import jsonify, request
+from flask import jsonify
 from ..notebook import LabNotebook
 from ._helpers import get_autonomy, _DISMISSED_ACTIONS
-from ._strategy import compute_action_queue
+from ._strategy_recommendations import compute_action_queue
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)

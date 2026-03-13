@@ -128,7 +128,7 @@ def test_safe_eval_stage_records_parity_result_when_sampled():
         NATIVE_RUNNER_ABI_PRIMARY_STAGES="candidate_screening",
         NATIVE_RUNNER_ABI_PROBE_STAGES="candidate_screening",
     ), patch("research.scientist.runner.screening.safe_eval", return_value=_Res()), patch(
-        "research.scientist.runner.record_native_abi_parity_result"
+        "research.scientist.runner.screening.record_native_abi_parity_result"
     ) as mock_record:
         runner._safe_eval_for_stage(
             object(),

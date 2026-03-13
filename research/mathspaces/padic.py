@@ -21,11 +21,7 @@ import math
 import torch
 import torch.nn as nn
 
-try:
-    import aria_core
-    _HAS_ARIA_CORE = hasattr(aria_core, 'ultrametric_attention_f32')
-except ImportError:
-    _HAS_ARIA_CORE = False
+from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 
 DEFAULT_P = 2
@@ -40,7 +36,7 @@ def padic_valuation(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
 
     Returns: (B, S, D) tensor of valuations.
     """
-    abs_x = x.abs().clamp(min=1e-10)
+    abs_x = x.abs() + 1e-8
     # v_p(x) = -log_p(|x|) for the "most significant" p-adic digit
     log_p = math.log(p)
     return -(torch.log(abs_x) / log_p)

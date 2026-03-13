@@ -28,7 +28,6 @@ from .designer import (
     _validate_designer_layer_adapter_contract,
 )
 from .guardrails import (
-    _maybe_enforce_fallback_guardrails,
     _maybe_fail_on_fallback_rate,
     _maybe_fail_on_legacy_compile_usage,
     _maybe_warn_deprecated_legacy_only_flag,

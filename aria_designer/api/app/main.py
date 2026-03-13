@@ -9,7 +9,7 @@ import requests
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -27,6 +27,7 @@ from .diff import diff_graphs
 from .collaboration import collab_manager
 from .property_audit import audit_components
 from .benchmark_targets import benchmark_target_catalog, build_benchmark_analysis
+from .research_signals import fetch_research_recommendation_signals
 from .models import (
     ApplyPatchRequest,
     AskAriaPromptRequest,
@@ -41,7 +42,6 @@ from .models import (
     ValidationIssue,
     WorkflowGraphModel,
 )
-
 # Try to import runtime from parent directory
 import sys
 import os
@@ -53,6 +53,15 @@ for _p in (_ARIA_DESIGNER_ROOT, _PROJECT_ROOT, _ARIA_CORE_ROOT):
     _ps = str(_p)
     if _p.exists() and _ps not in sys.path:
         sys.path.insert(0, _ps)
+
+from research.eval.perf_budget import evaluate_perf_budget_gate
+from research.perf_contract import (
+    build_duplicate_work_report,
+    build_perf_contract,
+    emit_perf_artifact,
+    list_recent_perf_artifacts,
+    summarize_perf_artifacts,
+)
 
 
 def _optional_import(module: str, names: list[str], *, aliases: dict[str, str] | None = None):
@@ -116,12 +125,6 @@ _EVAL_RUNS: Dict[str, Dict[str, Any]] = {}
 _EVAL_RUNS_LOCK = threading.Lock()
 _EVAL_RUNS_MAX = 200          # max runs kept in memory
 _EVAL_RUNS_TTL_S = 3600       # evict runs older than 1 hour
-_RESEARCH_SIGNALS_CACHE_LOCK = threading.Lock()
-_RESEARCH_SIGNALS_CACHE: Dict[str, Any] = {
-    "fetched_at": 0.0,
-    "payload": None,
-}
-
 # Optional lineage sync to research notebook service.
 from app.config import settings
 
@@ -178,32 +181,70 @@ def _list_runs() -> List[Dict[str, Any]]:
         return out
 
 
+def _stage_elapsed_metrics(stages: Dict[str, Any]) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    for stage_name, stage in (stages or {}).items():
+        if not isinstance(stage, dict):
+            continue
+        elapsed_ms = stage.get("elapsed_ms")
+        if elapsed_ms is not None:
+            try:
+                metrics[f"{stage_name}_time_ms"] = float(elapsed_ms)
+            except (TypeError, ValueError):
+                continue
+    return metrics
+
+
+def _build_designer_perf_bundle(
+    *,
+    run_id: Optional[str],
+    workflow_id: Optional[str],
+    stages: Dict[str, Any],
+    total_time_ms: Optional[float],
+    status: str,
+    duplicate_work: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    profiling = ((stages or {}).get("profiling") or {}).get("metrics") or {}
+    compilation = ((stages or {}).get("compilation") or {}).get("metrics") or {}
+    sandbox = ((stages or {}).get("sandbox") or {}).get("metrics") or {}
+    metrics: Dict[str, Any] = {
+        "total_time_ms": float(total_time_ms or 0.0),
+        "compile_time_ms": float(compilation.get("compile_time_ms", 0.0) or 0.0),
+        "forward_time_ms": float(sandbox.get("forward_ms", 0.0) or 0.0),
+        "backward_time_ms": float(sandbox.get("backward_ms", 0.0) or 0.0),
+        "peak_memory_mb": float(sandbox.get("peak_memory_mb", 0.0) or 0.0),
+        "native_coverage": float(profiling.get("native_coverage", 0.0) or 0.0),
+        "total_flops_per_token": float(profiling.get("total_flops_per_token", 0.0) or 0.0),
+        "total_params": float(profiling.get("total_params", 0.0) or 0.0),
+        "status_code": 1.0 if status == "success" else 0.0,
+    }
+    metrics.update(_stage_elapsed_metrics(stages))
+    dup = duplicate_work or build_duplicate_work_report()
+    report = {
+        "metrics": metrics,
+        "duplicate_work": dup,
+    }
+    budget_verdict = evaluate_perf_budget_gate(report, budget_profile="designer_interactive")
+    contract = build_perf_contract(
+        component="aria_designer",
+        workload="workflow_evaluation",
+        identity={"run_id": run_id, "workflow_id": workflow_id, "status": status},
+        metrics=metrics,
+        budget_profile="designer_interactive",
+        budget_verdict=budget_verdict,
+        duplicate_work=dup,
+    )
+    artifact_path = emit_perf_artifact(contract, slug=(run_id or workflow_id or "designer_eval"))
+    contract["artifact_path"] = artifact_path
+    return {
+        "perf_contract": contract,
+        "perf_artifact_path": artifact_path,
+        "perf_budget_gate": budget_verdict,
+    }
+
+
 def _fetch_research_recommendation_signals(force: bool = False) -> Optional[Dict[str, Any]]:
-    """Fetch and cache recommendation signals from research analytics API."""
-    if not settings.RECOMMENDER_USE_RESEARCH_SIGNALS:
-        return None
-
-    now = _time_mod.time()
-    with _RESEARCH_SIGNALS_CACHE_LOCK:
-        cached_payload = _RESEARCH_SIGNALS_CACHE.get("payload")
-        fetched_at = float(_RESEARCH_SIGNALS_CACHE.get("fetched_at") or 0.0)
-        if not force and cached_payload and (now - fetched_at) <= max(1.0, settings.RECOMMENDER_SIGNALS_TTL_S):
-            return cached_payload
-
-    url = f"{settings.LINEAGE_SYNC_BASE.rstrip('/')}/api/analytics/recommendation-signals"
-    try:
-        resp = requests.get(url, timeout=max(0.2, settings.RECOMMENDER_SIGNALS_TIMEOUT))
-        if not resp.ok:
-            return None
-        payload = resp.json() if resp.content else {}
-        if not isinstance(payload, dict):
-            return None
-        with _RESEARCH_SIGNALS_CACHE_LOCK:
-            _RESEARCH_SIGNALS_CACHE["fetched_at"] = now
-            _RESEARCH_SIGNALS_CACHE["payload"] = payload
-        return payload
-    except Exception:
-        return None
+    return fetch_research_recommendation_signals(force=force)
 
 
 from .models import utc_now_iso as _utc_now  # noqa: E402 – single source of truth
@@ -2099,14 +2140,216 @@ def _generate_patch_impl(req: AskAriaPromptRequest) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/v1/aria/refine-winner")
-def refine_winner_endpoint(workflow_id: str, num_variations: int = 3) -> Dict[str, Any]:
-    """Generate evolutionary variations for a workflow."""
+def _fetch_parent_scores_for_workflow(workflow_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch scores from the research leaderboard for the current workflow fingerprint."""
+    wf = db.get_workflow(workflow_id)
+    if not wf or not wf.get("graph_json"):
+        return None
+        
+    graph = json.loads(wf["graph_json"])
+    fingerprint = (graph.get("metadata") or {}).get("graph_fingerprint")
+    if not fingerprint:
+        return None
+        
+    # LabNotebook lookup
     try:
-        proposal_ids = refine_winner(workflow_id, num_variations)
-        return {"success": True, "generated_proposals": proposal_ids}
+        from research.scientist.notebook import LabNotebook
+        # Use same logic as _auto_promote_workflow_locally
+        notebook_path = _PROJECT_ROOT / "research" / "lab_notebook.db"
+        if not notebook_path.exists():
+            return None
+            
+        nb = LabNotebook(str(notebook_path))
+        try:
+            # First find the result_id for this fingerprint
+            res = nb.conn.execute(
+                "SELECT result_id FROM program_results WHERE graph_fingerprint = ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (fingerprint,),
+            ).fetchone()
+            if not res:
+                return None
+            
+            result_id = res[0]
+            # Then get the leaderboard entry
+            lb_entry = nb.get_leaderboard_entry(result_id)
+            return lb_entry
+        finally:
+            nb.close()
+    except Exception as e:
+        logger.warning("Could not fetch parent scores from LabNotebook: %s", e)
+        return None
+
+
+@app.post("/api/v1/aria/refine-winner")
+def refine_winner_endpoint(workflow_id: str, num_variations: int = 3, intent: Optional[str] = None) -> Dict[str, Any]:
+    """Generate evolutionary variations for a workflow with quality gate validation."""
+    try:
+        parent_scores = _fetch_parent_scores_for_workflow(workflow_id)
+        
+        # We might generate more than num_variations to account for validation failures
+        raw_proposal_ids = refine_winner(workflow_id, num_variations * 2, intent=intent, parent_scores=parent_scores)
+        
+        valid_proposals = []
+        rejection_reasons: List[str] = []
+        # Phase 0.2: Quality gate — compile + forward + regression check
+        for pid in raw_proposal_ids:
+            if len(valid_proposals) >= num_variations:
+                break
+
+            is_valid, error = _validate_proposal_quality(pid, parent_scores=parent_scores)
+            if is_valid:
+                valid_proposals.append(pid)
+            else:
+                logger.warning("Proposal %s failed quality gate: %s", pid, error)
+                if error:
+                    rejection_reasons.append(error)
+                
+        return {
+            "success": True, 
+            "generated_proposals": valid_proposals, 
+            "parent_scores_found": bool(parent_scores),
+            "validation_failures": len(raw_proposal_ids) - len(valid_proposals),
+            "warning": (
+                "All refinement candidates regressed against the parent guardrails."
+                if raw_proposal_ids and not valid_proposals
+                else None
+            ),
+            "rejection_reasons": rejection_reasons[:5],
+        }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+def _validate_proposal_quality(
+    proposal_id: str,
+    parent_scores: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, Optional[str]]:
+    """Phase 0.2: Quality gate — compile check + fast forward pass + regression check.
+
+    Returns (is_valid, error_or_None).
+    """
+    from .database import get_proposal, get_workflow
+    from .patcher import apply_patch_ops
+
+    proposal = get_proposal(proposal_id)
+    if not proposal:
+        return False, "Proposal not found"
+
+    wf_data = get_workflow(proposal["workflow_id"])
+    if not wf_data:
+        return False, "Workflow not found"
+
+    wf = json.loads(wf_data["graph_json"])
+    patch = json.loads(proposal["patch_json"])
+    ops = patch.get("ops", [])
+
+    # --- Step 1: patch + compile ---
+    try:
+        patched_wf = apply_patch_ops(wf, ops)
+        from aria_designer.runtime.compiler import compile_workflow as runtime_compile
+        components_dir = _PROJECT_ROOT / "aria_designer" / "components"
+        if not components_dir.exists():
+            components_dir = Path(__file__).parent.parent.parent / "components"
+        runtime_compile(patched_wf, str(components_dir))
+    except Exception as e:
+        return False, f"Compilation failed: {e}"
+
+    # --- Step 2: structural quality snapshot + native smoke when available ---
+    parent_snapshot = _build_refinement_quality_snapshot(wf)
+    child_snapshot = _build_refinement_quality_snapshot(patched_wf)
+    if not child_snapshot.get("valid", False):
+        return False, f"Validation failed: {child_snapshot.get('error', 'unknown')}"
+    smoke = child_snapshot.get("smoke_test")
+    if smoke and not bool(smoke.get("ok", True)):
+        return False, f"Smoke test failed: {smoke.get('error', 'unknown')}"
+    if smoke and not bool(smoke.get("grad_flows", True)):
+        return False, "Smoke test reported gradient regression"
+    if smoke and not bool(smoke.get("no_nan", True)):
+        return False, "Smoke test reported unstable outputs"
+    if parent_snapshot.get("has_gradient_path") and not child_snapshot.get("has_gradient_path"):
+        return False, "Refinement removed the parent gradient path"
+    if parent_snapshot.get("n_ops", 0) > 0:
+        retention = float(child_snapshot.get("n_ops", 0)) / float(parent_snapshot["n_ops"])
+        if retention < 0.7:
+            return False, f"Refinement retained only {retention:.2%} of parent ops"
+
+    # --- Step 3: regression check against parent ---
+    if parent_scores:
+        parent_composite = float(parent_scores.get("composite_score") or 0.0)
+        parent_tier = parent_scores.get("tier", "screening")
+        # Hard gate: reject if parent was investigation+ and child can't even compile
+        # (compilation already passed above, so this is a softer tier-awareness check)
+        # We inject parent context so downstream eval can compare, but we can't
+        # run a full micro-train here — that happens at eval time.
+        # What we CAN do: reject proposals that remove critical ops from high-tier parents.
+        if parent_tier in ("investigation", "validation", "breakthrough") and parent_composite > 100:
+            # Check the patch doesn't remove more than 30% of ops
+            original_op_count = len([n for n in wf.get("nodes", [])
+                                     if n.get("component_type", "").split("/")[0] not in ("graph_input", "graph_output", "io")])
+            remove_ops = [op for op in ops if op.get("op") == "remove_node"]
+            if original_op_count > 0 and len(remove_ops) / original_op_count > 0.3:
+                return False, (
+                    f"Rejected: removes {len(remove_ops)}/{original_op_count} ops "
+                    f"from {parent_tier}-tier parent (composite {parent_composite:.1f})"
+                )
+            predicted_child = parent_composite * _estimate_patch_quality_multiplier(ops)
+            if predicted_child < (parent_composite * 0.95):
+                return False, (
+                    f"Rejected: predicted composite {predicted_child:.1f} "
+                    f"falls below 95% of parent {parent_composite:.1f}"
+                )
+
+    return True, None
+
+
+def _build_refinement_quality_snapshot(workflow_json: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot = {"valid": True, "n_ops": 0, "depth": 0, "has_gradient_path": True, "smoke_test": None}
+    try:
+        if HAS_BRIDGE:
+            from runtime.bridge import validate_workflow_graph
+
+            result = validate_workflow_graph(workflow_json, model_dim=256)
+            if not result.get("valid", False):
+                return {"valid": False, "error": result.get("error", "bridge validation failed")}
+            graph_info = result.get("graph_info") or {}
+            snapshot.update({
+                "n_ops": int(graph_info.get("n_ops") or 0),
+                "depth": int(graph_info.get("depth") or 0),
+                "has_gradient_path": bool(graph_info.get("has_gradient_path", True)),
+            })
+    except Exception as exc:
+        logger.debug("Bridge validation unavailable during refinement quality gate: %s", exc)
+    snapshot["smoke_test"] = _run_native_refinement_smoke_test(workflow_json)
+    return snapshot
+
+
+def _run_native_refinement_smoke_test(workflow_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        from aria_core import smoke_test_graph  # type: ignore
+    except Exception:
+        return None
+    try:
+        result = smoke_test_graph(workflow_json, 256, 32)
+    except TypeError:
+        result = smoke_test_graph(workflow_json)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    if isinstance(result, dict):
+        return result
+    return {key: getattr(result, key) for key in ("ok", "has_params", "grad_flows", "no_nan") if hasattr(result, key)}
+
+
+def _estimate_patch_quality_multiplier(ops: List[Dict[str, Any]]) -> float:
+    penalties = {
+        "mutate_param": 0.015,
+        "replace_node": 0.03,
+        "add_node": 0.035,
+        "remove_node": 0.08,
+        "rewire": 0.02,
+    }
+    total_penalty = sum(penalties.get(str(op.get("op") or ""), 0.04) for op in ops)
+    return max(0.75, 1.0 - total_penalty)
 
 
 @app.get("/api/v1/aria/proposals")
@@ -2165,12 +2408,13 @@ def get_survivors(
     n: int = Query(10, ge=1, le=100),
     sort_by: str = Query("validation_loss_ratio"),
     min_novelty: float = Query(0.0, ge=0.0, le=1.0),
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """List top survivors from the research pipeline as importable workflows."""
     if not HAS_IMPORTER:
         raise HTTPException(status_code=501, detail="Importer not available")
     try:
-        return import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
+        survivors = import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
+        return {"survivors": survivors}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -2267,6 +2511,35 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
     result_dict["run_id"] = run_id
     result_dict["semantic_warnings"] = semantic_warnings
     result_dict["semantic_warning_count"] = len(semantic_warnings)
+    direct_duplicate_work = build_duplicate_work_report()
+    direct_metrics = {
+        "total_time_ms": float(result_dict.get("total_time_ms", 0.0) or 0.0),
+        "compile_time_ms": float(result_dict.get("compile_time_ms", 0.0) or 0.0),
+        "forward_time_ms": float(result_dict.get("forward_ms", 0.0) or 0.0),
+        "backward_time_ms": float(result_dict.get("backward_ms", 0.0) or 0.0),
+        "peak_memory_mb": float(result_dict.get("peak_memory_mb", 0.0) or 0.0),
+        "native_coverage": float(result_dict.get("native_coverage", 0.0) or 0.0),
+        "total_flops_per_token": float(result_dict.get("total_flops_per_token", 0.0) or 0.0),
+        "total_params": float(result_dict.get("param_count", 0.0) or 0.0),
+    }
+    perf_budget_gate = evaluate_perf_budget_gate(
+        {"metrics": direct_metrics, "duplicate_work": direct_duplicate_work},
+        budget_profile="designer_interactive",
+    )
+    perf_contract = build_perf_contract(
+        component="aria_designer",
+        workload="workflow_evaluation_direct",
+        identity={"run_id": run_id, "workflow_id": wf.get("workflow_id"), "status": result_dict.get("status", "unknown")},
+        metrics=direct_metrics,
+        budget_profile="designer_interactive",
+        budget_verdict=perf_budget_gate,
+        duplicate_work=direct_duplicate_work,
+    )
+    perf_artifact_path = emit_perf_artifact(perf_contract, slug=run_id)
+    perf_contract["artifact_path"] = perf_artifact_path
+    result_dict["perf_contract"] = perf_contract
+    result_dict["perf_artifact_path"] = perf_artifact_path
+    result_dict["perf_budget_gate"] = perf_budget_gate
 
     created_at = _utc_now()
 
@@ -2280,6 +2553,9 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
         "budget": budget,
         "stages": {},
         "result": result_dict,
+        "perf_contract": perf_contract,
+        "perf_artifact_path": perf_artifact_path,
+        "perf_budget_gate": perf_budget_gate,
     })
 
     lineage_payload = {
@@ -2403,6 +2679,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         total_t0 = _time_mod.monotonic()
         accumulated = {}
         lineage_synced = False
+        duplicate_work_avoided = {"workflow_to_graph": 0}
 
         # Init the stored run record
         created_at = _utc_now()
@@ -2425,6 +2702,19 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
         def _persist_done(status, error=None, error_stage=None, total_ms=None):
             nonlocal lineage_synced
+            perf_bundle = _build_designer_perf_bundle(
+                run_id=run_id,
+                workflow_id=wf.get("workflow_id"),
+                stages=(_get_run(run_id) or {}).get("stages", {}),
+                total_time_ms=total_ms,
+                status=status,
+                duplicate_work=build_duplicate_work_report(
+                    avoided_keys=duplicate_work_avoided,
+                ),
+            )
+            accumulated["perf_contract"] = perf_bundle["perf_contract"]
+            accumulated["perf_budget_gate"] = perf_bundle["perf_budget_gate"]
+            accumulated["perf_artifact_path"] = perf_bundle["perf_artifact_path"]
             _update_run(run_id, {
                 "status": status,
                 "error": error,
@@ -2432,6 +2722,9 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "total_time_ms": total_ms,
                 "result": accumulated,
                 "completed_at": _utc_now(),
+                "perf_contract": perf_bundle["perf_contract"],
+                "perf_artifact_path": perf_bundle["perf_artifact_path"],
+                "perf_budget_gate": perf_bundle["perf_budget_gate"],
             })
             if not lineage_synced and settings.LINEAGE_SYNC_ENABLED:
                 lineage_payload = {
@@ -2495,8 +2788,8 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "used_original_graph": used_original,
             }
             accumulated["conversion"] = metrics
-            _persist_stage("conversion", {"status": "done", "metrics": metrics})
             elapsed = (_time_mod.monotonic() - t0) * 1000
+            _persist_stage("conversion", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'conversion', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
             elapsed = (_time_mod.monotonic() - t0) * 1000
@@ -2513,9 +2806,11 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         op_profiles_for_nodes = []
         try:
             if HAS_PROFILER:
+                from runtime.profiler import profile_static_graph
+
+                duplicate_work_avoided["workflow_to_graph"] += 1
                 report = await asyncio.to_thread(
-                    bridge_profile, wf, model_dim=model_dim, device=device,
-                    runtime=False, vocab_size=vocab_size, batch_size=batch_size, seq_len=seq_len,
+                    profile_static_graph, graph, model_dim=model_dim, batch_size=batch_size, seq_len=seq_len,
                 )
                 report_dict = report.to_dict()
                 # Map op_profiles node_ids to aria IDs
@@ -2537,8 +2832,8 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             else:
                 metrics = {"skipped": True, "reason": "profiler not available"}
             accumulated["profiling"] = metrics
-            _persist_stage("profiling", {"status": "done", "metrics": metrics})
             elapsed = (_time_mod.monotonic() - t0) * 1000
+            _persist_stage("profiling", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'profiling', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
             elapsed = (_time_mod.monotonic() - t0) * 1000
@@ -2553,7 +2848,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             elapsed = (_time_mod.monotonic() - t0) * 1000
             metrics = {"compile_time_ms": round(elapsed, 1)}
             accumulated["compilation"] = metrics
-            _persist_stage("compilation", {"status": "done", "metrics": metrics})
+            _persist_stage("compilation", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'compilation', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
             elapsed = (_time_mod.monotonic() - t0) * 1000
@@ -2585,7 +2880,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "native_abi_probe": getattr(sandbox, "native_abi_probe", None),
             }
             accumulated["sandbox"] = metrics
-            _persist_stage("sandbox", {"status": "done", "metrics": metrics})
+            _persist_stage("sandbox", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'sandbox', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
             
             # --- Stage 4.5: routing (Phase 5.1 live-sync) ---
@@ -2608,8 +2903,8 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                     
                     metrics = {"op_routing": mapped_rt}
                     accumulated["routing"] = metrics
-                    _persist_stage("routing", {"status": "done", "metrics": metrics})
                     elapsed = (_time_mod.monotonic() - t0) * 1000
+                    _persist_stage("routing", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
                     yield f"event: stage\ndata: {_json({'stage': 'routing', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
                 except Exception as e:
                     logger.error(f"Routing analysis failed: {e}")
@@ -2643,8 +2938,8 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             )
             metrics = comp_result.to_dict()
             accumulated["compression"] = metrics
-            _persist_stage("compression", {"status": "done", "metrics": metrics})
             elapsed = (_time_mod.monotonic() - t0) * 1000
+            _persist_stage("compression", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'compression', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
             elapsed = (_time_mod.monotonic() - t0) * 1000
@@ -2673,8 +2968,8 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             else:
                 metrics = {"skipped": True}
             accumulated["fingerprint"] = metrics
-            _persist_stage("fingerprint", {"status": "done", "metrics": metrics})
             elapsed = (_time_mod.monotonic() - t0) * 1000
+            _persist_stage("fingerprint", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'fingerprint', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
             elapsed = (_time_mod.monotonic() - t0) * 1000
@@ -2696,8 +2991,8 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             else:
                 metrics = {"skipped": True}
             accumulated["novelty"] = metrics
-            _persist_stage("novelty", {"status": "done", "metrics": metrics})
             elapsed = (_time_mod.monotonic() - t0) * 1000
+            _persist_stage("novelty", {"status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics})
             yield f"event: stage\ndata: {_json({'stage': 'novelty', 'status': 'done', 'elapsed_ms': round(elapsed, 1), 'metrics': metrics})}\n\n"
         except Exception as e:
             elapsed = (_time_mod.monotonic() - t0) * 1000
@@ -2707,7 +3002,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         total_ms = (_time_mod.monotonic() - total_t0) * 1000
         _attach_benchmarking()
         _persist_done("success", total_ms=round(total_ms, 1))
-        yield f"event: done\ndata: {_json({'status': 'success', 'total_time_ms': round(total_ms, 1), 'result': accumulated, 'benchmarking': accumulated.get('benchmarking')})}\n\n"
+        yield f"event: done\ndata: {_json({'status': 'success', 'total_time_ms': round(total_ms, 1), 'result': accumulated, 'benchmarking': accumulated.get('benchmarking'), 'perf_budget_gate': accumulated.get('perf_budget_gate'), 'perf_artifact_path': accumulated.get('perf_artifact_path')})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -2867,6 +3162,31 @@ def get_eval_run_benchmarking(run_id: str) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/v1/eval/runs/{run_id}/perf")
+def get_eval_run_perf(run_id: str) -> Dict[str, Any]:
+    """Get normalized performance contract, artifact path, and budget verdict for a run."""
+    run = _require_run(run_id)
+    perf_contract = run.get("perf_contract")
+    if not perf_contract:
+        raise HTTPException(status_code=404, detail="Performance contract not available for this run")
+    return {
+        "run_id": run_id,
+        "perf_contract": perf_contract,
+        "perf_artifact_path": run.get("perf_artifact_path"),
+        "perf_budget_gate": run.get("perf_budget_gate"),
+    }
+
+
+@app.get("/api/v1/perf/summary")
+def get_perf_summary(limit: int = Query(20, ge=1, le=100)) -> Dict[str, Any]:
+    """Return recent designer perf artifacts and aggregate summary."""
+    artifacts = list_recent_perf_artifacts(component="aria_designer", limit=limit)
+    return {
+        "summary": summarize_perf_artifacts(artifacts, component="aria_designer"),
+        "artifacts": artifacts,
+    }
+
+
 @app.get("/api/v1/benchmarks/targets")
 def get_benchmark_targets(run_id: Optional[str] = Query(None, description="Optional run_id for live target comparison")) -> Dict[str, Any]:
     """Return benchmark target catalog and optional run-specific comparison."""
@@ -2903,7 +3223,23 @@ def profile_workflow_endpoint(req: RunWorkflowRequest) -> Dict[str, Any]:
         batch_size=budget.get("batch_size", 2),
         seq_len=budget.get("seq_len", 128),
     )
-    return report.to_dict()
+    payload = report.to_dict()
+    perf_contract = payload.get("perf_contract")
+    if isinstance(perf_contract, dict):
+        perf_contract["identity"] = {
+            **(perf_contract.get("identity") or {}),
+            "workflow_id": wf.get("workflow_id"),
+            "runtime_enabled": bool(budget.get("runtime", False)),
+        }
+        perf_artifact_path = emit_perf_artifact(
+            perf_contract,
+            slug=f"profile_{wf.get('workflow_id') or uuid4().hex[:12]}",
+        )
+        perf_contract["artifact_path"] = perf_artifact_path
+        payload["perf_contract"] = perf_contract
+        payload["perf_artifact_path"] = perf_artifact_path
+        payload["perf_budget_gate"] = perf_contract.get("budget_verdict")
+    return payload
 
 
 @app.post("/api/v1/workflows/validate-graph")

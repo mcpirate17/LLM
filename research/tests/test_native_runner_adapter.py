@@ -23,7 +23,7 @@ from research.scientist.native_runner import (
 from research.scientist.native_runner_adapter import capability_handshake
 from research.tests.conftest import make_fake_graph
 
-pytestmark = pytest.mark.native
+pytestmark = [pytest.mark.native, pytest.mark.slow]
 
 
 def test_native_runner_enabled_by_default():

@@ -101,7 +101,7 @@ def register_campaigns_routes(app, context: ApiRouteContext):
                 decisions=decisions,
             )
 
-            from ..llm.context import build_campaign_report_context
+            from ..llm.context_hypothesis import build_campaign_report_context
             ctx = build_campaign_report_context(
                 campaign, experiments, hypotheses, decisions, knowledge)
             report = aria.compile_campaign_report(

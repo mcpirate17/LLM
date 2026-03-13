@@ -4,6 +4,7 @@ import tempfile
 from unittest.mock import MagicMock
 
 from research.scientist.runner import ExperimentRunner, RunConfig
+from research.scientist.refinement_scoring import rank_synthesis_candidates_by_stability
 from research.synthesis.graph import ComputationGraph
 
 pytestmark = pytest.mark.unit
@@ -25,6 +26,28 @@ def _complex_graph() -> ComputationGraph:
     c = g.add_op("gelu", [b], config={})
     d = g.add_op("linear_proj", [c], config={"out_dim": 64})
     g.set_output(d)
+    return g
+
+
+def _risky_graph() -> ComputationGraph:
+    g = ComputationGraph(model_dim=64)
+    x = g.add_input()
+    a = g.add_op("moe_2expert", [x], config={})
+    b = g.add_op("gelu", [a], config={})
+    c = g.add_op("gated_linear", [b], config={"out_dim": 64})
+    g.set_output(c)
+    return g
+
+
+def _stabilized_risky_graph() -> ComputationGraph:
+    g = ComputationGraph(model_dim=64)
+    x = g.add_input()
+    n = g.add_op("layernorm", [x], config={})
+    a = g.add_op("moe_2expert", [n], config={})
+    b = g.add_op("gelu", [a], config={})
+    c = g.add_op("gated_linear", [b], config={"out_dim": 64})
+    y = g.add_op("add", [x, c], config={})
+    g.set_output(y)
     return g
 
 
@@ -65,6 +88,32 @@ def test_refinement_breakdown_matches_score():
     assert weighted
     assert abs(score - sum(weighted.values())) < 1e-12
     assert breakdown.get("mode") == "balanced"
+
+
+def test_refinement_balanced_penalizes_oscillation_risk():
+    runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "refine_stability.db"))
+    risky = _risky_graph()
+    stable = _stabilized_risky_graph()
+    op_success = {"moe_2expert": 0.6, "gelu": 0.6, "gated_linear": 0.6, "layernorm": 0.6, "add": 0.6}
+
+    risky_score, risky_breakdown = runner._score_refinement_candidate(
+        risky, op_success, "balanced", include_breakdown=True
+    )
+    stable_score, stable_breakdown = runner._score_refinement_candidate(
+        stable, op_success, "balanced", include_breakdown=True
+    )
+
+    assert risky_breakdown["components"]["oscillation_risk"] > stable_breakdown["components"]["oscillation_risk"]
+    assert risky_breakdown["weighted_terms"]["oscillation_penalty"] < 0.0
+    assert stable_score > risky_score
+
+
+def test_synthesis_stability_rerank_prefers_stabilized_graph():
+    ranked = rank_synthesis_candidates_by_stability([
+        _risky_graph(),
+        _stabilized_risky_graph(),
+    ])
+    assert ranked[0].has_residual_path()
 
 
 def test_fingerprint_refinement_default_hypothesis_is_structured():

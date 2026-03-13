@@ -11,9 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional, Set, Tuple
-
-import numpy as np
+from typing import List, Set
 
 logger = logging.getLogger(__name__)
 

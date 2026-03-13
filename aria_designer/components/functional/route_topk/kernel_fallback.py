@@ -1,21 +1,20 @@
-"""Python fallback kernel for adaptive_lane_mixer."""
+"""Python fallback kernel for route_topk."""
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 class ComponentHandler:
-    """Fallback handler for adaptive_lane_mixer."""
+    """Fallback handler for route_topk."""
 
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        # The designer runtime usually builds a module that matches the primitive op
-        # In research/synthesis/compiler.py, this op is implemented.
-        # For the designer UI execution path, we can provide a simplified version.
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
-        x = inputs["x"]
-        # Simplified: just return input for UI preview
-        return {"y": x}
+        scores = inputs["scores"]
+        if scores.dim() != 3:
+            raise ValueError("route_topk expects scores with shape [B, S, K]")
+        k = max(1, min(int(config.get("k", 1)), scores.size(-1)))
+        weights, indices = torch.topk(scores, k=k, dim=-1)
+        return {"indices": indices, "weights": weights}

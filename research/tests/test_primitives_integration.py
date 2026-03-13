@@ -322,7 +322,10 @@ class TestSpikingPrimitives(unittest.TestCase):
                       "sparse_threshold"]:
             op = PRIMITIVE_REGISTRY[name]
             self.assertEqual(op.shape_rule, "identity")
-            self.assertFalse(op.has_params)
+        # stdp_attention has a learnable temporal decay parameter
+        for name in ["lif_neuron", "spike_rate_code", "sparse_threshold"]:
+            op = PRIMITIVE_REGISTRY[name]
+            self.assertFalse(op.has_params, f"{name} should be parameter-free")
 
     def test_stdp_attention_gradient(self):
         from research.mathspaces.spiking import execute_stdp_attention
@@ -766,6 +769,10 @@ class TestOneShotPruningBaseline(unittest.TestCase):
                 return False
 
         runner._stop_event = _Stop()
+        runner._corpus_batcher = None
+        runner._corpus_signature = None
+        runner._corpus_warned_unavailable = False
+        runner._hydra_loader = None
 
         cfg = RunConfig(
             vocab_size=64,

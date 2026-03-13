@@ -5,7 +5,6 @@ import json
 import math
 import time
 import uuid
-from dataclasses import field
 from typing import Any, Dict, List, Optional
 
 from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
@@ -44,6 +43,7 @@ class _ExperimentsMixin:
 
         Returns the number of experiments cleaned up.
         """
+        self.flush_writes()
         now = time.time()
         cutoff = now - (timeout_minutes * 60)
         startup_cutoff = now - (startup_failure_minutes * 60)
@@ -394,6 +394,7 @@ class _ExperimentsMixin:
 
     def fail_experiment(self, experiment_id: str, error: str, results: Optional[Dict] = None):
         """Mark an experiment as failed. Deletes record if it contains no useful information."""
+        self.flush_writes()
         results_blob = self._compress(results) if results else None
         n_prog = results.get("total", 0) if results else 0
         
@@ -429,6 +430,7 @@ class _ExperimentsMixin:
         Call periodically (e.g. between experiment cycles) to prevent
         empty experiments from accumulating.  Returns count deleted.
         """
+        self.flush_writes()
         rows = self.conn.execute("""
             SELECT experiment_id FROM experiments
             WHERE status = 'failed'
@@ -867,4 +869,3 @@ class _ExperimentsMixin:
             children = json.loads(d.get("child_hypotheses") or "[]")
             queue_ids.extend(children)
         return chain
-

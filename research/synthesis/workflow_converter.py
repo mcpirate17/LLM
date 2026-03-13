@@ -5,7 +5,7 @@ Single source of truth for graph transformation logic.
 
 from __future__ import annotations
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 from .graph import ComputationGraph
 from .component_registry import registry, fe_type_to_op_name
 from .primitives import PRIMITIVE_REGISTRY

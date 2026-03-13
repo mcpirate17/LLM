@@ -1,12 +1,23 @@
-from typing import Dict, Any, Optional, List
-import json
+from typing import Dict, List
 import logging
 
 logger = logging.getLogger(__name__)
 
 class _PersonaRulesMixin:
     def _rule_based_hypothesis(self, **kwargs) -> str:
-        """Original template-based hypothesis generation."""
+        """Data-informed hypothesis generation using op success analytics."""
+        # Try data-driven hypothesis first
+        nb = kwargs.get("notebook") or getattr(self, "_notebook", None)
+        if nb is not None:
+            try:
+                hyp = self._data_driven_hypothesis(nb)
+                if hyp:
+                    self.state.current_hypothesis = hyp
+                    return hyp
+            except Exception:
+                pass
+
+        # Fallback to templates
         template = self._rng.choice(self.HYPOTHESIS_TEMPLATES)
         defaults = {
             "concept": "tropical geometry",
@@ -23,6 +34,55 @@ class _PersonaRulesMixin:
         hyp = template.format(**defaults)
         self.state.current_hypothesis = hyp
         return hyp
+
+    def _data_driven_hypothesis(self, nb) -> str:
+        """Generate hypothesis from actual op success rates and failure patterns."""
+        conn = nb.conn
+        # Top performing ops (high S1 survival, enough data)
+        top_ops = conn.execute(
+            "SELECT op_name, n_used, n_stage1_passed, "
+            "CAST(n_stage1_passed AS FLOAT) / n_used AS rate "
+            "FROM op_success_rates WHERE n_used >= 15 "
+            "ORDER BY rate DESC LIMIT 5"
+        ).fetchall()
+        # Worst performing ops
+        worst_ops = conn.execute(
+            "SELECT op_name, n_used, n_stage1_passed, "
+            "CAST(n_stage1_passed AS FLOAT) / n_used AS rate "
+            "FROM op_success_rates WHERE n_used >= 15 AND n_stage1_passed > 0 "
+            "ORDER BY rate ASC LIMIT 3"
+        ).fetchall()
+        # Best recent efficiency
+        best_eff = conn.execute(
+            "SELECT architecture_desc, efficiency_multiple "
+            "FROM leaderboard WHERE efficiency_multiple IS NOT NULL "
+            "AND (tags IS NULL OR tags NOT LIKE '%reference%') "
+            "ORDER BY efficiency_multiple DESC LIMIT 1"
+        ).fetchone()
+
+        if not top_ops:
+            return ""
+
+        top_names = [r[0] for r in top_ops]
+        top_rates = [f"{r[0]}({r[3]:.0%})" for r in top_ops[:3]]
+        worst_names = [r[0] for r in worst_ops] if worst_ops else []
+
+        templates = [
+            (f"Combining top-performing ops {top_rates[0]} and {top_rates[1]} "
+             f"in a sparse architecture will improve efficiency_multiple beyond "
+             f"{best_eff[1]:.2f}x." if best_eff else
+             f"Combining {top_rates[0]} and {top_rates[1]} will produce "
+             f"architectures with >1.5x efficiency_multiple."),
+            (f"Replacing low-survival op {worst_names[0]} with {top_names[0]} "
+             f"in existing graph patterns will improve S1 pass rate."
+             if worst_names else
+             f"Deeper use of {top_names[0]} with residual connections will "
+             f"reduce loss_ratio below 0.01."),
+            (f"A compact architecture using {top_names[0]}, {top_names[1]}, and "
+             f"bottleneck_proj will achieve >2x efficiency_multiple by reducing "
+             f"parameter count while maintaining low loss_ratio."),
+        ]
+        return self._rng.choice(templates)
 
     def _rule_based_summary(self, results: Dict) -> str:
         """Original template-based experiment summary."""

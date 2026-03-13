@@ -22,7 +22,7 @@ from typing import Callable, List
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -1,5 +1,5 @@
 import { apiCall } from "../services/apiService";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
 
@@ -96,7 +96,8 @@ function CampaignList({ onSelectCampaign }) {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
 
-  useEffect(() => {
+  const fetchCampaigns = useCallback(() => {
+    setLoading(true);
     apiCall(`/api/campaigns`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -109,6 +110,10 @@ function CampaignList({ onSelectCampaign }) {
       })
       .catch(e => { setError('Failed to load campaigns: ' + e.message); setLoading(false); });
   }, []);
+
+  useEffect(() => {
+    fetchCampaigns();
+  }, [fetchCampaigns]);
 
   if (loading) return <p style={{ color: 'var(--text-muted)' }}>Loading campaigns...</p>;
   if (error) return <p style={{ color: 'var(--accent-red)' }}>{error}</p>;
@@ -452,8 +457,8 @@ function evaluateSuccessCriteria(successCriteria, context) {
 function DecisionLog({ decisions, hypotheses, experiments, onSelectExperiment }) {
   if (!decisions || decisions.length === 0) return null;
 
-  const hypothesisById = new Map((hypotheses || []).map(h => [h.hypothesis_id, h]));
-  const experimentById = new Map((experiments || []).map(exp => [exp.experiment_id, exp]));
+  const hypothesisById = useMemo(() => new Map((hypotheses || []).map(h => [h.hypothesis_id, h])), [hypotheses]);
+  const experimentById = useMemo(() => new Map((experiments || []).map(exp => [exp.experiment_id, exp])), [experiments]);
   const [copiedValue, copyText] = useCopyToClipboard();
 
   return (
@@ -597,6 +602,7 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
   const [reportGeneratedAt, setReportGeneratedAt] = useState(null);
 
   useEffect(() => {
+    setLoading(true);
     apiCall(`/api/campaigns/${campaignId}`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -610,7 +616,7 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
       .catch(e => { setError('Failed to load campaign: ' + e.message); setLoading(false); });
   }, [campaignId]);
 
-  const generateReport = async () => {
+  const generateReport = useCallback(async () => {
     setGenerating(true);
     setReportError(null);
     try {
@@ -623,27 +629,32 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
       setReportError('Failed to generate report: ' + e.message);
     }
     setGenerating(false);
-  };
+  }, [campaignId]);
 
-  if (loading) return <p style={{ color: 'var(--text-muted)' }}>Loading...</p>;
-  if (error) return <p style={{ color: 'var(--accent-red)' }}>{error}</p>;
-  if (!data) return <p style={{ color: 'var(--accent-red)' }}>Campaign not found</p>;
+  const campaign = data?.campaign || {};
+  const experiments = useMemo(() => Array.isArray(data?.experiments) ? data.experiments : [], [data?.experiments]);
+  const hypotheses = useMemo(() => Array.isArray(data?.hypotheses) ? data.hypotheses : [], [data?.hypotheses]);
+  const decisions = useMemo(() => Array.isArray(data?.decisions) ? data.decisions : [], [data?.decisions]);
+  
+  const { confirmed, refuted, resolvedHypotheses, pendingHypotheses } = useMemo(() => {
+    const c = hypotheses.filter(h => h.status === 'confirmed').length;
+    const r = hypotheses.filter(h => h.status === 'refuted').length;
+    return {
+      confirmed: c,
+      refuted: r,
+      resolvedHypotheses: c + r,
+      pendingHypotheses: hypotheses.filter(h => h.status !== 'confirmed' && h.status !== 'refuted').length
+    };
+  }, [hypotheses]);
 
-  const campaign = data.campaign || {};
-  const experiments = Array.isArray(data.experiments) ? data.experiments : [];
-  const hypotheses = Array.isArray(data.hypotheses) ? data.hypotheses : [];
-  const decisions = Array.isArray(data.decisions) ? data.decisions : [];
-  const confirmed = hypotheses.filter(h => h.status === 'confirmed').length;
-  const refuted = hypotheses.filter(h => h.status === 'refuted').length;
-  const resolvedHypotheses = confirmed + refuted;
-  const pendingHypotheses = hypotheses.filter(h => h.status !== 'confirmed' && h.status !== 'refuted').length;
-  const experimentsWithEvidence = experiments.filter(exp => ((exp.n_programs_generated || exp.n_programs || 0) > 0)).length;
-  const evidenceCoveragePct = experiments.length > 0 ? Math.round((experimentsWithEvidence / experiments.length) * 100) : 0;
-  const hypothesisResolutionPct = hypotheses.length > 0 ? Math.round((resolvedHypotheses / hypotheses.length) * 100) : 0;
-  const decisionCoveragePct = resolvedHypotheses > 0
+  const experimentsWithEvidence = useMemo(() => experiments.filter(exp => ((exp.n_programs_generated || exp.n_programs || 0) > 0)).length, [experiments]);
+  const evidenceCoveragePct = useMemo(() => experiments.length > 0 ? Math.round((experimentsWithEvidence / experiments.length) * 100) : 0, [experiments.length, experimentsWithEvidence]);
+  const hypothesisResolutionPct = useMemo(() => hypotheses.length > 0 ? Math.round((resolvedHypotheses / hypotheses.length) * 100) : 0, [hypotheses.length, resolvedHypotheses]);
+  const decisionCoveragePct = useMemo(() => resolvedHypotheses > 0
     ? Math.min(100, Math.round((decisions.length / resolvedHypotheses) * 100))
-    : (decisions.length > 0 ? 100 : 0);
-  const progressSignals = [
+    : (decisions.length > 0 ? 100 : 0), [decisions.length, resolvedHypotheses]);
+
+  const progressSignals = useMemo(() => [
     {
       label: 'Evidence Coverage',
       pct: evidenceCoveragePct,
@@ -659,74 +670,91 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
       pct: decisionCoveragePct,
       detail: `${decisions.length}/${resolvedHypotheses || 0} decisions linked to resolved hypotheses`,
     },
-  ];
-  const blockers = [
+  ], [evidenceCoveragePct, experimentsWithEvidence, experiments.length, hypothesisResolutionPct, resolvedHypotheses, hypotheses.length, decisionCoveragePct, decisions.length]);
+
+  const blockers = useMemo(() => [
     experiments.length === 0 ? 'No experiments run yet for this objective.' : null,
     hypotheses.length === 0 ? 'No explicit hypotheses are captured from current evidence.' : null,
     pendingHypotheses > 0 ? `${pendingHypotheses} hypotheses are still pending outcome.` : null,
     decisions.length === 0 && hypotheses.length > 0 ? 'No go/no-go decision recorded yet.' : null,
-  ].filter(Boolean);
-  const campaignHealth = experiments.length === 0
+  ].filter(Boolean), [experiments.length, hypotheses.length, pendingHypotheses, decisions.length]);
+
+  const campaignHealth = useMemo(() => experiments.length === 0
     ? { label: 'Not Started', color: 'var(--accent-red)' }
     : blockers.length >= 2
       ? { label: 'At Risk', color: 'var(--accent-yellow)' }
       : pendingHypotheses === 0 && decisions.length > 0
         ? { label: 'Decision-Ready', color: 'var(--accent-green)' }
-        : { label: 'In Progress', color: 'var(--accent-blue)' };
-  const completionReason = campaign.completion_reason;
-  const statusMeaning = campaign.status === 'active'
-    ? 'Actively collecting evidence from new experiments.'
-    : campaign.status === 'paused'
-      ? 'Temporarily paused; no new evidence is being generated.'
-      : campaign.status === 'completed'
-        ? completionReason === 'criteria_met'
-          ? 'Campaign succeeded — all success criteria were met. A successor campaign was created with evolved objectives.'
-          : completionReason === 'stale'
-            ? 'Campaign pivoted — objectives were not being met after sustained effort. A new campaign was created with adjusted approach.'
-            : 'Research thread completed; decisions are finalized.'
-        : 'Not actively progressing.';
-  const nextBestAction = experiments.length === 0
-    ? 'Run a first experiment to create evidence for this objective.'
-    : hypotheses.length === 0
-      ? 'Capture at least one explicit hypothesis from current evidence.'
-      : decisions.length === 0
-        ? 'Record a go/no-go decision from the strongest evidence.'
-        : 'Generate a campaign report to summarize what changed and why.';
-  const sectionTabs = [
+        : { label: 'In Progress', color: 'var(--accent-blue)' }, [experiments.length, blockers.length, pendingHypotheses, decisions.length]);
+
+  const statusMeaning = useMemo(() => {
+    const reason = campaign.completion_reason;
+    if (campaign.status === 'active') return 'Actively collecting evidence from new experiments.';
+    if (campaign.status === 'paused') return 'Temporarily paused; no new evidence is being generated.';
+    if (campaign.status === 'completed') {
+      if (reason === 'criteria_met') return 'Campaign succeeded — all success criteria were met. A successor campaign was created with evolved objectives.';
+      if (reason === 'stale') return 'Campaign pivoted — objectives were not being met after sustained effort. A new campaign was created with adjusted approach.';
+      return 'Research thread completed; decisions are finalized.';
+    }
+    return 'Not actively progressing.';
+  }, [campaign.status, campaign.completion_reason]);
+
+  const nextBestAction = useMemo(() => {
+    if (experiments.length === 0) return 'Run a first experiment to create evidence for this objective.';
+    if (hypotheses.length === 0) return 'Capture at least one explicit hypothesis from current evidence.';
+    if (decisions.length === 0) return 'Record a go/no-go decision from the strongest evidence.';
+    return 'Generate a campaign report to summarize what changed and why.';
+  }, [experiments.length, hypotheses.length, decisions.length]);
+
+  const sectionTabs = useMemo(() => [
     { key: 'timeline', label: `Timeline (${experiments.length})` },
     { key: 'hypotheses', label: `Hypotheses (${hypotheses.length})` },
     { key: 'decisions', label: `Decisions (${decisions.length})` },
     { key: 'report', label: 'Report' },
-  ];
-  const bestBaselineRatio = experiments
-    .map(exp => exp.best_baseline_ratio)
-    .filter(v => typeof v === 'number')
-    .reduce((best, value) => Math.min(best, value), Number.POSITIVE_INFINITY);
-  const bestNovelty = experiments
-    .map(exp => exp.best_novelty_score)
-    .filter(v => typeof v === 'number')
-    .reduce((best, value) => Math.max(best, value), Number.NEGATIVE_INFINITY);
-  const bestStage1Rate = experiments
-    .map(exp => {
-      const total = exp.n_programs_generated || exp.n_programs || 0;
-      const passed = exp.n_stage1_passed || 0;
-      if (!total) return null;
-      return passed / total;
-    })
-    .filter(v => typeof v === 'number')
-    .reduce((best, value) => Math.max(best, value), Number.NEGATIVE_INFINITY);
-  const fallbackCriteriaTracker = evaluateSuccessCriteria(campaign.success_criteria, {
-    bestBaselineRatio: Number.isFinite(bestBaselineRatio) ? bestBaselineRatio : null,
-    bestNovelty: Number.isFinite(bestNovelty) ? bestNovelty : null,
-    bestStage1Rate: Number.isFinite(bestStage1Rate) ? bestStage1Rate : null,
-    decisionCount: decisions.length,
-    experimentCount: experiments.length,
-    hypothesisCount: hypotheses.length,
-  });
-  const backendCriteriaTracker = Array.isArray(data.success_criteria_tracker)
-    ? data.success_criteria_tracker
-    : (Array.isArray(report?.success_criteria_tracker) ? report.success_criteria_tracker : null);
-  const criteriaTracker = backendCriteriaTracker || fallbackCriteriaTracker;
+  ], [experiments.length, hypotheses.length, decisions.length]);
+
+  const { bestBaselineRatio, bestNovelty, bestStage1Rate } = useMemo(() => {
+    return {
+      bestBaselineRatio: experiments
+        .map(exp => exp.best_baseline_ratio)
+        .filter(v => typeof v === 'number')
+        .reduce((best, value) => Math.min(best, value), Number.POSITIVE_INFINITY),
+      bestNovelty: experiments
+        .map(exp => exp.best_novelty_score)
+        .filter(v => typeof v === 'number')
+        .reduce((best, value) => Math.max(best, value), Number.NEGATIVE_INFINITY),
+      bestStage1Rate: experiments
+        .map(exp => {
+          const total = exp.n_programs_generated || exp.n_programs || 0;
+          const passed = exp.n_stage1_passed || 0;
+          if (!total) return null;
+          return passed / total;
+        })
+        .filter(v => typeof v === 'number')
+        .reduce((best, value) => Math.max(best, value), Number.NEGATIVE_INFINITY)
+    };
+  }, [experiments]);
+
+  const criteriaTracker = useMemo(() => {
+    const backend = Array.isArray(data?.success_criteria_tracker)
+      ? data.success_criteria_tracker
+      : (Array.isArray(report?.success_criteria_tracker) ? report.success_criteria_tracker : null);
+    
+    if (backend) return backend;
+
+    return evaluateSuccessCriteria(campaign.success_criteria, {
+      bestBaselineRatio: Number.isFinite(bestBaselineRatio) ? bestBaselineRatio : null,
+      bestNovelty: Number.isFinite(bestNovelty) ? bestNovelty : null,
+      bestStage1Rate: Number.isFinite(bestStage1Rate) ? bestStage1Rate : null,
+      decisionCount: decisions.length,
+      experimentCount: experiments.length,
+      hypothesisCount: hypotheses.length,
+    });
+  }, [data?.success_criteria_tracker, report?.success_criteria_tracker, campaign.success_criteria, bestBaselineRatio, bestNovelty, bestStage1Rate, decisions.length, experiments.length, hypotheses.length]);
+
+  if (loading) return <p style={{ color: 'var(--text-muted)' }}>Loading...</p>;
+  if (error) return <p style={{ color: 'var(--accent-red)' }}>{error}</p>;
+  if (!data) return <p style={{ color: 'var(--accent-red)' }}>Campaign not found</p>;
 
   return (
     <div>
@@ -746,14 +774,14 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0' }}>
           <strong>Success Criteria:</strong> {campaign.success_criteria}
         </p>
-        {completionReason && (
+        {campaign.completion_reason && (
           <div style={{
             marginTop: 8, padding: '6px 10px', borderRadius: 6,
-            background: completionReason === 'criteria_met' ? 'rgba(63,185,80,0.1)' : 'rgba(210,153,34,0.1)',
-            border: `1px solid ${completionReason === 'criteria_met' ? 'var(--accent-green)' : 'var(--accent-yellow)'}`,
-            fontSize: 12, color: completionReason === 'criteria_met' ? 'var(--accent-green)' : 'var(--accent-yellow)',
+            background: campaign.completion_reason === 'criteria_met' ? 'rgba(63,185,80,0.1)' : 'rgba(210,153,34,0.1)',
+            border: `1px solid ${campaign.completion_reason === 'criteria_met' ? 'var(--accent-green)' : 'var(--accent-yellow)'}`,
+            fontSize: 12, color: campaign.completion_reason === 'criteria_met' ? 'var(--accent-green)' : 'var(--accent-yellow)',
           }}>
-            {completionReason === 'criteria_met'
+            {campaign.completion_reason === 'criteria_met'
               ? 'All success criteria met — campaign completed successfully.'
               : 'Campaign pivoted after sustained lack of progress.'}
             {campaign.findings_summary && (

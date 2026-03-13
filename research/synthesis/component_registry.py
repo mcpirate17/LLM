@@ -6,7 +6,7 @@ Consolidates aliases and category mappings between aria_designer and research.
 from __future__ import annotations
 import yaml
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 # Configuration file location
 _HERE = Path(__file__).resolve().parent

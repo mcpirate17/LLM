@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import os
-import sys
 import ctypes
-import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Union, Callable
-import torch
-import torch.nn as nn
+from typing import Dict, Any, List, Optional
 
 from .core import NativeRunnerState, _FALLBACK_METRICS, _env_flag
 
@@ -149,8 +144,6 @@ def _build_native_abi_only_model(
 
     return _NativeAbiOnlyModel(abi_session, vocab_size, model_dim)
 
-    def __del__(self):
-        self.close()
 
 class NativeRunnerAbiSession:
     """Holder for runner ABI compiled handle + token execute helper."""

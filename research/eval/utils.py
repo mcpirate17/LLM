@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import List, Any, Optional
 
 import torch
 import torch.nn as nn

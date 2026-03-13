@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set
 
 import numpy as np
 from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY, estimate_op_params, OPCODE_MAP

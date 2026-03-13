@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import gc
 import logging
-from typing import Callable, Dict, Sequence, Tuple
+from typing import Callable, Dict, Sequence
 
 import torch
 import torch.nn as nn

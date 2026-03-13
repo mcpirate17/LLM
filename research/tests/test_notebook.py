@@ -110,6 +110,22 @@ class TestNotebook(unittest.TestCase):
                 break
         self.assertTrue(has_experiment_index, "Missing index on program_results(experiment_id)")
 
+    def test_phase4_indexes_exist(self):
+        """Hot query paths should have the new Phase 4 indexes."""
+        program_indexes = {
+            row[1]: [c[2] for c in self.nb.conn.execute(f"PRAGMA index_info('{row[1]}')").fetchall()]
+            for row in self.nb.conn.execute("PRAGMA index_list('program_results')").fetchall()
+        }
+        leaderboard_indexes = {
+            row[1]: [c[2] for c in self.nb.conn.execute(f"PRAGMA index_info('{row[1]}')").fetchall()]
+            for row in self.nb.conn.execute("PRAGMA index_list('leaderboard')").fetchall()
+        }
+
+        self.assertIn(["stage1_passed"], program_indexes.values())
+        self.assertIn(["graph_fingerprint"], program_indexes.values())
+        self.assertIn(["routing_mode"], program_indexes.values())
+        self.assertIn(["model_source"], leaderboard_indexes.values())
+
     def test_designer_run_lineage_upsert_and_query(self):
         """Designer run lineage rows should upsert and round-trip structured payloads."""
         self.nb.save_designer_run_lineage(
@@ -396,6 +412,44 @@ class TestNotebook(unittest.TestCase):
         for k in expected_keys:
             self.assertIn(k, summary)
 
+    def test_dashboard_summary_cache_invalidates_after_write(self):
+        """Dashboard summary cache should refresh after notebook writes commit."""
+        before = self.nb.get_dashboard_summary()
+        exp_id = self.nb.start_experiment("synthesis", {}, "cache-refresh")
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_cache_refresh",
+            graph_json="{}",
+            stage1_passed=True,
+        )
+        self.nb.flush_writes()
+        after = self.nb.get_dashboard_summary()
+        self.assertEqual(after["total_programs_evaluated"], before["total_programs_evaluated"] + 1)
+        self.assertEqual(after["stage1_survivors"], before["stage1_survivors"] + 1)
+
+    def test_graph_structural_counts_supports_dict_nodes(self):
+        """Structural op counting should handle dict-based graph JSON without refetching repeatedly."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "counts")
+        graph_json = json.dumps({
+            "nodes": {
+                "a": {"op_name": "route_topk"},
+                "b": {"op_name": "block_sparse_linear"},
+                "c": {"op_name": "moe_topk"},
+            }
+        })
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_counts",
+            graph_json=graph_json,
+            stage1_passed=True,
+        )
+        self.nb.flush_writes()
+
+        counts = self.nb._graph_structural_counts(result_id)
+        self.assertEqual(counts["routing"], 2)
+        self.assertEqual(counts["sparse"], 1)
+        self.assertEqual(counts["moe"], 2)
+
     def test_get_top_programs_sort_options(self):
         """get_top_programs supports all sort options."""
         exp_id = self.nb.start_experiment("synthesis", {}, "test")
@@ -421,7 +475,9 @@ class TestNotebook(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="fp_curve",
             graph_json="{}",
+            stage1_passed=True,
         )
+        self.nb.flush_writes()
 
         curve = [
             {"step": 0, "loss": 5.0, "grad_norm": 1.0},
@@ -433,6 +489,41 @@ class TestNotebook(unittest.TestCase):
         retrieved = self.nb.get_training_curve(result_id)
         self.assertEqual(len(retrieved), 3)
         self.assertAlmostEqual(retrieved[0]["loss"], 5.0)
+
+    def test_training_curve_ignored_without_persisted_survivor(self):
+        """Curve writes should be skipped when the parent result does not exist."""
+        self.nb.store_training_curve("missing_result", [
+            {"step": 0, "loss": 1.0, "grad_norm": 0.5},
+        ])
+        retrieved = self.nb.get_training_curve("missing_result")
+        self.assertEqual(retrieved, [])
+
+    def test_training_curve_deleted_with_parent_program(self):
+        """Purging junk programs should cascade and remove attached curves."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "junk")
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_junk",
+            graph_json="{}",
+            stage0_passed=False,
+            stage1_passed=False,
+            error_type="compile_error",
+        )
+        self.nb.flush_writes()
+        self.nb.conn.execute(
+            """INSERT INTO training_curves (result_id, step, loss, grad_norm, step_time_ms)
+               VALUES (?, 0, 3.0, 1.0, 1.0)""",
+            (result_id,),
+        )
+        self.nb.conn.commit()
+
+        deleted = self.nb.purge_junk_programs()
+        self.assertEqual(deleted["deleted"], 1)
+        remaining = self.nb.conn.execute(
+            "SELECT COUNT(*) FROM training_curves WHERE result_id = ?",
+            (result_id,),
+        ).fetchone()[0]
+        self.assertEqual(remaining, 0)
 
     def test_top_op_combinations_handles_malformed_graph_json(self):
         """Analytics top_op_combinations should skip malformed JSON and still aggregate valid pairs."""

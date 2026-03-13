@@ -26,6 +26,7 @@ def test_get_top_programs_returns_stage1_survivors(tmp_path):
             novelty_score=0.6,
         )
         nb.complete_experiment(exp_good, {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1})
+        nb.flush_writes()
 
         exp_bad = nb.start_experiment("synthesis", {"n_programs": 1}, "bad")
         bad_result = nb.record_program_result(
@@ -39,6 +40,7 @@ def test_get_top_programs_returns_stage1_survivors(tmp_path):
             novelty_score=0.9,
         )
         nb.complete_experiment(exp_bad, {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1})
+        nb.flush_writes()
         nb.conn.execute("UPDATE experiments SET status = 'invalid' WHERE experiment_id = ?", (exp_bad,))
         nb.conn.commit()
 

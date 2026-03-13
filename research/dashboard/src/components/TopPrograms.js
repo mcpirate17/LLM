@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
 import { qkvUsageDescriptor, detectQkvFree } from '../utils/architecture';
@@ -6,6 +6,8 @@ import { candidateScore, candidateScoreBreakdown } from '../utils/scoringEngine'
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import useRenderPerf from '../hooks/useRenderPerf';
 import { filterRowsByQuery } from '../utils/tableFiltering';
+import { SortableHeader, TableFilterInput } from './shared/DataTableControls';
+import useInteractiveTable from './shared/useInteractiveTable';
 
 const TOP_PROGRAMS_SORT_KEY = 'aria_top_programs_sort_v1';
 
@@ -107,51 +109,9 @@ function TopPrograms({
 }) {
   useRenderPerf(compact ? 'TopPrograms(compact)' : 'TopPrograms');
 
-  const [sortKey, setSortKey] = useState(() => {
-    try {
-      if (typeof window === 'undefined') return 'score';
-      const stored = window.localStorage.getItem(TOP_PROGRAMS_SORT_KEY);
-      if (!stored) return 'score';
-      const parsed = JSON.parse(stored);
-      if (typeof parsed?.sortKey === 'string') return parsed.sortKey;
-      return 'score';
-    } catch {
-      return 'score';
-    }
-  });
-  const [sortDesc, setSortDesc] = useState(() => {
-    try {
-      if (typeof window === 'undefined') return true;
-      const stored = window.localStorage.getItem(TOP_PROGRAMS_SORT_KEY);
-      if (!stored) return true;
-      const parsed = JSON.parse(stored);
-      return typeof parsed?.sortDesc === 'boolean' ? parsed.sortDesc : true;
-    } catch {
-      return true;
-    }
-  });
   const [copiedValue, copyText] = useCopyToClipboard();
-  const [filterQuery, setFilterQuery] = useState('');
   const [fingerprintFilter, setFingerprintFilter] = useState('');
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
-
-  useEffect(() => {
-    try {
-      if (typeof window === 'undefined') return;
-      window.localStorage.setItem(TOP_PROGRAMS_SORT_KEY, JSON.stringify({ sortKey, sortDesc }));
-    } catch {
-      // Ignore localStorage failures.
-    }
-  }, [sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDesc(!sortDesc);
-    } else {
-      setSortKey(key);
-      setSortDesc(true);
-    }
-  };
 
   const augmented = useMemo(() => {
     if (!programs) return [];
@@ -162,38 +122,32 @@ function TopPrograms({
     }));
   }, [programs]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(augmented, filterQuery, [
+  const {
+    sortKey,
+    sortDesc,
+    filterQuery,
+    setFilterQuery,
+    sortedRows: sorted,
+    handleSort,
+  } = useInteractiveTable({
+    rows: augmented,
+    filterFields: [
       'graph_fingerprint',
       'result_id',
       'architecture_name',
       'program_id',
       'experiment_id',
       'tags',
-    ])
-  ), [augmented, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va, vb;
-      if (sortKey === 'score') {
-        va = a._score; vb = b._score;
-      } else if (sortKey === 'rating') {
-        va = a._rating.order; vb = b._rating.order;
-      } else {
-        va = a[sortKey]; vb = b[sortKey];
-      }
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') {
-        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
+    ],
+    initialSortKey: 'score',
+    initialSortDesc: true,
+    storageKey: TOP_PROGRAMS_SORT_KEY,
+    getSortValue: (row, key) => {
+      if (key === 'score') return row._score;
+      if (key === 'rating') return row._rating.order;
+      return row?.[key];
+    },
+  });
 
   const leadingFingerprints = useMemo(() => {
     const groups = new Map();
@@ -250,19 +204,11 @@ function TopPrograms({
             ? `(${programs.length}${totalCount > programs.length ? ` of ${totalCount}` : ''})`
             : `— ${programs.length} Survivors`}
         </span>
-        <input
+        <TableFilterInput
           value={filterQuery}
-          onChange={(e) => setFilterQuery(e.target.value)}
+          onChange={setFilterQuery}
           placeholder="Filter programs"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          ariaLabel="Filter programs"
         />
       </div>
       {!compact && (
@@ -278,19 +224,11 @@ function TopPrograms({
         <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 6 }}>
             <div style={{ fontSize: 12, fontWeight: 600 }}>Fingerprint Leaderboard (Deduplicated Architecture IDs)</div>
-            <input
+            <TableFilterInput
               value={fingerprintFilter}
-              onChange={(e) => setFingerprintFilter(e.target.value)}
+              onChange={setFingerprintFilter}
               placeholder="Filter fingerprints"
-              style={{
-                fontSize: 11,
-                padding: '4px 8px',
-                borderRadius: 4,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-primary)',
-                minWidth: 160,
-              }}
+              ariaLabel="Filter fingerprints"
             />
           </div>
           <table className="data-table" style={{ margin: 0 }}>
@@ -321,19 +259,15 @@ function TopPrograms({
         <thead>
           <tr>
             {columns.map(col => (
-              <th
+              <SortableHeader
                 key={col.key}
-                onClick={() => handleSort(col.key)}
+                sortKey={col.key}
+                activeSortKey={sortKey}
+                sortDesc={sortDesc}
+                onSort={handleSort}
+                label={col.label}
                 title={col.title || (col.key === 'graph_fingerprint' ? PROGRAM_FINGERPRINT_HEADER_TOOLTIP : undefined)}
-                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-              >
-                {col.label}
-                {sortKey === col.key && (
-                  <span style={{ marginLeft: 4, fontSize: 10 }}>
-                    {sortDesc ? '\u25BC' : '\u25B2'}
-                  </span>
-                )}
-              </th>
+              />
             ))}
           </tr>
         </thead>
@@ -374,10 +308,18 @@ function TopPrograms({
                   </td>
                 )}
                 <td
-                  style={{ fontFamily: 'monospace', fontSize: 12, color: onSelectProgram ? 'var(--accent-blue)' : 'inherit' }}
+                  style={{
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    color: onSelectProgram ? 'var(--accent-blue)' : 'inherit',
+                    whiteSpace: 'normal',
+                    overflowWrap: 'anywhere',
+                    lineHeight: 1.35,
+                    minWidth: 160,
+                  }}
                   title={p.graph_fingerprint || 'not available'}
                 >
-                  {p.graph_fingerprint?.slice(0, 10) || '--'}
+                  {p.graph_fingerprint || '--'}
                   {p.graph_fingerprint && (
                     <button
                       className="refresh-btn"

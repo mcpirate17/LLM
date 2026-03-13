@@ -3,7 +3,7 @@
 
 PYTHON ?= python
 
-.PHONY: all aria_core test clean help guardrails-dry guardrails-dry-report
+.PHONY: all aria_core test clean help guardrails-dry guardrails-dry-report perf-summary
 
 all: aria_core  ## Build everything
 
@@ -30,6 +30,9 @@ guardrails-dry:  ## Enforce DRY/language guardrails against baseline
 
 guardrails-dry-report:  ## Print DRY/language guardrail metrics
 	$(PYTHON) -m research.tools.dry_language_guardrails
+
+perf-summary:  ## Print recent shared performance artifacts
+	$(PYTHON) -m research.tools.perf_summary --limit 10
 
 # ── Clean ────────────────────────────────────────────────────────────
 clean:  ## Clean all build artifacts

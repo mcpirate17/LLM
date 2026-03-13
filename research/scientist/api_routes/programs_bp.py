@@ -10,9 +10,10 @@ from flask import jsonify, request
 from ..notebook import LabNotebook
 from ..runner import RunConfig
 from ..persona import get_aria
-from ..llm.context import build_program_context
+from ..llm.context_experiment import build_program_context
+from ..refinement_scoring import oscillation_risk_score
 from ._helpers import get_runner, json_safe
-from ._strategy import annotate_qkv_usage, enrich_program_detail, program_lineage_chain
+from ._strategy_recommendations import annotate_qkv_usage, enrich_program_detail, program_lineage_chain
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -207,19 +208,35 @@ def register_programs_routes(app, context: ApiRouteContext):
                         1.0 for op in child_ops_list if any(t in op.lower() for t in sparse_hint_ops)
                     ) / len(child_ops_list)
                 sparsity_proxy = min(1.0, 0.7 * compression_proxy + 0.3 * sparse_op_bonus)
+                oscillation_risk, stability = oscillation_risk_score(child)
                 parent_novelty = float(program.get("novelty_score") or 0.0)
                 parent_quality = 1.0 - float(program.get("loss_ratio") or 1.0)
 
                 if intent == "quality":
-                    score = 0.60 * learned_quality + 0.25 * parent_quality + 0.15 * compression_proxy
+                    score = (
+                        0.60 * learned_quality + 0.25 * parent_quality + 0.15 * compression_proxy
+                        - 0.10 * oscillation_risk
+                    )
                 elif intent == "compression":
-                    score = 0.60 * compression_proxy + 0.25 * learned_quality + 0.15 * parent_quality
+                    score = (
+                        0.60 * compression_proxy + 0.25 * learned_quality + 0.15 * parent_quality
+                        - 0.10 * oscillation_risk
+                    )
                 elif intent == "sparsity":
-                    score = 0.60 * sparsity_proxy + 0.25 * learned_quality + 0.15 * compression_proxy
+                    score = (
+                        0.60 * sparsity_proxy + 0.25 * learned_quality + 0.15 * compression_proxy
+                        - 0.10 * oscillation_risk
+                    )
                 elif intent == "novelty":
-                    score = 0.55 * novelty_proxy + 0.25 * learned_quality + 0.20 * parent_novelty
+                    score = (
+                        0.55 * novelty_proxy + 0.25 * learned_quality + 0.20 * parent_novelty
+                        - 0.06 * oscillation_risk
+                    )
                 else:
-                    score = 0.35 * learned_quality + 0.25 * compression_proxy + 0.20 * novelty_proxy + 0.20 * max(parent_quality, parent_novelty)
+                    score = (
+                        0.35 * learned_quality + 0.25 * compression_proxy + 0.20 * novelty_proxy
+                        + 0.20 * max(parent_quality, parent_novelty) - 0.10 * oscillation_risk
+                    )
 
                 child_ops = sorted(set(child_ops_list))
                 added_ops = [op for op in child_ops if op not in parent_ops]
@@ -250,6 +267,9 @@ def register_programs_routes(app, context: ApiRouteContext):
                         "compression_proxy": round(float(compression_proxy), 4),
                         "novelty_proxy": round(float(novelty_proxy), 4),
                         "sparsity_proxy": round(float(sparsity_proxy), 4),
+                        "oscillation_risk": round(float(oscillation_risk), 4),
+                        "has_residual": int(stability.get("has_residual", 0.0) > 0.5),
+                        "norm_count": int(stability.get("norm_count", 0.0)),
                     },
                 })
 

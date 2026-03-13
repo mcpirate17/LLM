@@ -81,3 +81,22 @@ AI scientist system for autonomous architecture discovery via grammar-based prog
 ```bash
 /home/tim/venvs/llm/bin/pytest tests/ -x --tb=short
 ```
+
+## Test Commands
+
+```bash
+# Fast unit tests (safe for parallel, default CI)
+pytest -m "unit and not slow" -n auto --dist loadgroup
+
+# API contract tests
+pytest -m api -n 2 --dist loadgroup
+
+# Native/CUDA tests (single worker to avoid CUDA context duplication)
+pytest -m native -n 1
+
+# Full suite (unit+api parallel, then native serial)
+pytest -m "unit or api" -n auto --dist loadgroup && pytest -m native -n 1
+
+# Pipeline integration
+pytest -m pipeline -n 2 --dist loadgroup
+```

@@ -1,23 +1,26 @@
-"""Auto-generated Python fallback kernel for swiglu_mlp."""
+"""Python fallback kernel for swiglu_mlp."""
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-class SwigluMlpFallback:
+
+class ComponentHandler:
     """Fallback handler for swiglu_mlp."""
 
-    def __call__(self, module, x):
-        """Execute swiglu_mlp operation."""
-        if not hasattr(module, 'gate_proj'):
-            # Initialize projections if missing (lazy init for designer context)
-            D = x.shape[-1]
-            hidden = D * 3
-            module.gate_proj = torch.nn.Linear(D, hidden, bias=False)
-            module.up_proj = torch.nn.Linear(D, hidden, bias=False)
-            module.down_proj = torch.nn.Linear(hidden, D, bias=False)
+    __slots__ = ()
 
-        gate = module.gate_proj(x)
-        up = module.up_proj(x)
-        activated = F.silu(gate) * up
-        return module.down_proj(activated)
+    def validate_config(self, config):
+        return []
+
+    def build(self, config):
+        return None
+
+    def forward(self, inputs, config):
+        x = inputs["x"]
+        if x.dim() != 3:
+            raise ValueError("swiglu_mlp expects x with shape [B, S, D]")
+        hidden = max(1, int(x.shape[-1] * float(config.get("mlp_ratio", 3.0))))
+        gate = F.silu(x.mean(dim=-1, keepdim=True)).expand(*x.shape[:-1], hidden)
+        up = x.mean(dim=-1, keepdim=True).expand(*x.shape[:-1], hidden)
+        mixed = gate * up
+        return {"y": mixed[..., : x.shape[-1]]}

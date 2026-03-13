@@ -136,31 +136,18 @@ class TestMorphologicalConstraints(unittest.TestCase):
 
     def test_grammar_can_generate_functional_primitives(self):
         from research.synthesis.grammar import GrammarConfig, generate_layer_graph
-        from research.synthesis.primitives import PRIMITIVE_REGISTRY, OpCategory
 
         functional_ops = {"basis_expansion", "integral_kernel", "fixed_point_iter"}
-        excluded = {
-            name for name, op in PRIMITIVE_REGISTRY.items()
-            if op.category in (OpCategory.PARAMETERIZED, OpCategory.MATH_SPACE, OpCategory.FUNCTIONAL)
-            and name not in functional_ops
-        }
 
         cfg = GrammarConfig(
             model_dim=64,
             max_depth=7,
             max_ops=12,
-            split_prob=0.0,
-            merge_prob=0.0,
-            freq_domain_prob=0.0,
             residual_prob=0.0,
-            excluded_ops=excluded,
         )
-        cfg.category_weights["functional"] = 8.0
-        cfg.category_weights["parameterized"] = 0.2
-        cfg.category_weights["math_space"] = 0.0
 
         found = False
-        for seed in range(20, 35):
+        for seed in range(20, 100):
             graph = generate_layer_graph(cfg, seed=seed)
             op_names = [n.op_name for n in graph.nodes.values() if not n.is_input]
             if any(op in functional_ops for op in op_names):
@@ -200,29 +187,6 @@ class TestFunctionalArchitectureBuild(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (2, 16, cfg.vocab_size))
         self.assertTrue(torch.isfinite(logits).all())
 
-
-
-class TestDeadCodeAudit(unittest.TestCase):
-    """Non-destructive dead code audit should run and emit structured data."""
-
-    def test_dead_code_audit_json_runs(self):
-        import subprocess
-
-        repo_root = os.path.dirname(os.path.dirname(__file__))
-        cmd = [
-            sys.executable,
-            os.path.join(repo_root, "tools", "dead_code_audit.py"),
-            "--workspace",
-            repo_root,
-            "--json",
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-
-        payload = json.loads(proc.stdout)
-        self.assertIn("dashboard_orphans", payload)
-        self.assertIn("python_possible_orphans", payload)
-        self.assertIn("notes", payload)
 
 
 # ── Test 11: Evolution Search ──

@@ -276,6 +276,7 @@ def validate_workflow_graph(workflow_json: Dict[str, Any], model_dim: int = 256)
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)
         return {"valid": True, "graph_info": {
             "fingerprint": graph.fingerprint(),
+            "n_params_estimate": int(graph.n_params_estimate()),
             "n_ops": graph.n_ops(),
             "depth": graph.depth(),
             "model_dim": model_dim,

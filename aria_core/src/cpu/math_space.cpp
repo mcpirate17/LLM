@@ -48,34 +48,34 @@ void aria_tropical_attention_f32(const float *x, float *y,
             const float *xi = xb + i * dim;
             for (int64_t j = 0; j <= i; j++) {
                 const float *xj = xb + j * dim;
-                float best = -INFINITY;
+                float best = INFINITY;
                 int64_t k = 0;
 #if defined(ARIA_SIMD_WIDTH)
-                aria_simd_ps vbest = aria_simd_set1_ps(-INFINITY);
+                aria_simd_ps vbest = aria_simd_set1_ps(INFINITY);
                 for (; k <= dim - ARIA_SIMD_WIDTH; k += ARIA_SIMD_WIDTH) {
                     aria_simd_ps vxi = aria_simd_loadu_ps(xi + k);
                     aria_simd_ps vxj = aria_simd_loadu_ps(xj + k);
-                    vbest = aria_simd_max_ps(vbest, aria_simd_add_ps(vxi, vxj));
+                    vbest = aria_simd_min_ps(vbest, aria_simd_add_ps(vxi, vxj));
                 }
                 float tmp[ARIA_SIMD_WIDTH]; aria_simd_storeu_ps(tmp, vbest);
-                for (int h = 0; h < ARIA_SIMD_WIDTH; h++) if (tmp[h] > best) best = tmp[h];
+                for (int h = 0; h < ARIA_SIMD_WIDTH; h++) if (tmp[h] < best) best = tmp[h];
 #endif
                 for (; k < dim; k++) {
                     float v = xi[k] + xj[k];
-                    if (v > best) best = v;
+                    if (v < best) best = v;
                 }
                 dist[j] = best;
             }
 
             float max_logit = -INFINITY;
             for (int64_t j = 0; j <= i; j++) {
-                float logit = dist[j] * inv_temp;
+                float logit = -dist[j] * inv_temp;
                 if (logit > max_logit) max_logit = logit;
             }
 
             float sum = 0.0f;
             for (int64_t j = 0; j <= i; j++) {
-                float w = expf((dist[j] * inv_temp) - max_logit);
+                float w = expf((-dist[j] * inv_temp) - max_logit);
                 weights[j] = w;
                 sum += w;
             }
@@ -123,34 +123,34 @@ void aria_tropical_gate_f32(const float *x, float *y,
             const float *xi = xb + i * dim;
             for (int64_t j = 0; j <= i; j++) {
                 const float *xj = xb + j * dim;
-                float best = -INFINITY;
+                float best = INFINITY;
                 int64_t k = 0;
 #if defined(ARIA_SIMD_WIDTH)
-                aria_simd_ps vbest = aria_simd_set1_ps(-INFINITY);
+                aria_simd_ps vbest = aria_simd_set1_ps(INFINITY);
                 for (; k <= dim - ARIA_SIMD_WIDTH; k += ARIA_SIMD_WIDTH) {
                     aria_simd_ps vxi = aria_simd_loadu_ps(xi + k);
                     aria_simd_ps vxj = aria_simd_loadu_ps(xj + k);
-                    vbest = aria_simd_max_ps(vbest, aria_simd_add_ps(vxi, vxj));
+                    vbest = aria_simd_min_ps(vbest, aria_simd_add_ps(vxi, vxj));
                 }
                 float tmp[ARIA_SIMD_WIDTH]; aria_simd_storeu_ps(tmp, vbest);
-                for (int h = 0; h < ARIA_SIMD_WIDTH; h++) if (tmp[h] > best) best = tmp[h];
+                for (int h = 0; h < ARIA_SIMD_WIDTH; h++) if (tmp[h] < best) best = tmp[h];
 #endif
                 for (; k < dim; k++) {
                     float v = xi[k] + xj[k];
-                    if (v > best) best = v;
+                    if (v < best) best = v;
                 }
                 dist[j] = best;
             }
 
             float max_logit = -INFINITY;
             for (int64_t j = 0; j <= i; j++) {
-                float logit = dist[j] * inv_temp;
+                float logit = -dist[j] * inv_temp;
                 if (logit > max_logit) max_logit = logit;
             }
 
             float sum = 0.0f;
             for (int64_t j = 0; j <= i; j++) {
-                float w = expf((dist[j] * inv_temp) - max_logit);
+                float w = expf((-dist[j] * inv_temp) - max_logit);
                 weights[j] = w;
                 sum += w;
             }
@@ -189,6 +189,39 @@ void aria_tropical_gate_f32(const float *x, float *y,
             }
         }
         free(dist); free(weights); free(gated);
+    }
+}
+
+void aria_tropical_router_f32(const float *x, const float *centroids, float *out,
+                              int64_t batch, int64_t seq, int64_t dim, int64_t n_experts) {
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for collapse(2) schedule(static) if(batch * seq > 128)
+#endif
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t s = 0; s < seq; s++) {
+            const float *xs = x + (b * seq + s) * dim;
+            float *outs = out + (b * seq + s) * n_experts;
+            for (int64_t e = 0; e < n_experts; e++) {
+                const float *ce = centroids + e * dim;
+                float best = INFINITY;
+                int64_t d = 0;
+#if defined(ARIA_SIMD_WIDTH)
+                aria_simd_ps vbest = aria_simd_set1_ps(INFINITY);
+                for (; d <= dim - ARIA_SIMD_WIDTH; d += ARIA_SIMD_WIDTH) {
+                    aria_simd_ps vxs = aria_simd_loadu_ps(xs + d);
+                    aria_simd_ps vce = aria_simd_loadu_ps(ce + d);
+                    vbest = aria_simd_min_ps(vbest, aria_simd_add_ps(vxs, vce));
+                }
+                float tmp[ARIA_SIMD_WIDTH]; aria_simd_storeu_ps(tmp, vbest);
+                for (int h = 0; h < ARIA_SIMD_WIDTH; h++) if (tmp[h] < best) best = tmp[h];
+#endif
+                for (; d < dim; d++) {
+                    float v = xs[d] + ce[d];
+                    if (v < best) best = v;
+                }
+                outs[e] = best;
+            }
+        }
     }
 }
 
@@ -437,6 +470,10 @@ void aria_clifford_attention_f32(const float *x, float *y, int64_t batch, int64_
 void aria_lif_neuron_f32(const float *x, float *y,
                            int64_t batch, int64_t seq, int64_t dim,
                            float tau, float threshold) {
+    /* Parallelize over batch × dim (seq is sequential due to state dependency) */
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for collapse(2) schedule(static) if(batch * dim > 256)
+#endif
     for (int64_t b = 0; b < batch; b++) {
         for (int64_t d = 0; d < dim; d++) {
             float v = 0.0f;
@@ -444,6 +481,32 @@ void aria_lif_neuron_f32(const float *x, float *y,
                 v = tau * v + x[(b * seq + s) * dim + d];
                 float spike = (v > threshold) ? 1.0f : 0.0f;
                 y[(b * seq + s) * dim + d] = spike;
+                if (spike > 0.0f) v = 0.0f;
+            }
+        }
+    }
+}
+
+void aria_lif_neuron_with_state_f32(const float *x, float *spikes, float *membrane,
+                                      int64_t batch, int64_t seq, int64_t dim,
+                                      float tau, float threshold) {
+    /*
+     * LIF neuron with membrane state output for autograd backward.
+     * spikes: (B, S, D) binary spike output
+     * membrane: (B, S, D) pre-spike membrane potential (needed for surrogate gradient)
+     */
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for collapse(2) schedule(static) if(batch * dim > 256)
+#endif
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t d = 0; d < dim; d++) {
+            float v = 0.0f;
+            for (int64_t s = 0; s < seq; s++) {
+                int64_t idx = (b * seq + s) * dim + d;
+                v = tau * v + x[idx];
+                membrane[idx] = v;  /* pre-spike membrane for surrogate grad */
+                float spike = (v > threshold) ? 1.0f : 0.0f;
+                spikes[idx] = spike;
                 if (spike > 0.0f) v = 0.0f;
             }
         }

@@ -1,5 +1,5 @@
 """Registry and initialization dispatch for CompiledOp parameters."""
-from typing import Callable, Dict, Any, Tuple, Optional
+from typing import Callable, Dict, Any
 import math
 import torch
 import torch.nn as nn

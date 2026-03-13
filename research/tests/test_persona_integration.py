@@ -69,142 +69,7 @@ except Exception as e:
     print(f"Context import failed: {e}")
 
 
-# ── Test 4: Aria Mode Selection ──
-
-
-@unittest.skipUnless(HAS_PERSONA, "requires persona module")
-class TestAriaModeSelecion(unittest.TestCase):
-    """Test Aria's rule-based mode recommendation."""
-
-    def setUp(self):
-        self.aria = Aria()
-
-    def test_no_survivors_recommends_synthesis(self):
-        """With no S1 survivors, should recommend synthesis."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 1,
-        })
-        self.assertEqual(rec["mode"], "synthesis")
-
-    def test_long_zero_survivor_streak_rotates_recovery(self):
-        """After many zero-survivor runs, recommendation should rotate strategies."""
-        # n_experiments=10 → recovery_idx=0 → conservative config
-        rec0 = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 10,
-        })
-        self.assertEqual(rec0["mode"], "synthesis")
-        self.assertEqual(rec0["config"]["residual_prob"], 0.85)
-
-        # n_experiments=11 → recovery_idx=1 → sparse config
-        rec1 = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 11,
-        })
-        self.assertEqual(rec1["mode"], "synthesis")
-        self.assertIn("op_weights", rec1["config"])
-
-        # n_experiments=14 → recovery_idx=4 → evolution
-        rec4 = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 14,
-        })
-        self.assertEqual(rec4["mode"], "evolution")
-
-    def test_low_novelty_recommends_novelty_search(self):
-        """With survivors but low novelty, should recommend novelty."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 5,
-            "avg_novelty": 0.2,
-            "n_experiments_in_session": 2,
-        })
-        self.assertEqual(rec["mode"], "novelty")
-
-    def test_good_survivors_recommends_evolution(self):
-        """With 3+ diverse survivors, should recommend evolution."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 5,
-            "avg_novelty": 0.6,
-            "n_experiments_in_session": 2,
-        })
-        self.assertEqual(rec["mode"], "evolution")
-
-    def test_investigation_ready_recommends_investigation(self):
-        """With investigation-ready candidates, should recommend investigation."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 3,
-            "avg_novelty": 0.5,
-            "n_experiments_in_session": 5,
-            "investigation_ready": 3,
-        })
-        self.assertEqual(rec["mode"], "investigation")
-
-    def test_validation_ready_recommends_validation(self):
-        """Validation candidates take highest priority."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 5,
-            "avg_novelty": 0.6,
-            "n_experiments_in_session": 10,
-            "investigation_ready": 3,
-            "validation_ready": 2,
-        })
-        self.assertEqual(rec["mode"], "validation")
-
-    def test_recommendation_has_required_fields(self):
-        """Every recommendation should have mode, reasoning, confidence, config."""
-        rec = self.aria._rule_based_mode_recommendation({})
-        self.assertIn("mode", rec)
-        self.assertIn("reasoning", rec)
-        self.assertIn("confidence", rec)
-        self.assertIn("config", rec)
-        self.assertIn(rec["mode"],
-                      {"synthesis", "evolution", "novelty",
-                       "investigation", "validation"})
-
-    def test_parse_briefing_uses_reasoning_when_briefing_missing(self):
-        parsed = self.aria._parse_briefing(
-            "SUGGESTED_ACTION:\n"
-            "MODE: evolve\n"
-            "REASONING: Evolution remains the best next step from recent plateaued runs.\n"
-            "CONFIDENCE: 0.78\n"
-        )
-        self.assertTrue(parsed.get("briefing_text"))
-        self.assertIn("Evolution remains the best next step", parsed.get("briefing_text", ""))
-
-    def test_parse_briefing_accepts_summary_prefix(self):
-        parsed = self.aria._parse_briefing(
-            "Summary: Recent S1 hit rate is flattening and validation queue is growing.\n"
-            "MODE: novelty\n"
-            "REASONING: Diversification is needed to escape local minima."
-        )
-        self.assertIn("Recent S1 hit rate is flattening", parsed.get("briefing_text", ""))
-
-    def test_parse_mode_recommendation(self):
-        """Parse LLM mode recommendation text."""
-        text = (
-            "MODE: evolution\n"
-            "REASONING: We have 5 good survivors to breed.\n"
-            "CONFIDENCE: 0.8\n"
-            "CONFIG_ADJUSTMENTS:\n"
-            "```json\n"
-            '{"n_programs": 30}\n'
-            "```"
-        )
-        rec = self.aria._parse_mode_recommendation(text)
-        self.assertEqual(rec["mode"], "evolution")
-        self.assertAlmostEqual(rec["confidence"], 0.8)
-        self.assertEqual(rec["config"]["n_programs"], 30)
-
-    def test_parse_invalid_mode_defaults_to_synthesis(self):
-        """Invalid mode in LLM response should default to synthesis."""
-        text = "MODE: quantum_computing\nREASONING: reasons\nCONFIDENCE: 0.5"
-        rec = self.aria._parse_mode_recommendation(text)
-        self.assertEqual(rec["mode"], "synthesis")
+# TestAriaModeSelecion lives in test_runner_mode_selection.py
 
 
 # ── Test 5: Context Builders ──
@@ -216,7 +81,7 @@ class TestContextBuilders(unittest.TestCase):
 
     def test_mode_selection_context(self):
         """Mode selection context includes key information."""
-        from research.scientist.llm.context import build_mode_selection_context
+        from research.scientist.llm.context_experiment import build_mode_selection_context
 
         ctx = build_mode_selection_context(
             recent_experiments=[
@@ -236,7 +101,7 @@ class TestContextBuilders(unittest.TestCase):
 
     def test_investigation_context(self):
         """Investigation context includes candidate data."""
-        from research.scientist.llm.context import build_investigation_context
+        from research.scientist.llm.context_experiment import build_investigation_context
 
         ctx = build_investigation_context(
             candidates=[{"result_id": "r1", "loss_ratio": 0.4}],
@@ -247,7 +112,7 @@ class TestContextBuilders(unittest.TestCase):
 
     def test_validation_context(self):
         """Validation context includes investigation results."""
-        from research.scientist.llm.context import build_validation_context
+        from research.scientist.llm.context_experiment import build_validation_context
 
         ctx = build_validation_context(
             candidates=[{"result_id": "r1", "investigation_loss_ratio": 0.3}],
@@ -441,7 +306,7 @@ class TestPersona(unittest.TestCase):
             name = "mystery-backend"
 
         self.aria._llm = _Backend()
-        with patch("research.scientist.persona.logger.warning") as warn:
+        with patch("research.scientist.persona_llm.logger.warning") as warn:
             self.aria._track_cost(_Resp())
             self.aria._track_cost(_Resp())
             self.assertEqual(warn.call_count, 1)
@@ -469,18 +334,18 @@ class TestPersonaOptimizerAwareness(unittest.TestCase):
     """Tests for optimizer diversity awareness in persona."""
 
     def test_strategy_index_8_produces_valid_recommendation(self):
-        """Strategy index 8 (alternative learning rules) returns valid rec."""
+        """Strategy index 8 with low novelty returns diversification rec."""
         from research.scientist.persona import Aria
         aria = Aria()
-        # n_experiments=8 -> strategy_index = 8 % 9 = 8
+        # With avg_novelty < 0.4 in analytics_data, the standard exploration
+        # strategy triggers the low-novelty diversification path.
         data = {
             "total_s1_survivors": 5,
-            "avg_novelty": 0.4,
             "n_experiments_in_session": 8,
             "investigation_ready": 0,
             "validation_ready": 0,
-            "analytics_data": {},
-            "recent_modes": ["synthesis"] * 5,
+            "analytics_data": {"avg_novelty": 0.0},
+            "recent_exploration_modes": ["evolution"] * 5,
             "recent_failure_count": 1,
             "leaderboard_diversity": 3,
             "leaderboard_size": 10,
@@ -489,8 +354,7 @@ class TestPersonaOptimizerAwareness(unittest.TestCase):
         }
         rec = aria._rule_based_mode_recommendation(data)
         self.assertEqual(rec["mode"], "synthesis")
-        self.assertIn("alternative", rec["reasoning"].lower())
-        self.assertEqual(rec["config"].get("optimizer_preference"), "alternative")
+        self.assertIn("diversify", rec["reasoning"].lower())
 
     def test_suggestion_template_includes_alternative_rules(self):
         """At least one suggestion config mentions alternative learning rules."""
@@ -514,8 +378,8 @@ class TestContextBuilderExpanded(unittest.TestCase):
 
     def test_op_registry_section_populated(self):
         """Op registry section should list all primitives by category."""
-        from research.scientist.llm.context import _build_op_registry_section
-        import research.scientist.llm.context as ctx_mod
+        from research.scientist.llm.context_experiment import _build_op_registry_section
+        import research.scientist.llm.context_experiment as ctx_mod
         ctx_mod._OP_REGISTRY_CACHE = None  # Force rebuild
         section = _build_op_registry_section()
         self.assertIn("Available Ops", section)
@@ -526,7 +390,7 @@ class TestContextBuilderExpanded(unittest.TestCase):
 
     def test_category_weight_hint_in_context(self):
         """Grammar weights section should include category_weights hint."""
-        from research.scientist.llm.context import build_rich_context
+        from research.scientist.llm.context_experiment import build_rich_context
         ctx = build_rich_context(
             results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
             analytics_data={
@@ -538,7 +402,7 @@ class TestContextBuilderExpanded(unittest.TestCase):
 
     def test_excluded_ops_hint_in_negative_results(self):
         """Negative results section should suggest using excluded_ops."""
-        from research.scientist.llm.context import build_rich_context
+        from research.scientist.llm.context_experiment import build_rich_context
         ctx = build_rich_context(
             results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
             analytics_data={
@@ -553,7 +417,7 @@ class TestContextBuilderExpanded(unittest.TestCase):
 
     def test_designer_telemetry_section(self):
         """Designer telemetry should render in context when present."""
-        from research.scientist.llm.context import build_rich_context
+        from research.scientist.llm.context_experiment import build_rich_context
         ctx = build_rich_context(
             results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
             analytics_data={
@@ -574,7 +438,7 @@ class TestContextBuilderExpanded(unittest.TestCase):
 
     def test_designer_telemetry_absent_gracefully(self):
         """Missing designer telemetry should not break context building."""
-        from research.scientist.llm.context import build_rich_context
+        from research.scientist.llm.context_experiment import build_rich_context
         ctx = build_rich_context(
             results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
             analytics_data={},

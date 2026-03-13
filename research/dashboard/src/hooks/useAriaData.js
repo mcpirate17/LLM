@@ -5,15 +5,9 @@ import { apiCall } from '../services/apiService';
 const AriaDataContext = createContext(null);
 
 /**
- * Provider that owns the 4 shared analytics endpoints.
+ * Provider that owns the shared analytics and dashboard endpoints.
  * Polls on a coordinated schedule and exposes an atomic snapshot
  * so all consumers see consistent data.
- *
- * Shared endpoints:
- *   /api/analytics/learning-trajectory
- *   /api/leaderboard?sort=composite_score&limit=300
- *   /api/analytics/math-family-coverage
- *   /api/diagnostics/fingerprint
  */
 export function AriaDataProvider({ apiBase, isRunning, children }) {
   const [learningTrajectory, setLearningTrajectory] = useState(null);
@@ -23,6 +17,18 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const [fingerprintDiagnostics, setFingerprintDiagnostics] = useState(null);
   const [summary, setSummary] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  
+  // New centralized data
+  const [dashboardData, setDashboardData] = useState(null);
+  const [ariaCycle, setAriaCycle] = useState(null);
+  const [healerTasks, setHealerTasks] = useState([]);
+  const [experiments, setExperiments] = useState([]);
+  const [programs, setPrograms] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [insights, setInsights] = useState([]);
+  const [cycleHistory, setCycleHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   const apiBaseRef = useRef(apiBase);
   apiBaseRef.current = apiBase;
@@ -32,24 +38,29 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const fetchSharedData = useCallback(async () => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
-    const base = apiBaseRef.current;
     const controller = new AbortController();
     abortRef.current = controller;
+    
     try {
-      const [ltRes, lbRes, mcRes, fpRes] = await Promise.all([
+      const [ltRes, lbRes, mcRes, fpRes, dashRes, cycleRes, historyRes] = await Promise.all([
         apiCall(`/api/analytics/learning-trajectory`, { signal: controller.signal }),
-        apiCall(`/api/leaderboard?sort=composite_score&limit=300`, { signal: controller.signal }),
+        apiCall(`/api/leaderboard?sort=composite_score&limit=80&quality=promotable&include_references=0&compact=1`, { signal: controller.signal }),
         apiCall(`/api/analytics/math-family-coverage`, { signal: controller.signal }),
         apiCall(`/api/diagnostics/fingerprint`, { signal: controller.signal }),
+        apiCall(`/api/dashboard/summary`, { signal: controller.signal }),
+        apiCall(`/api/aria/cycle-status`, { signal: controller.signal }).catch(() => ({ ok: false })),
+        apiCall(`/api/aria/cycle-history?n=60&compact=1`, { signal: controller.signal }).catch(() => ({ ok: false })),
       ]);
 
-      // Parse all responses (tolerant of individual failures)
       const ltData = ltRes.ok ? await ltRes.json() : null;
       const lbData = lbRes.ok ? await lbRes.json() : null;
       const mcData = mcRes.ok ? await mcRes.json() : null;
       const fpData = fpRes.ok ? await fpRes.json() : null;
+      const dashData = dashRes.ok ? await dashRes.json() : null;
+      const cycleData = cycleRes.ok ? await cycleRes.json() : null;
+      const historyData = historyRes.ok ? await historyRes.json() : [];
 
-      // Atomic state update — all consumers see a consistent snapshot
+      // Atomic state updates
       setLearningTrajectory(ltData);
       if (lbData) {
         setLeaderboardRaw(lbData);
@@ -57,14 +68,52 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       }
       setMathFamilyCoverage(mcData);
       setFingerprintDiagnostics(fpData?.sensitivity_skips || null);
+      if (dashData) {
+        setDashboardData(dashData);
+        if (dashData.summary) setSummary(dashData.summary);
+      }
+      if (cycleData && !cycleData.error) setAriaCycle(cycleData);
+      if (Array.isArray(historyData)) setCycleHistory(historyData);
+      
       setLastUpdated(Date.now());
-    } catch {
-      // Silently fail — keep stale data rather than clearing
+      setError(null);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setError(err.message);
+      }
     } finally {
       if (abortRef.current === controller) {
         abortRef.current = null;
       }
       inFlightRef.current = false;
+      setLoading(false);
+    }
+  }, []);
+
+  // Specialized fetchers for tab data (less frequent)
+  const fetchTabData = useCallback(async (tab) => {
+    const endpoints = {
+      experiments: `/api/experiments?n=200`,
+      programs: '/api/programs?n=50&sort=novelty_score',
+      entries: '/api/entries?n=50',
+      insights: '/api/insights',
+    };
+    
+    const endpoint = endpoints[tab];
+    if (!endpoint) return;
+
+    try {
+      const res = await apiCall(endpoint);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const data = Array.isArray(json) ? json : [];
+      
+      if (tab === 'experiments') setExperiments(data);
+      if (tab === 'programs') setPrograms(data);
+      if (tab === 'entries') setEntries(data);
+      if (tab === 'insights') setInsights(data);
+    } catch (err) {
+      console.error(`Failed to fetch ${tab} data:`, err);
     }
   }, []);
 
@@ -75,7 +124,7 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
 
   // Poll at adaptive interval
   useEffect(() => {
-    const interval = setInterval(fetchSharedData, isRunning ? 5000 : 10000);
+    const interval = setInterval(fetchSharedData, isRunning ? 3000 : 10000);
     return () => clearInterval(interval);
   }, [fetchSharedData, isRunning]);
 
@@ -86,18 +135,14 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     }
   }, []);
 
-  // SSE-driven refresh on experiment/cycle completion
   const sseTimersRef = useRef([]);
-
-  useEventBus('experiment_completed', useCallback(() => {
+  const debouncedRefresh = useCallback(() => {
     sseTimersRef.current.push(setTimeout(fetchSharedData, 2000));
-  }, [fetchSharedData]));
+  }, [fetchSharedData]);
 
-  useEventBus('aria_cycle_completed', useCallback(() => {
-    sseTimersRef.current.push(setTimeout(fetchSharedData, 2000));
-  }, [fetchSharedData]));
+  useEventBus('experiment_completed', debouncedRefresh);
+  useEventBus('aria_cycle_completed', debouncedRefresh);
 
-  // Cancel SSE-driven timers on unmount
   useEffect(() => () => {
     sseTimersRef.current.forEach(clearTimeout);
     sseTimersRef.current = [];
@@ -112,8 +157,19 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       fingerprintDiagnostics,
       summary,
       setSummary,
+      dashboardData,
+      ariaCycle,
+      healerTasks,
+      experiments,
+      programs,
+      entries,
+      insights,
+      loading,
+      initialLoading: loading && !dashboardData,
+      error,
       lastUpdated,
       refreshSharedData: fetchSharedData,
+      fetchTabData,
     }}>
       {children}
     </AriaDataContext.Provider>

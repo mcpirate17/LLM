@@ -2,18 +2,16 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
-import math
-import queue
 import time
 import uuid
 from typing import Any, Dict, List, Optional
-
-from ._shared import sanitize_for_db
+from ..json_utils import fast_loads as _json_loads
 
 
 class _MiscMixin:
     """Misc operations for the Lab Notebook."""
     __slots__ = ()
+    _DASHBOARD_SUMMARY_TTL_S = 2.0
 
     # ── Training Curves ──
 
@@ -25,13 +23,14 @@ class _MiscMixin:
         """
         if not curve or not result_id:
             return
+        self.flush_writes()
         # Only store curves for results that passed S1 (survivors).
         # S1 failure learning signal is captured in loss_ratio, not per-step curves.
         row = self.conn.execute(
             "SELECT stage1_passed FROM program_results WHERE result_id = ?",
             (result_id,),
         ).fetchone()
-        if row and row[0] == 0:
+        if row is None or row[0] != 1:
             return
         self.conn.executemany(
             """INSERT OR REPLACE INTO training_curves
@@ -116,7 +115,7 @@ class _MiscMixin:
         of what-connects-to-what.
         """
         try:
-            data = json.loads(graph_json)
+            data = _json_loads(graph_json)
         except (json.JSONDecodeError, TypeError):
             return []
         nodes = data.get("nodes", {})
@@ -168,7 +167,7 @@ class _MiscMixin:
                 merged: Dict[str, Any] = {}
                 if existing and existing["external_benchmarks_json"]:
                     try:
-                        parsed = json.loads(existing["external_benchmarks_json"])
+                        parsed = _json_loads(existing["external_benchmarks_json"])
                         if isinstance(parsed, dict):
                             merged.update(parsed)
                     except Exception:
@@ -236,64 +235,55 @@ class _MiscMixin:
 
     def get_dashboard_summary(self) -> Dict:
         """Get aggregate stats for the dashboard."""
-        total_exp = self.conn.execute(
-            "SELECT COUNT(*) FROM experiments"
-        ).fetchone()[0]
-        completed = self.conn.execute(
-            "SELECT COUNT(*) FROM experiments WHERE status = 'completed'"
-        ).fetchone()[0]
-        total_programs = self.conn.execute(
-            "SELECT COUNT(*) FROM program_results"
-        ).fetchone()[0]
-        stage1_survivors = self.conn.execute(
-            "SELECT COUNT(*) FROM program_results WHERE stage1_passed = 1"
-        ).fetchone()[0]
-        avg_novelty = self.conn.execute(
-            "SELECT AVG(novelty_score) FROM program_results WHERE novelty_score IS NOT NULL"
-        ).fetchone()[0]
-        top_novelty = self.conn.execute(
-            "SELECT MAX(novelty_score) FROM program_results"
-        ).fetchone()[0]
-        n_insights = self.conn.execute(
-            "SELECT COUNT(*) FROM insights WHERE status = 'active'"
-        ).fetchone()[0]
+        now = time.time()
+        cached = getattr(self, "_dashboard_summary_cache", None)
+        expires_at = float(getattr(self, "_dashboard_summary_cache_expires_at", 0.0) or 0.0)
+        if cached is not None and now < expires_at:
+            return dict(cached)
 
-        # Learning summary
-        n_learning_events = self.conn.execute(
-            "SELECT COUNT(*) FROM learning_log"
-        ).fetchone()[0]
-        latest_learning = self.conn.execute(
-            "SELECT description FROM learning_log ORDER BY timestamp DESC LIMIT 1"
+        exp_row = self.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_experiments,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_experiments
+            FROM experiments
+            """
         ).fetchone()
-
-        avg_step_time = self.conn.execute(
-            "SELECT AVG(avg_step_time_ms) FROM program_results WHERE avg_step_time_ms IS NOT NULL"
-        ).fetchone()[0]
-        avg_throughput = self.conn.execute(
-            "SELECT AVG(throughput_tok_s) FROM program_results WHERE throughput_tok_s IS NOT NULL"
-        ).fetchone()[0]
-        avg_entropy = self.conn.execute(
-            "SELECT AVG(routing_utilization_entropy) FROM program_results WHERE routing_utilization_entropy IS NOT NULL"
-        ).fetchone()[0]
-        avg_savings = self.conn.execute(
-            "SELECT AVG(depth_savings_ratio) FROM program_results WHERE depth_savings_ratio IS NOT NULL"
-        ).fetchone()[0]
-        avg_recursion_savings = self.conn.execute(
-            "SELECT AVG(recursion_savings_ratio) FROM program_results WHERE recursion_savings_ratio IS NOT NULL"
-        ).fetchone()[0]
-        avg_token_retention = self.conn.execute(
-            """SELECT AVG(CASE WHEN routing_tokens_total > 0
-                               THEN CAST(routing_tokens_processed AS REAL) / routing_tokens_total END)
-               FROM program_results"""
-        ).fetchone()[0]
-        avg_sparsity = self.conn.execute(
-            "SELECT AVG(sparsity_ratio) FROM program_results WHERE sparsity_ratio IS NOT NULL"
-        ).fetchone()[0]
-        
-        # Unique fingerprint count for grammar diversity tracking
-        unique_fingerprints = self.conn.execute(
-            "SELECT COUNT(DISTINCT graph_fingerprint) FROM program_results"
-        ).fetchone()[0]
+        program_row = self.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_programs_evaluated,
+                SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) AS stage1_survivors,
+                AVG(novelty_score) AS avg_novelty_score,
+                MAX(novelty_score) AS top_novelty_score,
+                AVG(avg_step_time_ms) AS avg_step_time_ms,
+                AVG(throughput_tok_s) AS avg_throughput_tok_s,
+                AVG(routing_utilization_entropy) AS avg_routing_entropy,
+                AVG(depth_savings_ratio) AS avg_depth_savings,
+                AVG(recursion_savings_ratio) AS avg_recursion_savings,
+                AVG(CASE WHEN routing_tokens_total > 0
+                         THEN CAST(routing_tokens_processed AS REAL) / routing_tokens_total END) AS avg_routing_token_retention,
+                AVG(sparsity_ratio) AS avg_sparsity_ratio,
+                COUNT(DISTINCT graph_fingerprint) AS unique_fingerprints
+            FROM program_results
+            """
+        ).fetchone()
+        insight_row = self.conn.execute(
+            "SELECT COUNT(*) AS active_insights FROM insights WHERE status = 'active'"
+        ).fetchone()
+        learning_row = self.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS learning_events,
+                (
+                    SELECT description
+                    FROM learning_log ll2
+                    ORDER BY ll2.timestamp DESC
+                    LIMIT 1
+                ) AS latest_learning
+            FROM learning_log
+            """
+        ).fetchone()
 
         latest_perf_report = None
         latest_dedup = None
@@ -307,7 +297,7 @@ class _MiscMixin:
         ).fetchone()
         if latest_perf_row and latest_perf_row["results_json"]:
             try:
-                latest_results = json.loads(latest_perf_row["results_json"])
+                latest_results = _json_loads(latest_perf_row["results_json"])
                 perf_report = latest_results.get("perf_report") if isinstance(latest_results, dict) else None
                 if isinstance(perf_report, dict):
                     queue = perf_report.get("queue_telemetry") or {}
@@ -334,28 +324,33 @@ class _MiscMixin:
             except (TypeError, ValueError, json.JSONDecodeError):
                 latest_perf_report = None
 
-        return {
-            "total_experiments": total_exp,
-            "completed_experiments": completed,
+        total_programs = int((program_row["total_programs_evaluated"] or 0) if program_row else 0)
+        stage1_survivors = int((program_row["stage1_survivors"] or 0) if program_row else 0)
+        summary = {
+            "total_experiments": int((exp_row["total_experiments"] or 0) if exp_row else 0),
+            "completed_experiments": int((exp_row["completed_experiments"] or 0) if exp_row else 0),
             "total_programs_evaluated": total_programs,
             "stage1_survivors": stage1_survivors,
             "survival_rate": stage1_survivors / max(total_programs, 1),
-            "avg_novelty_score": avg_novelty or 0,
-            "top_novelty_score": top_novelty or 0,
-            "active_insights": n_insights,
-            "learning_events": n_learning_events,
-            "latest_learning": latest_learning[0] if latest_learning else None,
-            "avg_step_time_ms": avg_step_time or 0,
-            "avg_throughput_tok_s": avg_throughput or 0,
-            "avg_routing_entropy": avg_entropy,
-            "avg_depth_savings": avg_savings,
-            "avg_recursion_savings": avg_recursion_savings,
-            "avg_routing_token_retention": avg_token_retention,
-            "avg_sparsity_ratio": avg_sparsity,
+            "avg_novelty_score": float((program_row["avg_novelty_score"] or 0.0) if program_row else 0.0),
+            "top_novelty_score": float((program_row["top_novelty_score"] or 0.0) if program_row else 0.0),
+            "active_insights": int((insight_row["active_insights"] or 0) if insight_row else 0),
+            "learning_events": int((learning_row["learning_events"] or 0) if learning_row else 0),
+            "latest_learning": (learning_row["latest_learning"] if learning_row else None),
+            "avg_step_time_ms": float((program_row["avg_step_time_ms"] or 0.0) if program_row else 0.0),
+            "avg_throughput_tok_s": float((program_row["avg_throughput_tok_s"] or 0.0) if program_row else 0.0),
+            "avg_routing_entropy": (float(program_row["avg_routing_entropy"]) if program_row and program_row["avg_routing_entropy"] is not None else None),
+            "avg_depth_savings": (float(program_row["avg_depth_savings"]) if program_row and program_row["avg_depth_savings"] is not None else None),
+            "avg_recursion_savings": (float(program_row["avg_recursion_savings"]) if program_row and program_row["avg_recursion_savings"] is not None else None),
+            "avg_routing_token_retention": (float(program_row["avg_routing_token_retention"]) if program_row and program_row["avg_routing_token_retention"] is not None else None),
+            "avg_sparsity_ratio": (float(program_row["avg_sparsity_ratio"]) if program_row and program_row["avg_sparsity_ratio"] is not None else None),
             "latest_perf_report": latest_perf_report,
-            "unique_fingerprints": unique_fingerprints,
+            "unique_fingerprints": int((program_row["unique_fingerprints"] or 0) if program_row else 0),
             "latest_dedup": latest_dedup,
         }
+        self._dashboard_summary_cache = dict(summary)
+        self._dashboard_summary_cache_expires_at = now + self._DASHBOARD_SUMMARY_TTL_S
+        return summary
 
 
     # ── Leaderboard ──
@@ -389,58 +384,67 @@ class _MiscMixin:
         "breakthrough": 3,
     }
 
+    def _graph_structural_counts(self, result_id: str, graph_json: Optional[str] = None) -> Dict[str, Optional[int]]:
+        """Return routing/sparse/MoE op counts with at most one graph lookup."""
+        try:
+            raw_graph_json = graph_json
+            if raw_graph_json is None:
+                row = self.conn.execute(
+                    "SELECT graph_json FROM program_results WHERE result_id = ?",
+                    (result_id,),
+                ).fetchone()
+                raw_graph_json = row[0] if row else None
+            if not raw_graph_json:
+                return {"routing": None, "sparse": None, "moe": None}
+            graph_data = _json_loads(raw_graph_json)
+            nodes = graph_data.get("nodes", [])
+            if isinstance(nodes, dict):
+                node_iter = nodes.values()
+            elif isinstance(nodes, list):
+                node_iter = nodes
+            else:
+                node_iter = []
+
+            routing = 0
+            sparse = 0
+            moe = 0
+            for node in node_iter:
+                if not isinstance(node, dict):
+                    continue
+                op_name = node.get("op")
+                if not op_name:
+                    op_name = node.get("op_name")
+                if op_name in self._ROUTING_OPS:
+                    routing += 1
+                if op_name in self._SPARSE_OPS:
+                    sparse += 1
+                if op_name in self._MOE_OPS:
+                    moe += 1
+            return {
+                "routing": routing if routing > 0 else None,
+                "sparse": sparse if sparse > 0 else None,
+                "moe": moe if moe > 0 else None,
+            }
+        except Exception:
+            return {"routing": None, "sparse": None, "moe": None}
+
+
     def _count_routing_ops(self, result_id: str) -> Optional[int]:
         """Count routing/branching ops in the graph for a program result."""
-        try:
-            row = self.conn.execute(
-                "SELECT graph_json FROM program_results WHERE result_id = ?",
-                (result_id,),
-            ).fetchone()
-            if not row or not row[0]:
-                return None
-            graph_data = json.loads(row[0])
-            nodes = graph_data.get("nodes", [])
-            count = sum(1 for n in nodes if n.get("op") in self._ROUTING_OPS)
-            return count if count > 0 else None
-        except Exception:
-            return None
+        return self._graph_structural_counts(result_id).get("routing")
 
 
     def _count_sparse_ops(self, result_id: str) -> Optional[int]:
         """Count sparsity/compression ops in the graph for a program result."""
-        try:
-            row = self.conn.execute(
-                "SELECT graph_json FROM program_results WHERE result_id = ?",
-                (result_id,),
-            ).fetchone()
-            if not row or not row[0]:
-                return None
-            graph_data = json.loads(row[0])
-            nodes = graph_data.get("nodes", [])
-            count = sum(1 for n in nodes if n.get("op") in self._SPARSE_OPS)
-            return count if count > 0 else None
-        except Exception:
-            return None
+        return self._graph_structural_counts(result_id).get("sparse")
 
 
     def _count_moe_ops(self, result_id: str) -> Optional[int]:
         """Count MoE-specific ops in the graph for a program result."""
-        try:
-            row = self.conn.execute(
-                "SELECT graph_json FROM program_results WHERE result_id = ?",
-                (result_id,),
-            ).fetchone()
-            if not row or not row[0]:
-                return None
-            graph_data = json.loads(row[0])
-            nodes = graph_data.get("nodes", [])
-            count = sum(1 for n in nodes if n.get("op") in self._MOE_OPS)
-            return count if count > 0 else None
-        except Exception:
-            return None
+        return self._graph_structural_counts(result_id).get("moe")
 
 
-    
+    @staticmethod
     def _best_min(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
         vals = [r.get(key) for r in rows if r.get(key) is not None]
         if not vals:
@@ -451,7 +455,7 @@ class _MiscMixin:
             return None
 
 
-    
+    @staticmethod
     def _best_max(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
         vals = [r.get(key) for r in rows if r.get(key) is not None]
         if not vals:
@@ -462,7 +466,7 @@ class _MiscMixin:
             return None
 
 
-    
+    @staticmethod
     def _best_bool(rows: List[Dict[str, Any]], key: str) -> Optional[int]:
         vals = [r.get(key) for r in rows if r.get(key) is not None]
         if not vals:
@@ -525,205 +529,12 @@ class _MiscMixin:
 
 
     
-    def compute_composite_score(self, 
-        screening_lr: Optional[float] = None,
-        screening_nov: Optional[float] = None,
-        inv_lr: Optional[float] = None,
-        inv_robust: Optional[float] = None,
-        val_lr: Optional[float] = None,
-        val_baseline: Optional[float] = None,
-        val_std: Optional[float] = None,
-        novelty_confidence: Optional[float] = None,
-        scaling_param_efficiency: Optional[float] = None,
-        is_reference: bool = False,
-        routing_savings: Optional[float] = None,
-        compression_ratio: Optional[float] = None,
-        entropy: Optional[float] = None,
-        discovery_lr: Optional[float] = None,
-        spectral_norm: Optional[float] = None,
-        robustness_noise: Optional[float] = None,
-        quant_retention: Optional[float] = None,
-        long_ctx_score: Optional[float] = None,
-        init_std: Optional[float] = None,
-        loss_improvement_rate: Optional[float] = None,
-        quant_quality_per_byte: Optional[float] = None,
-        ncd_score: Optional[float] = None,
-        n_routing_ops: Optional[int] = None,
-        n_sparse_ops: Optional[int] = None,
-        n_moe_ops: Optional[int] = None,
-        recursion_savings: Optional[float] = None,
-        depth_savings: Optional[float] = None,
-        activation_sparsity: Optional[float] = None,
-        max_viable_seq_len: Optional[int] = None,
-        long_ctx_scaling: Optional[float] = None,
-        long_ctx_passkey: Optional[float] = None,
-        long_ctx_multi_hop: Optional[float] = None,
-        long_ctx_assoc: Optional[float] = None,
-        routing_expert_count: Optional[int] = None,
-        routing_confidence_mean: Optional[float] = None,
-        routing_drop_rate: Optional[float] = None,
-        **kwargs
-    ) -> float:
-        """
-        Compute "Total Scientific Utility" — an open-ended additive score.
-        ...
-        """
-        score = 0.0
-
-        # 1. Performance Utility (Primary)
-        # Use validation_baseline_ratio if available, otherwise fallback.
-        # Apply a confidence discount: screening-only metrics are less
-        # trustworthy than investigation/validation-confirmed ones.
-        if val_baseline is not None:
-            perf_lr = val_baseline
-            perf_confidence = 1.0
-        elif val_lr is not None:
-            perf_lr = val_lr
-            perf_confidence = 1.0
-        elif inv_lr is not None:
-            perf_lr = inv_lr
-            perf_confidence = 0.85
-        elif screening_lr is not None:
-            perf_lr = screening_lr
-            perf_confidence = 0.65
-        else:
-            perf_lr = None
-            perf_confidence = 0.0
-        if perf_lr is not None:
-            score += 100.0 * max(0, 1.0 - perf_lr) * perf_confidence
-        
-        # Discovery channel (random tokens)
-        if discovery_lr is not None:
-            score += 20.0 * max(0, 1.0 - discovery_lr)
-
-        # Learning Efficiency: How fast did it learn?
-        if loss_improvement_rate is not None:
-            # High improvement rate per step is efficient learning
-            # Up to 20 points
-            score += 20.0 * max(0, min(1.0, loss_improvement_rate))
-
-        # 2. Novelty Utility
-        eff_nov = 1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
-        conf = 1.0 if is_reference else (novelty_confidence if novelty_confidence is not None else 1.0)
-        score += 40.0 * eff_nov * conf
-
-        # 3. Efficiency & Scaling Utility
-        if scaling_param_efficiency is not None:
-            score += 10.0 * max(0, scaling_param_efficiency - 1.0)
-        
-        if routing_savings is not None:
-            score += 50.0 * routing_savings
-            
-        if compression_ratio is not None:
-            # Reward compression: 4x (0.25) -> 20 utility
-            # Weight compression ratio + maintained quality
-            comp_score = 20.0 * max(0, 1.0 - (compression_ratio / 1.0))
-            if quant_quality_per_byte is not None:
-                # Reward high quality per compressed byte
-                comp_score += 10.0 * max(0, quant_quality_per_byte)
-            score += comp_score
-
-        # NCD: reward compact graph descriptions that explain training behavior
-        if ncd_score is not None:
-            # Low NCD = graph structure predicts training dynamics (good)
-            # Max 15 points when NCD = 0
-            score += 15.0 * max(0, 1.0 - ncd_score)
-
-        # 3b. Structural complexity bonus: reward routing/branching architectures
-        # Counterbalances MDL and NCD penalties for exotic architectures
-        if n_routing_ops is not None and n_routing_ops > 0:
-            # Up to 15 points (reduced from 25, replaced by MoE quality)
-            score += min(15.0, n_routing_ops * 5.0)
-
-        # 3c. Sparsity bonus (max 30pts: 20 structural + 10 activation)
-        if n_sparse_ops is not None and n_sparse_ops > 0:
-            score += min(20.0, n_sparse_ops * 6.0)
-        if activation_sparsity is not None and activation_sparsity > 0.3:
-            score += 10.0 * min(1.0, (activation_sparsity - 0.3) / 0.5)
-
-        # 3d. MoE quality bonus (max ~25pts)
-        if n_moe_ops is not None and n_moe_ops > 0:
-            moe_base = min(10.0, n_moe_ops * 5.0)
-            # Expert diversity multiplier: more experts = higher potential
-            if routing_expert_count is not None and routing_expert_count > 1:
-                expert_mult = min(1.5, 1.0 + math.log2(routing_expert_count) / 6.0)
-                moe_base *= expert_mult
-            # Confidence bonus: high confidence = routing is working
-            if routing_confidence_mean is not None and routing_confidence_mean > 0.5:
-                moe_base *= 1.0 + 0.3 * (routing_confidence_mean - 0.5)
-            # Drop rate penalty: high drop = wasted compute
-            if routing_drop_rate is not None and routing_drop_rate > 0.3:
-                moe_base *= max(0.5, 1.0 - (routing_drop_rate - 0.3))
-            score += moe_base
-
-        # 3e. Adaptive computation bonus (max 25pts)
-        if recursion_savings is not None and recursion_savings > 0:
-            score += 15.0 * min(1.0, recursion_savings / 0.5)
-        if depth_savings is not None and depth_savings > 0:
-            score += 10.0 * min(1.0, depth_savings / 0.5)
-
-        # 4. Robustness & Stability Utility
-        if spectral_norm is not None:
-            score += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
-
-        if robustness_noise is not None:
-            score += 15.0 * max(0, 1.0 - robustness_noise)
-
-        if quant_retention is not None:
-            score += 15.0 * max(0, quant_retention - 0.5) / 0.5
-
-        # 4b. Expanded long-context scoring (total budget 50pts, up from 20)
-        if long_ctx_score is not None:
-            # Base combined score: 20pts (unchanged)
-            score += 20.0 * long_ctx_score
-            # Sub-score bonuses: reward specific long-context capabilities
-            if long_ctx_passkey is not None:
-                score += 10.0 * long_ctx_passkey
-            if long_ctx_multi_hop is not None:
-                score += 10.0 * long_ctx_multi_hop
-            if long_ctx_scaling is not None:
-                score += 5.0 * long_ctx_scaling
-            if long_ctx_assoc is not None:
-                score += 5.0 * long_ctx_assoc
-
-        # Bonus for viable long sequences (log-scale, max 20pts)
-        if max_viable_seq_len is not None and max_viable_seq_len > 512:
-            seq_bonus = 5.0 * min(4.0, math.log2(max_viable_seq_len / 512))
-            score += seq_bonus
-
-        # 5. Generalization Utility (The "Anti-Cheat")
-        # Wikitext/TinyStories scores are normalized 0-1, where 1 is good (low perplexity)
-        # We also look at raw perplexity for severe penalties.
-        # Note: These values might be in the future, but we add them now.
-        
-        # If we have raw perplexity data, apply severe penalties for "Zombie" models
-        # We assume 10^6 is the cutoff for total failure to generalize.
-        # We use wikitext_perplexity as the primary proxy.
-        # This function signature might need updating or we use kwargs
-        wikitext_perplexity = kwargs.get("wikitext_perplexity")
-        if wikitext_perplexity is not None:
-            if wikitext_perplexity > 1000000:
-                return 0.0 # Instant disqualification for non-generalizing models
-            if wikitext_perplexity > 1000:
-                # Logarithmic penalty for high perplexity
-                score -= 50.0 * math.log10(wikitext_perplexity / 1000.0)
-
-        # 6. Numerical Integrity (Spectral Floor)
-        if spectral_norm is not None and spectral_norm < 0.01:
-            # Gradients are likely not propagating (numerical collapse)
-            score -= 40.0
-
-        # 7. Penalties
-        if val_std is not None and val_std > 0.1:
-            # High variance across seeds is a major red flag
-            score -= 50.0 * min(2.0, val_std / 0.5)
-            
-        if entropy is not None and entropy > 0.95:
-            # Only penalize truly unfocused routing, not healthy multi-lane distribution
-            score -= 5.0 * (entropy - 0.95)
-
-        # Sanity floor
-        return max(0.0, score)
+    @staticmethod
+    def compute_composite_score(**kwargs) -> float:
+        """Delegate to canonical implementation in leaderboard_scoring."""
+        from ..leaderboard_scoring import compute_composite_score as _ccs
+        result = _ccs(**kwargs)
+        return result if isinstance(result, float) else float(result)
 
 
     @staticmethod
@@ -937,7 +748,7 @@ class _MiscMixin:
             return "Unknown"
 
         try:
-            graph = json.loads(graph_json)
+            graph = _json_loads(graph_json)
             nodes = graph.get("nodes")
             if isinstance(nodes, dict):
                 node_iter = [n for n in nodes.values() if isinstance(n, dict)]
@@ -1060,12 +871,12 @@ class _MiscMixin:
             for f in ("evidence_ids", "alternatives_considered"):
                 if d.get(f):
                     try:
-                        d[f] = json.loads(d[f])
+                        d[f] = _json_loads(d[f])
                     except (json.JSONDecodeError, TypeError):
                         pass
             if d.get("evidence_pack_json"):
                 try:
-                    d["evidence_pack"] = json.loads(d["evidence_pack_json"])
+                    d["evidence_pack"] = _json_loads(d["evidence_pack_json"])
                 except (json.JSONDecodeError, TypeError):
                     d["evidence_pack"] = None
             results.append(d)
@@ -1138,7 +949,7 @@ class _MiscMixin:
                 raw = item.get(key)
                 if raw:
                     try:
-                        item[key] = json.loads(raw)
+                        item[key] = _json_loads(raw)
                     except (TypeError, json.JSONDecodeError):
                         pass
             out.append(item)
@@ -1239,8 +1050,7 @@ class _MiscMixin:
             raw = out.get(key)
             if raw:
                 try:
-                    out[key] = json.loads(raw)
+                    out[key] = _json_loads(raw)
                 except (TypeError, json.JSONDecodeError):
                     pass
         return out
-

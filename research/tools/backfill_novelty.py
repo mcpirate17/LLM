@@ -21,6 +21,48 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+def _fetch_candidates(
+    nb,
+    *,
+    include_all: bool = False,
+    recalculate_top: bool = False,
+    limit: Optional[int] = None,
+    leaderboard_only: bool = False,
+) -> List[Dict]:
+    """Return candidate program rows for novelty backfill/recalculation."""
+    if recalculate_top:
+        query = [
+            "SELECT pr.result_id, pr.graph_json, pr.graph_fingerprint, pr.param_count,",
+            "       pr.novelty_score, l.composite_score",
+            "FROM program_results pr",
+            "LEFT JOIN leaderboard l ON l.result_id = pr.result_id",
+            "WHERE pr.graph_json IS NOT NULL AND pr.graph_json != ''",
+            "  AND pr.novelty_score IS NOT NULL",
+        ]
+        if not include_all:
+            query.append("  AND pr.stage1_passed = 1")
+        if leaderboard_only:
+            query.append("  AND l.result_id IS NOT NULL")
+        query.append("ORDER BY COALESCE(l.composite_score, 0) DESC, pr.timestamp DESC")
+        params: List[object] = []
+    else:
+        query = [
+            "SELECT result_id, graph_json, graph_fingerprint, param_count, novelty_score",
+            "FROM program_results",
+            "WHERE (novelty_score IS NULL OR novelty_score = 0)",
+            "  AND graph_json IS NOT NULL AND graph_json != ''",
+        ]
+        if not include_all:
+            query.append("  AND stage1_passed = 1")
+        query.append("ORDER BY timestamp DESC")
+        params = []
+    if limit is not None:
+        query.append("LIMIT ?")
+        params.append(int(limit))
+    rows = nb.conn.execute("\n".join(query), tuple(params)).fetchall()
+    return [dict(row) for row in rows]
+
+
 def backfill_novelty(
     db_path: str,
     device: str = "cuda",
@@ -45,16 +87,7 @@ def backfill_novelty(
 
     nb = LabNotebook(db_path)
 
-    # Find candidates missing novelty
-    query = """SELECT result_id, graph_json, graph_fingerprint, param_count
-           FROM program_results
-           WHERE (novelty_score IS NULL OR novelty_score = 0)
-             AND graph_json IS NOT NULL AND graph_json != ''"""
-    if not include_all:
-        query += " AND stage1_passed = 1"
-    query += " ORDER BY timestamp DESC"
-    rows = nb.conn.execute(query).fetchall()
-    candidates = [dict(r) for r in rows]
+    candidates = _fetch_candidates(nb, include_all=include_all)
 
     if verbose:
         print(f"Novelty backfill")

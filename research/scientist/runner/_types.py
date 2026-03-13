@@ -1,13 +1,32 @@
 """Shared dataclass definitions for the runner package.
 
-Contains RunConfig and LiveProgress to avoid circular imports
-between __init__.py and submodules.
+Contains RunConfig, LiveProgress, and ModelCandidate to avoid circular
+imports between __init__.py and submodules.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+
+
+class ModelCandidate:
+    """Unified representation of a candidate model from any source."""
+    __slots__ = ("source", "model", "description", "graph", "graph_json",
+                 "arch_spec", "arch_spec_json", "fingerprint")
+
+    def __init__(self, source: str = "graph_synthesis", model: Any = None,
+                 description: str = "", graph: Any = None,
+                 graph_json: Optional[str] = None, arch_spec: Any = None,
+                 arch_spec_json: Optional[str] = None, fingerprint: str = ""):
+        self.source = source
+        self.model = model
+        self.description = description
+        self.graph = graph
+        self.graph_json = graph_json
+        self.arch_spec = arch_spec
+        self.arch_spec_json = arch_spec_json
+        self.fingerprint = fingerprint
 
 
 from ._helpers import _native_runner_progress_report
@@ -41,6 +60,11 @@ class RunConfig:
     early_stop_patience: int = 300       # steps without improvement before stopping
     early_stop_min_delta: float = 1e-3   # minimum loss improvement to reset patience
     early_stop_min_steps: int = 100      # don't early-stop before this many steps
+    # Inflight training checks: abort hopeless runs early
+    inflight_spike_ratio: float = 2.0    # kill if loss > 2x running minimum
+    inflight_spike_window: int = 10      # check spike over this many steps
+    inflight_grad_norm_limit: float = 100.0  # kill if grad_norm exceeds this
+    inflight_grad_norm_strikes: int = 3  # consecutive violations before kill
     cuda_graph_warmup_steps: int = 3
     loss_check_interval: int = 8
     enable_kernel_profiling: bool = False
@@ -153,6 +177,8 @@ class RunConfig:
     # Training program variation
     use_synthesized_training: bool = False  # use random training programs
     n_training_programs: int = 3       # how many to try per candidate (investigation)
+    loss_type: str = "cross_entropy"       # "cross_entropy" | "synthesized"
+    optimizer_type: str = "adamw"          # "adamw" | "synthesized"
     # Investigation phase
     investigation_steps: int = 2500
     investigation_batch_size: int = 4
@@ -209,12 +235,13 @@ class RunConfig:
     knowledge_extraction_interval: int = 3  # every N experiments
     auto_go_no_go: bool = True  # auto-record go/no-go decisions at escalation
     # Stage pass thresholds (overridable by LLM per-cycle)
-    stage1_loss_ratio_threshold: float = 0.8
+    stage1_loss_ratio_threshold: float = 0.4
     stage05_stability_threshold: float = 0.5
     investigation_loss_ratio_threshold: float = 0.15
     investigation_robustness_threshold: float = 0.5
     # Pre-investigation gate
     pre_inv_gate_enabled: bool = True
+    pre_inv_max_lr: float = 0.5
     pre_inv_min_stability: float = 0.3
     pre_inv_max_spectral_norm: float = 50.0
     pre_inv_min_spectral_norm: float = 0.01

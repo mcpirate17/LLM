@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { formatBenchmarkValue } from '../../utils/format';
+import useSortableRows from './useSortableRows';
 
 const BenchmarkTargets = ({ benchmarkMetrics, benchmarkObserved, onBenchmarkObservedChange }) => {
   const [benchmarkInputDraft, setBenchmarkInputDraft] = useState('');
@@ -46,6 +47,12 @@ const BenchmarkTargets = ({ benchmarkMetrics, benchmarkObserved, onBenchmarkObse
   const notMeasuredTargets = Array.isArray(benchmarkMetrics.targets)
     ? benchmarkMetrics.targets.filter((t) => t.status === 'not_measured')
     : [];
+  const {
+    rows: sortedTargets,
+    handleSort,
+    sortDirection,
+    sortGlyph,
+  } = useSortableRows(benchmarkMetrics.targets || [], 'status', false);
 
   return (
     <>
@@ -53,6 +60,9 @@ const BenchmarkTargets = ({ benchmarkMetrics, benchmarkObserved, onBenchmarkObse
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
           <strong style={{ fontSize: 12, color: '#d8e6f5' }}>External Benchmark Inputs</strong>
           <span style={{ fontSize: 11, color: '#8fa8c2' }}>{benchmarkInputCount} loaded</span>
+        </div>
+        <div style={{ fontSize: 11, color: '#8fa8c2', marginTop: 4, lineHeight: 1.5 }}>
+          Next best action: add measured benchmark values, then rerun Deep Run to convert "not measured" rows into decision-grade evidence.
         </div>
         <textarea
           value={benchmarkInputDraft}
@@ -87,20 +97,36 @@ const BenchmarkTargets = ({ benchmarkMetrics, benchmarkObserved, onBenchmarkObse
       </div>
 
       {Array.isArray(benchmarkMetrics.targets) && benchmarkMetrics.targets.length > 0 && (
-        <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #1f3147', borderRadius: 8 }}>
+        <div className="table-scroll-shell" style={{ maxHeight: 220, border: '1px solid #1f3147', borderRadius: 8 }}>
           <table className="op-profile-table">
             <thead>
               <tr>
-                <th>Metric</th>
-                <th>Observed</th>
-                <th>Target</th>
-                <th>Status</th>
+                <th aria-sort={sortDirection('label')}>
+                  <button type="button" className="th-sort-btn" onClick={() => handleSort('label')}>
+                    Metric {sortGlyph('label')}
+                  </button>
+                </th>
+                <th aria-sort={sortDirection('observed')}>
+                  <button type="button" className="th-sort-btn" onClick={() => handleSort('observed')}>
+                    Observed {sortGlyph('observed')}
+                  </button>
+                </th>
+                <th aria-sort={sortDirection('target')}>
+                  <button type="button" className="th-sort-btn" onClick={() => handleSort('target')}>
+                    Target {sortGlyph('target')}
+                  </button>
+                </th>
+                <th aria-sort={sortDirection('status')}>
+                  <button type="button" className="th-sort-btn" onClick={() => handleSort('status')}>
+                    Status {sortGlyph('status')}
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {benchmarkMetrics.targets.map((target) => (
+              {sortedTargets.map((target) => (
                 <tr key={target.id}>
-                  <td>{target.label}</td>
+                  <td style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35 }}>{target.label}</td>
                   <td>{formatBenchmarkValue(target.observed, target.unit)}</td>
                   <td>{formatBenchmarkValue(target.target, target.unit)}</td>
                   <td>

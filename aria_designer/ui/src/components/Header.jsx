@@ -35,6 +35,8 @@ const Header = ({
           <button 
             className={`step-btn step-state-${runStatus.phase === 'validated' ? 'pass' : runStatus.phase === 'failed' ? 'fail' : 'idle'} ${runStatus.phase === 'validating' ? 'busy' : ''}`}
             onClick={onValidate}
+            aria-pressed={runStatus.phase === 'validated'}
+            data-busy={runStatus.phase === 'validating' ? 'true' : 'false'}
             title="Step 1: Validate"
           >
             Step 1: Validate
@@ -42,6 +44,8 @@ const Header = ({
           <button 
             className={`step-btn step-state-${runStatus.phase === 'compiled' ? 'pass' : 'idle'} ${runStatus.phase === 'compiling' ? 'busy' : ''}`}
             onClick={onCompile}
+            aria-pressed={runStatus.phase === 'compiled'}
+            data-busy={runStatus.phase === 'compiling' ? 'true' : 'false'}
             title="Step 2: Compile"
           >
             Step 2: Compile
@@ -49,6 +53,8 @@ const Header = ({
           <button 
             className={`step-btn step-state-${runStatus.phase === 'success' ? 'pass' : 'idle'} ${runStatus.phase === 'running' ? 'busy' : ''}`}
             onClick={onRun}
+            aria-pressed={runStatus.phase === 'success'}
+            data-busy={runStatus.phase === 'running' ? 'true' : 'false'}
             title="Step 3: Test"
           >
             Step 3: Test
@@ -79,14 +85,14 @@ const Header = ({
           </select>
         </div>
         <div className="toolbar-group files">
-          <button className="btn-secondary" onClick={onImport}>Import</button>
-          <button className="btn-secondary" onClick={onExport}>Export</button>
-          <button className="btn-primary" onClick={onSave}>Save</button>
+          <button className="btn-secondary" onClick={onImport} data-feedback="depress">Import</button>
+          <button className="btn-secondary" onClick={onExport} data-feedback="depress">Export</button>
+          <button className="btn-primary" onClick={onSave} data-feedback="depress">Save</button>
         </div>
         <div className="toolbar-group ai">
-          <button className="btn-aria" onClick={onAskAria}>Ask Aria</button>
+          <button className="btn-aria" onClick={onAskAria} data-feedback="depress">Ask Aria</button>
         </div>
-        <button className="btn-icon" onClick={onShowShortcuts} title="Keyboard Shortcuts">⌨️</button>
+        <button className="btn-icon" onClick={onShowShortcuts} title="Keyboard Shortcuts" data-feedback="depress">⌨️</button>
       </div>
     </header>
   );

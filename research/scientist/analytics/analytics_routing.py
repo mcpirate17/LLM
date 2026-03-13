@@ -1,9 +1,7 @@
 from __future__ import annotations
 import json
-import math
 from typing import Any, Dict, List, Optional
 import numpy as np
-from ...eval.utils import safe_parse_float
 
 
 class _RoutingMixin:

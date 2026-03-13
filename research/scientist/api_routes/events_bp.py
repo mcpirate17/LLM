@@ -1,11 +1,11 @@
 """events API route registration."""
 from __future__ import annotations
 
-import json
 import logging
 from flask import jsonify, request, Response
 from ..notebook import LabNotebook
-from ._helpers import get_runner, get_sse_timeout_seconds, json_safe
+from ..json_utils import fast_dumps as _json_dumps, fast_loads as _json_loads
+from ._helpers import get_runner, get_sse_timeout_seconds
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -77,10 +77,7 @@ def register_events_routes(app, context: ApiRouteContext):
         def event_stream():
             while True:
                 for event in runner.get_events(timeout=sse_timeout):
-                    data = json.dumps(
-                        json_safe(event.get("data", {})),
-                        allow_nan=False,
-                    )
+                    data = _json_dumps(event.get("data", {}), safe=True)
                     yield f"event: {event['type']}\ndata: {data}\n\n"
                 yield f"event: keepalive\ndata: {{}}\n\n"
 
@@ -103,8 +100,7 @@ def _entry_to_live_feed_event(entry: dict):
     metadata = entry.get("metadata") or entry.get("metadata_json") or {}
     if isinstance(metadata, str):
         try:
-            import json as _json
-            metadata = _json.loads(metadata)
+            metadata = _json_loads(metadata)
         except Exception:
             metadata = {}
     ret = {

@@ -21,10 +21,9 @@ from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.api
 
-# Detect available dependencies
+# Detect available dependencies — lazy import to reduce memory in parallel runs
 try:
-    import torch
-    HAS_TORCH = True
+    import torch; HAS_TORCH = True; del torch
 except ImportError:
     HAS_TORCH = False
 
@@ -195,6 +194,16 @@ class TestAPI(unittest.TestCase):
         ))
 
         nb.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app = None
+        cls.client = None
+        try:
+            nb = LabNotebook(cls.db_path)
+            nb.close()
+        except Exception:
+            pass
 
     def setUp(self):
         from research.scientist.api_routes import _helpers as _helpers_mod
@@ -725,6 +734,16 @@ class TestAPI(unittest.TestCase):
             self.assertIn("metadata", data[0])
             self.assertIsInstance(data[0]["metadata"], dict)
 
+    def test_api_perf_summary(self):
+        r = self.client.get("/api/perf/summary")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("summary", data)
+        self.assertIn("artifacts", data)
+        self.assertIsInstance(data["summary"], dict)
+        self.assertIsInstance(data["artifacts"], list)
+
     def test_api_live_feed(self):
         # Use explicit experiment_id to avoid cross-test interference
         # from tests that add live_feed entries for other experiments
@@ -796,7 +815,7 @@ class TestAPI(unittest.TestCase):
         self.assertNotIn(older_exp, experiment_ids)
 
     def test_api_events_serializes_tensor_payloads(self):
-        pass
+        import torch
 
         class _FakeRunner:
             def __init__(self):
@@ -819,8 +838,8 @@ class TestAPI(unittest.TestCase):
             first_chunk = next(response.response).decode("utf-8")
 
         self.assertIn("event: evolution_generation", first_chunk)
-        self.assertIn("\"generation\": 1", first_chunk)
-        self.assertIn("\"tensor_metric\": [0.1", first_chunk)
+        self.assertIn("\"generation\":1", first_chunk)
+        self.assertIn("\"tensor_metric\":[", first_chunk)
 
     def test_api_events_sanitizes_non_finite_float_payloads(self):
         class _FakeRunner:
@@ -846,9 +865,11 @@ class TestAPI(unittest.TestCase):
             first_chunk = next(response.response).decode("utf-8")
 
         self.assertIn("event: evolution_generation", first_chunk)
-        self.assertIn('"nan_metric": null', first_chunk)
-        self.assertIn('"inf_metric": null', first_chunk)
-        self.assertIn('"ninf_metric": null', first_chunk)
+        # JSON may use compact format (no space after colon)
+        chunk_compact = first_chunk.replace(": ", ":")
+        self.assertIn('"nan_metric":null', chunk_compact)
+        self.assertIn('"inf_metric":null', chunk_compact)
+        self.assertIn('"ninf_metric":null', chunk_compact)
 
     def test_api_fingerprint_diagnostics_endpoint(self):
         r = self.client.get("/api/diagnostics/fingerprint")
@@ -1225,6 +1246,158 @@ class TestAPI(unittest.TestCase):
             self.assertIn("mode", summary)
             self.assertIn("status", summary)
             self.assertIn("timestamp", summary)
+
+    def test_dashboard_detects_external_running_experiment(self):
+        from research.scientist.api_routes import _helpers as _helpers_mod
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"mode": "single", "n_programs": 12}, "External CLI run")
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_external_001",
+            graph_json=json.dumps({"nodes": {}, "id": "external-1"}),
+            stage0_passed=True,
+            stage05_passed=False,
+            stage1_passed=False,
+            loss_ratio=None,
+            novelty_score=0.11,
+        )
+        nb.flush_writes()
+        nb.close()
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.last_recommendation = None
+        fake_runner.progress.to_dict.return_value = {
+            "experiment_id": "",
+            "status": "idle",
+            "current_program": 0,
+            "total_programs": 0,
+            "stage0_passed": 0,
+            "stage05_passed": 0,
+            "stage1_passed": 0,
+            "novel_count": 0,
+            "current_stage": "",
+            "current_fingerprint": "",
+            "best_loss_ratio": None,
+            "best_novelty": None,
+            "elapsed_seconds": 0.0,
+            "aria_message": "",
+            "error": None,
+            "estimated_cost": 0.0,
+            "total_tokens": 0,
+            "current_generation": 0,
+            "total_generations": 0,
+            "best_fitness": None,
+            "avg_fitness": None,
+            "archive_size": 0,
+            "hypothesis_critique": None,
+            "native_runner": {},
+        }
+        fake_runner.get_aria_cycle_status.return_value = {
+            "aria_message": "",
+            "continuous_active": False,
+            "cycle_history": [],
+            "cycle_index": 0,
+            "cycle_paused": False,
+            "experiment_id": "",
+            "is_running": False,
+            "last_completed_mode": None,
+            "last_cycle_summary": None,
+            "last_note": "Awaiting run.",
+            "phase": "idle",
+            "phase_label": "Idle",
+            "progress_status": "idle",
+            "selected_mode": None,
+        }
+
+        with patch.object(_helpers_mod, "_runner", fake_runner):
+            r = self.client.get("/api/dashboard")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["is_running"])
+        self.assertEqual(data["progress"]["experiment_id"], exp_id)
+        self.assertEqual(data["progress"]["total_programs"], 12)
+        self.assertEqual(data["progress"]["current_program"], 1)
+        self.assertEqual(data["progress"]["current_stage"], "external_cli")
+        self.assertEqual(data["progress"]["run_source"], "external_notebook_process")
+
+    def test_cycle_status_detects_external_running_experiment(self):
+        from research.scientist.api_routes import _helpers as _helpers_mod
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"mode": "single", "n_programs": 9}, "External cycle run")
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_external_cycle_001",
+            graph_json=json.dumps({"nodes": {}, "id": "external-cycle-1"}),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            loss_ratio=0.42,
+            novelty_score=0.22,
+        )
+        nb.flush_writes()
+        nb.close()
+
+        fake_runner = MagicMock()
+        fake_runner.is_running = False
+        fake_runner.last_recommendation = None
+        fake_runner.progress.to_dict.return_value = {
+            "experiment_id": "",
+            "status": "idle",
+            "current_program": 0,
+            "total_programs": 0,
+            "stage0_passed": 0,
+            "stage05_passed": 0,
+            "stage1_passed": 0,
+            "novel_count": 0,
+            "current_stage": "",
+            "current_fingerprint": "",
+            "best_loss_ratio": None,
+            "best_novelty": None,
+            "elapsed_seconds": 0.0,
+            "aria_message": "",
+            "error": None,
+            "estimated_cost": 0.0,
+            "total_tokens": 0,
+            "current_generation": 0,
+            "total_generations": 0,
+            "best_fitness": None,
+            "avg_fitness": None,
+            "archive_size": 0,
+            "hypothesis_critique": None,
+            "native_runner": {},
+        }
+        fake_runner.get_aria_cycle_status.return_value = {
+            "aria_message": "",
+            "continuous_active": False,
+            "cycle_history": [],
+            "cycle_index": 0,
+            "cycle_paused": False,
+            "experiment_id": "",
+            "is_running": False,
+            "last_completed_mode": None,
+            "last_cycle_summary": None,
+            "last_note": "Awaiting run.",
+            "phase": "idle",
+            "phase_label": "Idle",
+            "progress_status": "idle",
+            "selected_mode": None,
+        }
+
+        with patch.object(_helpers_mod, "_runner", fake_runner):
+            r = self.client.get("/api/aria/cycle-status")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["is_running"])
+        self.assertTrue(data["continuous_active"])
+        self.assertEqual(data["phase"], "running")
+        self.assertEqual(data["selected_mode"], "single")
+        self.assertTrue(data["external_process"])
+        self.assertEqual(data["experiment_id"], exp_id)
 
     def test_api_aria_cycle_history(self):
         r = self.client.get("/api/aria/cycle-history?n=10")
@@ -3812,7 +3985,7 @@ class TestChatActions(unittest.TestCase):
 
     def test_session_delta_context_builder(self):
         """Session delta section should be added to rich context."""
-        from research.scientist.llm.context import _build_session_delta
+        from research.scientist.llm.context_experiment import _build_session_delta
         analytics = {
             "grammar_weights": {"parameterized": 4.0, "frequency_domain": 0.2},
             "default_weights": {"parameterized": 1.0, "frequency_domain": 1.0},

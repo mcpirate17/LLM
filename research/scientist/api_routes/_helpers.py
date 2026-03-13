@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 import threading
@@ -16,9 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..shared_utils import safe_float as _to_safe_float
 from ..notebook import LabNotebook
-from ..runner import ExperimentRunner, RunConfig
+from ..runner import ExperimentRunner
 from ..native_runner import native_runner_capability_report
 from ..persona import get_aria
 
@@ -26,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Singleton runner ────────────────────────────────────────────────────
 _runner: Optional[ExperimentRunner] = None
+_EXTERNAL_RUN_ACTIVITY_TIMEOUT_SECONDS = 3600.0
 
 
 def get_runner(notebook_path: str) -> ExperimentRunner:
@@ -33,6 +32,181 @@ def get_runner(notebook_path: str) -> ExperimentRunner:
     if _runner is None:
         _runner = ExperimentRunner(notebook_path)
     return _runner
+
+
+def _json_dict_or_empty(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def get_external_running_experiment_snapshot(
+    nb: LabNotebook,
+    *,
+    activity_timeout_seconds: float = _EXTERNAL_RUN_ACTIVITY_TIMEOUT_SECONDS,
+) -> Optional[Dict[str, Any]]:
+    """Infer an active external experiment from notebook state.
+
+    This is used when the dashboard/API process did not launch the runner itself,
+    for example when a separate ``python -m research --mode=synthesize`` process
+    is writing to the same notebook database.
+    """
+    row = nb.conn.execute(
+        """
+        SELECT
+            e.experiment_id,
+            e.timestamp,
+            e.started_at,
+            e.experiment_type,
+            e.status,
+            e.hypothesis,
+            e.config_json,
+            e.n_programs_generated,
+            e.n_stage0_passed,
+            e.n_stage05_passed,
+            e.n_stage1_passed,
+            COALESCE((
+                SELECT MAX(pr.timestamp)
+                FROM program_results pr
+                WHERE pr.experiment_id = e.experiment_id
+            ), 0) AS last_program_ts,
+            COALESCE((
+                SELECT MAX(ml.timestamp)
+                FROM metrics_log ml
+                WHERE ml.experiment_id = e.experiment_id
+            ), 0) AS last_metric_ts,
+            COALESCE((
+                SELECT MAX(en.timestamp)
+                FROM entries en
+                WHERE en.experiment_id = e.experiment_id
+                  AND en.entry_type != 'hypothesis'
+            ), 0) AS last_entry_ts,
+            COALESCE((
+                SELECT COUNT(*)
+                FROM program_results pr
+                WHERE pr.experiment_id = e.experiment_id
+            ), 0) AS program_results_count
+        FROM experiments e
+        WHERE e.status = 'running'
+        ORDER BY e.timestamp DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+
+    config = _json_dict_or_empty(row["config_json"])
+    total_programs = (
+        config.get("n_programs")
+        or config.get("num_programs")
+        or row["n_programs_generated"]
+        or 0
+    )
+    try:
+        total_programs = int(total_programs or 0)
+    except Exception:
+        total_programs = 0
+
+    current_program = max(
+        int(row["program_results_count"] or 0),
+        int(row["n_programs_generated"] or 0),
+    )
+    last_activity_ts = max(
+        float(row["started_at"] or 0.0),
+        float(row["timestamp"] or 0.0),
+        float(row["last_program_ts"] or 0.0),
+        float(row["last_metric_ts"] or 0.0),
+        float(row["last_entry_ts"] or 0.0),
+    )
+    age_seconds = max(0.0, time.time() - last_activity_ts)
+    if activity_timeout_seconds > 0 and age_seconds > activity_timeout_seconds:
+        return None
+
+    mode = str(
+        config.get("mode")
+        or config.get("run_mode")
+        or config.get("experiment_mode")
+        or row["experiment_type"]
+        or "external"
+    )
+    hypothesis = str(row["hypothesis"] or "").strip()
+    return {
+        "experiment_id": str(row["experiment_id"] or ""),
+        "status": "running",
+        "mode": mode,
+        "hypothesis": hypothesis,
+        "current_program": current_program,
+        "total_programs": max(total_programs, current_program),
+        "stage0_passed": int(row["n_stage0_passed"] or 0),
+        "stage05_passed": int(row["n_stage05_passed"] or 0),
+        "stage1_passed": int(row["n_stage1_passed"] or 0),
+        "started_at": float(row["started_at"] or row["timestamp"] or 0.0),
+        "last_activity_ts": last_activity_ts,
+        "elapsed_seconds": max(0.0, time.time() - float(row["started_at"] or row["timestamp"] or time.time())),
+        "source": "external_notebook_process",
+    }
+
+
+def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str, Any]:
+    """Return dashboard-safe running/progress state for local or external runs."""
+    if runner.is_running:
+        return {
+            "is_running": True,
+            "progress": with_native_runner_progress(runner.progress.to_dict()),
+            "external_snapshot": None,
+        }
+
+    external = get_external_running_experiment_snapshot(nb)
+    if not external:
+        return {
+            "is_running": False,
+            "progress": with_native_runner_progress(runner.progress.to_dict()),
+            "external_snapshot": None,
+        }
+
+    progress = {
+        "experiment_id": external["experiment_id"],
+        "status": "running",
+        "current_program": external["current_program"],
+        "total_programs": external["total_programs"],
+        "stage0_passed": external["stage0_passed"],
+        "stage05_passed": external["stage05_passed"],
+        "stage1_passed": external["stage1_passed"],
+        "novel_count": 0,
+        "current_stage": "external_cli",
+        "current_fingerprint": "",
+        "best_loss_ratio": None,
+        "best_novelty": None,
+        "elapsed_seconds": external["elapsed_seconds"],
+        "aria_message": (
+            f"External {external['mode']} experiment detected via notebook"
+            if not external["hypothesis"]
+            else f"External {external['mode']} experiment: {external['hypothesis'][:160]}"
+        ),
+        "error": None,
+        "estimated_cost": 0.0,
+        "total_tokens": 0,
+        "current_generation": 0,
+        "total_generations": 0,
+        "best_fitness": None,
+        "avg_fitness": None,
+        "archive_size": 0,
+        "hypothesis_critique": None,
+        "run_source": external["source"],
+        "last_activity_ts": external["last_activity_ts"],
+        "external_process": True,
+    }
+    return {
+        "is_running": True,
+        "progress": with_native_runner_progress(progress),
+        "external_snapshot": external,
+    }
 
 
 # ── SSE timeout ─────────────────────────────────────────────────────────
@@ -53,43 +227,7 @@ def get_sse_timeout_seconds() -> float:
 
 # ── JSON safety ─────────────────────────────────────────────────────────
 
-def json_safe(value: Any) -> Any:
-    """Convert values to JSON-serializable primitives for API/SSE payloads."""
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): json_safe(val) for key, val in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [json_safe(item) for item in value]
-    # Torch-like tensors
-    if hasattr(value, "detach") and callable(getattr(value, "detach")):
-        try:
-            tensor_like = value.detach()
-            if hasattr(tensor_like, "cpu") and callable(getattr(tensor_like, "cpu")):
-                tensor_like = tensor_like.cpu()
-            if hasattr(tensor_like, "tolist") and callable(getattr(tensor_like, "tolist")):
-                return json_safe(tensor_like.tolist())
-            if hasattr(tensor_like, "item") and callable(getattr(tensor_like, "item")):
-                return json_safe(tensor_like.item())
-            return str(tensor_like)
-        except Exception:
-            return str(value)
-    # NumPy-like arrays/scalars
-    if hasattr(value, "tolist") and callable(getattr(value, "tolist")):
-        try:
-            return json_safe(value.tolist())
-        except Exception:
-            pass
-    if hasattr(value, "item") and callable(getattr(value, "item")):
-        try:
-            return json_safe(value.item())
-        except Exception:
-            pass
-    return str(value)
+from ..json_utils import json_safe  # noqa: F811 — re-export for callers
 
 
 # ── Env helpers ─────────────────────────────────────────────────────────

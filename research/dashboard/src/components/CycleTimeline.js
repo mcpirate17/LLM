@@ -1,5 +1,6 @@
 import { apiCall } from "../services/apiService";
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
+import { useAriaData } from '../hooks/useAriaData';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -10,35 +11,18 @@ function formatTs(ts) {
 }
 
 function CycleTimeline() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const {
+    cycleHistory: rows,
+    loading,
+    error,
+    refreshSharedData: fetchHistory,
+  } = useAriaData();
+
   const [modeFilter, setModeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [query, setQuery] = useState('');
   const [preset, setPreset] = useState('');
   const [recentHours, setRecentHours] = useState(null);
-
-  const fetchHistory = useCallback(async () => {
-    try {
-      const params = new URLSearchParams();
-      params.set('n', '120');
-      if (modeFilter) params.set('mode', modeFilter);
-      if (statusFilter) params.set('status', statusFilter);
-      if (query.trim()) params.set('q', query.trim());
-      const res = await apiCall(`/api/aria/cycle-history?${params.toString()}`);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
-      setError(null);
-    } catch (err) {
-      setError(err.message || 'Failed to load cycle history');
-    } finally {
-      setLoading(false);
-    }
-  }, [modeFilter, statusFilter, query]);
 
   const exportHistory = useCallback((format) => {
     const params = new URLSearchParams();
@@ -61,12 +45,6 @@ function CycleTimeline() {
     anchor.click();
     document.body.removeChild(anchor);
   }, [modeFilter, statusFilter, query]);
-
-  useEffect(() => {
-    fetchHistory();
-    const interval = setInterval(fetchHistory, 10000);
-    return () => clearInterval(interval);
-  }, [fetchHistory]);
 
   const applyPreset = useCallback((nextPreset) => {
     if (nextPreset === 'failures') {

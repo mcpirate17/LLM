@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import math
+
+from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 try:
-    import aria_core
-    _HAS_ARIA_CORE = hasattr(aria_core, 'tropical_add_f32')
+    from ..synthesis.kernels import triton_tropical_matmul
+    _HAS_TRITON_KERNELS = True
 except ImportError:
-    _HAS_ARIA_CORE = False
+    _HAS_TRITON_KERNELS = False
 
 
 def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -41,29 +42,44 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Tropical matrix multiplication.
 
     Instead of sum(a_ik * b_kj), computes min_k(a_ik + b_kj).
-    This gives shortest-path distances: if a[i,k] is the distance from
-    token i to intermediate k, and b[k,j] from k to j, then the result
-    is the shortest path from i to j through any intermediate.
+    Dispatch order: Triton (GPU) -> aria_core (CPU) -> chunked torch fallback.
 
     Input: a (B, S, D), b (B, D, S) or (B, S, D)
     Output: (B, S, S) or similar
     """
+    # GPU fast path: Triton kernel
+    if _HAS_TRITON_KERNELS and a.is_cuda and b.is_cuda:
+        try:
+            return triton_tropical_matmul(a, b)
+        except Exception:
+            pass
+
+    # CPU fast path: native C kernel
     if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.ndim == 3 and b.ndim == 3 and a.device.type == "cpu":
         B, S, D = a.shape
-        _, D2, S2 = b.shape
+        _, D2, _ = b.shape
         if D == D2:
-            # We need to handle batch dimension in C++ or loop here
             return torch.stack([aria_core.tropical_matmul_f32(a[i], b[i]) for i in range(B)])
 
-    # a: (B, S, D), b: (B, S, D) -> we want (B, S, S) min-plus
-    B, S, D = a.shape
-    # a_ik + b_jk for all i,j via broadcasting
-    # a: (B, S, 1, D), b: (B, 1, S, D)
-    expanded_a = a.unsqueeze(2)  # (B, S, 1, D)
-    expanded_b = b.unsqueeze(1)  # (B, 1, S, D)
-    pairwise = expanded_a + expanded_b  # (B, S, S, D)
-    # Min over D dimension (the "sum" in tropical semiring)
-    result = pairwise.min(dim=-1).values  # (B, S, S)
+    # Chunked torch fallback — avoids O(S^2 * D) peak memory
+    B, S1, D1 = a.shape
+    if b.ndim == 3 and b.shape[1] == D1:
+        S2 = b.shape[2]
+        b_val = b.transpose(1, 2)
+    else:
+        S2 = b.shape[1]
+        b_val = b
+
+    result = torch.empty((B, S1, S2), device=a.device, dtype=a.dtype)
+    b_expanded = b_val.unsqueeze(1)  # (B, 1, S2, D)
+
+    chunk_size = 32
+    for i in range(0, S1, chunk_size):
+        end = min(i + chunk_size, S1)
+        a_chunk = a[:, i:end, :].unsqueeze(2)  # (B, chunk, 1, D)
+        pairwise = a_chunk + b_expanded        # (B, chunk, S2, D)
+        result[:, i:end, :] = pairwise.min(dim=-1).values
+
     return result
 
 
@@ -72,8 +88,14 @@ def tropical_softmax(x: torch.Tensor, dim: int = -1,
     """Smooth approximation of tropical (min) using low-temperature softmax.
 
     As temperature -> 0, softmin -> argmin (tropical behavior).
+    Temperature scales adaptively with sqrt(S/128) to prevent
+    numerical underflow for long sequences.
     """
-    return torch.softmax(-x / temperature, dim=dim)
+    # Adaptive: scale temperature with sqrt(S/128) to prevent
+    # numerical underflow for long sequences
+    S = x.shape[1] if x.ndim >= 2 else 1
+    adaptive_t = temperature * max(1.0, (S / 128.0) ** 0.5)
+    return torch.softmax(-x / adaptive_t, dim=dim)
 
 
 def tropical_attention(q: torch.Tensor, k: torch.Tensor,

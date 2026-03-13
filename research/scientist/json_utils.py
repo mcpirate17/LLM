@@ -4,6 +4,10 @@ Single source of truth for safely converting Python objects (including
 numpy/torch types, NaN/Inf floats, Path objects) to JSON-serializable
 primitives.  All callers should use ``json_safe()`` instead of rolling
 their own conversion logic.
+
+Hot-path functions (``fast_dumps`` / ``fast_loads``) use ``orjson`` when
+available (3-10x faster, native numpy support).  Falls back to stdlib
+``json`` transparently.
 """
 
 from __future__ import annotations
@@ -11,7 +15,12 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
+
+try:
+    import orjson as _orjson
+except ImportError:  # pragma: no cover
+    _orjson = None  # type: ignore[assignment]
 
 
 def json_safe(value: Any) -> Any:
@@ -99,3 +108,40 @@ class SafeJSONEncoder(json.JSONEncoder):
         if isinstance(o, Path):
             return str(o)
         return super().default(o)
+
+
+# ── Fast JSON (orjson when available) ──────────────────────────────────
+
+def fast_dumps(obj: Any, *, safe: bool = False) -> str:
+    """Serialize *obj* to a JSON string using orjson if available.
+
+    Parameters
+    ----------
+    obj : Any
+        Object to serialize.
+    safe : bool
+        If True, run ``json_safe()`` on *obj* first to sanitize
+        numpy/torch/NaN values.  Adds overhead but guarantees
+        serializability.
+
+    Returns
+    -------
+    str
+        JSON string (always str, never bytes).
+    """
+    if safe:
+        obj = json_safe(obj)
+    if _orjson is not None:
+        # orjson.dumps returns bytes; decode to str for API compat
+        return _orjson.dumps(
+            obj,
+            option=_orjson.OPT_NON_STR_KEYS | _orjson.OPT_SERIALIZE_NUMPY,
+        ).decode("utf-8")
+    return json.dumps(obj, cls=SafeJSONEncoder)
+
+
+def fast_loads(data: Union[str, bytes]) -> Any:
+    """Deserialize JSON string or bytes using orjson if available."""
+    if _orjson is not None:
+        return _orjson.loads(data)
+    return json.loads(data)

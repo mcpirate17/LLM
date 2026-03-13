@@ -13,14 +13,13 @@ Supports multi-scale evaluation at d=256 and d=512 for scaling slope analysis.
 from __future__ import annotations
 
 import gc
-import json
 import logging
 import math
 import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 

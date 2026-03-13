@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -89,137 +89,77 @@ def _compute_spectral_component(logits: torch.Tensor) -> torch.Tensor:
     return torch.tensor(0.0, device=logits.device)
 
 
+def _loss_cross_entropy(flat_logits, flat_targets, log_probs, probs):
+    return F.cross_entropy(flat_logits, flat_targets)
+
+
+def _loss_label_smoothed_ce(flat_logits, flat_targets, log_probs, probs):
+    if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
+    smooth = 0.1
+    nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
+    smooth_loss = -log_probs.mean(dim=-1)
+    return ((1 - smooth) * nll + smooth * smooth_loss).mean()
+
+
+def _loss_rank_weighted_ce(flat_logits, flat_targets, log_probs, probs):
+    if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
+    nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
+    ranks = (flat_logits.argsort(dim=-1, descending=True) == flat_targets.unsqueeze(1))
+    rank_pos = ranks.float().argmax(dim=-1).float()
+    weights = 1.0 + torch.log1p(rank_pos)
+    return (nll * weights).mean()
+
+
+def _loss_tropical_ce(flat_logits, flat_targets, log_probs, probs):
+    if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
+    target_log_probs = log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
+    mask = torch.ones_like(log_probs).scatter_(1, flat_targets.unsqueeze(1), 0)
+    max_other = (log_probs * mask + (1 - mask) * -1e9).max(dim=-1).values
+    margin = max_other - target_log_probs
+    return F.relu(margin + 1.0).mean()
+
+
+def _loss_contrastive_push(flat_logits, flat_targets, log_probs, probs):
+    target_logits = flat_logits.gather(1, flat_targets.unsqueeze(1))
+    topk, _ = flat_logits.topk(6, dim=-1)
+    return F.relu(topk[:, 1:] - target_logits + 0.5).mean()
+
+
+def _loss_entropy_reg(flat_logits, flat_targets, log_probs, probs):
+    if probs is None: probs = F.softmax(flat_logits, dim=-1)
+    entropy = -(probs * (probs + 1e-10).log()).sum(dim=-1).mean()
+    return entropy * 0.1
+
+
+def _loss_gradient_penalty(flat_logits, flat_targets, log_probs, probs):
+    return flat_logits.pow(2).mean() * 0.001
+
+
+def _loss_kl_uniform(flat_logits, flat_targets, log_probs, probs):
+    if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
+    V = flat_logits.shape[-1]
+    return -(log_probs.mean(dim=-1) + math.log(V)).mean()
+
+
+_LOSS_DISPATCH = {
+    "cross_entropy": _loss_cross_entropy,
+    "label_smoothed_ce": _loss_label_smoothed_ce,
+    "rank_weighted_ce": _loss_rank_weighted_ce,
+    "tropical_ce": _loss_tropical_ce,
+    "contrastive_push": _loss_contrastive_push,
+    "entropy_reg": _loss_entropy_reg,
+    "gradient_penalty": _loss_gradient_penalty,
+    "kl_uniform": _loss_kl_uniform,
+}
+
+
 def _compute_component_fast(name: str, flat_logits: torch.Tensor,
                             flat_targets: torch.Tensor,
                             log_probs: Optional[torch.Tensor] = None,
                             probs: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Fast compute a single loss component using shared intermediates."""
-    V = flat_logits.shape[-1]
-
-    if name == "cross_entropy":
-        return F.cross_entropy(flat_logits, flat_targets)
-
-    elif name == "label_smoothed_ce":
-        if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
-        smooth = 0.1
-        nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
-        smooth_loss = -log_probs.mean(dim=-1)
-        return ((1 - smooth) * nll + smooth * smooth_loss).mean()
-
-    elif name == "rank_weighted_ce":
-        if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
-        nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
-        
-        ranks = (flat_logits.argsort(dim=-1, descending=True) == flat_targets.unsqueeze(1))
-        rank_pos = ranks.float().argmax(dim=-1).float()
-        weights = 1.0 + torch.log1p(rank_pos)
-        return (nll * weights).mean()
-
-    elif name == "tropical_ce":
-        if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
-        target_log_probs = log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
-        mask = torch.ones_like(log_probs).scatter_(1, flat_targets.unsqueeze(1), 0)
-        max_other = (log_probs * mask + (1 - mask) * -1e9).max(dim=-1).values
-        margin = max_other - target_log_probs
-        return F.relu(margin + 1.0).mean()
-
-    elif name == "contrastive_push":
-        if log_probs is None: log_probs = F.log_softmax(flat_logits, dim=-1)
-        target_logits = flat_logits.gather(1, flat_targets.unsqueeze(1))
-        topk, _ = flat_logits.topk(6, dim=-1)
-        push = F.relu(topk[:, 1:] - target_logits + 0.5).mean()
-        return push
-
-    elif name == "entropy_reg":
-        if probs is None: probs = F.softmax(flat_logits, dim=-1)
-        entropy = -(probs * (probs + 1e-10).log()).sum(dim=-1).mean()
-        return entropy * 0.1
-
-    elif name == "gradient_penalty":
-        return flat_logits.pow(2).mean() * 0.001
-
-    elif name == "kl_uniform":
-        if log_probs is None: log_probs = F.log_probs = F.log_softmax(flat_logits, dim=-1)
-        return -(log_probs.mean(dim=-1) + math.log(V)).mean()
-
-    else:
-        return F.cross_entropy(flat_logits, flat_targets)
-
-
-def _compute_component(name: str, logits: torch.Tensor,
-                       targets: torch.Tensor) -> torch.Tensor:
-    """Compute a single loss component."""
-    V = logits.shape[-1]
-    flat_logits = logits.reshape(-1, V)
-    flat_targets = targets.reshape(-1)
-
-    if name == "cross_entropy":
-        return F.cross_entropy(flat_logits, flat_targets)
-
-    elif name == "label_smoothed_ce":
-        # Cross-entropy with label smoothing
-        smooth = 0.1
-        log_probs = F.log_softmax(flat_logits, dim=-1)
-        nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
-        smooth_loss = -log_probs.mean(dim=-1)
-        return ((1 - smooth) * nll + smooth * smooth_loss).mean()
-
-    elif name == "rank_weighted_ce":
-        # Weight loss by token rank (rare tokens get more weight)
-        log_probs = F.log_softmax(flat_logits, dim=-1)
-        nll = -log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
-        # Rank: how far from the top prediction
-        ranks = (flat_logits.argsort(dim=-1, descending=True) == flat_targets.unsqueeze(1))
-        rank_pos = ranks.float().argmax(dim=-1).float()
-        weights = 1.0 + torch.log1p(rank_pos)
-        return (nll * weights).mean()
-
-    elif name == "tropical_ce":
-        # Tropical cross-entropy: min-plus on log probabilities
-        log_probs = F.log_softmax(flat_logits, dim=-1)
-        target_log_probs = log_probs.gather(1, flat_targets.unsqueeze(1)).squeeze(1)
-        # Tropical: penalize by maximum non-target log prob (margin)
-        mask = torch.ones_like(log_probs).scatter_(1, flat_targets.unsqueeze(1), 0)
-        max_other = (log_probs * mask + (1 - mask) * -1e9).max(dim=-1).values
-        margin = max_other - target_log_probs
-        return F.relu(margin + 1.0).mean()  # Hinge-like tropical loss
-
-    elif name == "spectral_loss":
-        # Penalize high-frequency oscillations in logit sequence
-        # Only applies if logits have a sequence dimension
-        if logits.dim() >= 3:
-            freq = torch.fft.rfft(logits.float(), dim=1)
-            high_freq_energy = freq[:, freq.shape[1]//2:].abs().mean()
-            return high_freq_energy * 0.01
-        return torch.tensor(0.0, device=logits.device)
-
-    elif name == "contrastive_push":
-        # Push apart logits of non-target classes
-        log_probs = F.log_softmax(flat_logits, dim=-1)
-        target_logits = flat_logits.gather(1, flat_targets.unsqueeze(1))
-        # Mean distance from target to top-5 non-targets
-        topk, _ = flat_logits.topk(6, dim=-1)
-        push = F.relu(topk[:, 1:] - target_logits + 0.5).mean()
-        return push
-
-    elif name == "entropy_reg":
-        # Encourage confident predictions (low entropy)
-        probs = F.softmax(flat_logits, dim=-1)
-        entropy = -(probs * (probs + 1e-10).log()).sum(dim=-1).mean()
-        return entropy * 0.1
-
-    elif name == "gradient_penalty":
-        # Soft gradient penalty on logit magnitudes
-        return flat_logits.pow(2).mean() * 0.001
-
-    elif name == "kl_uniform":
-        # KL divergence from uniform (encourages exploration)
-        log_probs = F.log_softmax(flat_logits, dim=-1)
-        return -(log_probs.mean(dim=-1) + math.log(V)).mean()
-
-    else:
-        # Fallback to cross-entropy
-        return F.cross_entropy(flat_logits, flat_targets)
+    """Compute a single loss component using shared intermediates."""
+    fn = _LOSS_DISPATCH.get(name, _loss_cross_entropy)
+    return fn(flat_logits, flat_targets, log_probs, probs)
 
 # ── Available Components ──────────────────────────────────────────────
 

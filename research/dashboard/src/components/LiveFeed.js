@@ -3,6 +3,7 @@ import { useEventBus } from '../hooks/useEventBus';
 import apiService, { apiCall } from '../services/apiService';
 
 const LIVE_LOSS_CURVE_MAX_POINTS = 20000;
+const LIVE_FEED_MAX_EVENTS = 100;
 
 const RESULT_COLORS = {
   'S1 PASS': 'var(--accent-green)',
@@ -141,7 +142,7 @@ function annotateGenerationHistory(events) {
 // Mini inline SVG chart for live training loss
 function MiniLossChart({ curve }) {
   if (!curve || curve.length < 2) return null;
-  const W = 500, H = 113; // graph area: +25% wider and +25% taller from 400x90
+  const W = 600, H = 113; // +20% wider from the previous 500px chart
   const pad = { l: 4, r: 4, t: 4, b: 4 };
 
   const losses = curve.map(p => p.loss);
@@ -219,7 +220,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
 
     const normalized = normalizeLiveFeedEvent({ type, ...data, ts: Date.now() });
     if (!normalized) return;
-    setEvents(prev => [...prev.slice(-99), normalized]);
+    setEvents(prev => [...prev.slice(-(LIVE_FEED_MAX_EVENTS - 1)), normalized]);
   }, []);
 
   // Handle training_step events for the mini loss chart
@@ -311,7 +312,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
           .map((event) => normalizeLiveFeedEvent(event))
           .filter(Boolean);
         if (normalizedHistory.length === 0) return;
-        setEvents((prev) => [...normalizedHistory, ...prev].slice(-100));
+        setEvents((prev) => [...normalizedHistory, ...prev].slice(-LIVE_FEED_MAX_EVENTS));
       })
       .catch(() => {});
 
@@ -379,7 +380,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
               seen.add(key);
               deduped.push(evt);
             }
-            return deduped.slice(-150);
+            return deduped.slice(-Math.max(LIVE_FEED_MAX_EVENTS, 150));
           });
         })
         .catch((err) => console.error('LiveFeed: Gap heal fetch failed', err));

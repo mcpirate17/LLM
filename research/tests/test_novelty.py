@@ -297,23 +297,23 @@ class TestNoveltyCalibration(unittest.TestCase):
 
     def test_breakthrough_requires_novelty_confidence(self):
         """Runner breakthrough gate requires novelty_confidence >= 0.5."""
-        # Verify the threshold is present in the source code
-        from pathlib import Path
+        from research.scientist.runner import RunConfig
 
-        runner_path = Path(__file__).parent.parent / "scientist" / "runner.py"
-        source = runner_path.read_text()
-        # Should contain the novelty confidence gate
-        self.assertIn("nov_conf >= 0.5", source,
-                       "Breakthrough gate must require novelty_confidence >= 0.5")
+        config = RunConfig()
+        self.assertGreaterEqual(
+            config.auto_validate_min_novelty_confidence, 0.5,
+            "Breakthrough gate must require novelty_confidence >= 0.5",
+        )
 
     def test_breakthrough_requires_5_seeds(self):
         """Runner breakthrough gate requires >= 5 seeds passed."""
-        from pathlib import Path
+        from research.scientist.runner import RunConfig
 
-        runner_path = Path(__file__).parent.parent / "scientist" / "runner.py"
-        source = runner_path.read_text()
-        self.assertIn("len(passed_seeds) >= 5", source,
-                       "Breakthrough gate must require >= 5 seeds")
+        config = RunConfig()
+        self.assertGreaterEqual(
+            config.validation_n_seeds, 5,
+            "Breakthrough gate must require >= 5 seeds",
+        )
 
     def test_validation_n_seeds_default_is_5(self):
         """RunConfig.validation_n_seeds default must be >= 5."""
@@ -377,6 +377,7 @@ class TestNoveltyCalibration(unittest.TestCase):
     def test_grammar_weights_cap_repeated_fingerprint_influence(self):
         """Fingerprint-capped weighting should reduce repeated architecture dominance."""
         from research.scientist.analytics import ExperimentAnalytics
+        from unittest.mock import patch as _patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "fingerprint_cap.db")
@@ -431,8 +432,6 @@ class TestNoveltyCalibration(unittest.TestCase):
 
             analytics_capped = ExperimentAnalytics(nb)
             analytics_uncapped = ExperimentAnalytics(nb)
-            analytics_capped.FINGERPRINT_WEIGHT_CAP = 3.0
-            analytics_uncapped.FINGERPRINT_WEIGHT_CAP = 1_000_000.0
 
             capped_rates, capped_diag = analytics_capped._collect_fingerprint_capped_op_rates(3.0)
             uncapped_rates, _ = analytics_uncapped._collect_fingerprint_capped_op_rates(1_000_000.0)
@@ -443,12 +442,14 @@ class TestNoveltyCalibration(unittest.TestCase):
             self.assertGreater(capped_diag["rerun_ratio"], 0.5)
             self.assertGreater(capped_diag["top_fingerprint_concentration"], 0.5)
 
-            capped_weights = analytics_capped.compute_grammar_weights()
-            uncapped_weights = analytics_uncapped.compute_grammar_weights()
+            with _patch.object(ExperimentAnalytics, 'FINGERPRINT_WEIGHT_CAP', 3.0):
+                capped_weights = analytics_capped.compute_grammar_weights()
+                diag = analytics_capped.grammar_weight_learning_diagnostics()
+            with _patch.object(ExperimentAnalytics, 'FINGERPRINT_WEIGHT_CAP', 1_000_000.0):
+                uncapped_weights = analytics_uncapped.compute_grammar_weights()
             self.assertIsNotNone(capped_weights)
             self.assertIsNotNone(uncapped_weights)
 
-            diag = analytics_capped.grammar_weight_learning_diagnostics()
             self.assertEqual(diag.get("mode"), "fingerprint_capped")
             self.assertTrue(diag.get("used_fingerprint_capping"))
             self.assertEqual(diag.get("fingerprint_cap"), 3.0)

@@ -13,11 +13,9 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 from .utils import (
     tokenize_file,

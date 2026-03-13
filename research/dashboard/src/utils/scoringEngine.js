@@ -13,10 +13,12 @@ export const TIER_ORDER = {
   validation: 3,
   investigation: 2,
   screening: 1,
+  screened_out: 0,
 };
 
 export const TIER_COLORS = {
   screening: 'var(--accent-blue)',
+  screened_out: 'var(--text-muted)',
   investigation: 'var(--accent-yellow)',
   validation: 'var(--accent-purple)',
   breakthrough: 'var(--accent-green)',
@@ -24,6 +26,7 @@ export const TIER_COLORS = {
 
 export const TIER_LABELS = {
   screening: 'Screening',
+  screened_out: 'Failed Investigation',
   investigation: 'Investigation',
   validation: 'Validation',
   breakthrough: 'Breakthrough',
@@ -714,17 +717,27 @@ export function candidateScore(entry) {
   utility += 40.0 * effectiveNov * conf * noveltyGate;
 
   // 3. Efficiency Utility — 5x TARGET
-  // scaling_param_efficiency is a multiplier (1-5x range) — do NOT fallback
-  // to param_efficiency which is FLOPs/param (100-1000 range, different scale)
   const scalingEff = entry.scaling_param_efficiency;
   if (scalingEff != null) {
-    // Superlinear reward: 2x→15, 3x→30, 5x→60, 10x→100
     const effAbove1 = Math.max(0, scalingEff - 1.0);
-    utility += 22.0 * Math.sqrt(effAbove1);
-    // Milestone bonus at 5x+ (the explicit target)
-    if (scalingEff >= 5.0) utility += 25.0;
+    utility += 25.0 * Math.sqrt(effAbove1);
+    if (scalingEff >= 5.0) utility += 30.0;
+    if (scalingEff >= 10.0) utility += 20.0;
   }
-  
+
+  // Compound efficiency bonus: routing + sparse + high efficiency
+  const nRoutingOps = entry.n_routing_ops ?? 0;
+  const nSparseOps = entry.n_sparse_ops ?? 0;
+  if (nRoutingOps >= 1 && nSparseOps >= 1 && scalingEff != null && scalingEff >= 3.0) {
+    utility += 15.0;
+  }
+
+  // Efficiency amplifier gate
+  if (scalingEff != null && scalingEff > 3.0) {
+    const amplifier = 1.0 + 0.05 * Math.min(5, scalingEff - 3.0);
+    utility *= amplifier;
+  }
+
   const savings = entry.routing_savings_ratio ?? entry.depth_savings_ratio;
   if (savings != null) {
     utility += 50.0 * savings;

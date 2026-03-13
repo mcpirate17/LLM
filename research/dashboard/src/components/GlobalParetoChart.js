@@ -21,9 +21,18 @@ function finiteOrNull(v) {
   return Number.isFinite(Number(v)) ? Number(v) : null;
 }
 
+function noveltyValue(program) {
+  const overall = finiteOrNull(program.novelty_score);
+  if (overall != null) return overall;
+  const structural = finiteOrNull(program.structural_novelty);
+  const behavioral = finiteOrNull(program.behavioral_novelty);
+  if (structural != null && behavioral != null) return Math.max(structural, behavioral);
+  return structural ?? behavioral ?? 0;
+}
+
 function GlobalParetoChart({
   programs,
-  title = 'Search Frontier: 3D Accuracy vs Efficiency vs Size',
+  title = 'Search Frontier: 3D Accuracy vs Novelty vs Size',
   onSelectProgram,
   onNavigateTab,
 }) {
@@ -67,26 +76,16 @@ function GlobalParetoChart({
       .map((p) => {
         const accuracy = Math.max(0, 1 - Number(p.loss_ratio || 1));
         const paramsM = Number(p.param_count || 0) / 1e6;
-
-        let paramEff = finiteOrNull(p.param_efficiency);
-        if (paramEff == null) {
-          const sampleEff = finiteOrNull(p.sample_efficiency);
-          if (sampleEff != null) paramEff = sampleEff * 10;
-        }
-        if (paramEff == null) {
-          const throughput = finiteOrNull(p.throughput_tok_s || p.throughput);
-          if (throughput != null) paramEff = Math.log10(Math.max(throughput, 1));
-        }
-        if (paramEff == null) paramEff = 0;
+        const noveltyAxis = noveltyValue(p);
         const explicitScore = finiteOrNull(p._score ?? p.composite_score ?? p.score);
-        const fallbackScore = (accuracy * 100) + paramEff - paramsM * 0.25;
+        const fallbackScore = (accuracy * 100) + (noveltyAxis * 25) - paramsM * 0.25;
         const score = explicitScore != null ? explicitScore : fallbackScore;
 
         return {
           ...p,
           accuracy,
           params_m: paramsM,
-          param_eff: paramEff,
+          novelty_axis: noveltyAxis,
           score,
           family: p.architecture_family || 'Custom',
           name: (p.result_id || '').slice(0, 8),
@@ -124,7 +123,7 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
     if (!frontierPoints.length) return null;
     const xs = frontierPoints.map((p) => p.params_m);
     const ys = frontierPoints.map((p) => p.accuracy);
-    const zs = frontierPoints.map((p) => p.param_eff);
+    const zs = frontierPoints.map((p) => p.novelty_axis);
     const scores = frontierPoints.map((p) => p.score || 0);
     return {
       xMin: Math.min(...xs), xMax: Math.max(...xs),
@@ -140,7 +139,7 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
       ...p,
       nx: normalize(p.params_m, bounds.xMin, bounds.xMax),
       ny: normalize(p.accuracy, bounds.yMin, bounds.yMax),
-      nz: normalize(p.param_eff, bounds.zMin, bounds.zMax),
+      nz: normalize(p.novelty_axis, bounds.zMin, bounds.zMax),
       nscore: normalize(p.score || 0, bounds.scoreMin, bounds.scoreMax),
       color: fingerprintColors[p.graph_fingerprint || 'unknown'] || '#58a6ff',
     }));
@@ -176,7 +175,7 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
     const axisDefs = [
       { label: 'Size (M params)', to: [1.5, 0, 0], color: '#58a6ff' },
       { label: 'Accuracy', to: [0, 1.5, 0], color: '#3fb950' },
-      { label: 'Param Eff.', to: [0, 0, 1.5], color: '#d29922' },
+      { label: 'Novelty', to: [0, 0, 1.5], color: '#d29922' },
     ];
     const axes = axisDefs.map((a) => ({ ...a, end: project(a.to[0], a.to[1], a.to[2]) }));
 
@@ -295,9 +294,9 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
   const actions = useMemo(() => {
     if (!frontierPoints.length) return [];
     const sortedAcc = [...frontierPoints].sort((a, b) => b.accuracy - a.accuracy);
-    const sortedEff = [...frontierPoints].sort((a, b) => b.param_eff - a.param_eff);
+    const sortedNovelty = [...frontierPoints].sort((a, b) => b.novelty_axis - a.novelty_axis);
     const bestAcc = sortedAcc[0];
-    const bestEff = sortedEff[0];
+    const bestNovelty = sortedNovelty[0];
     const result = [];
 
     if (selectedPoints.length > 0) {
@@ -327,13 +326,13 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
         onClick: () => onSelectProgram?.(bestAcc.result_id),
       });
     }
-    if (bestEff?.result_id && bestEff.result_id !== bestAcc?.result_id) {
+    if (bestNovelty?.result_id && bestNovelty.result_id !== bestAcc?.result_id) {
       result.push({
-        id: 'best-eff',
-        label: `Inspect highest param efficiency (${bestEff.name})`,
-        detail: `eff=${bestEff.param_eff.toFixed(2)}`,
+        id: 'best-novelty',
+        label: `Inspect highest novelty (${bestNovelty.name})`,
+        detail: `novelty=${bestNovelty.novelty_axis.toFixed(3)}`,
         color: 'var(--accent-blue)',
-        onClick: () => onSelectProgram?.(bestEff.result_id),
+        onClick: () => onSelectProgram?.(bestNovelty.result_id),
       });
     }
     if (frontierPoints.length > 12) {
@@ -447,7 +446,7 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
             <div>Fingerprint: {(hover.graph_fingerprint || 'unknown').substring(0, 8)}</div>
             <div>Family: {hover.family || 'Custom'}</div>
             <div>Accuracy: {(hover.accuracy * 100).toFixed(2)}%</div>
-            <div>Param Eff: {hover.param_eff.toFixed(3)}</div>
+            <div>Novelty: {hover.novelty_axis.toFixed(3)}</div>
             <div>Size: {hover.params_m.toFixed(2)}M</div>
             <div style={{ marginTop: 4, fontSize: 10, color: 'var(--accent-blue)' }}>Click to open fingerprint</div>
           </div>
@@ -468,7 +467,7 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
           <span>Showing: top {frontierPercentile}% ({frontierPoints.length}/{survivors.length})</span>
           <span>Size: {bounds.xMin.toFixed(2)}M to {bounds.xMax.toFixed(2)}M</span>
           <span>Accuracy: {(bounds.yMin * 100).toFixed(1)}% to {(bounds.yMax * 100).toFixed(1)}%</span>
-          <span>Param Eff: {bounds.zMin.toFixed(2)} to {bounds.zMax.toFixed(2)}</span>
+          <span>Novelty: {bounds.zMin.toFixed(2)} to {bounds.zMax.toFixed(2)}</span>
         </div>
       )}
 

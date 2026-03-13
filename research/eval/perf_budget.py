@@ -20,7 +20,21 @@ DEFAULT_PERF_BUDGETS: Dict[str, Dict[str, float]] = {
         "queue_telemetry.submit_wait_avg_ms": 10.0,
         "gpu_starvation.max_stall_ms": 30.0,
         "gpu_starvation.total_stall_ms": 200.0,
-    }
+    },
+    "research_default": {
+        "trace_avg_ms.compile": 250.0,
+        "trace_avg_ms.forward_pass": 35.0,
+        "trace_avg_ms.backward_pass": 55.0,
+        "queue_telemetry.scheduling_wait_avg_ms": 40.0,
+        "gpu_starvation.max_stall_ms": 30.0,
+        "duplicate_work.detected_count": 0.0,
+    },
+    "designer_interactive": {
+        "metrics.total_time_ms": 1200.0,
+        "metrics.compile_time_ms": 400.0,
+        "metrics.native_coverage": 0.4,
+        "duplicate_work.detected_count": 0.0,
+    },
 }
 
 
@@ -34,6 +48,25 @@ def _nested_get(payload: Dict[str, Any], dotted_key: str) -> Optional[float]:
         return float(node)
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_observed_value(payload: Dict[str, Any], dotted_key: str) -> Optional[float]:
+    observed = _nested_get(payload, dotted_key)
+    if observed is not None:
+        return observed
+
+    contract = payload.get("perf_contract")
+    if isinstance(contract, dict):
+        observed = _nested_get(contract, dotted_key)
+        if observed is not None:
+            return observed
+
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict) and not dotted_key.startswith("metrics."):
+        observed = _nested_get(metrics, dotted_key)
+        if observed is not None:
+            return observed
+    return None
 
 
 def evaluate_perf_budget_gate(
@@ -50,7 +83,7 @@ def evaluate_perf_budget_gate(
     checks = []
     all_passed = True
     for key, limit in active_budgets.items():
-        observed = _nested_get(report, key)
+        observed = _resolve_observed_value(report, key)
         if observed is None:
             checks.append({
                 "metric": key,
@@ -62,6 +95,8 @@ def evaluate_perf_budget_gate(
             all_passed = False
             continue
         passed = observed <= float(limit)
+        if key.endswith("native_coverage"):
+            passed = observed >= float(limit)
         checks.append({
             "metric": key,
             "limit": float(limit),

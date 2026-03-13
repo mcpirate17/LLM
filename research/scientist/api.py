@@ -16,7 +16,28 @@ from typing import Optional
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+from .api_routes import _designer as _designer_mod
+
 logger = logging.getLogger(__name__)
+
+_requests = _designer_mod._requests
+_DESIGNER_PROXY_ENABLED = _designer_mod._DESIGNER_PROXY_ENABLED
+
+
+def _designer_proxy(method: str, path: str, *, json_body=None, params=None, timeout=None):
+    _designer_mod._requests = _requests
+    _designer_mod._DESIGNER_PROXY_ENABLED = _DESIGNER_PROXY_ENABLED
+    return _designer_mod.designer_proxy(
+        method,
+        path,
+        json_body=json_body,
+        params=params,
+        timeout=timeout,
+    )
+
+
+def _proxy_or_error(resp):
+    return _designer_mod.proxy_or_error(resp)
 
 
 def create_app(

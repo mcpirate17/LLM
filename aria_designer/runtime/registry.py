@@ -57,10 +57,11 @@ class ComponentRegistry:
             component_dir = self.components_dir / cat / cid
             if component_dir.is_dir():
                 return component_dir
-            return None
+            # Category mismatch — fall through to search by op name alone
+            parts = [cid]
 
-        # Search across categories if only ID provided
-        cid = component_type
+        # Search across categories if only ID provided or category was wrong
+        cid = parts[0]
         if self.components_dir.exists():
             for category_dir in self.components_dir.iterdir():
                 if not category_dir.is_dir():

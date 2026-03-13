@@ -4,7 +4,6 @@ import math
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from ...eval.utils import safe_parse_float
 from ...synthesis.primitives import get_primitive
 
 

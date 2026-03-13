@@ -9,7 +9,7 @@ pytestmark = pytest.mark.unit
 
 
 class _NotebookBreakthrough:
-    def get_leaderboard(self, tier=None, limit=5, sort_by="composite_score"):
+    def get_leaderboard(self, tier=None, limit=5, sort_by="composite_score", **kwargs):
         if tier != "breakthrough":
             return []
         return [{
@@ -20,7 +20,7 @@ class _NotebookBreakthrough:
 
 
 class _NotebookEmpty:
-    def get_leaderboard(self, tier=None, limit=5, sort_by="composite_score"):
+    def get_leaderboard(self, tier=None, limit=5, sort_by="composite_score", **kwargs):
         return []
 
 

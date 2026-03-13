@@ -19,15 +19,28 @@ class TestRobustnessInfrastructure(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp_dir.name) / "test_lab_notebook.db"
         self.nb = LabNotebook(str(self.db_path))
+        # Create a shared experiment for FK satisfaction
+        self._exp_id = self.nb.start_experiment("test", {})
 
     def tearDown(self):
         self.nb.close()
         self.tmp_dir.cleanup()
 
+    def _ensure_program_result(self, result_id: str) -> None:
+        """Insert a minimal program_results row so FK constraints are satisfied."""
+        self.nb.conn.execute(
+            "INSERT OR IGNORE INTO program_results "
+            "(result_id, experiment_id, graph_fingerprint, graph_json, timestamp) "
+            "VALUES (?, ?, ?, '{}', datetime('now'))",
+            (result_id, self._exp_id, f"fp_{result_id}"),
+        )
+        self.nb.conn.commit()
+
     def test_upsert_leaderboard_preserves_metrics(self):
         """Test that upsert_leaderboard doesn't overwrite existing data with NULL."""
         result_id = "test_res_123"
-        
+        self._ensure_program_result(result_id)
+
         # 1. Initial screening upsert
         self.nb.upsert_leaderboard(
             result_id=result_id,
@@ -73,6 +86,7 @@ class TestRobustnessInfrastructure(unittest.TestCase):
     def test_promote_to_tier_preserves_metrics(self):
         """Test that promote_to_tier doesn't overwrite existing data with NULL."""
         result_id = "test_res_456"
+        self._ensure_program_result(result_id)
         self.nb.upsert_leaderboard(
             result_id=result_id,
             model_source="graph_synthesis",
@@ -108,6 +122,7 @@ class TestRobustnessInfrastructure(unittest.TestCase):
     def test_robustness_columns_exist(self):
         """Test that all new robustness and scaling columns exist in the schema."""
         result_id = "test_res_789"
+        self._ensure_program_result(result_id)
         self.nb.upsert_leaderboard(
             result_id=result_id,
             model_source="graph_synthesis",

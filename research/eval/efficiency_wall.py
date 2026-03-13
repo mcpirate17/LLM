@@ -11,7 +11,7 @@ from __future__ import annotations
 import gc
 import logging
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 import torch
 import torch.nn as nn

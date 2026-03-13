@@ -5,7 +5,7 @@ Consolidates BridgeResult, SandboxResult, and Fingerprint schemas.
 
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 @dataclass
 class SandboxResult:
@@ -100,6 +100,11 @@ class BridgeResult:
 
     # Timing
     total_time_ms: float = 0.0
+
+    @property
+    def param_count(self) -> int:
+        """Backward-compatible alias used by older bridge consumers/tests."""
+        return int(self.n_params_estimate or 0)
 
     def to_dict(self) -> Dict[str, Any]:
         """Flatten nested results for backward compatibility with designer API."""

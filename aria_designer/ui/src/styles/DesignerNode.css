@@ -60,9 +60,9 @@
   color: #ffffff;
   font-size: 13px;
   letter-spacing: 0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 .designer-node .node-cat {
   font-size: 10px;

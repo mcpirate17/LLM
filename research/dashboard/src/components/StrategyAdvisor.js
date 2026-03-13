@@ -441,10 +441,11 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
     return () => clearInterval(interval);
   }, [fetchBriefing]);
 
-  const normalizedMathCoverage = Array.isArray(mathFamilyCoverage)
+  const normalizedMathCoverage = useMemo(() => Array.isArray(mathFamilyCoverage)
     ? mathFamilyCoverage
-    : mathFamilyCoverage?.families || [];
-  const strategy = computeStrategy(dashboardData, leaderboardEntries, normalizedMathCoverage);
+    : mathFamilyCoverage?.families || [], [mathFamilyCoverage]);
+
+  const strategy = useMemo(() => computeStrategy(dashboardData, leaderboardEntries, normalizedMathCoverage), [dashboardData, leaderboardEntries, normalizedMathCoverage]);
   const ts = strategy.tierSummary;
 
   useEffect(() => {
@@ -471,13 +472,13 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
 
   // Action button config: prefer suggested_config from briefing, fall back to strategy
   const briefingAction = briefing?.action;
-  const normalizedSuggestedMode = normalizeSuggestedMode(suggestedConfig?.mode || briefingAction);
+  const normalizedSuggestedModeVal = normalizeSuggestedMode(suggestedConfig?.mode || briefingAction);
   const actionConfig = suggestedConfig
     ? {
-        suggestedMode: normalizedSuggestedMode || 'continuous',
+        suggestedMode: normalizedSuggestedModeVal || 'continuous',
         configOverrides: {
           ...suggestedConfig,
-          mode: normalizedSuggestedMode || 'continuous',
+          mode: normalizedSuggestedModeVal || 'continuous',
         },
       }
     : (briefingAction && ACTION_CONFIGS[briefingAction]
@@ -490,7 +491,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
   const actionLabel = briefing?.action_label || strategy.title;
 
   // Build final config for experiment start
-  const buildStartConfig = () => {
+  const buildStartConfig = useCallback(() => {
     if (!actionConfig) return null;
     if (suggestedConfig) {
       // Preserve all AI-suggested keys so sparse/compression steering knobs are not dropped.
@@ -499,7 +500,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
       delete fullConfig.result_ids;
       return {
         ...fullConfig,
-        mode: normalizedSuggestedMode || 'continuous',
+        mode: normalizedSuggestedModeVal || 'continuous',
         model_source: fullConfig.model_source || 'mixed',
         source: 'aria_briefing',
         hypothesis: suggestedConfig.hypothesis || undefined,
@@ -512,7 +513,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
       source: 'strategy_advisor',
       ...actionConfig.configOverrides,
     };
-  };
+  }, [actionConfig, suggestedConfig, normalizedSuggestedModeVal]);
 
   // Summarize key params for display
   const paramEntries = suggestedConfig
@@ -527,7 +528,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
     return `${k.replace(/_/g, ' ')}: ${display}`;
   });
 
-  const handleStartClick = async () => {
+  const handleStartClick = useCallback(async () => {
     const config = buildStartConfig();
     if (!config || !onStart) return;
     setStarting(true);
@@ -536,9 +537,9 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
     } finally {
       setStarting(false);
     }
-  };
+  }, [buildStartConfig, onStart]);
 
-  const handleStartAutonomous = async () => {
+  const handleStartAutonomous = useCallback(async () => {
     if (!onStartAutonomous) return;
     setStartingAutonomous(true);
     try {
@@ -552,9 +553,9 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
     } finally {
       setStartingAutonomous(false);
     }
-  };
+  }, [onStartAutonomous, autoMaxExperiments, autoMaxMinutes]);
 
-  const handleNavigateClick = () => {
+  const handleNavigateClick = useCallback(() => {
     if (onApplyStrategy) {
       onApplyStrategy({
         action: briefingAction || strategy.action || null,
@@ -563,7 +564,7 @@ function StrategyAdvisor({ dashboardData, onApplyStrategy, onStart, onStop, isRu
         strategy,
       });
     }
-  };
+  }, [onApplyStrategy, briefingAction, strategy, actionLabel]);
 
   const handleDiagnose = async () => {
     setDiagnosing(true);

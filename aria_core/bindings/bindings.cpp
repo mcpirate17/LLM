@@ -15,11 +15,20 @@
 #include "hyperbolic.h"
 #include "graph_validator.h"
 #include "shape_inference.h"
+#include "smoke_test.h"
 
 #define CHECK_CPU(x) TORCH_CHECK(!x.is_cuda(), #x " must be a CPU tensor")
+#define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
+#define CHECK_DEVICE(x)
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_F32(x) TORCH_CHECK(x.dtype() == torch::kFloat32, #x " must be float32")
 #define CHECK_INPUT(x) do { CHECK_CPU(x); CHECK_CONTIGUOUS(x); CHECK_F32(x); } while(0)
+#define CHECK_INPUT_ANY(x) do { CHECK_CONTIGUOUS(x); CHECK_F32(x); } while(0)
+
+void launch_cuda_tropical_matmul_f32(const float* A, const float* B, float* C, int64_t M, int64_t K, int64_t N);
+void launch_cuda_tropical_matmul_batched_f32(const float* A, const float* B, float* C, int64_t batch, int64_t M, int64_t K, int64_t N);
+void launch_cuda_tropical_add_f32(const float* a, const float* b, float* y, int64_t n);
+void launch_cuda_clifford_geometric_product_cl30_f32(const float* a, const float* b, float* y, int64_t n);
 #define CHECK_I64(x) TORCH_CHECK(x.dtype() == torch::kInt64, #x " must be int64")
 
 // ═══ Elementwise unary ═══
@@ -63,7 +72,17 @@ DEFINE_BINARY_F32(add_f32, aria_add_f32)
 DEFINE_BINARY_F32(mul_f32, aria_mul_f32)
 DEFINE_BINARY_F32(sub_f32, aria_sub_f32)
 DEFINE_BINARY_F32(silu_mul_f32, aria_silu_mul_f32)
-DEFINE_BINARY_F32(tropical_add_f32, aria_tropical_add_f32)
+torch::Tensor tropical_add_f32(torch::Tensor a, torch::Tensor b) {
+    CHECK_INPUT_ANY(a); CHECK_INPUT_ANY(b);
+    TORCH_CHECK(a.numel() == b.numel(), "a and b must have same numel");
+    auto y = torch::empty_like(a);
+    if (a.is_cuda()) {
+        launch_cuda_tropical_add_f32(a.data_ptr<float>(), b.data_ptr<float>(), y.data_ptr<float>(), a.numel());
+    } else {
+        aria_tropical_add_f32(a.data_ptr<float>(), b.data_ptr<float>(), y.data_ptr<float>(), a.numel());
+    }
+    return y;
+}
 DEFINE_BINARY_F32(maximum_f32, aria_maximum_f32)
 DEFINE_BINARY_F32(minimum_f32, aria_minimum_f32)
 DEFINE_BINARY_F32(div_safe_f32, aria_div_safe_f32)
@@ -93,10 +112,26 @@ torch::Tensor matmul_f32(torch::Tensor A, torch::Tensor B) {
 }
 
 torch::Tensor tropical_matmul_f32(torch::Tensor A, torch::Tensor B) {
-    CHECK_INPUT(A); CHECK_INPUT(B);
+    CHECK_INPUT_ANY(A); CHECK_INPUT_ANY(B);
     int64_t M = A.size(0), K = A.size(1), N = B.size(1);
     auto C = torch::zeros({M, N}, A.options());
-    aria_tropical_matmul_f32(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, K, N);
+    if (A.is_cuda()) {
+        launch_cuda_tropical_matmul_f32(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, K, N);
+    } else {
+        aria_tropical_matmul_f32(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, K, N);
+    }
+    return C;
+}
+
+torch::Tensor tropical_matmul_batched_f32(torch::Tensor A, torch::Tensor B) {
+    CHECK_INPUT_ANY(A); CHECK_INPUT_ANY(B);
+    int64_t batch = A.size(0), M = A.size(1), K = A.size(2), N = B.size(2);
+    auto C = torch::zeros({batch, M, N}, A.options());
+    if (A.is_cuda()) {
+        launch_cuda_tropical_matmul_batched_f32(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), batch, M, K, N);
+    } else {
+        aria_tropical_matmul_batched_f32(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), batch, M, K, N);
+    }
     return C;
 }
 
@@ -596,11 +631,38 @@ torch::Tensor hyp_distance_f32(torch::Tensor x, torch::Tensor yi) { CHECK_INPUT(
 torch::Tensor hyperbolic_mobius_add_f32(torch::Tensor x, torch::Tensor v, float c) { CHECK_INPUT(x); CHECK_INPUT(v); auto y = torch::empty_like(x); aria_hyperbolic_mobius_add_f32(x.data_ptr<float>(), v.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), c); return y; }
 torch::Tensor hyperbolic_distance_f32(torch::Tensor x, torch::Tensor yi, float c) { CHECK_INPUT(x); CHECK_INPUT(yi); auto out = torch::empty({x.size(0)}, x.options()); aria_hyperbolic_distance_f32(x.data_ptr<float>(), yi.data_ptr<float>(), out.data_ptr<float>(), x.size(0), x.size(1), c); return out; }
 
+torch::Tensor exp_map_backward_f32(torch::Tensor v, torch::Tensor grad_out, float c) {
+    CHECK_INPUT(v); CHECK_INPUT(grad_out);
+    auto grad_in = torch::empty_like(v);
+    int64_t dim = v.size(-1);
+    int64_t batch = v.numel() / dim;
+    aria_exp_map_backward_f32(v.data_ptr<float>(), grad_out.data_ptr<float>(),
+                               grad_in.data_ptr<float>(), batch, dim, c);
+    return grad_in;
+}
+torch::Tensor log_map_backward_f32(torch::Tensor x, torch::Tensor grad_out, float c) {
+    CHECK_INPUT(x); CHECK_INPUT(grad_out);
+    auto grad_in = torch::empty_like(x);
+    int64_t dim = x.size(-1);
+    int64_t batch = x.numel() / dim;
+    aria_log_map_backward_f32(x.data_ptr<float>(), grad_out.data_ptr<float>(),
+                               grad_in.data_ptr<float>(), batch, dim, c);
+    return grad_in;
+}
+
 // ═══ Tropical ═══
 
 torch::Tensor tropical_center_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_tropical_center_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
 torch::Tensor tropical_attention_f32(torch::Tensor x, float t) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_tropical_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t); return y; }
 torch::Tensor tropical_gate_f32(torch::Tensor x, float t) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_tropical_gate_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t); return y; }
+
+torch::Tensor tropical_router_f32(torch::Tensor x, torch::Tensor centroids) {
+    CHECK_INPUT(x); CHECK_INPUT(centroids);
+    int64_t B = x.size(0), S = x.size(1), D = x.size(2), E = centroids.size(0);
+    auto y = torch::empty({B, S, E}, x.options());
+    aria_tropical_router_f32(x.data_ptr<float>(), centroids.data_ptr<float>(), y.data_ptr<float>(), B, S, D, E);
+    return y;
+}
 
 // ═══ P-adic ═══
 
@@ -615,12 +677,30 @@ torch::Tensor rotor_transform_f32(torch::Tensor x, torch::Tensor r) { CHECK_INPU
 torch::Tensor grade_select_f32(torch::Tensor x, int32_t g) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_grade_select_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), g); return y; }
 torch::Tensor grade_mix_f32(torch::Tensor x, torch::Tensor a) { CHECK_INPUT(x); CHECK_INPUT(a); auto y = torch::empty_like(x); aria_grade_mix_f32(x.data_ptr<float>(), a.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1)); return y; }
 torch::Tensor clifford_attention_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_clifford_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
-torch::Tensor clifford_geometric_product_cl30_f32(torch::Tensor a, torch::Tensor b) { CHECK_INPUT(a); CHECK_INPUT(b); auto y = torch::empty_like(a); aria_clifford_geometric_product_cl30_f32(a.data_ptr<float>(), b.data_ptr<float>(), y.data_ptr<float>(), a.numel()/8); return y; }
+torch::Tensor clifford_geometric_product_cl30_f32(torch::Tensor a, torch::Tensor b) {
+    CHECK_INPUT_ANY(a); CHECK_INPUT_ANY(b);
+    auto y = torch::empty_like(a);
+    if (a.is_cuda()) {
+        launch_cuda_clifford_geometric_product_cl30_f32(a.data_ptr<float>(), b.data_ptr<float>(), y.data_ptr<float>(), a.numel());
+    } else {
+        aria_clifford_geometric_product_cl30_f32(a.data_ptr<float>(), b.data_ptr<float>(), y.data_ptr<float>(), a.numel()/8);
+    }
+    return y;
+}
 torch::Tensor clifford_rotor_transform_cl30_f32(torch::Tensor x, torch::Tensor r) { CHECK_INPUT(x); CHECK_INPUT(r); auto y = torch::empty_like(x); aria_clifford_rotor_transform_cl30_f32(x.data_ptr<float>(), r.data_ptr<float>(), y.data_ptr<float>(), x.numel()/8); return y; }
 
 // ═══ Spiking ═══
 
 torch::Tensor lif_neuron_f32(torch::Tensor x, float tau, float thr) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_lif_neuron_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), tau, thr); return y; }
+std::vector<torch::Tensor> lif_neuron_with_state_f32(torch::Tensor x, float tau, float thr) {
+    CHECK_INPUT(x);
+    auto spikes = torch::empty_like(x);
+    auto membrane = torch::empty_like(x);
+    aria_lif_neuron_with_state_f32(x.data_ptr<float>(), spikes.data_ptr<float>(),
+                                    membrane.data_ptr<float>(),
+                                    x.size(0), x.size(1), x.size(2), tau, thr);
+    return {spikes, membrane};
+}
 torch::Tensor spike_rate_code_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_spike_rate_code_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
 torch::Tensor stdp_attention_f32(torch::Tensor x, float tp, float tm) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_stdp_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), tp, tm); return y; }
 
@@ -696,6 +776,26 @@ torch::Tensor rwkv_time_mixing_f32(torch::Tensor x, torch::Tensor wd, torch::Ten
     auto y = torch::empty_like(x);
     aria_rwkv_time_mixing_f32(x.data_ptr<float>(), wd.data_ptr<float>(), ub.data_ptr<float>(), Wk.data_ptr<float>(), Wv.data_ptr<float>(), Wr.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2));
     return y;
+}
+torch::Tensor rwkv_wkv_scan_f32(torch::Tensor k, torch::Tensor v, torch::Tensor r,
+                                  torch::Tensor w_decay, torch::Tensor u_bonus) {
+    CHECK_INPUT(k); CHECK_INPUT(v); CHECK_INPUT(r);
+    CHECK_INPUT(w_decay); CHECK_INPUT(u_bonus);
+    auto out = torch::empty_like(k);
+    aria_rwkv_wkv_scan_f32(k.data_ptr<float>(), v.data_ptr<float>(), r.data_ptr<float>(),
+                            w_decay.data_ptr<float>(), u_bonus.data_ptr<float>(),
+                            out.data_ptr<float>(), k.size(0), k.size(1), k.size(2));
+    return out;
+}
+
+// ── Gromov Delta ──────────────────────────────────────────────────
+float gromov_delta_f32(torch::Tensor distance_matrix, torch::Tensor indices) {
+    CHECK_INPUT(distance_matrix);
+    int64_t n = distance_matrix.size(0);
+    int64_t n_idx = indices.numel();
+    auto indices_int = indices.to(torch::kInt32).contiguous();
+    return aria_gromov_delta_f32(distance_matrix.data_ptr<float>(),
+                                 indices_int.data_ptr<int32_t>(), n, n_idx);
 }
 
 // ── GraphExecutor Wrapper ──────────────────────────────────────────
@@ -1103,7 +1203,58 @@ py::list canonical_topo_sort(
     return res;
 }
 
-// ═══ Module registration — 98 bindings ═══
+// ═══ Fingerprint Metrics Wrappers ═══
+
+torch::Tensor interaction_metrics_f32_py(torch::Tensor influence, torch::Tensor positions) {
+    CHECK_INPUT(influence);
+    TORCH_CHECK(positions.dtype() == torch::kInt64, "positions must be int64");
+    CHECK_CPU(positions); CHECK_CONTIGUOUS(positions);
+    TORCH_CHECK(influence.dim() == 2, "influence must be 2D [n_pos, seq_len]");
+    int64_t n_pos = influence.size(0);
+    int64_t seq_len = influence.size(1);
+    auto out = torch::empty({4}, torch::kFloat32);
+    aria_interaction_metrics_f32(
+        influence.data_ptr<float>(), positions.data_ptr<int64_t>(),
+        out.data_ptr<float>(), n_pos, seq_len
+    );
+    return out;
+}
+
+torch::Tensor sensitivity_metrics_f32_py(torch::Tensor sens) {
+    CHECK_INPUT(sens);
+    TORCH_CHECK(sens.dim() == 2, "sens must be 2D [n_pos, seq_len]");
+    int64_t n_pos = sens.size(0);
+    int64_t seq_len = sens.size(1);
+    auto out = torch::empty({3}, torch::kFloat32);
+    aria_sensitivity_metrics_f32(
+        sens.data_ptr<float>(), out.data_ptr<float>(), n_pos, seq_len
+    );
+    return out;
+}
+
+// ═══ Smoke Test Wrapper ═══
+
+py::dict smoke_test_graph_py(
+    int32_t n_nodes,
+    std::vector<int32_t> edges,
+    std::vector<int32_t> op_roles,
+    std::vector<int32_t> has_params_flag,
+    std::vector<int32_t> preserves_grad,
+    int32_t output_node
+) {
+    SmokeTestResult r = smoke_test_graph(
+        n_nodes, edges.data(), op_roles.data(),
+        has_params_flag.data(), preserves_grad.data(), output_node
+    );
+    py::dict result;
+    result["ok"] = (bool)r.ok;
+    result["has_params"] = (bool)r.has_params;
+    result["grad_flows"] = (bool)r.grad_flows;
+    result["no_unsafe"] = (bool)r.no_unsafe;
+    return result;
+}
+
+// ═══ Module registration — 99 bindings ═══
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "aria_core: Unified high-performance kernel library for Aria";
@@ -1119,7 +1270,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("minimum_f32", &minimum_f32); m.def("div_safe_f32", &div_safe_f32); m.def("outer_product_f32", &outer_product_f32);
     m.def("sum_f32", &sum_f32); m.def("mean_f32", &mean_f32);
     m.def("linear_cka_f32", &linear_cka_f32, "Linear CKA similarity score");
-    m.def("matmul_f32", &matmul_f32); m.def("tropical_matmul_f32", &tropical_matmul_f32); m.def("linear_f32", &linear_f32);
+    m.def("matmul_f32", &matmul_f32);
+    m.def("tropical_matmul_f32", &tropical_matmul_f32);
+    m.def("tropical_matmul_batched_f32", &tropical_matmul_batched_f32);
+    m.def("linear_f32", &linear_f32);
     m.def("rmsnorm_f32", &rmsnorm_f32); m.def("layernorm_f32", &layernorm_f32);
     m.def("softmax_f32", &softmax_f32); m.def("softmax_seq_f32", &softmax_seq_f32);
     m.def("transpose2d_f32", &transpose2d_f32); m.def("causal_mask_f32", &causal_mask_f32);
@@ -1161,27 +1315,56 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("linear_tied_f32", &linear_tied_f32);
     
     m.def("exp_map_f32", &exp_map_f32); m.def("log_map_f32", &log_map_f32);
+    m.def("exp_map_backward_f32", &exp_map_backward_f32); m.def("log_map_backward_f32", &log_map_backward_f32);
     
     m.def("poincare_add_f32", &poincare_add_f32); m.def("hyp_linear_f32", &hyp_linear_f32);
     m.def("hyperbolic_norm_f32", &hyperbolic_norm_f32); m.def("hyp_tangent_nonlinear_f32", &hyp_tangent_nonlinear_f32);
     m.def("hyp_distance_f32", &hyp_distance_f32); m.def("hyperbolic_mobius_add_f32", &hyperbolic_mobius_add_f32);
     m.def("hyperbolic_distance_f32", &hyperbolic_distance_f32);
-    m.def("tropical_center_f32", &tropical_center_f32); m.def("tropical_attention_f32", &tropical_attention_f32);
+    m.def("tropical_center_f32", &tropical_center_f32);
+    m.def("tropical_attention_f32", &tropical_attention_f32);
     m.def("tropical_gate_f32", &tropical_gate_f32);
-    m.def("padic_gate_f32", &padic_gate_f32); m.def("padic_expand_f32", &padic_expand_f32);
+    m.def("tropical_router_f32", &tropical_router_f32);
+    m.def("padic_gate_f32", &padic_gate_f32);
+ m.def("padic_expand_f32", &padic_expand_f32);
     m.def("padic_residual_f32", &padic_residual_f32); m.def("ultrametric_attention_f32", &ultrametric_attention_f32);
     m.def("rotor_transform_f32", &rotor_transform_f32); m.def("grade_select_f32", &grade_select_f32);
     m.def("grade_mix_f32", &grade_mix_f32); m.def("clifford_attention_f32", &clifford_attention_f32);
     m.def("clifford_geometric_product_cl30_f32", &clifford_geometric_product_cl30_f32);
     m.def("clifford_rotor_transform_cl30_f32", &clifford_rotor_transform_cl30_f32);
-    m.def("lif_neuron_f32", &lif_neuron_f32); m.def("spike_rate_code_f32", &spike_rate_code_f32);
+    m.def("lif_neuron_f32", &lif_neuron_f32); m.def("lif_neuron_with_state_f32", &lif_neuron_with_state_f32);
+    m.def("spike_rate_code_f32", &spike_rate_code_f32);
     m.def("stdp_attention_f32", &stdp_attention_f32);
     m.def("embedding_lookup_f32", &embedding_lookup_f32); m.def("rope_rotate_f32", &rope_rotate_f32);
     m.def("gated_linear_f32", &gated_linear_f32); m.def("cosine_similarity_f32", &cosine_similarity_f32);
     m.def("rwkv_time_mixing_f32", &rwkv_time_mixing_f32);
+    m.def("rwkv_wkv_scan_f32", &rwkv_wkv_scan_f32);
+    m.def("gromov_delta_f32", &gromov_delta_f32);
     m.def("swiglu_f32", &swiglu_f32);
     m.def("rwkv_channel_f32", &rwkv_channel_f32);
     m.def("gather_topk_f32", &gather_topk_f32);
+    // Cumulative ops (AVX2+OpenMP)
+    m.def("cumsum_f32", [](torch::Tensor x) -> torch::Tensor {
+        CHECK_INPUT(x);
+        auto flat = x.reshape({-1, x.size(-1)});
+        auto y = torch::empty_like(flat);
+        aria_cumsum_f32(flat.data_ptr<float>(), y.data_ptr<float>(), flat.size(0), flat.size(1));
+        return y.reshape_as(x);
+    }, "Cumulative sum along last dim (AVX2+OpenMP)");
+    m.def("cumprod_safe_f32", [](torch::Tensor x, float lo, float hi) -> torch::Tensor {
+        CHECK_INPUT(x);
+        auto flat = x.reshape({-1, x.size(-1)});
+        auto y = torch::empty_like(flat);
+        aria_cumprod_safe_f32(flat.data_ptr<float>(), y.data_ptr<float>(), flat.size(0), flat.size(1), lo, hi);
+        return y.reshape_as(x);
+    }, "Cumulative product with clamping", py::arg("x"), py::arg("lo") = 1e-6f, py::arg("hi") = 1e6f);
+    // Fingerprint metrics
+    m.def("interaction_metrics_f32", &interaction_metrics_f32_py, "Interaction metrics from influence matrix");
+    m.def("sensitivity_metrics_f32", &sensitivity_metrics_f32_py, "Sensitivity metrics from Jacobian matrix");
+    // Smoke test
+    m.def("smoke_test_graph", &smoke_test_graph_py, "Fast structural smoke test for computation graphs",
+          py::arg("n_nodes"), py::arg("edges"), py::arg("op_roles"),
+          py::arg("has_params_flag"), py::arg("preserves_grad"), py::arg("output_node"));
     // Graph validation & shape inference
     m.def("validate_graph", &validate_graph, "Validate a DAG: cycle detection, topological sort",
           py::arg("n_nodes"), py::arg("edges"), py::arg("op_codes") = std::vector<int32_t>());

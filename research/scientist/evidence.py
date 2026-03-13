@@ -55,16 +55,10 @@ def _median(values: Iterable[float]) -> Optional[float]:
     return float((data[mid - 1] + data[mid]) / 2.0)
 
 
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+from .shared_utils import safe_float as _safe_float
 
 
-@dataclass
+@dataclass(slots=True)
 class EvidencePack:
     """Structured evidence pack for a recommendation/decision."""
     hypothesis: str

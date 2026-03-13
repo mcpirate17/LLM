@@ -234,6 +234,10 @@ def _wait_for_completion(runner, poll_seconds: float = 1.0):
             time.sleep(0.2)
 
     final = runner.progress
+    # Flush async writes to DB
+    nb = getattr(runner, 'notebook', None)
+    if nb and hasattr(nb, 'flush_writes'):
+        nb.flush_writes()
     print("\nRun finished.")
     print(f"Final status: {final.status}")
     if final.error:

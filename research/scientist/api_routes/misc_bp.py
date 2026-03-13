@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import traceback
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,25 +20,31 @@ from ..native_runner import native_runner_capability_report
 from ..code_agent import _spawn_code_agent_task
 from ..evidence import build_evidence_pack
 from ..designer_utils import get_designer_components
+from ...perf_contract import list_recent_perf_artifacts, summarize_perf_artifacts
 from ._helpers import (
     get_runner, with_native_runner_progress, get_run_trigger_snapshot,
     deduplicate_insights, normalize_result_ids, record_run_trigger,
-    get_autonomy, native_runner_canary_status_payload,
+    get_autonomy, native_runner_canary_status_payload, resolve_runner_status,
 )
-from ._strategy import (
-    parse_report_date, report_program_matches_theme,
-    report_experiment_matches_trend, build_filtered_report_summary,
-    build_report_snapshot_key, build_report_action_eligibility,
-    annotate_qkv_usage, compute_cross_run_stability,
-    compute_breakthrough_production_readiness, compute_recommendation,
+from ._strategy_preflight import (
     normalize_start_mode, build_start_mode_eligibility,
-    compute_compression_opportunities, compute_sparse_evidence,
-    sparse_coverage_summary, diagnose_research_issues,
-    run_pipeline_sample_check, run_launch_preflight,
-    normalize_entries, parse_bool_query,
+    run_launch_preflight, run_pipeline_sample_check,
     normalize_briefing_mode, briefing_action_from_mode,
     briefing_action_label, augment_sparse_action_config,
 )
+from ._strategy_recommendations import (
+    annotate_qkv_usage, compute_cross_run_stability,
+    compute_breakthrough_production_readiness, compute_recommendation,
+    compute_compression_opportunities, compute_sparse_evidence,
+    sparse_coverage_summary,
+)
+from ._strategy_report import (
+    parse_report_date, report_program_matches_theme,
+    report_experiment_matches_trend, build_filtered_report_summary,
+    build_report_snapshot_key, build_report_action_eligibility,
+    normalize_entries, parse_bool_query,
+)
+from ._strategy_diagnostics import diagnose_research_issues
 from ._designer import (
     designer_service_status, designer_touch_activity, designer_idle_state,
     start_designer_services, stop_designer_services,
@@ -77,14 +82,15 @@ def register_misc_routes(app, context: ApiRouteContext):
         aria = get_aria()
         try:
             summary = nb.get_dashboard_summary()
-            progress_payload = with_native_runner_progress(runner.progress.to_dict())
+            runner_state = resolve_runner_status(nb, runner)
+            progress_payload = runner_state["progress"]
             trigger = get_run_trigger_snapshot(progress_payload.get("experiment_id"))
             progress_payload["run_trigger_source"] = trigger.get("source")
             progress_payload["run_trigger"] = trigger
             return jsonify({
                 "aria": aria.get_status(db_summary=summary),
                 "summary": summary,
-                "is_running": runner.is_running,
+                "is_running": runner_state["is_running"],
                 "progress": progress_payload,
                 "native_runner": progress_payload.get("native_runner"),
                 "run_trigger_source": trigger.get("source"),
@@ -211,13 +217,18 @@ def register_misc_routes(app, context: ApiRouteContext):
 
 
     @app.route("/api/dashboard")
+    @app.route("/api/dashboard/summary")
     def api_dashboard():
         """Get all dashboard data in one call."""
         runner = get_runner(notebook_path)
         nb = LabNotebook(notebook_path)
         aria = get_aria()
         try:
+            compact = request.path.endswith("/summary") or (
+                str(request.args.get("compact", "0")).strip().lower() in {"1", "true", "yes"}
+            )
             summary = nb.get_dashboard_summary()
+            runner_state = resolve_runner_status(nb, runner)
 
             # Add campaign/hypothesis/knowledge counts
             try:
@@ -240,6 +251,63 @@ def register_misc_routes(app, context: ApiRouteContext):
             top_programs = nb.get_top_programs(10)
             annotate_qkv_usage(top_programs, analytics)
             production_readiness = compute_breakthrough_production_readiness(nb, analytics)
+            insights = deduplicate_insights(nb.get_insights(limit=50))
+            recent_entries = normalize_entries(nb.get_entries(limit=20))
+
+            if compact:
+                recent_experiments = [
+                    {
+                        "experiment_id": exp.get("experiment_id"),
+                        "timestamp": exp.get("timestamp"),
+                        "status": exp.get("status"),
+                        "mode": exp.get("mode"),
+                        "n_generated": exp.get("n_generated"),
+                        "n_stage0_passed": exp.get("n_stage0_passed"),
+                        "n_stage1_passed": exp.get("n_stage1_passed"),
+                        "best_loss_ratio": exp.get("best_loss_ratio"),
+                        "aria_summary": exp.get("aria_summary"),
+                    }
+                    for exp in recent_experiments[:8]
+                ]
+                top_programs = [
+                    {
+                        "result_id": row.get("result_id"),
+                        "experiment_id": row.get("experiment_id"),
+                        "timestamp": row.get("timestamp"),
+                        "loss_ratio": row.get("loss_ratio"),
+                        "novelty_score": row.get("novelty_score"),
+                        "composite_score": row.get("composite_score"),
+                        "architecture_family": row.get("architecture_family"),
+                        "qkv_usage": row.get("qkv_usage"),
+                        "routing_mode": row.get("routing_mode"),
+                        "param_count": row.get("param_count"),
+                        "stage1_passed": row.get("stage1_passed"),
+                        "graph_fingerprint": row.get("graph_fingerprint"),
+                    }
+                    for row in top_programs[:5]
+                ]
+                insights = [
+                    {
+                        "insight_id": ins.get("insight_id"),
+                        "experiment_id": ins.get("experiment_id"),
+                        "timestamp": ins.get("timestamp"),
+                        "op_name": ins.get("op_name"),
+                        "text": str(ins.get("text") or "")[:220],
+                        "confidence": ins.get("confidence"),
+                        "signal": ins.get("signal"),
+                    }
+                    for ins in insights[:12]
+                ]
+                recent_entries = [
+                    {
+                        "entry_id": row.get("entry_id"),
+                        "experiment_id": row.get("experiment_id"),
+                        "entry_type": row.get("entry_type"),
+                        "timestamp": row.get("timestamp"),
+                        "content": str(row.get("content") or "")[:180],
+                    }
+                    for row in recent_entries[:8]
+                ]
 
             data = {
                 "aria": aria.get_status(db_summary=summary),
@@ -247,10 +315,10 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "recent_experiments": recent_experiments,
                 "top_programs": top_programs,
                 "production_readiness": production_readiness,
-                "insights": deduplicate_insights(nb.get_insights(limit=50)),
-                "recent_entries": normalize_entries(nb.get_entries(limit=20)),
-                "is_running": runner.is_running,
-                "progress": with_native_runner_progress(runner.progress.to_dict()),
+                "insights": insights,
+                "recent_entries": recent_entries,
+                "is_running": runner_state["is_running"],
+                "progress": runner_state["progress"],
             }
 
             # Compute deltas from latest completed experiment
@@ -1239,7 +1307,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                     fallback_reason = "llm_unreachable"
             ref_comparison = None
             try:
-                from ..llm.context import build_briefing_context
+                from ..llm.context_briefing import build_briefing_context
 
                 # Gather extra context for LLM
                 try:
@@ -1354,12 +1422,11 @@ def register_misc_routes(app, context: ApiRouteContext):
                     # Modes that require result_ids — resolve them automatically
                     if normalized_mode in ("investigation", "validation") and not suggested_config.get("result_ids"):
                         _tier = "screening" if normalized_mode == "investigation" else "investigation"
-                        _tier_rows = nb.conn.execute(
-                            f"SELECT result_id FROM leaderboard "
-                            f"WHERE tier = ? AND {_tier}_passed = 1 "
-                            f"ORDER BY {_tier}_loss_ratio ASC LIMIT 20",
-                            (_tier,),
-                        ).fetchall()
+                        _TIER_SQL = {
+                            "screening": "SELECT result_id FROM leaderboard WHERE tier = ? AND screening_passed = 1 ORDER BY screening_loss_ratio ASC LIMIT 20",
+                            "investigation": "SELECT result_id FROM leaderboard WHERE tier = ? AND investigation_passed = 1 ORDER BY investigation_loss_ratio ASC LIMIT 20",
+                        }
+                        _tier_rows = nb.conn.execute(_TIER_SQL[_tier], (_tier,)).fetchall()
                         _rids = [r["result_id"] for r in _tier_rows if r["result_id"]]
                         suggested_config["result_ids"] = _rids
 
@@ -1754,11 +1821,32 @@ def register_misc_routes(app, context: ApiRouteContext):
     def api_aria_cycle_status():
         """Get Aria continuous-cycle status (planning/running/analyzing)."""
         runner = get_runner(notebook_path)
+        nb = LabNotebook(notebook_path)
         try:
-            return jsonify(runner.get_aria_cycle_status())
+            cycle = runner.get_aria_cycle_status()
+            runner_state = resolve_runner_status(nb, runner)
+            external = runner_state.get("external_snapshot")
+            if external and not runner.is_running:
+                cycle.update({
+                    "aria_message": runner_state["progress"].get("aria_message", ""),
+                    "continuous_active": True,
+                    "experiment_id": external["experiment_id"],
+                    "is_running": True,
+                    "last_note": (
+                        f"External {external['mode']} experiment detected via notebook activity."
+                    ),
+                    "phase": "running",
+                    "phase_label": "Running",
+                    "progress_status": "running",
+                    "selected_mode": external["mode"],
+                    "external_process": True,
+                })
+            return jsonify(cycle)
         except Exception as e:
             logger.error(f"Error in /api/aria/cycle-status: {e}")
             return jsonify({"error": str(e)}), 500
+        finally:
+            nb.close()
 
 
     @app.route("/api/aria/cycle-history")
@@ -1769,6 +1857,7 @@ def register_misc_routes(app, context: ApiRouteContext):
         status_filter = str(request.args.get("status") or "").strip().lower()
         query_text = str(request.args.get("q") or "").strip().lower()
         output_format = str(request.args.get("format") or "json").strip().lower()
+        compact = str(request.args.get("compact", "1")).strip().lower() not in {"0", "false", "no"}
         nb = LabNotebook(notebook_path)
         try:
             entries = normalize_entries(nb.get_entries(entry_type="live_feed", limit=n * 4))
@@ -1802,6 +1891,25 @@ def register_misc_routes(app, context: ApiRouteContext):
                     ]).lower()
                     if query_text not in searchable:
                         continue
+
+                if compact:
+                    reasoning = str(row.get("reasoning") or "").strip()
+                    error = str(row.get("error") or "").strip()
+                    row = {
+                        "cycle_index": row.get("cycle_index"),
+                        "mode": row.get("mode"),
+                        "status": row.get("status"),
+                        "timestamp": row.get("timestamp"),
+                        "delta_programs": row.get("delta_programs"),
+                        "delta_stage1_survivors": row.get("delta_stage1_survivors"),
+                        "stage1_survivors": row.get("stage1_survivors"),
+                        "confidence": row.get("confidence"),
+                        "entry_id": row.get("entry_id"),
+                        "experiment_id": row.get("experiment_id"),
+                        "entry_timestamp": row.get("entry_timestamp"),
+                        "reasoning": reasoning[:240],
+                        "error": error[:180],
+                    }
 
                 history.append(row)
                 if len(history) >= n:
@@ -1914,7 +2022,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             analytics_data = runner._gather_analytics_data(nb)
             history = nb.get_recent_experiments(10)
             past_hypotheses = runner._get_past_hypotheses(nb)
-            from ..llm.context import build_rich_context
+            from ..llm.context_experiment import build_rich_context
             context = build_rich_context(
                 results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
                          "stage1_passed": 0, "novel_count": 0},
@@ -1951,7 +2059,7 @@ def register_misc_routes(app, context: ApiRouteContext):
             analytics_data = runner._gather_analytics_data(nb)
             history = nb.get_recent_experiments(10)
             past_hypotheses = runner._get_past_hypotheses(nb)
-            from ..llm.context import build_rich_context
+            from ..llm.context_experiment import build_rich_context
             context = build_rich_context(
                 results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
                          "stage1_passed": 0, "novel_count": 0},
@@ -2305,7 +2413,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 past_hypotheses = []
 
             try:
-                from ..llm.context import build_rich_context
+                from ..llm.context_experiment import build_rich_context
                 context = build_rich_context(
                     results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
                              "stage1_passed": 0, "novel_count": 0},
@@ -2748,6 +2856,7 @@ def register_misc_routes(app, context: ApiRouteContext):
 
             # Database stats
             summary = nb.get_dashboard_summary()
+            runner_state = resolve_runner_status(nb, runner)
             db_info = {
                 "path": notebook_path,
                 "total_experiments": summary.get("total_experiments", 0),
@@ -2760,7 +2869,7 @@ def register_misc_routes(app, context: ApiRouteContext):
                 "database": db_info,
                 "native_runner": native_runner_capability_report(),
                 "native_runner_canary": native_runner_canary_status_payload(force_refresh=refresh_canary),
-                "is_running": runner.is_running,
+                "is_running": runner_state["is_running"],
             })
         except Exception as e:
             logger.error(f"Error in /api/system/status: {e}")
@@ -2816,6 +2925,25 @@ def register_misc_routes(app, context: ApiRouteContext):
             })
         except Exception as e:
             logger.error(f"Error in /api/native-runner/telemetry: {e}")
+            return jsonify({"error": str(e)}), 500
+
+
+    @app.route("/api/perf/summary")
+    def api_perf_summary():
+        """Return recent research perf artifacts and aggregate budget state."""
+        try:
+            limit = max(1, min(100, int(request.args.get("limit", 20))))
+        except Exception:
+            limit = 20
+        try:
+            artifacts = list_recent_perf_artifacts(component="research", limit=limit)
+            return jsonify({
+                "status": "ok",
+                "summary": summarize_perf_artifacts(artifacts, component="research"),
+                "artifacts": artifacts,
+            })
+        except Exception as e:
+            logger.error(f"Error in /api/perf/summary: {e}")
             return jsonify({"error": str(e)}), 500
 
 
@@ -3024,13 +3152,28 @@ def register_misc_routes(app, context: ApiRouteContext):
         return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
 
-    @app.route("/api/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
+    @app.route("/api/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
     def designer_v1_proxy(path):
-        """Catch-all proxy for designer API v1 routes when embedded."""
+        """Catch-all proxy for designer API v1 routes when embedded.
+
+        This route is registered earlier than the later catch-all below, so it
+        must preserve SSE semantics for streaming endpoints like
+        ``/api/v1/workflows/evaluate/stream`` instead of routing them through
+        the JSON proxy adapter.
+        """
+        json_body = request.get_json(silent=True) if request.method in ("POST", "PUT", "OPTIONS") else None
+        params = request.args
+
+        if "stream" in path:
+            return proxy_stream(request.method, f"/api/v1/{path}", json_body=json_body, params=params)
+
         result = proxy_or_error(
-            designer_proxy(request.method, f"/api/v1/{path}",
-                            json_body=request.get_json(silent=True) if request.method in ("POST", "PUT") else None,
-                            params=request.args)
+            designer_proxy(
+                request.method,
+                f"/api/v1/{path}",
+                json_body=json_body,
+                params=params,
+            )
         )
         if result is not None:
             return result
@@ -3444,4 +3587,3 @@ def register_misc_routes(app, context: ApiRouteContext):
         if index_path and not _is_asset_path(path):
             return send_from_directory(app.static_folder, "index.html")
         return "Not found", 404
-

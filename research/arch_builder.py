@@ -18,6 +18,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .utils import (
+    RMSNorm, DynamicNorm, GroupNormWrapper, SigmoidNorm,
+    RoPE, ALiBi, ConvPositional, LearnedAbsolutePositional, RandomFourierPositional,
+)
+
 from .morphological_box import ArchSpec
 
 
@@ -276,20 +281,28 @@ class StateSpaceMixer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
         dt = F.softplus(self.dt_proj(x))  # (B, S, D)
-        # Discretize A
-        A_bar = torch.exp(self.A.unsqueeze(0).unsqueeze(0) * dt.unsqueeze(-1))  # (B, S, D, N)
+        # Discretize A: average dt across sequence for a single decay rate
+        dt_mean = dt.mean(dim=1)  # (B, D)
+        log_a = (self.A * dt_mean.unsqueeze(-1)).clamp(-10, 0)  # (B, D, N)
 
         b_x = self.B(x).reshape(B, S, D, self.state_dim)
 
-        # Scan (sequential for correctness, can be parallelized later)
-        h = torch.zeros(B, D, self.state_dim, device=x.device, dtype=x.dtype)
-        outs = []
-        for t in range(S):
-            h = A_bar[:, t] * h.unsqueeze(1).squeeze(1) + b_x[:, t]
-            y = self.C(h.reshape(B, -1))
-            outs.append(y)
+        # Vectorized scan via causal conv with exponential kernel per state dim.
+        # h[t] = decay * h[t-1] + b_x[t] → convolve with [decay^(S-1), ..., 1]
+        N = self.state_dim
+        indices = torch.arange(S, device=x.device, dtype=x.dtype)  # (S,)
+        # Kernel: exp(log_a * (S-1-s)) for each (B, D, N)
+        # Process each state dim via grouped conv1d
+        # Flatten (D, N) → channels for grouped conv
+        log_a_avg = log_a.mean(dim=0)  # (D, N) — average across batch for shared kernel
+        kernel = torch.exp(log_a_avg.reshape(D * N, 1, 1) * (S - 1 - indices).reshape(1, 1, S))  # (D*N, 1, S)
 
-        y = torch.stack(outs, dim=1)
+        # b_x: (B, S, D, N) → (B, D*N, S) for grouped conv
+        u = b_x.permute(0, 2, 3, 1).reshape(B, D * N, S)
+        h = F.conv1d(F.pad(u, (S - 1, 0)), kernel, groups=D * N)  # (B, D*N, S)
+        h = h.reshape(B, D, N, S).permute(0, 3, 1, 2).reshape(B * S, D * N)  # (B*S, D*N)
+
+        y = self.C(h).reshape(B, S, D)
         return y + x * self.D
 
 
@@ -837,123 +850,6 @@ class AdaptiveRecursionRouting(nn.Module):
         # Weighted sum across depths
         stacked = torch.stack(outputs[:self.max_depth], dim=-1)  # (B, S, D, max_depth)
         return (stacked * depth_weights.unsqueeze(2)).sum(dim=-1)
-
-
-# ── Normalization Modules ──────────────────────────────────────────────
-
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(dim))
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.sqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        return x / rms * self.weight
-
-
-class DynamicNorm(nn.Module):
-    """Per-token learned normalization scale."""
-    def __init__(self, dim: int):
-        super().__init__()
-        self.scale_proj = nn.Linear(dim, dim)
-        self.rms = RMSNorm(dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        scale = torch.sigmoid(self.scale_proj(x.detach()))
-        return self.rms(x) * scale
-
-
-class GroupNormWrapper(nn.Module):
-    """GroupNorm wrapped for (B, S, D) format."""
-    def __init__(self, num_groups: int, dim: int):
-        super().__init__()
-        self.norm = nn.GroupNorm(num_groups, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.norm(x.transpose(1, 2)).transpose(1, 2)
-
-
-class SigmoidNorm(nn.Module):
-    """Sigmoid-gated normalization."""
-    def __init__(self, dim: int):
-        super().__init__()
-        self.norm = RMSNorm(dim)
-        self.gate = nn.Linear(dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.norm(x) * torch.sigmoid(self.gate(x))
-
-
-# ── Positional Encoding Modules ───────────────────────────────────────
-
-class RoPE(nn.Module):
-    """Rotary Position Embeddings."""
-    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
-        super().__init__()
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
-        t = torch.arange(max_seq_len).float()
-        freqs = torch.outer(t, inv_freq)
-        self.register_buffer("cos_cached", freqs.cos())
-        self.register_buffer("sin_cached", freqs.sin())
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        S = x.shape[1]
-        cos = self.cos_cached[:S].unsqueeze(0)
-        sin = self.sin_cached[:S].unsqueeze(0)
-        x1, x2 = x[..., ::2], x[..., 1::2]
-        return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
-
-
-class ALiBi(nn.Module):
-    """ALiBi-inspired position encoding (simplified: adds distance-weighted bias)."""
-    def __init__(self, dim: int, max_seq_len: int = 2048):
-        super().__init__()
-        self.proj = nn.Linear(1, dim, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, S, D = x.shape
-        positions = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1) / S
-        pe = self.proj(positions).unsqueeze(0)  # (1, S, D)
-        return x + pe
-
-
-class ConvPositional(nn.Module):
-    """Implicit position from causal convolution."""
-    def __init__(self, dim: int, kernel_size: int = 5):
-        super().__init__()
-        self.conv = nn.Conv1d(dim, dim, kernel_size, padding=kernel_size - 1, groups=dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.conv(x.transpose(1, 2))[:, :, :x.shape[1]].transpose(1, 2)
-
-
-class LearnedAbsolutePositional(nn.Module):
-    """Learned absolute position embeddings."""
-    def __init__(self, dim: int, max_seq_len: int = 2048):
-        super().__init__()
-        self.embed = nn.Embedding(max_seq_len, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, S, D = x.shape
-        positions = torch.arange(S, device=x.device)
-        return x + self.embed(positions).unsqueeze(0)
-
-
-class RandomFourierPositional(nn.Module):
-    """Random Fourier features for position encoding."""
-    def __init__(self, dim: int, max_seq_len: int = 2048):
-        super().__init__()
-        self.proj = nn.Parameter(torch.randn(1, dim // 2) * 0.1, requires_grad=False)
-        self.linear = nn.Linear(dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, S, D = x.shape
-        positions = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
-        features = positions * self.proj
-        pe = torch.cat([torch.sin(features), torch.cos(features)], dim=-1)
-        return x + self.linear(pe).unsqueeze(0)
 
 
 # ── Topology: Block Wiring ─────────────────────────────────────────────

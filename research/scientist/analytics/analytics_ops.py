@@ -1,11 +1,8 @@
 from __future__ import annotations
 import json
-import math
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
-import numpy as np
+from typing import Any, Dict, List, Optional, Set
 from ...eval.utils import safe_parse_float
-from ...synthesis.primitives import get_primitive
 
 
 class _OpsMixin:

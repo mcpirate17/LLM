@@ -4,11 +4,9 @@ import hashlib
 import logging
 import math
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.spatial.distance import cdist
-from ...eval.utils import safe_parse_float
-from ...synthesis.primitives import get_primitive
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +230,7 @@ class _ExperimentsMixin:
         Uses high-performance NumPy vectorization for k-means clustering,
         silhouette scores, and model selection.
         """
+        self.nb.flush_writes()
         rows = self.nb.conn.execute("""
             SELECT experiment_id, n_programs_generated, n_stage1_passed,
                    best_novelty_score, best_loss_ratio, duration_seconds
@@ -1279,4 +1278,3 @@ class _ExperimentsMixin:
             })
 
         return insights
-

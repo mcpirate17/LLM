@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from ..llm.context import build_validation_context
+from ..llm.context_experiment import build_validation_context
 from ..notebook import LabNotebook
 from ..shared_utils import resolve_device
 from ._types import LiveProgress, RunConfig

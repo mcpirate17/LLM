@@ -3,6 +3,7 @@ import os
 import sys
 import sqlite3
 import tempfile
+import time
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -56,14 +57,12 @@ def _insert_program_result(nb, result_id=None, experiment_id=None, **kwargs):
     }
     defaults.update(kwargs)
 
-    # Ensure experiment exists
-    try:
-        nb.conn.execute(
-            "INSERT OR IGNORE INTO experiments (experiment_id, experiment_type, timestamp) VALUES (?, 'synthesis', datetime('now'))",
-            (eid,),
-        )
-    except Exception:
-        pass
+    # Ensure experiment exists (config_json is NOT NULL in schema)
+    nb.conn.execute(
+        "INSERT OR IGNORE INTO experiments (experiment_id, experiment_type, timestamp, config_json) "
+        "VALUES (?, 'synthesis', ?, '{}')",
+        (eid, time.time()),
+    )
 
     cols = ["result_id", "experiment_id"] + list(defaults.keys())
     vals = [rid, eid] + list(defaults.values())

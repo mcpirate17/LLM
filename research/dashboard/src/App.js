@@ -1,12 +1,28 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import AriaAvatar from './components/AriaAvatar';
-import SummaryCards from './components/SummaryCards';
+import AriaChatPanel from './components/AriaChatPanel';
+import ArchitectureDrawer from './components/ArchitectureDrawer';
 import ControlPanel from './components/ControlPanel';
+import LearningPanel from './components/LearningPanel';
+import SummaryCards from './components/SummaryCards';
 import LiveFeed from './components/LiveFeed';
-import HelpPanel from './components/HelpPanel';
 import GlobalParetoChart from './components/GlobalParetoChart';
 import ActionQueue from './components/ActionQueue';
 import StatusBar from './components/StatusBar';
+import {
+  AnalyticsTab,
+  ErrorBoundary,
+  LazyFallback,
+  LogTab,
+  QuickAnalyticsPreview,
+} from './components/app/AppShellShared';
+import {
+  ChatDrawer,
+  DesignerDrawerOverlay,
+  HelpOverlay,
+  ProgramDetailOverlay,
+  SettingsOverlay,
+} from './components/app/AppOverlays';
 import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
 import apiService, { apiCall } from './services/apiService';
@@ -16,21 +32,13 @@ import './App.css';
 const ExperimentList = React.lazy(() => import('./components/ExperimentList'));
 const ExperimentDetail = React.lazy(() => import('./components/ExperimentDetail'));
 const ProgramDetail = React.lazy(() => import('./components/ProgramDetail'));
-const InsightsPanel = React.lazy(() => import('./components/InsightsPanel'));
-const LabNotebook = React.lazy(() => import('./components/LabNotebook'));
-const TrendCharts = React.lazy(() => import('./components/TrendCharts'));
-const ExperimentDataTab = React.lazy(() => import('./components/TrendCharts').then(m => ({ default: m.ExperimentDataTab })));
 const PerfDashboard = React.lazy(() => import('./components/PerfDashboard'));
-const LearningPanel = React.lazy(() => import('./components/LearningPanel'));
-const CycleTimeline = React.lazy(() => import('./components/CycleTimeline'));
 const ResearchReport = React.lazy(() => import('./components/ResearchReport'));
 const Leaderboard = React.lazy(() => import('./components/Leaderboard'));
 const Discoveries = React.lazy(() => import('./components/Discoveries'));
 const CampaignView = React.lazy(() => import('./components/CampaignView'));
 const KnowledgeBase = React.lazy(() => import('./components/KnowledgeBase'));
 const CompareView = React.lazy(() => import('./components/CompareView'));
-const AriaChatPanel = React.lazy(() => import('./components/AriaChatPanel'));
-const ArchitectureDrawer = React.lazy(() => import('./components/ArchitectureDrawer'));
 const NativeProfilePanel = React.lazy(() => import('./components/NativeProfilePanel'));
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -38,39 +46,6 @@ const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
 const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
 const AUTO_REPAIR_SHOW_COMPLETED_KEY = 'aria_auto_repair_show_completed_v1';
 const OVERRIDE_INELIGIBLE_ALWAYS_KEY = 'aria_override_ineligible_always_v1';
-
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-  componentDidCatch(error, errorInfo) {
-    console.error("ErrorBoundary caught an error", error, errorInfo);
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="card" style={{ border: '1px solid var(--accent-red)', padding: 20 }}>
-          <h3 style={{ color: 'var(--accent-red)' }}>Component crashed</h3>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{this.state.error?.message}</p>
-          <button className="refresh-btn" onClick={() => this.setState({ hasError: false })}>Retry</button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-function LazyFallback() {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 40, color: 'var(--text-muted)', fontSize: 13 }}>
-      Loading…
-    </div>
-  );
-}
 
 function normalizeQueue(items) {
   if (!Array.isArray(items)) return [];
@@ -182,280 +157,6 @@ function mergeAutoRepairTask(existing, incoming, fallbackSource = 'start') {
   };
 }
 
-const LOG_SUB_TABS = [
-  { key: 'notebook', label: 'Notebook' },
-  { key: 'cycles', label: 'Cycles' },
-];
-
-const ANALYTICS_SUB_TABS = [
-  { key: 'trends', label: 'Trends' },
-  { key: 'data', label: 'Data' },
-  { key: 'insights', label: 'Insights' },
-  { key: 'learning', label: 'Learning' },
-];
-
-function ReferenceBaselinesPanel() {
-  const [refs, setRefs] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchRefs() {
-      try {
-        const res = await apiCall(`/api/discoveries?sort=composite_score&limit=200&view=ranked`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        const entries = (json.entries || []).filter(e => e.is_reference);
-        if (!cancelled) setRefs(entries);
-      } catch {
-        // silently fail — references panel is supplementary
-      }
-      if (!cancelled) setLoading(false);
-    }
-    fetchRefs();
-    const iv = setInterval(fetchRefs, 30000);
-    return () => { cancelled = true; clearInterval(iv); };
-  }, []);
-
-  if (loading) return null;
-  if (refs.length === 0) return null;
-
-  const metricKeys = [
-    { key: 'screening_loss_ratio', label: 'Loss Ratio', fmt: v => v?.toFixed(4) },
-    { key: 'moe_routing_efficiency', label: 'MoE Eff', fmt: v => v?.toFixed(3) },
-    { key: 'arch_quality_score', label: 'Arch Q', fmt: v => v?.toFixed(3) },
-    { key: 'screening_novelty', label: 'Novelty', fmt: v => v?.toFixed(4) },
-    { key: 'composite_score', label: 'Score', fmt: v => v?.toFixed(4) },
-    { key: 'validation_baseline_ratio', label: 'vs Baseline', fmt: v => v ? v.toFixed(2) + 'x' : '--' },
-    { key: 'param_efficiency', label: 'Param Eff', fmt: v => v ? v.toFixed(1) : '--' },
-    { key: 'quant_int8_retention', label: 'Quant Ret', fmt: v => v ? (v * 100).toFixed(1) + '%' : '--' },
-    { key: 'robustness_noise_score', label: 'Noise', fmt: v => v?.toFixed(2) },
-    { key: 'init_sensitivity_std', label: 'Init Std', fmt: v => v?.toFixed(4) },
-  ];
-
-  return (
-    <div className="card" style={{
-      padding: 16, marginTop: 16,
-      border: '1px solid var(--accent-purple)',
-      background: 'rgba(188, 140, 255, 0.04)',
-    }}>
-      <div style={{
-        fontSize: 13, fontWeight: 700, marginBottom: 12,
-        color: 'var(--accent-purple)', textTransform: 'uppercase', letterSpacing: 0.5,
-      }}>
-        Reference Architecture Baselines
-      </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table className="data-table table-compact">
-          <thead>
-            <tr style={{ borderBottom: '2px solid var(--border)' }}>
-              <th style={{ textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Architecture</th>
-              {metricKeys.map(m => (
-                <th key={m.key} style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>{m.label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {refs.sort((a, b) => (a.screening_loss_ratio || 99) - (b.screening_loss_ratio || 99)).map(ref => (
-              <tr key={ref.entry_id || ref.result_id} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '8px', fontWeight: 600, color: 'var(--accent-purple)' }}>
-                  {ref.reference_name || ref.architecture_desc || 'Reference'}
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400, marginTop: 2 }}>
-                    {ref.tags?.split(',').filter(t => t !== 'reference').join(', ')}
-                  </div>
-                </td>
-                {metricKeys.map(m => {
-                  const val = ref[m.key];
-                  return (
-                    <td key={m.key} style={{ textAlign: 'right', padding: '8px', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
-                      {val != null ? m.fmt(Number(val)) : '--'}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>
-        Aria-generated architectures should aim to beat these baselines. Target: 3-5x lower loss ratio than best reference.
-      </div>
-    </div>
-  );
-}
-
-function AnalyticsTab({ data, tabData, tabErrors, onSelectExperiment, onRerunExperiment, onFillGapsExperiment, onNavigateStrategy, onStartExperiment }) {
-  const [analyticsView, setAnalyticsView] = useState('trends');
-  return (
-    <>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-        {ANALYTICS_SUB_TABS.map(st => (
-          <button
-            key={st.key}
-            className="refresh-btn"
-            style={{
-              fontSize: 12,
-              padding: '4px 12px',
-              fontWeight: analyticsView === st.key ? 700 : 400,
-              background: analyticsView === st.key ? 'var(--accent-blue)' : 'transparent',
-              color: analyticsView === st.key ? '#fff' : 'var(--text-secondary)',
-              borderColor: analyticsView === st.key ? 'var(--accent-blue)' : 'var(--border)',
-            }}
-            onClick={() => setAnalyticsView(st.key)}
-          >
-            {st.label}
-          </button>
-        ))}
-      </div>
-      {analyticsView === 'trends' && (
-        <ErrorBoundary>
-          <Suspense fallback={<LazyFallback />}>
-            <TrendCharts onSelectExperiment={onSelectExperiment} />
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {analyticsView === 'data' && (
-        <ErrorBoundary>
-          <Suspense fallback={<LazyFallback />}>
-            <ExperimentDataTab
-              onSelectExperiment={onSelectExperiment}
-              onRerunExperiment={onRerunExperiment}
-              onFillGapsExperiment={onFillGapsExperiment}
-              onStartExperiment={onStartExperiment}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {analyticsView === 'insights' && (
-        <ErrorBoundary>
-          <Suspense fallback={<LazyFallback />}>
-            <div>
-              {tabErrors.insights && (
-                <div className="error-banner" style={{ marginBottom: 12 }}>
-                  Fresh insights fetch failed ({tabErrors.insights}); showing dashboard snapshot.
-                </div>
-              )}
-              <InsightsPanel insights={tabData.insights || data?.insights} />
-            </div>
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {analyticsView === 'learning' && (
-        <ErrorBoundary>
-          <Suspense fallback={<LazyFallback />}>
-            <LearningPanel onNavigateStrategy={onNavigateStrategy} onStartExperiment={onStartExperiment} />
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {/* Reference baselines pinned at bottom of all analytics views */}
-      <ErrorBoundary>
-        <ReferenceBaselinesPanel />
-      </ErrorBoundary>
-    </>
-  );
-}
-
-function LogTab({ entries, entriesError, onSelectExperiment }) {
-  const [logView, setLogView] = useState('notebook');
-  return (
-    <>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-        {LOG_SUB_TABS.map(st => (
-          <button
-            key={st.key}
-            className="refresh-btn"
-            style={{
-              fontSize: 12,
-              padding: '4px 12px',
-              fontWeight: logView === st.key ? 700 : 400,
-              background: logView === st.key ? 'var(--accent-blue)' : 'transparent',
-              color: logView === st.key ? '#fff' : 'var(--text-secondary)',
-              borderColor: logView === st.key ? 'var(--accent-blue)' : 'var(--border)',
-            }}
-            onClick={() => setLogView(st.key)}
-          >
-            {st.label}
-          </button>
-        ))}
-      </div>
-      {logView === 'notebook' && (
-        <Suspense fallback={<LazyFallback />}>
-          {entriesError && (
-            <div className="error-banner" style={{ marginBottom: 12 }}>
-              Fresh notebook fetch failed ({entriesError}); showing dashboard snapshot.
-            </div>
-          )}
-          <LabNotebook entries={entries} onSelectExperiment={onSelectExperiment} />
-        </Suspense>
-      )}
-      {logView === 'cycles' && <Suspense fallback={<LazyFallback />}><CycleTimeline /></Suspense>}
-    </>
-  );
-}
-
-function QuickAnalyticsPreview({ deltas, learningTrajectory, summary, onOpenAnalytics }) {
-  const trend = learningTrajectory?.trend;
-  const trendLabel = trend === 'improving'
-    ? 'Improving'
-    : trend === 'declining'
-      ? 'Declining'
-      : trend === 'plateaued'
-        ? 'Plateaued'
-        : 'Insufficient data';
-  const trendColor = trend === 'improving'
-    ? 'var(--accent-green)'
-    : trend === 'declining'
-      ? 'var(--accent-red, #e74c3c)'
-      : 'var(--accent-yellow)';
-
-  const deltaLoss = deltas?.best_loss;
-  const deltaNovelty = deltas?.best_novelty;
-  const deltaStage1 = deltas?.stage1;
-  const deltaPrograms = deltas?.programs;
-
-  const routingEntropy = summary?.avg_routing_entropy;
-  const depthSavings = summary?.avg_depth_savings;
-  const avgThroughput = summary?.avg_throughput_tok_s;
-  const avgRecursionSavings = summary?.avg_recursion_savings;
-  const avgRoutingRetention = summary?.avg_routing_token_retention;
-
-  return (
-    <div className="card" style={{ marginTop: 12 }}>
-      <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-        <span>Quick Analytics</span>
-        <button className="refresh-btn" onClick={onOpenAnalytics} style={{ fontSize: 11 }}>
-          Open Analytics
-        </button>
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-        <div>
-          Trend: <strong style={{ color: trendColor }}>{trendLabel}</strong>
-          {learningTrajectory?.slope != null && (
-            <span style={{ color: trendColor }}> · {learningTrajectory.slope > 0 ? '+' : ''}{(learningTrajectory.slope * 100).toFixed(2)}%/exp</span>
-          )}
-        </div>
-        <div>
-          Δ Loss: {deltaLoss != null ? `${deltaLoss > 0 ? '+' : ''}${deltaLoss.toFixed(4)}` : 'n/a'} ·
-          Δ Novelty: {deltaNovelty != null ? `${deltaNovelty > 0 ? '+' : ''}${deltaNovelty.toFixed(3)}` : 'n/a'}
-        </div>
-        <div>
-          Δ S1 survivors: {deltaStage1 != null ? `${deltaStage1 > 0 ? '+' : ''}${deltaStage1}` : 'n/a'} ·
-          Δ Programs: {deltaPrograms != null ? `${deltaPrograms > 0 ? '+' : ''}${deltaPrograms}` : 'n/a'}
-        </div>
-        <div>
-          Avg throughput: {avgThroughput != null ? `${Math.round(avgThroughput).toLocaleString()} tok/s` : 'n/a'} ·
-          Routing entropy: {routingEntropy != null ? routingEntropy.toFixed(2) : 'n/a'} ·
-          Token retention: {avgRoutingRetention != null ? `${(avgRoutingRetention * 100).toFixed(1)}%` : 'n/a'}
-        </div>
-        <div>
-          Depth savings: {depthSavings != null ? `${(depthSavings * 100).toFixed(1)}%` : 'n/a'} ·
-          Recursion savings: {avgRecursionSavings != null ? `${(avgRecursionSavings * 100).toFixed(1)}%` : 'n/a'}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function App() {
   const [isRunning, setIsRunning] = useState(false);
   return (
@@ -503,31 +204,42 @@ function AppContent({ onRunningChange }) {
     reports: 'Publishable findings, campaigns, and knowledge base (7)',
     log: 'Raw notebook entries and cycle timeline (8)',
   };
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
-  const [initialLoading, setInitialLoading] = useState(true);
+
+  // Centralized data from AriaDataProvider
+  const {
+    learningTrajectory,
+    leaderboardEntries,
+    fingerprintDiagnostics,
+    dashboardData: data,
+    ariaCycle,
+    healerTasks,
+    experiments: centralizedExperiments,
+    programs: centralizedPrograms,
+    entries: centralizedEntries,
+    insights: centralizedInsights,
+    initialLoading,
+    error,
+    lastUpdated: dashboardUpdatedAt,
+    refreshSharedData,
+    fetchTabData,
+  } = useAriaData() || {};
+
+  const fetchDashboard = refreshSharedData || (() => {});
+  const setAriaCycle = () => {};  // ariaCycle is read from provider; refresh updates it
+
   const [activeTab, setActiveTab] = useState('command');
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [dashboardUpdatedAt, setDashboardUpdatedAt] = useState(null);
   const [overviewActivityTab, setOverviewActivityTab] = useState('recent');
   const [showHelp, setShowHelp] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [tabData, setTabData] = useState({
-    experiments: null,
-    programs: null,
-    entries: null,
-    insights: null,
-  });
-  const [tabErrors, setTabErrors] = useState({
-    experiments: null,
-    programs: null,
-    entries: null,
-    insights: null,
-  });
+
   const [experimentsPageSize, setExperimentsPageSize] = useState(DEFAULT_EXPERIMENTS_PAGE_SIZE);
   const [experimentsHasMore, setExperimentsHasMore] = useState(true);
   const [experimentsLoadingMore, setExperimentsLoadingMore] = useState(false);
+
+  // Local state for experiments pagination (optional, but keeping for now)
+  const [paginatedExperiments, setPaginatedExperiments] = useState([]);
 
   // Drill-down state
   const [selectedExperiment, setSelectedExperiment] = useState(null);
@@ -569,25 +281,21 @@ function AppContent({ onRunningChange }) {
   const [selectedCampaignId, setSelectedCampaignId] = useState(null);
   const [controlPanelPrefill, setControlPanelPrefill] = useState(null);
   const [activeOverviewStrategy, setActiveOverviewStrategy] = useState(null);
-  const [ariaCycle, setAriaCycle] = useState(null);
   const [cycleControlBusy, setCycleControlBusy] = useState(false);
   const [fingerprintLookup, setFingerprintLookup] = useState('');
   const [fingerprintLookupBusy, setFingerprintLookupBusy] = useState(false);
   const [fingerprintLookupError, setFingerprintLookupError] = useState(null);
   const [allowAdvancedStartOverride, setAllowAdvancedStartOverride] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
-  const [healerTasks, setHealerTasks] = useState([]);
-  const advancedDetailsRef = useRef(null);
+  const [comparisonList, setComparisonList] = useState([]);
   const [investigationQueue, setInvestigationQueue] = useState(() => {
     try {
       const stored = window.localStorage.getItem(INVESTIGATION_QUEUE_KEY);
-      return normalizeQueue(stored ? JSON.parse(stored) : []);
+      return stored ? JSON.parse(stored) : [];
     } catch {
       return [];
     }
   });
-
-  const [comparisonList, setComparisonList] = useState([]);
 
   const handleAddToComparison = useCallback((resultId) => {
     setComparisonList(prev => {
@@ -630,32 +338,6 @@ function AppContent({ onRunningChange }) {
     } catch {}
   }, [overrideIneligibleAlways]);
 
-  const fetchDashboard = useCallback(async () => {
-    try {
-      const [json, cycleJson, healerJson] = await Promise.all([
-        apiService.getDashboardSummary(),
-        apiService.getAriaCycleStatus().catch(() => null),
-        apiService.getHealerTasks(5).catch(() => []),
-      ]);
-      
-      setData(json);
-      setDashboardUpdatedAt(Date.now());
-      if (setSummary && json?.summary) setSummary(json.summary);
-      setError(null);
-      
-      if (cycleJson && !cycleJson.error) {
-        setAriaCycle(cycleJson);
-      }
-      if (Array.isArray(healerJson)) {
-        setHealerTasks(healerJson);
-      }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setInitialLoading(false);
-    }
-  }, []);
-
   // Sync isRunning up to App for AriaDataProvider polling speed
   useEffect(() => {
     if (onRunningChange) onRunningChange(Boolean(data?.is_running));
@@ -675,7 +357,6 @@ function AppContent({ onRunningChange }) {
   useEffect(() => {
     const TAB_KEYS = ['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'];
     const handler = (e) => {
-      // Ignore when typing in inputs/textareas/selects
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
 
@@ -699,32 +380,10 @@ function AppContent({ onRunningChange }) {
     return () => window.removeEventListener('keydown', handler);
   }, [showHelp, showChat, showSettings, selectedProgram, designerSession.open, closeDesigner]);
 
-  // Shared analytics from AriaDataProvider
-  const {
-    learningTrajectory,
-    leaderboardEntries,
-    fingerprintDiagnostics,
-    setSummary,
-    refreshSharedData,
-  } = useAriaData() || {};
-
   const eligibilityByResultId = useMemo(
     () => buildEligibilityByResultId(leaderboardEntries || []),
     [leaderboardEntries],
   );
-
-  useEffect(() => {
-    fetchDashboard();
-  }, [fetchDashboard]);
-
-  // Faster refresh when experiment is running
-  const refreshInterval = data?.is_running ? 3000 : 10000;
-
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const interval = setInterval(fetchDashboard, refreshInterval);
-    return () => clearInterval(interval);
-  }, [autoRefresh, fetchDashboard, refreshInterval]);
 
   useEffect(() => {
     if (data?.is_running && overviewActivityTab !== 'live') {
@@ -736,76 +395,44 @@ function AppContent({ onRunningChange }) {
     setAllowAdvancedStartOverride(false);
   }, [activeOverviewStrategy?.id]);
 
-  const fetchTabFreshData = useCallback(async (tab, options = {}) => {
-    const append = options.append === true;
-    const requestedOffset = Number(options.offset || 0);
-    const endpoints = {
-      experiments: null,
-      programs: '/api/programs?n=50&sort=novelty_score',
-      entries: '/api/entries?n=50',
-      insights: '/api/insights',
-    };
-
-    if (tab === 'experiments') {
-      const offset = append ? requestedOffset : 0;
-      const endpoint = `/api/experiments?n=${experimentsPageSize}&offset=${offset}`;
-
-      try {
-        if (append) {
-          setExperimentsLoadingMore(true);
-        }
-        const res = await apiCall(endpoint);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        const page = Array.isArray(json) ? json : [];
-        setTabData(prev => ({
-          ...prev,
-          experiments: append ? [...(Array.isArray(prev.experiments) ? prev.experiments : []), ...page] : page,
-        }));
-        setTabErrors(prev => ({ ...prev, experiments: null }));
-        setExperimentsHasMore(page.length === experimentsPageSize);
-      } catch (err) {
-        setTabErrors(prev => ({ ...prev, experiments: err.message }));
-      } finally {
-        if (append) {
-          setExperimentsLoadingMore(false);
-        }
-      }
-      return;
-    }
-
-    const endpoint = endpoints[tab];
-    if (!endpoint) return;
-
-    try {
-      const res = await apiCall(endpoint);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setTabData(prev => ({ ...prev, [tab]: Array.isArray(json) ? json : [] }));
-      setTabErrors(prev => ({ ...prev, [tab]: null }));
-    } catch (err) {
-      setTabErrors(prev => ({ ...prev, [tab]: err.message }));
-    }
-  }, [experimentsPageSize]);
-
+  // Use centralized tab data fetching
   useEffect(() => {
     if (activeTab === 'experiments') {
-      setExperimentsHasMore(true);
-      fetchTabFreshData('experiments');
+      fetchTabData('experiments');
     } else if (activeTab === 'discoveries') {
-      fetchTabFreshData('programs');
+      fetchTabData('programs');
     } else if (activeTab === 'log') {
-      fetchTabFreshData('entries');
+      fetchTabData('entries');
     } else if (activeTab === 'trends') {
-      fetchTabFreshData('insights');
+      fetchTabData('insights');
     }
-  }, [activeTab, fetchTabFreshData]);
+  }, [activeTab, fetchTabData]);
 
-  const handleLoadMoreExperiments = useCallback(() => {
+  const handleLoadMoreExperiments = useCallback(async () => {
     if (experimentsLoadingMore || !experimentsHasMore) return;
-    const currentCount = Array.isArray(tabData.experiments) ? tabData.experiments.length : 0;
-    fetchTabFreshData('experiments', { append: true, offset: currentCount });
-  }, [experimentsHasMore, experimentsLoadingMore, fetchTabFreshData, tabData.experiments]);
+    const currentCount = paginatedExperiments.length;
+    
+    setExperimentsLoadingMore(true);
+    try {
+      const res = await apiCall(`/api/experiments?n=${experimentsPageSize}&offset=${currentCount}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const page = Array.isArray(json) ? json : [];
+      setPaginatedExperiments(prev => [...prev, ...page]);
+      setExperimentsHasMore(page.length === experimentsPageSize);
+    } catch (err) {
+      setActionError('Failed to load more experiments: ' + err.message);
+    } finally {
+      setExperimentsLoadingMore(false);
+    }
+  }, [experimentsHasMore, experimentsLoadingMore, experimentsPageSize, paginatedExperiments.length]);
+
+  useEffect(() => {
+    if (centralizedExperiments) {
+      setPaginatedExperiments(centralizedExperiments);
+      setExperimentsHasMore(centralizedExperiments.length >= 200);
+    }
+  }, [centralizedExperiments]);
 
   const handleExperimentPageSizeChange = useCallback((nextSize) => {
     const parsed = Number(nextSize);
@@ -1109,6 +736,7 @@ function AppContent({ onRunningChange }) {
   const handleStopAutonomous = async () => {
     try {
       setCycleControlBusy(true);
+      // Pause the cycle (prevents next experiment from starting)
       const res = await apiCall(`/api/aria/cycle-control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1117,6 +745,12 @@ function AppContent({ onRunningChange }) {
       const payload = await res.json();
       if (!res.ok || payload?.error) {
         throw new Error(payload?.error || 'Failed to pause autonomous cycle');
+      }
+      // Also stop the current experiment immediately
+      try {
+        await apiCall(`/api/experiments/stop`, { method: 'POST' });
+      } catch (_) {
+        // Ignore — may not have a running experiment
       }
       if (payload?.cycle) {
         setAriaCycle(payload.cycle);
@@ -1969,15 +1603,10 @@ function AppContent({ onRunningChange }) {
 
         {activeTab === 'experiments' && (
           <Suspense fallback={<LazyFallback />}>
-            {tabErrors.experiments && (
-              <div className="error-banner" style={{ marginBottom: 12 }}>
-                Fresh experiments fetch failed ({tabErrors.experiments}); showing dashboard snapshot.
-              </div>
-            )}
             <ExperimentList
-              experiments={tabData.experiments || data?.recent_experiments}
+              experiments={paginatedExperiments}
               onSelectExperiment={handleSelectExperiment}
-              onRefresh={fetchDashboard}
+              onRefresh={refreshSharedData}
               onLoadMore={handleLoadMoreExperiments}
               hasMore={experimentsHasMore}
               loadingMore={experimentsLoadingMore}
@@ -2001,6 +1630,7 @@ function AppContent({ onRunningChange }) {
           <Suspense fallback={<LazyFallback />}>
             <Discoveries
               onSelectProgram={handleSelectProgram}
+              onAddToComparison={handleAddToComparison}
               onInvestigate={handleInvestigate}
               onValidate={handleValidate}
               highlightResultId={leaderboardHighlight}
@@ -2018,13 +1648,13 @@ function AppContent({ onRunningChange }) {
           <Suspense fallback={<LazyFallback />}>
             <AnalyticsTab
               data={data}
-              tabData={tabData}
-              tabErrors={tabErrors}
+              insights={centralizedInsights}
               onSelectExperiment={handleSelectExperiment}
               onRerunExperiment={handleRerunExperiment}
               onFillGapsExperiment={handleFillGapsExperiment}
               onNavigateStrategy={handleNavigateStrategy}
               onStartExperiment={handleStartExperiment}
+              LearningPanelComponent={LearningPanel}
             />
           </Suspense>
         )}
@@ -2079,164 +1709,67 @@ function AppContent({ onRunningChange }) {
         {activeTab === 'log' && (
           <Suspense fallback={<LazyFallback />}>
             <LogTab
-              entries={tabData.entries || data?.recent_entries}
-              entriesError={tabErrors.entries}
+              entries={centralizedEntries}
               onSelectExperiment={handleSelectExperiment}
             />
           </Suspense>
         )}
       </main>
 
-      {/* Chat drawer */}
-      {showChat && (
-        <div className="chat-drawer-backdrop" onClick={() => setShowChat(false)}>
-          <div className="chat-drawer" onClick={e => e.stopPropagation()}>
-            <div className="chat-drawer-header">
-              <span>Aria Chat</span>
-              <button onClick={() => setShowChat(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>&times;</button>
-            </div>
-            <div style={{ flex: 1, overflow: 'auto' }}>
-              <Suspense fallback={<LazyFallback />}>
-                <AriaChatPanel isRunning={Boolean(data?.is_running)} autonomousMode={autonomousActive} onAutonomousEnd={() => setAutonomousMode(false)} />
-              </Suspense>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Settings overlay */}
-      {showSettings && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.5)', zIndex: 1000,
-          display: 'flex', justifyContent: 'center', alignItems: 'flex-start',
-          paddingTop: 60, overflow: 'auto',
-        }} onClick={() => setShowSettings(false)}>
-          <div style={{
-            background: 'var(--bg-primary)', borderRadius: 12, maxWidth: 800,
-            width: '90%', maxHeight: 'calc(100vh - 120px)', overflow: 'auto',
-            padding: 24, position: 'relative',
-          }} onClick={e => e.stopPropagation()}>
-            <button
-              onClick={() => setShowSettings(false)}
-              style={{
-                position: 'absolute', top: 12, right: 12,
-                background: 'none', border: 'none', color: 'var(--text-secondary)',
-                fontSize: 20, cursor: 'pointer', lineHeight: 1,
-              }}
-              aria-label="Close settings"
-            >&times;</button>
-            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>Experiment Settings</div>
-            <label style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginBottom: 14,
-              fontSize: 12,
-              color: 'var(--text-secondary)',
-            }}>
-              <input
-                type="checkbox"
-                checked={overrideIneligibleAlways}
-                onChange={(e) => setOverrideIneligibleAlways(Boolean(e.target.checked))}
-              />
-              Always allow override for ineligible fingerprints (Investigate/Validate)
-            </label>
-            {strategyBlocksAdvancedStart && (
-              <div style={{
-                marginBottom: 16,
-                padding: '8px 10px',
-                borderRadius: 6,
-                border: '1px solid var(--accent-yellow)',
-                background: 'rgba(210, 153, 34, 0.12)',
-                fontSize: 12,
-                color: 'var(--text-secondary)',
-                lineHeight: 1.5,
-              }}>
-                <div style={{ marginBottom: 6 }}>
-                  {strategyLockReason}
-                </div>
-                <button
-                  className="refresh-btn"
-                  style={{ fontSize: 11, padding: '3px 8px' }}
-                  onClick={() => setAllowAdvancedStartOverride(true)}
-                >
-                  Use advanced setup anyway
-                </button>
-              </div>
-            )}
-            <ControlPanel
-              isRunning={data?.is_running}
-              progress={data?.progress}
-              onStart={handleStartExperiment}
-              onStop={handleStopExperiment}
-              onRestart={() => handleRerunExperiment(data?.recent_experiments?.[0]?.experiment_id)}
-              restartExperimentId={data?.recent_experiments?.[0]?.experiment_id}
-              onRefresh={fetchDashboard}
-              autoRecommendation={data?.last_recommendation}
-              prefillRequest={controlPanelPrefill}
-              onPrefillApplied={() => setControlPanelPrefill(null)}
-              startLocked={strategyBlocksAdvancedStart}
-              startLockReason={strategyLockReason}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Help overlay */}
-      {showHelp && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.5)', zIndex: 1000,
-          display: 'flex', justifyContent: 'center', alignItems: 'flex-start',
-          paddingTop: 60, overflow: 'auto',
-        }} onClick={() => setShowHelp(false)}>
-          <div style={{
-            background: 'var(--bg-primary)', borderRadius: 12, maxWidth: 720,
-            width: '90%', maxHeight: 'calc(100vh - 120px)', overflow: 'auto',
-            padding: 24, position: 'relative',
-          }} onClick={e => e.stopPropagation()}>
-            <button
-              onClick={() => setShowHelp(false)}
-              style={{
-                position: 'absolute', top: 12, right: 12,
-                background: 'none', border: 'none', color: 'var(--text-secondary)',
-                fontSize: 20, cursor: 'pointer', lineHeight: 1,
-              }}
-              aria-label="Close help"
-            >&times;</button>
-            <HelpPanel />
-          </div>
-        </div>
-      )}
-
-      {/* Program Detail Modal (global) */}
-      {selectedProgram && (
-        <Suspense fallback={<LazyFallback />}>
-          <ProgramDetail
-            resultId={selectedProgram}
-            onClose={() => setSelectedProgram(null)}
-            onActionComplete={handleActionComplete}
-            onSelectExperiment={handleSelectExperiment}
-            onViewInLeaderboard={handleViewInLeaderboard}
-            onSelectCampaign={handleSelectCampaign}
-            onOpenInDesigner={openDesignerForResult}
-            onAddToComparison={handleAddToComparison}
-            eligibilityByResultId={eligibilityByResultId}
-            defaultOverrideIneligible={overrideIneligibleAlways}
-          />
-        </Suspense>
-      )}
-
-      {/* Architecture Designer Drawer */}
-      {designerSession.open && (
-        <Suspense fallback={<LazyFallback />}>
-          <ArchitectureDrawer
-            resultId={designerSession.resultId}
-            onClose={closeDesigner}
-          />
-        </Suspense>
-      )}
+      <ChatDrawer
+        open={showChat}
+        onClose={() => setShowChat(false)}
+        isRunning={Boolean(data?.is_running)}
+        autonomousMode={autonomousActive}
+        onAutonomousEnd={() => setAutonomousMode(false)}
+        fallback={<LazyFallback />}
+        AriaChatPanelComponent={AriaChatPanel}
+      />
+      <SettingsOverlay
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        overrideIneligibleAlways={overrideIneligibleAlways}
+        setOverrideIneligibleAlways={setOverrideIneligibleAlways}
+        strategyBlocksAdvancedStart={strategyBlocksAdvancedStart}
+        strategyLockReason={strategyLockReason}
+        onAllowAdvancedStartOverride={() => setAllowAdvancedStartOverride(true)}
+        controlPanelProps={{
+          isRunning: data?.is_running,
+          progress: data?.progress,
+          onStart: handleStartExperiment,
+          onStop: handleStopExperiment,
+          onRestart: () => handleRerunExperiment(data?.recent_experiments?.[0]?.experiment_id),
+          restartExperimentId: data?.recent_experiments?.[0]?.experiment_id,
+          onRefresh: refreshSharedData,
+          autoRecommendation: data?.last_recommendation,
+          prefillRequest: controlPanelPrefill,
+          onPrefillApplied: () => setControlPanelPrefill(null),
+          startLocked: strategyBlocksAdvancedStart,
+          startLockReason: strategyLockReason,
+        }}
+        ControlPanelComponent={ControlPanel}
+      />
+      <HelpOverlay open={showHelp} onClose={() => setShowHelp(false)} />
+      <ProgramDetailOverlay
+        resultId={selectedProgram}
+        fallback={<LazyFallback />}
+        onClose={() => setSelectedProgram(null)}
+        onActionComplete={handleActionComplete}
+        onSelectExperiment={handleSelectExperiment}
+        onViewInLeaderboard={handleViewInLeaderboard}
+        onSelectCampaign={handleSelectCampaign}
+        onOpenInDesigner={openDesignerForResult}
+        onAddToComparison={handleAddToComparison}
+        eligibilityByResultId={eligibilityByResultId}
+        defaultOverrideIneligible={overrideIneligibleAlways}
+      />
+      <DesignerDrawerOverlay
+        open={designerSession.open}
+        resultId={designerSession.resultId}
+        onClose={closeDesigner}
+        fallback={<LazyFallback />}
+        ArchitectureDrawerComponent={ArchitectureDrawer}
+      />
 
       <footer className="app-footer">
         <span>HYDRA Architecture Explorer — Program Synthesis Engine</span>

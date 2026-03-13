@@ -19,11 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    import aria_core
-    _HAS_ARIA_CORE = hasattr(aria_core, 'hyperbolic_mobius_add_f32')
-except ImportError:
-    _HAS_ARIA_CORE = False
+from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 
 # Curvature parameter (negative curvature)
@@ -110,16 +106,24 @@ class HyperbolicLinear(nn.Module):
     Maps through: log_map -> Euclidean linear -> exp_map
     """
 
+    __slots__ = ()
+
     def __init__(self, dim: int, c: float = DEFAULT_C):
         super().__init__()
         self.weight = nn.Parameter(torch.randn(dim, dim) * (1.0 / math.sqrt(dim)))
-        self.c = c
+        # Learnable curvature: c = softplus(c_raw) + eps, constrained to (0, 10]
+        self._c_raw = nn.Parameter(torch.tensor(math.log(math.exp(c) - 1.0)))
+
+    @property
+    def c(self) -> float:
+        return float(F.softplus(self._c_raw).clamp(max=10.0).item())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Map to tangent space, transform, map back
-        euclidean = log_map(x, self.c)
+        c = self.c
+        euclidean = log_map(x, c=c)
         transformed = F.linear(euclidean, self.weight)
-        return exp_map(transformed, self.c)
+        return exp_map(transformed, c=c)
 
 
 # ── Primitive execution functions ─────────────────────────────────────

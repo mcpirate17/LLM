@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --port 5174",
     "build": "vite build",
-    "preview": "vite preview --port 4174"
+    "preview": "vite preview --port 4174",
+    "check:ui-standards": "node ../../scripts/check-ui-standards.js designer"
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",

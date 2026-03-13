@@ -16,10 +16,10 @@ Validates graphs before compilation:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Set
+from typing import List
 
-from .primitives import get_primitive, PrimitiveOp, REVERSE_OPCODE_MAP
-from .graph import ComputationGraph, OpNode, ComputationGraphIR
+from .primitives import get_primitive, REVERSE_OPCODE_MAP
+from .graph import ComputationGraph, ComputationGraphIR
 import numpy as np
 from collections import deque
 

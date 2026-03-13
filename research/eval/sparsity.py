@@ -7,7 +7,7 @@ Identifies neurons that are never activated (dead neurons) or highly sparse.
 
 from __future__ import annotations
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Any
 import torch
 import torch.nn as nn
 import numpy as np

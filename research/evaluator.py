@@ -11,6 +11,7 @@ Each stage produces a structured result that feeds into the experiment database.
 from __future__ import annotations
 
 import gc
+import math
 import traceback
 import time
 from dataclasses import dataclass, field, asdict
@@ -404,6 +405,3 @@ def stage1_micro_train(
         gc.collect()
 
     return result
-
-
-import math

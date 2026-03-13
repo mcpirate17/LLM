@@ -1,14 +1,12 @@
 from __future__ import annotations
 import hashlib
-import json
 import logging
 import math
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
-from ...eval.utils import safe_parse_float
 from ...synthesis.grammar import GrammarConfig
-from ...synthesis.primitives import get_primitive, PROTECTED_OPS
+from ...synthesis.primitives import get_primitive
 
 logger = logging.getLogger(__name__)
 
@@ -290,52 +288,52 @@ class _GrammarMixin:
 
     def pareto_optimal_programs(self) -> List[str]:
         """Find result_ids of non-dominated programs (Accuracy vs Efficiency).
-        
-        Uses NumPy for high-performance vectorized dominance checking.
+
+        Uses vectorized NumPy dominance check with early pruning via
+        sort on first objective.
         """
         rows = self.nb.conn.execute("""
-            SELECT result_id, loss_ratio, validation_loss_ratio, 
+            SELECT result_id, loss_ratio, validation_loss_ratio,
                    graph_n_params_estimate, param_count
             FROM program_results
             WHERE stage1_passed = 1
         """).fetchall()
-        
-        if not rows: return []
-        
-        # Criteria 1: Accuracy (1 - Loss Ratio). Higher is better.
-        # Criteria 2: Efficiency (1 / Params). Higher is better.
-        data = []
+
+        if not rows:
+            return []
+
         ids = []
+        data = []
         for r in rows:
             lr = r["validation_loss_ratio"] if r["validation_loss_ratio"] is not None else r["loss_ratio"]
             params = r["param_count"] if r["param_count"] is not None else r["graph_n_params_estimate"]
             if lr is not None and params is not None:
-                data.append([1.0 - lr, 1.0 / max(1, params)])
+                data.append((1.0 - lr, 1.0 / max(1, params)))
                 ids.append(r["result_id"])
-        
-        if not data: return []
-        
+
+        if not data:
+            return []
+
         costs = np.array(data, dtype=np.float32)
-        n_points = costs.shape[0]
-        is_pareto = np.ones(n_points, dtype=bool)
-        for i in range(n_points):
-            # A point is dominated if another point is >= in all criteria AND > in at least one
-            # Here we simplify to: is there any point better than me in both?
-            dominated = np.all(costs >= costs[i], axis=1) & np.any(costs > costs[i], axis=1)
-            if np.any(dominated):
-                # Wait, logic is: am I dominated? 
-                # costs[j] dominates costs[i] if costs[j] is better.
-                pass
-        
-        # Proper O(N^2) vectorized Pareto (fine for N < 1000)
-        is_pareto = np.ones(n_points, dtype=bool)
-        for i, c in enumerate(costs):
-            if is_pareto[i]:
-                # Keep points that are not dominated by any other point
-                # j dominates i if costs[j] >= costs[i] and any(costs[j] > costs[i])
-                is_pareto[i] = not np.any(np.all(costs >= c, axis=1) & np.any(costs > c, axis=1))
-                
-        return [ids[i] for i in range(n_points) if is_pareto[i]]
+        n = costs.shape[0]
+
+        # Sort by objective 1 descending, then objective 2 descending so
+        # equal-loss candidates keep the most efficient point first.
+        order = np.lexsort((-costs[:, 1], -costs[:, 0]))
+        costs_sorted = costs[order]
+
+        is_pareto = np.ones(n, dtype=bool)
+        max_obj2 = -np.inf
+        for i in range(n):
+            if costs_sorted[i, 1] <= max_obj2:
+                is_pareto[i] = False
+            else:
+                max_obj2 = costs_sorted[i, 1]
+
+        # Map back to original indices
+        pareto_mask = np.zeros(n, dtype=bool)
+        pareto_mask[order[is_pareto]] = True
+        return [ids[i] for i in range(n) if pareto_mask[i]]
 
     def _load_program_factor_rows(self) -> List[Dict[str, Any]]:
         """Load per-program factors for attribution analysis."""
@@ -761,4 +759,3 @@ class _GrammarMixin:
     def get_current_grammar_weights(self) -> Dict[str, float]:
         """Get the default grammar weights for comparison."""
         return dict(GrammarConfig().category_weights)
-

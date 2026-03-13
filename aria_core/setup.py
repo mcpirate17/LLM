@@ -1,9 +1,13 @@
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension, CppExtension
+from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
+import torch
 import os
 
 sources = [
     'src/cpu/kernels.cpp',
+    'src/gpu/tropical.cu',
+    'src/gpu/clifford.cu',
+
     'src/cpu/graph_validator.cpp',
     'src/cpu/shape_inference.cpp',
     'src/cpu/clifford.cpp',
@@ -16,7 +20,7 @@ setup(
     version='0.1.0',
     packages=find_packages(),
     ext_modules=[
-        CppExtension(
+        CUDAExtension(
             name='aria_core._C',
             sources=sources,
             include_dirs=[os.path.abspath('include')],

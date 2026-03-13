@@ -18,13 +18,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-try:
-    import aria_core
-    _HAS_ARIA_CORE = hasattr(aria_core, 'lif_neuron_f32')
-except ImportError:
-    _HAS_ARIA_CORE = False
+from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 
 # ── Surrogate gradient helpers ──
@@ -79,7 +74,7 @@ def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     decay = 0.9
     threshold = 1.0
 
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu" and not x.requires_grad:
         return aria_core.lif_neuron_f32(x, decay, threshold)
 
     B, S, D = x.shape
@@ -99,7 +94,10 @@ def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
         spike_list.append(spike)
         membrane = membrane * (1.0 - spike_hard)  # reset on fire
 
-    return torch.stack(spike_list, dim=1)
+    output = torch.stack(spike_list, dim=1)
+    if output.requires_grad:
+        output.register_hook(lambda grad: grad * 0.7)  # Dampen gradient amplification
+    return output
 
 
 def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
@@ -117,7 +115,7 @@ def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.T
         Spike-coded tensor of shape (B, S, D)
     """
     x = inputs[0]  # (B, S, D)
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
+    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu" and not x.requires_grad:
         return aria_core.spike_rate_code_f32(x)
     # Firing probability from continuous activation
     probs = torch.sigmoid(x)

@@ -61,6 +61,8 @@ void aria_matmul_f32(const float *A, const float *B, float *C,
                      int64_t M, int64_t K, int64_t N);
 void aria_tropical_matmul_f32(const float *A, const float *B, float *C,
                               int64_t M, int64_t K, int64_t N);
+void aria_tropical_matmul_batched_f32(const float *A, const float *B, float *C,
+                                      int64_t batch, int64_t M, int64_t K, int64_t N);
 
 /**
  * Linear projection: y = x @ W^T + bias
@@ -109,6 +111,9 @@ void aria_tropical_attention_f32(const float *x, float *y,
 void aria_tropical_gate_f32(const float *x, float *y,
                             int64_t batch, int64_t seq, int64_t dim,
                             float temperature);
+
+void aria_tropical_router_f32(const float *x, const float *centroids, float *out,
+                              int64_t batch, int64_t seq, int64_t dim, int64_t n_experts);
 
 /* ── Softmax ──────────────────────────────────────────────────────── */
 void aria_softmax_f32(const float *x, float *y, int64_t batch, int64_t dim);
@@ -512,6 +517,10 @@ void aria_clifford_rotor_transform_cl30_f32(const float *x, const float *rotor, 
 void aria_lif_neuron_f32(const float *x, float *y,
                            int64_t batch, int64_t seq, int64_t dim,
                            float tau, float threshold);
+/** LIF with membrane state output for autograd backward (surrogate gradient). */
+void aria_lif_neuron_with_state_f32(const float *x, float *spikes, float *membrane,
+                                      int64_t batch, int64_t seq, int64_t dim,
+                                      float tau, float threshold);
 void aria_spike_rate_code_f32(const float *x, float *y,
                                 int64_t batch, int64_t seq, int64_t dim);
 void aria_stdp_attention_f32(const float *x, float *y,
@@ -578,6 +587,46 @@ void aria_gated_linear_backward_f32(const float *grad_out,
                                       float *grad_x, float *grad_W, float *grad_W_gate,
                                       float *grad_b, float *grad_b_gate,
                                       int64_t batch, int64_t dim_in, int64_t dim_out);
+
+/** RWKV WKV parallel scan — sequential scan along S for each (B, D).
+ *  k, v, r: [batch, seq, dim], w_decay: [dim], u_bonus: [dim] */
+void aria_rwkv_wkv_scan_f32(const float *k, const float *v, const float *r,
+                              const float *w_decay, const float *u_bonus,
+                              float *out,
+                              int64_t batch, int64_t seq, int64_t dim);
+
+/** Gromov 4-point delta-hyperbolicity.
+ *  d: [n, n] distance matrix, indices: subset of point indices.
+ *  Returns max delta over all 4-tuples. */
+float aria_gromov_delta_f32(const float *d, const int32_t *indices,
+                             int64_t n, int64_t n_idx);
+
+/* ── Fingerprint metrics ──────────────────────────────────────────── */
+
+/**
+ * Interaction metrics from perturbation influence matrix.
+ * influence: [n_pos, seq_len], positions: [n_pos] (int64)
+ * out: [4] — locality, sparsity, symmetry, hierarchy
+ */
+void aria_interaction_metrics_f32(const float *influence, const int64_t *positions,
+                                   float *out, int64_t n_pos, int64_t seq_len);
+
+/**
+ * Sensitivity metrics from Jacobian sensitivity matrix.
+ * sens: [n_pos, seq_len]
+ * out: [3] — spectral_norm, uniformity, effective_rank
+ */
+void aria_sensitivity_metrics_f32(const float *sens, float *out,
+                                    int64_t n_pos, int64_t seq_len);
+
+/* ── Cumulative operations ───────────────────────────────────────────── */
+
+/** Cumulative sum along last dimension. SIMD+OpenMP optimized. */
+void aria_cumsum_f32(const float *x, float *y, int64_t batch, int64_t dim);
+
+/** Cumulative product with clamping for numerical stability. */
+void aria_cumprod_safe_f32(const float *x, float *y, int64_t batch, int64_t dim,
+                            float clamp_min, float clamp_max);
 
 #ifdef __cplusplus
 }

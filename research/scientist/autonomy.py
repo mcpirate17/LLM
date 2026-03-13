@@ -148,6 +148,10 @@ class AutonomousAction:
 
 class AriaAutonomy:
     """Manages Aria's autonomous operation loop and decision dispatch."""
+    __slots__ = (
+        "_trust_level", "_overrides", "_actions",
+        "_undo_handlers", "_notebook", "_max_stored_actions"
+    )
 
     def __init__(self, notebook=None):
         self._trust_level = TrustLevel.SUPERVISED

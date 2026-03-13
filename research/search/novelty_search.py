@@ -65,17 +65,33 @@ class BehaviorArchive:
         vectors = [_behavior_vector(fp) for _, fp in self.entries]
         self._feature_matrix = np.array(vectors, dtype=np.float32)
 
+    def _append_to_cache(self, behavior: BehavioralFingerprint) -> None:
+        """Append a single vector to the feature matrix (avoids full rebuild)."""
+        vec = np.array(_behavior_vector(behavior), dtype=np.float32).reshape(1, -1)
+        if self._feature_matrix is None:
+            self._feature_matrix = vec
+        else:
+            self._feature_matrix = np.vstack([self._feature_matrix, vec])
+
+    def _replace_in_cache(self, idx: int, behavior: BehavioralFingerprint) -> None:
+        """Replace a single row in the feature matrix (avoids full rebuild)."""
+        if self._feature_matrix is None:
+            self._update_cache()
+            return
+        vec = np.array(_behavior_vector(behavior), dtype=np.float32)
+        self._feature_matrix[idx] = vec
+
     def add(self, graph_hash: str, behavior: BehavioralFingerprint):
         """Add a behavior to the archive using reservoir sampling."""
         self._total_seen += 1
         if len(self.entries) < self.max_size:
             self.entries.append((graph_hash, behavior))
-            self._update_cache()
+            self._append_to_cache(behavior)
         else:
             j = self._rng.randint(0, self._total_seen - 1)
             if j < self.max_size:
                 self.entries[j] = (graph_hash, behavior)
-                self._update_cache()
+                self._replace_in_cache(j, behavior)
 
     def novelty_of(self, behavior: BehavioralFingerprint, k: int = 15) -> float:
         """Compute novelty of a behavior relative to the archive.

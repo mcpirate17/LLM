@@ -46,7 +46,11 @@ def test_recommendation_signals_endpoint_returns_aggregate_payload(tmp_path):
     assert data.get("source") == "research.analytics"
     assert "generated_at" in data
     assert isinstance(data.get("op_priors"), list)
+    assert isinstance(data.get("op_pair_priors"), list)
+    assert isinstance(data.get("fingerprint_buckets"), list)
+    assert isinstance(data.get("lineage_successors"), list)
     assert isinstance(data.get("toxic_ops"), list)
+    assert isinstance(data.get("failure_risk_signatures"), list)
     assert isinstance(data.get("insights"), list)
     assert isinstance(data.get("summary"), dict)
     assert any(row.get("op_name") == "rmsnorm_pre" for row in data.get("op_priors", []))

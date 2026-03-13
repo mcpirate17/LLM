@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -25,19 +25,13 @@ from .digest import (
 logger = logging.getLogger(__name__)
 
 
-def _safe_float(val, default: float = 0.0) -> float:
+from ..shared_utils import safe_float as _safe_float_opt
+
+
+def _safe_float(val: Any, default: float = 0.0) -> float:
     """Convert a DB value to float, handling bytes/blobs/None gracefully."""
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return float(val)
-    if isinstance(val, bytes):
-        # Some values stored as raw binary — skip
-        return default
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return default
+    result = _safe_float_opt(val, default)
+    return result if result is not None else default
 
 
 # Input/output pseudo-ops to exclude from analysis

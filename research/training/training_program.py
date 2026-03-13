@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from .loss_synthesis import SynthesizedLoss, synthesize_loss

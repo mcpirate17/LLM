@@ -27,14 +27,45 @@ from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.synthesis.workflow_converter import graph_to_workflow as _g2w
 
-# Keep for compatibility
+def _fix_component_types(wf: Dict[str, Any]) -> Dict[str, Any]:
+    """Fix component_type categories that the research converter gets wrong.
+
+    The research ``workflow_converter.graph_to_workflow`` reconstructs
+    ``component_type`` from ``OpCategory``, but multiple frontend categories
+    map to the same ``OpCategory`` (e.g. both ``routing/`` and ``functional/``
+    map to ``OpCategory.FUNCTIONAL``).  This post-processes the workflow to
+    resolve each op to the actual component directory on disk.
+    """
+    from pathlib import Path
+    from .registry import _COMPONENTS_ROOT
+
+    for node in wf.get("nodes", []):
+        ct = node.get("component_type", "")
+        if "/" not in ct:
+            continue
+        cat, op_name = ct.split("/", 1)
+        # Already resolvable — nothing to fix
+        if (_COMPONENTS_ROOT / cat / op_name).is_dir():
+            continue
+        # Search all category directories for the op (bypass alias lookup)
+        for category_dir in _COMPONENTS_ROOT.iterdir():
+            if not category_dir.is_dir():
+                continue
+            if (category_dir / op_name).is_dir():
+                node["component_type"] = f"{category_dir.name}/{op_name}"
+                break
+
+    return wf
+
+
 def graph_to_workflow(
     graph: ComputationGraph,
     workflow_id: Optional[str] = None,
     name: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    return _g2w(graph, workflow_id, name, metadata)
+    wf = _g2w(graph, workflow_id, name, metadata)
+    return _fix_component_types(wf)
 
 # ── Notebook access ──────────────────────────────────────────────────
 
@@ -126,6 +157,7 @@ def import_survivors(
                 "unknown_ops": unknown_ops,
             },
         )
+        wf["result_id"] = result_id
         workflows.append(wf)
 
     return workflows

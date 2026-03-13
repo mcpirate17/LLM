@@ -26,8 +26,10 @@ from ...synthesis.serializer import graph_to_json
 from ...eval.metrics import novelty_score
 from ...eval.fingerprint import BehavioralFingerprint
 from ...eval.diagnostic_tasks import run_diagnostic_suite
+from ...eval.perf_budget import evaluate_perf_budget_gate
+from ...perf_contract import build_duplicate_work_report, build_perf_contract, emit_perf_artifact
 from ..notebook import LabNotebook
-from ..llm.context import build_rich_context
+from ..llm.context_experiment import build_rich_context
 from ..shared_utils import resolve_device
 
 import logging
@@ -285,8 +287,11 @@ class _DashboardMixin:
         tp_sched_rows = results.get("training_program_scheduling", []) or []
         tp_avg_ms = [float(r.get("scheduling_avg_ms", 0.0) or 0.0) for r in tp_sched_rows]
         tp_max_ms = [float(r.get("scheduling_max_ms", 0.0) or 0.0) for r in tp_sched_rows]
-
-        return {
+        duplicate_work = build_duplicate_work_report(
+            repeated_keys={"graph_fingerprint_dedup": int(results.get("skipped_dedup", 0) or 0)},
+            hints=["Large dedup counts indicate search-space waste rather than runtime overhead."],
+        )
+        report = {
             "generated_at": time.time(),
             "programs_profiled": len(perf_traces),
             "trace_avg_ms": trace_avg_ms,
@@ -304,6 +309,39 @@ class _DashboardMixin:
                 "max_schedule_ms": round(max(tp_max_ms), 4) if tp_max_ms else 0.0,
             },
         }
+        report["duplicate_work"] = duplicate_work
+        budget_verdict = evaluate_perf_budget_gate(report, budget_profile="research_default")
+        contract = build_perf_contract(
+            component="research",
+            workload="experiment_screening",
+            identity={
+                "experiment_id": results.get("experiment_id"),
+                "total_programs": results.get("total", 0),
+                "stage1_passed": results.get("stage1_passed", 0),
+            },
+            metrics={
+                "total_time_ms": round(float(results.get("elapsed_seconds", 0.0) or 0.0) * 1000.0, 4),
+                "avg_throughput_tok_s": report["avg_throughput_tok_s"],
+                "programs_profiled": report["programs_profiled"],
+                "compile_time_ms": trace_avg_ms.get("compile", 0.0),
+                "forward_pass_ms": trace_avg_ms.get("forward_pass", 0.0),
+                "backward_pass_ms": trace_avg_ms.get("backward_pass", 0.0),
+                "optimizer_step_ms": trace_avg_ms.get("optimizer_step", 0.0),
+                "queue_submit_wait_ms": float((queue_telemetry or {}).get("submit_wait_avg_ms", 0.0) or 0.0),
+                "queue_scheduling_wait_ms": float((queue_telemetry or {}).get("scheduling_wait_avg_ms", 0.0) or 0.0),
+                "gpu_starvation_max_ms": report["gpu_starvation"]["max_stall_ms"],
+            },
+            budget_profile="research_default",
+            budget_verdict=budget_verdict,
+            duplicate_work=duplicate_work,
+        )
+        artifact_slug = str(results.get("experiment_id") or f"research_perf_{int(time.time())}")
+        artifact_path = emit_perf_artifact(contract, slug=artifact_slug)
+        contract["artifact_path"] = artifact_path
+        report["perf_contract"] = contract
+        report["perf_budget_gate"] = budget_verdict
+        report["perf_artifact_path"] = artifact_path
+        return report
 
     def _build_rich_context_for_experiment(
         self, results: Dict, config: RunConfig,
@@ -734,8 +772,28 @@ class _DashboardMixin:
         program_metrics["discovery_loss"] = s1_result.get("discovery_loss")
         program_metrics["discovery_loss_ratio"] = s1_result.get("discovery_loss_ratio")
         program_metrics.update({k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")})
+        # Propagate error info from training result to DB record
+        if s1_result.get("error_type"):
+            program_metrics["error_type"] = s1_result["error_type"]
+        if s1_result.get("error"):
+            program_metrics["error_message"] = s1_result["error"]
         self._merge_s1_telemetry(program_metrics, s1_result)
-        
+
+        # Compute efficiency_multiple at screening time
+        try:
+            from ..leaderboard_scoring import compute_efficiency_multiple
+            eff = compute_efficiency_multiple(
+                loss_ratio=s1_result.get("loss_ratio"),
+                param_count=program_metrics.get("param_count"),
+                forward_time_ms=s1_result.get("forward_time_ms"),
+                peak_memory_mb=s1_result.get("peak_memory_mb"),
+                throughput_tok_s=s1_result.get("throughput"),
+            )
+            if eff:
+                program_metrics["efficiency_multiple"] = eff["geomean"]
+        except Exception:
+            pass
+
         # Merge traces
         perf_report = s1_result.get("perf_report", s1_result.get("perf_traces"))
         if perf_report:
@@ -955,6 +1013,26 @@ class _DashboardMixin:
                 nb.store_training_curve(rid, training_curve)
             except Exception:
                 pass
+
+        # Every S1 survivor gets a screening-tier leaderboard entry
+        if s1_passed and rid:
+            try:
+                from ._helpers import _upsert_screening_entry
+                _upsert_screening_entry(nb, {
+                    "result_id": rid,
+                    "model_source": program_metrics.get("model_source", "graph_synthesis"),
+                    "graph_fingerprint": graph.fingerprint(),
+                    "loss_ratio": loss_ratio,
+                    "novelty_score": novelty_kwargs.get("novelty_score"),
+                    "novelty_confidence": novelty_kwargs.get("novelty_confidence"),
+                    "fp_jacobian_spectral_norm": program_metrics.get("fp_jacobian_spectral_norm"),
+                    "routing_savings_ratio": program_metrics.get("routing_savings_ratio"),
+                    "activation_sparsity_score": program_metrics.get("activation_sparsity_score"),
+                    "depth_savings_ratio": program_metrics.get("depth_savings_ratio"),
+                    "compression_ratio": program_metrics.get("compression_ratio"),
+                })
+            except Exception as e:
+                logger.debug("Screening leaderboard upsert failed for %s: %s", rid, e)
 
         # Update best metrics in experiment summary
         if loss_ratio is not None:

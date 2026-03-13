@@ -69,6 +69,8 @@ jobs:
             research/tests/test_native_runner_abi_smoke.py \
             research/tests/test_native_runner_abi_inference_probe.py \
             research/tests/test_runner_safe_eval_stage_routing.py \
+            research/tests/test_perf_budget_gate.py \
+            research/tests/test_perf_contract.py \
             -q
 
       - name: Cutover gate canary (enforce-ready)

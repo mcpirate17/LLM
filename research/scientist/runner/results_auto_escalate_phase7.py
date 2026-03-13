@@ -8,8 +8,7 @@ import uuid
 from typing import Any, Dict, List
 
 from ..evidence import validate_selection_decision_log
-from ..llm.context import build_go_no_go_context
-from ..leaderboard import LeaderboardManager
+from ..llm.context_experiment import build_go_no_go_context
 from ..notebook import ExperimentEntry, LabNotebook
 from ._types import RunConfig
 
@@ -18,6 +17,37 @@ logger = logging.getLogger(__name__)
 
 class _ResultsAutoEscalatePhase7Mixin:
     """Branch helpers extracted from _auto_escalate orchestration."""
+
+    @staticmethod
+    def _meets_empirical_validation_override(
+        candidate: Dict[str, Any],
+        candidate_score: float,
+        min_score: float,
+    ) -> bool:
+        robustness = float(candidate.get("robustness") or 0.0)
+        best_loss_ratio = float(candidate.get("best_loss_ratio") or 1.0)
+        baseline_loss_ratio = candidate.get("baseline_loss_ratio")
+        baseline_value = float(baseline_loss_ratio) if baseline_loss_ratio is not None else None
+        # Allow near-known-family architectures through when investigation-time
+        # evidence is dominant enough that novelty-confidence and missing/noisy
+        # baseline comparisons should affect ranking, not veto progression.
+        if robustness < 0.5:
+            return False
+        if best_loss_ratio >= 0.18:
+            return False
+        if baseline_value is not None and baseline_value >= 2.0:
+            return False
+        if min_score > 0 and candidate_score < (min_score * 1.15):
+            return False
+        return True
+
+    def _auto_escalate(self, results: Dict, config: RunConfig,
+                       nb: LabNotebook, phase: str = "screening") -> None:
+        """Auto-escalate candidates through the research pipeline."""
+        if phase in ("screening", "experiment"):
+            self._auto_escalate_screening(results, config, nb)
+        elif phase == "investigation":
+            self._auto_escalate_investigation(results, config, nb)
 
     def _auto_escalate_screening(self, results: Dict, config: RunConfig, nb: LabNotebook) -> None:
         if not config.auto_investigate:
@@ -206,42 +236,8 @@ class _ResultsAutoEscalatePhase7Mixin:
                 reward=float(reward),
             )
 
-        existing_lb = {e["result_id"]: e["tier"] for e in nb.get_leaderboard(limit=500)}
-        for p in selected_rows:
-            if p["result_id"] in candidate_ids:
-                if p["result_id"] in existing_lb and existing_lb[p["result_id"]] in (
-                    "screening",
-                    "investigation",
-                    "validation",
-                ):
-                    continue
-                # Compute efficiency multiple (geomean vs GPT-2) from screening metrics.
-                # NOTE: scaling_param_efficiency is NOT set here — that requires
-                # actual scaling experiments which only happen at validation.
-                _eff = LeaderboardManager.compute_efficiency_multiple(
-                    loss_ratio=p.get("loss_ratio"),
-                    param_count=p.get("param_count"),
-                    flops_forward=p.get("flops_forward"),
-                    throughput_tok_s=p.get("throughput_tok_s"),
-                    peak_memory_mb=p.get("peak_memory_mb"),
-                    forward_time_ms=p.get("forward_time_ms"),
-                )
-                nb.upsert_leaderboard(
-                    result_id=p["result_id"],
-                    model_source=p.get("model_source") or "graph_synthesis",
-                    architecture_desc=p.get("graph_fingerprint", "")[:40],
-                    screening_loss_ratio=p.get("loss_ratio"),
-                    screening_novelty=p.get("novelty_score"),
-                    screening_passed=True,
-                    tier="screening",
-                    novelty_confidence=p.get("novelty_confidence"),
-                    fp_jacobian_spectral_norm=p.get("fp_jacobian_spectral_norm"),
-                    efficiency_multiple=_eff["geomean"] if _eff else None,
-                    routing_savings_ratio=p.get("routing_savings_ratio"),
-                    activation_sparsity_score=p.get("activation_sparsity_score"),
-                    depth_savings_ratio=p.get("depth_savings_ratio"),
-                    compression_ratio=p.get("compression_ratio"),
-                )
+        # Leaderboard entries are created at S1-pass time in dashboard.py
+        # via _upsert_screening_entry(). No need to duplicate here.
 
         self._pending_investigation = {
             "result_ids": candidate_ids,
@@ -346,14 +342,15 @@ class _ResultsAutoEscalatePhase7Mixin:
         for r in inv_results:
             rid = r.get("result_id")
             meta = novelty_meta.get(rid or "", {})
-            if not meta:
-                novelty_valid = True
-            else:
-                novelty_valid = bool(meta.get("novelty_valid_for_promotion"))
-                if not novelty_valid and meta.get("cka_source") == "artifact":
-                    novelty_valid = True
-            if not novelty_valid and config.allow_heuristic_novelty_promotion:
-                novelty_valid = bool(str(config.heuristic_novelty_justification or "").strip())
+            # Log novelty status but don't gate on it — missing novelty is
+            # informational, not a disqualifier.
+            if meta and not bool(meta.get("novelty_valid_for_promotion")):
+                logger.info(
+                    "Auto-validate: %s has novelty_valid_for_promotion=False "
+                    "(cka_source=%s) — proceeding anyway",
+                    (rid or "?")[:12],
+                    meta.get("cka_source", "unknown"),
+                )
 
             candidate_score = composite_scores.get(rid, 0.0)
             if min_score > 0 and candidate_score < min_score:
@@ -364,20 +361,40 @@ class _ResultsAutoEscalatePhase7Mixin:
                     min_score,
                 )
                 continue
+            novelty_confidence = r.get("novelty_confidence")
+            novelty_gate_passed = (
+                novelty_confidence is not None
+                and float(novelty_confidence) >= config.auto_validate_min_novelty_confidence
+            )
+            baseline_loss_ratio = r.get("baseline_loss_ratio")
+            baseline_gate_passed = (
+                baseline_loss_ratio is not None
+                and float(baseline_loss_ratio) < config.auto_validate_max_baseline_ratio
+            )
+            empirical_override = self._meets_empirical_validation_override(
+                r,
+                candidate_score,
+                min_score,
+            )
             if (
                 r.get("robustness", 0) >= config.auto_validate_min_robustness
                 and (r.get("best_loss_ratio") or 1.0) < 0.25
-                and r.get("baseline_loss_ratio") is not None
-                and r.get("baseline_loss_ratio") < config.auto_validate_max_baseline_ratio
-                and r.get("novelty_confidence") is not None
-                and r.get("novelty_confidence") >= config.auto_validate_min_novelty_confidence
-                and novelty_valid
+                and (baseline_gate_passed or empirical_override)
+                and (novelty_gate_passed or empirical_override)
                 and not r.get("brittle_risk", False)
                 and (
                     r.get("loss_ratio_multiplier") is None
                     or r.get("loss_ratio_multiplier") <= config.investigation_max_loss_ratio_multiplier
                 )
             ):
+                if empirical_override and not novelty_gate_passed:
+                    logger.info(
+                        "Auto-validate: %s accepted via empirical override "
+                        "(novelty_conf=%.3f, score=%.1f)",
+                        (rid or "?")[:12],
+                        float(novelty_confidence or 0.0),
+                        candidate_score,
+                    )
                 strong.append(r)
 
         if not strong:

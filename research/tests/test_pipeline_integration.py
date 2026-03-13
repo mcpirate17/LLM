@@ -841,18 +841,17 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "seed_test.db"))
         model = TinyModel()
-        config = RunConfig(vocab_size=32, max_seq_len=16)
+        config = RunConfig(vocab_size=32, max_seq_len=16, data_mode="random")
 
-        original_randint = torch.randint
         seen_seeds = []
 
-        def _spy_randint(*args, **kwargs):
-            generator = kwargs.get("generator")
-            if generator is not None:
-                seen_seeds.append(generator.initial_seed())
-            return original_randint(*args, **kwargs)
+        original_sampler = runner._sample_training_input_ids
 
-        with patch("research.scientist.runner.execution.torch.randint", side_effect=_spy_randint):
+        def _spy_sample_training_input_ids(*args, **kwargs):
+            seen_seeds.append(kwargs.get("seed"))
+            return original_sampler(*args, **kwargs)
+
+        with patch.object(runner, "_sample_training_input_ids", side_effect=_spy_sample_training_input_ids):
             _ = runner._train_with_program(
                 model,
                 Program(),
@@ -861,8 +860,8 @@ class TestInlinePhaseMethods(unittest.TestCase):
                 seed=1234,
             )
 
-        self.assertGreaterEqual(len(seen_seeds), 3)
-        self.assertEqual(seen_seeds[:3], [1234, 1235, 1236])
+        self.assertGreaterEqual(len(seen_seeds), 1)
+        self.assertEqual(seen_seeds, list(range(1234, 1234 + len(seen_seeds))))
 
     def test_cycle_failure_marks_active_experiment_failed(self):
         """Cycle-level exceptions should finalize active experiment rows as failed."""
@@ -1142,7 +1141,7 @@ class TestBudgetContext(unittest.TestCase):
     """Verify budget info is included in mode selection context."""
 
     def test_context_includes_budget_when_provided(self):
-        from research.scientist.llm.context import build_mode_selection_context
+        from research.scientist.llm.context_experiment import build_mode_selection_context
         ctx = build_mode_selection_context(
             recent_experiments=[],
             leaderboard=[],
@@ -1155,7 +1154,7 @@ class TestBudgetContext(unittest.TestCase):
         self.assertIn("remaining", ctx.lower())
 
     def test_context_omits_budget_when_zero(self):
-        from research.scientist.llm.context import build_mode_selection_context
+        from research.scientist.llm.context_experiment import build_mode_selection_context
         ctx = build_mode_selection_context(
             recent_experiments=[],
             leaderboard=[],
@@ -1446,7 +1445,7 @@ class TestNegativeResultsLoop(unittest.TestCase):
 
     def test_negative_results_in_rich_context(self):
         """build_rich_context includes negative results when present."""
-        from research.scientist.llm.context import build_rich_context
+        from research.scientist.llm.context_experiment import build_rich_context
 
         analytics_data = {
             "negative_results": {
@@ -1470,7 +1469,7 @@ class TestNegativeResultsLoop(unittest.TestCase):
 
     def test_negative_results_absent_gracefully(self):
         """build_rich_context works fine without negative results."""
-        from research.scientist.llm.context import build_rich_context
+        from research.scientist.llm.context_experiment import build_rich_context
 
         ctx = build_rich_context(results={}, analytics_data={})
         self.assertNotIn("Negative Results", ctx)

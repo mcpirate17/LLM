@@ -42,6 +42,7 @@ def _torch_to_np(t):
 
 class KernelDispatcher:
     """Dispatches calls to the best available implementation for each component."""
+    __slots__ = ("use_native", "lib")
 
     def __init__(self, use_native=True):
         self.use_native = use_native

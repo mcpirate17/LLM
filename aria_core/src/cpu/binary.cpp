@@ -86,13 +86,13 @@ void aria_tropical_add_f32(const float *a, const float *b, float *y, int64_t n) 
     for (int64_t i = 0; i < vec_end; i += ARIA_SIMD_WIDTH) {
         aria_simd_ps va = aria_simd_loadu_ps(a + i);
         aria_simd_ps vb = aria_simd_loadu_ps(b + i);
-        aria_simd_ps vy = aria_simd_max_ps(va, vb);
+        aria_simd_ps vy = aria_simd_min_ps(va, vb);
         aria_simd_storeu_ps(y + i, vy);
     }
-    for (int64_t i = vec_end; i < n; i++) y[i] = fmaxf(a[i], b[i]);
+    for (int64_t i = vec_end; i < n; i++) y[i] = fminf(a[i], b[i]);
 #else
     for (int64_t i = 0; i < n; i++) {
-        y[i] = fmaxf(a[i], b[i]);
+        y[i] = fminf(a[i], b[i]);
     }
 #endif
 }

@@ -44,9 +44,14 @@ function Leaderboard({
     }
   })();
 
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const {
+    leaderboardEntries: rawEntries,
+    loading,
+    error,
+    lastUpdated,
+    refreshSharedData: fetchLeaderboard,
+  } = useAriaData() || {};
+
   const [activeTier, setActiveTier] = useState(() => {
     const tier = leaderboardPrefs?.activeTier;
     return ['all', 'screening', 'investigation', 'validation', 'breakthrough'].includes(tier) ? tier : 'all';
@@ -59,7 +64,6 @@ function Leaderboard({
   });
   const [actionError, setActionError] = useState(null);
   const [expandedRowId, setExpandedRowId] = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(null);
   const [searchQuery, setSearchQuery] = useState(() => {
     return typeof leaderboardPrefs?.searchQuery === 'string' ? leaderboardPrefs.searchQuery : '';
   });
@@ -103,35 +107,6 @@ function Leaderboard({
       return () => clearTimeout(timer);
     }
   }, [highlightResultId, onHighlightClear]);
-
-  const lastDataRef = useRef(null);
-
-  const fetchLeaderboard = useCallback(async (isBackground = false) => {
-    if (!isBackground) { setLoading(true); setError(null); }
-    try {
-      const params = new URLSearchParams({ sort: 'composite_score', limit: '100' });
-      if (activeTier !== 'all') params.set('tier', activeTier);
-      const res = await apiCall(`/api/leaderboard?${params}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      const jsonStr = JSON.stringify(json);
-      if (jsonStr !== lastDataRef.current) {
-        lastDataRef.current = jsonStr;
-        setData(json);
-        setLastUpdated(new Date());
-      }
-      setError(null);
-    } catch (e) {
-      if (!isBackground) setError('Failed to load leaderboard: ' + e.message);
-    }
-    if (!isBackground) setLoading(false);
-  }, [activeTier]);
-
-  useEffect(() => {
-    fetchLeaderboard(false);
-    const interval = setInterval(() => fetchLeaderboard(true), 60000);
-    return () => clearInterval(interval);
-  }, [fetchLeaderboard]);
 
   const handleSort = (key) => {
     if (key === '_actions') return;
@@ -186,7 +161,6 @@ function Leaderboard({
     }
   };
 
-  const rawEntries = data?.entries || [];
   const referenceEntries = useMemo(() => rawEntries.filter(e => e.is_reference), [rawEntries]);
   const referenceByFamily = useMemo(() => {
     const mapping = {};

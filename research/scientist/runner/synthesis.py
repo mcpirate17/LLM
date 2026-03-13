@@ -27,6 +27,7 @@ from ...synthesis.serializer import graph_to_json, graph_from_json
 from ...synthesis.primitives import PROTECTED_OPS
 from ...eval.flops import estimate_flops
 from ..notebook import LabNotebook
+from ..refinement_scoring import oscillation_risk_score
 
 import logging
 logger = logging.getLogger(__name__)
@@ -66,13 +67,11 @@ class _SynthesisMixin:
             cfg.max_ops = 12
             cfg.residual_prob = 0.6
         elif cycle == 3:
-            # EXOTIC: routing/MoE/compression exploration
-            cfg.max_depth = 10
-            cfg.max_ops = 16
-            cfg.residual_prob = 0.4
-            cfg.grammar_split_prob = 0.6
-            cfg.math_space_weight = 1.5
-            cfg._exotic_mode = True
+            # EFFICIENCY: sparse/routing/compression exploration
+            cfg.max_depth = 8
+            cfg.max_ops = 12
+            cfg.residual_prob = 0.7
+            cfg._efficiency_mode = True
         elif cycle == 4:
             # High risk, frequency focus
             cfg.math_space_weight = 3.0
@@ -243,6 +242,7 @@ class _SynthesisMixin:
             if s05_passed:
                 stage05_pass += 1
             s1_passed = False
+            s1 = {}
             final_loss = None
             loss_ratio = None
             if s05_passed:
@@ -267,6 +267,9 @@ class _SynthesisMixin:
                 stage0_error=s0.error,
                 final_loss=final_loss,
                 loss_ratio=loss_ratio,
+                error_type=s1.get("error_type") if s1 else None,
+                error_message=s1.get("error") if s1 else None,
+                param_count=s1.get("param_count") if s1 else None,
                 model_source="ablation",
                 perf_report_json=json.dumps(s1.get("perf_report", {})) if s1_passed else None,
                 kernel_timings_json=json.dumps(s1.get("kernel_timings_ms", {})) if s1_passed else None,
@@ -278,6 +281,7 @@ class _SynthesisMixin:
         outcome = "supported" if total > 0 and stage1_pass == 0 else "not_supported"
         if total == 0:
             outcome = "inconclusive"
+        nb.flush_writes()
         nb.complete_experiment(
             experiment_id=exp_id,
             results={
@@ -493,10 +497,10 @@ class _SynthesisMixin:
     def _compute_multi_objective_fitness(self, s1_result, sandbox_result, graph, config):
         """Multi-objective fitness: quality + efficiency + speed + learning + compactness."""
         weights = {
-            "quality": 0.30,
-            "efficiency": 0.25,
-            "speed": 0.10,
-            "learning_speed": 0.20,
+            "quality": 0.25,
+            "efficiency": 0.30,
+            "speed": 0.15,
+            "learning_speed": 0.15,
             "compactness": 0.15,
         }
 
@@ -506,13 +510,31 @@ class _SynthesisMixin:
         lr = s1_result.get("loss_ratio", 1.0) if s1_result else 1.0
         components["quality"] = max(0.0, 1.0 - lr)
 
-        # Efficiency: prefer fewer params
+        # Efficiency: use actual efficiency_multiple vs GPT-2
         max_params = config.model_dim * config.vocab_size * 2
         param_count = getattr(sandbox_result, "param_count", 0) or 0
-        if param_count > 0 and max_params > 0:
-            components["efficiency"] = max(0.0, 1.0 - min(param_count / max_params, 1.0))
-        else:
-            components["efficiency"] = 0.0
+        try:
+            from ..leaderboard_scoring import compute_efficiency_multiple
+            eff_result = compute_efficiency_multiple(
+                loss_ratio=s1_result.get("loss_ratio") if s1_result else None,
+                param_count=param_count or None,
+                forward_time_ms=s1_result.get("forward_time_ms") if s1_result else (
+                    getattr(sandbox_result, "forward_time_ms", None) if sandbox_result else None
+                ),
+                peak_memory_mb=s1_result.get("peak_memory_mb") if s1_result else None,
+                throughput_tok_s=s1_result.get("throughput") if s1_result else None,
+            )
+            if eff_result and eff_result.get("geomean", 0) > 0:
+                components["efficiency"] = min(1.0, eff_result["geomean"] / 5.0)
+            elif param_count > 0 and max_params > 0:
+                components["efficiency"] = max(0.0, 1.0 - min(param_count / max_params, 1.0))
+            else:
+                components["efficiency"] = 0.0
+        except Exception:
+            if param_count > 0 and max_params > 0:
+                components["efficiency"] = max(0.0, 1.0 - min(param_count / max_params, 1.0))
+            else:
+                components["efficiency"] = 0.0
 
         # Speed: throughput in tokens/sec
         target_throughput = 50000.0
@@ -873,6 +895,7 @@ class _SynthesisMixin:
                 1.0 for op in ops if any(token in op.lower() for token in sparse_hint_ops)
             ) / len(ops)
         sparsity_proxy = min(1.0, 0.7 * compression_proxy + 0.3 * sparse_op_bonus)
+        oscillation_risk, stability = oscillation_risk_score(graph)
 
         parent_novelty = float((source_row or {}).get("novelty_score") or 0.0)
         parent_quality = 1.0 - float((source_row or {}).get("loss_ratio") or 1.0)
@@ -902,6 +925,7 @@ class _SynthesisMixin:
                 "novelty_proxy": 0.55 * novelty_proxy,
                 "learned_quality": 0.25 * learned_quality,
                 "parent_novelty": 0.20 * parent_novelty,
+                "oscillation_penalty": -0.06 * oscillation_risk,
             }
         else:  # balanced
             weighted_terms = {
@@ -909,7 +933,10 @@ class _SynthesisMixin:
                 "compression_proxy": 0.25 * compression_proxy,
                 "novelty_proxy": 0.20 * novelty_proxy,
                 "parent_signal": 0.20 * max(parent_quality, parent_novelty),
+                "oscillation_penalty": -0.10 * oscillation_risk,
             }
+        if mode in {"quality", "compression", "sparsity"}:
+            weighted_terms["oscillation_penalty"] = -0.10 * oscillation_risk
         score = float(sum(weighted_terms.values()))
         if not include_breakdown:
             return score
@@ -924,6 +951,7 @@ class _SynthesisMixin:
                 "parent_quality": float(parent_quality),
                 "parent_novelty": float(parent_novelty),
                 "sparse_op_bonus": float(sparse_op_bonus),
+                **stability,
             },
             "weighted_terms": {k: float(v) for k, v in weighted_terms.items()},
             "ops": {
@@ -1042,4 +1070,3 @@ class _SynthesisMixin:
                 "refinement_novelty_pressure": float(config.refinement_novelty_pressure),
             },
         }
-

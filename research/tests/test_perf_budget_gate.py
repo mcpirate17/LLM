@@ -52,3 +52,34 @@ def test_perf_budget_gate_fails_for_missing_metrics():
     verdict = evaluate_perf_budget_gate({})
     assert verdict["passed"] is False
     assert verdict["n_failed"] > 0
+
+
+def test_designer_budget_profile_uses_nested_metrics_and_duplicate_work():
+    perf_report = {
+        "metrics": {
+            "total_time_ms": 400.0,
+            "compile_time_ms": 120.0,
+            "native_coverage": 0.75,
+        },
+        "duplicate_work": {
+            "detected_count": 0,
+        },
+    }
+    verdict = evaluate_perf_budget_gate(perf_report, budget_profile="designer_interactive")
+    assert verdict["passed"] is True
+
+
+def test_native_coverage_budget_is_minimum_not_maximum():
+    perf_report = {
+        "metrics": {
+            "total_time_ms": 400.0,
+            "compile_time_ms": 120.0,
+            "native_coverage": 0.1,
+        },
+        "duplicate_work": {
+            "detected_count": 0,
+        },
+    }
+    verdict = evaluate_perf_budget_gate(perf_report, budget_profile="designer_interactive")
+    failed = {check["metric"] for check in verdict["checks"] if not check["passed"]}
+    assert "metrics.native_coverage" in failed

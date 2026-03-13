@@ -406,7 +406,7 @@ CREATE TABLE IF NOT EXISTS insights (
 );
 
 CREATE TABLE IF NOT EXISTS training_curves (
-    result_id TEXT NOT NULL,
+    result_id TEXT NOT NULL REFERENCES program_results(result_id) ON DELETE CASCADE,
     step INTEGER NOT NULL,
     loss REAL,
     grad_norm REAL,
@@ -456,6 +456,8 @@ CREATE TABLE IF NOT EXISTS learning_log (
 CREATE INDEX IF NOT EXISTS idx_entries_experiment ON entries(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
 CREATE INDEX IF NOT EXISTS idx_programs_experiment ON program_results(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_programs_stage1_passed ON program_results(stage1_passed);
+CREATE INDEX IF NOT EXISTS idx_programs_graph_fingerprint ON program_results(graph_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_programs_novelty ON program_results(novelty_score);
 CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics_log(metric_name);
 CREATE INDEX IF NOT EXISTS idx_insights_category ON insights(category);
@@ -501,7 +503,7 @@ CREATE TABLE IF NOT EXISTS leaderboard (
     scaling_confidence TEXT,
     -- Composite score
     composite_score REAL,
-    tier TEXT DEFAULT 'screening',  -- 'screening', 'investigation', 'validation', 'breakthrough'
+    tier TEXT DEFAULT 'screening',  -- 'screening', 'screened_out', 'investigation', 'validation', 'breakthrough'
     -- Metadata
     tags TEXT,
     notes TEXT,
@@ -516,6 +518,7 @@ CREATE TABLE IF NOT EXISTS leaderboard (
 CREATE INDEX IF NOT EXISTS idx_leaderboard_tier ON leaderboard(tier);
 CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON leaderboard(composite_score);
 CREATE INDEX IF NOT EXISTS idx_leaderboard_result ON leaderboard(result_id);
+CREATE INDEX IF NOT EXISTS idx_leaderboard_model_source ON leaderboard(model_source);
 
 CREATE TABLE IF NOT EXISTS campaigns (
     campaign_id TEXT PRIMARY KEY,
@@ -845,6 +848,8 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "novelty_valid_for_promotion": "INTEGER",
     "novelty_validity_reason": "TEXT",
     "novelty_requires_justification": "INTEGER",
+    "novelty_scoring_policy_version": "TEXT",
+    "fingerprint_full_ran": "INTEGER",
     # CKA provenance
     "cka_source": "TEXT",
     "cka_artifact_version": "TEXT",

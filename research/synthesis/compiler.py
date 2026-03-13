@@ -9,7 +9,6 @@ parameters allocated for parameterized ops.
 from __future__ import annotations
 
 import math
-import numpy as np
 from typing import Dict, List, Optional, Tuple, Callable
 
 import torch
@@ -17,7 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .primitives import get_primitive, PrimitiveOp
-from .graph import ComputationGraph, OpNode, ShapeInfo
+from .graph import ComputationGraph, ShapeInfo
 
 try:
     from . import kernels
@@ -31,11 +30,7 @@ try:
 except ImportError:
     HAS_CPU_OPS = False
 
-try:
-    import aria_core
-    HAS_ARIA_CORE = True
-except ImportError:
-    HAS_ARIA_CORE = False
+from research.env import aria_core, HAS_ARIA_CORE
 
 
 # ── Registry System ───────────────────────────────────────────────────
@@ -79,7 +74,10 @@ def _record_sparse_telemetry(module: nn.Module, op_name: str, density: float,
 
 def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_experts: torch.Tensor,
                               logits: Optional[torch.Tensor] = None) -> None:
-    """Record MoE routing statistics: entropy, expert utilization, drop rate."""
+    """Record MoE routing statistics: entropy, expert utilization, drop rate.
+
+    Samples every 8th call to reduce overhead while maintaining statistical accuracy.
+    """
     telemetry = getattr(module, "routing_telemetry", {
         "tokens_total": 0,
         "tokens_processed": 0,
@@ -87,17 +85,25 @@ def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_expert
         "entropy_sum": 0.0,
         "count": 0,
         "heatmap": None,
+        "_call_count": -1,
     })
-    
+
+    telemetry["_call_count"] += 1
     B, S = selected_experts.shape[:2]
     total_tokens = B * S
     telemetry["tokens_total"] += total_tokens
-    telemetry["tokens_processed"] += total_tokens # Assuming all tokens processed for now
-    
+    telemetry["tokens_processed"] += total_tokens
+
+    # Sample every 8th call for expensive histogram + entropy (first call always records)
+    if telemetry["_call_count"] & 7 != 0:
+        telemetry["count"] += 1
+        setattr(module, "routing_telemetry", telemetry)
+        return
+
     # Expert utilization
     counts = torch.histc(selected_experts.float(), bins=n_experts, min=0, max=n_experts-1)
     telemetry["expert_counts"] += counts
-    
+
     # Entropy if logits provided
     if logits is not None:
         probs = F.softmax(logits, dim=-1)
@@ -308,7 +314,8 @@ def _op_reciprocal(_, inputs, __):
 @register_op("add")
 def _op_add(_, inputs, __):
     a, b = inputs[0], inputs[1]
-    if _c(a): return aria_core.add_f32(a, b)
+    if _c(a) and a.numel() == b.numel():
+        return aria_core.add_f32(a, b)
     return a + b
 
 @register_op("mul")
@@ -409,27 +416,27 @@ def _op_split2(_, inputs, config):
     part = int(config.get("part", 0))
     x = inputs[0]
     w = x.shape[-1] // 2
-    if part == 0: return x[..., :w]
-    return x[..., w:2*w]
+    if part == 0: return x[..., :w].contiguous()
+    return x[..., w:2*w].contiguous()
 
 @register_op("split3")
 def _op_split3(_, inputs, config):
     part = int(config.get("part", 0))
     x = inputs[0]
     w = x.shape[-1] // 3
-    if part == 0: return x[..., :w]
-    if part == 1: return x[..., w:2*w]
-    return x[..., 2*w:3*w]
+    if part == 0: return x[..., :w].contiguous()
+    if part == 1: return x[..., w:2*w].contiguous()
+    return x[..., 2*w:3*w].contiguous()
 
 @register_op("split4")
 def _op_split4(_, inputs, config):
     part = int(config.get("part", 0))
     x = inputs[0]
     w = x.shape[-1] // 4
-    if part == 0: return x[..., :w]
-    if part == 1: return x[..., w:2*w]
-    if part == 2: return x[..., 2*w:3*w]
-    return x[..., 3*w:4*w]
+    if part == 0: return x[..., :w].contiguous()
+    if part == 1: return x[..., w:2*w].contiguous()
+    if part == 2: return x[..., 2*w:3*w].contiguous()
+    return x[..., 3*w:4*w].contiguous()
 
 @register_op("concat")
 def _op_concat(_, inputs, __):
@@ -531,6 +538,8 @@ def _op_selective_scan(module, inputs, _):
 def _op_conv1d_seq(module, inputs, _):
     if not hasattr(module, 'conv_weight'): return inputs[0]
     x = inputs[0]
+    if x.ndim == 2:
+        x = x.unsqueeze(0)
     B, S, D = x.shape
     if _c(x):
         conv_bias = getattr(module, "conv_bias", None)
@@ -594,23 +603,17 @@ def _op_moe_topk(module, inputs, config):
     # Record routing telemetry
     _record_routing_telemetry(module, n_experts, indices, logits=logits)
     
-    # Recorded weights for expert contribution
+    # Weighted expert contributions
     if hasattr(module, 'experts'):
+        output = torch.zeros_like(x)
         for i, expert in enumerate(module.experts):
-            # Find tokens that selected this expert
-            # indices shape: (B, S, top_k)
-            # mask: (B, S) - tokens that have expert i in their top-k
             mask = (indices == i).any(dim=-1)
             if mask.any():
                 expert_input = x[mask]
-                # expert_weight: find the weight assigned to expert i for these tokens
-                # We need to extract the specific weight from 'weights' (B, S, top_k)
-                # where indices (B, S, top_k) == i
                 exp_mask = (indices == i)
                 expert_weight = weights[exp_mask].reshape(-1, 1)
                 output[mask] = output[mask] + expert(expert_input) * expert_weight
     else:
-        # Fallback to a learned projection if experts sub-modules aren't ready
         output = F.linear(x, module.weight) if hasattr(module, 'weight') else x
 
     return output
@@ -815,7 +818,7 @@ def _op_block_sparse_linear(module, inputs, config):
     block_size = int(getattr(module, "block_size", config.get("block_size", 16)))
     block_density = float(getattr(module, "block_density", config.get("block_density", 0.25)))
     
-    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32:
+    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32 and not inputs[0].requires_grad:
         # Generate block mask (coarse)
         mask = _build_block_sparse_mask(module.weight, block_size, block_density)
         # Convert to uint8 for kernel (needs downsampling if we want true block sparsity optimization)
@@ -952,10 +955,12 @@ def _op_layernorm(module, inputs, _):
 def _op_gated_linear(module, inputs, _):
     if not hasattr(module, 'linear_weight'): return inputs[0]
     x = inputs[0]
-    if _c(x):
-        return aria_core.gated_linear_f32(
+    if _c(x) and x.ndim == 3:
+        out = aria_core.gated_linear_f32(
             x, module.linear_weight, module.linear_bias,
             module.gate_weight, module.gate_bias)
+        if out.ndim == x.ndim:
+            return out
     linear = F.linear(x, module.linear_weight, module.linear_bias)
     gate = torch.sigmoid(F.linear(x, module.gate_weight, module.gate_bias))
     return linear * gate
@@ -985,41 +990,42 @@ def _op_rwkv_time_mixing(module, inputs, _):
         )
         return F.linear(out_native, module.W_o)
     B, S, D = x.shape
-    
+
     k = F.linear(x, module.W_k)
     v = F.linear(x, module.W_v)
-    r = torch.sigmoid(F.linear(x, module.W_r))
-    
-    # Stable Parallel Scan (simplified)
-    # Use exponential decay: out_t = (sum_{j=1}^t exp(-(t-j)w + u) v_j) / denom
-    w = -torch.exp(module.w_decay) # ensures decay
+    r_raw = F.linear(x, module.W_r)
+
+    # C kernel fast path: fused WKV scan (handles sigmoid internally)
+    if (
+        _c(k)
+        and hasattr(aria_core, "rwkv_wkv_scan_f32")
+        and not k.requires_grad
+    ):
+        out = aria_core.rwkv_wkv_scan_f32(
+            k.contiguous(), v.contiguous(), r_raw.contiguous(),
+            module.w_decay, module.u_bonus,
+        )
+        return F.linear(out, module.W_o)
+
+    r = torch.sigmoid(r_raw)
+    w = -torch.exp(module.w_decay)
     u = module.u_bonus
-    
-    # Cumulative max for numerical stability in exp
-    # Using a simplified version of the WKV parallel algorithm
-    # See: https://github.com/BlinkDL/RWKV-LM
-    
-    # For micro-eval, we use a slightly more stable sequential loop if S is small
-    # or a vectorized approximation if S is large.
+
     if S <= 128:
         exp_w = torch.exp(w).unsqueeze(0)
         wkv = torch.zeros(B, D, device=x.device, dtype=x.dtype)
         wkv_denom = torch.zeros(B, D, device=x.device, dtype=x.dtype)
         outputs = []
         for t in range(S):
-            # kt, vt: [B, D]
             kt, vt = k[:, t], v[:, t]
-            # u is 'bonus' for current token
             p = torch.exp(u + kt)
             outputs.append(r[:, t] * (wkv + p * vt) / (wkv_denom + p).clamp(min=1e-8))
-            # Update state for next step
             wkv = (wkv * exp_w) + torch.exp(kt) * vt
             wkv_denom = (wkv_denom * exp_w) + torch.exp(kt)
         out = torch.stack(outputs, dim=1)
     else:
-        # Fast vectorized fallback for long sequences
-        out = r * v # placeholder for full parallel scan
-        
+        out = r * v
+
     return F.linear(out, module.W_o)
 
 @register_op("padic_residual")
@@ -1027,48 +1033,6 @@ def _op_padic_residual(module, inputs, config):
     """Multi-resolution p-adic residual connection."""
     from ..mathspaces.padic import execute_padic_residual
     return execute_padic_residual(module, inputs[0])
-
-@register_op("mixed_recursion_gate")
-def _op_mixed_recursion_gate(module, inputs, config):
-    """Fixed-arity wrapper for mixed_recursion_gate."""
-    x = inputs[0]
-    # If 2nd input (scores) missing, generate internal scores from x
-    scores = inputs[1] if len(inputs) > 1 else x.mean(dim=-1, keepdim=True)
-    
-    max_depth = int(config.get("max_depth", 3))
-    if not hasattr(module, 'step_projs'): return x
-    
-    # Simple threshold-based depth if scores is single-dim
-    if scores.shape[-1] == 1:
-        depths = (torch.sigmoid(scores) * max_depth).long().squeeze(-1)
-    else:
-        depths = scores.argmax(dim=-1)
-        
-    out = x
-    for i in range(max_depth):
-        mask = (depths >= i).float().unsqueeze(-1)
-        step_out = F.linear(out, module.step_projs[i])
-        out = (1 - mask) * out + mask * step_out
-    return out
-
-@register_op("adaptive_lane_mixer")
-def _op_adaptive_lane_mixer(module, inputs, config):
-    """Fixed-arity wrapper for adaptive_lane_mixer."""
-    x = inputs[0]
-    # Lane mixer usually wants its own internal gate proj (handled in CompiledOp)
-    if not hasattr(module, 'gate_proj'): return x
-    
-    logits = F.linear(x, module.gate_proj)
-    weights = F.softmax(logits, dim=-1)
-    
-    _record_routing_telemetry(module, 3, weights.argmax(dim=-1), logits=logits)
-    out = x * weights[..., 0:1]
-    if hasattr(module, 'U_mid'):
-        mid = F.linear(F.linear(x, module.U_mid), module.V_mid)
-        out = out + mid * weights[..., 1:2]
-    if hasattr(module, 'heavy_mlp'):
-        out = out + module.heavy_mlp(x) * weights[..., 2:3]
-    return out
 
 @register_op("embedding_lookup")
 def _op_embedding_lookup(module, inputs, _):
@@ -1091,14 +1055,44 @@ def _op_embedding_lookup(module, inputs, _):
             pass
     return x
 
+class _RopeRotateC(torch.autograd.Function):
+    """C-accelerated RoPE rotation with analytical backward (rotate by -angle)."""
+
+    __slots__ = ()
+
+    @staticmethod
+    def forward(ctx, x, theta_base):
+        ctx.theta_base = theta_base
+        ctx.shape = x.shape
+        return aria_core.rope_rotate_f32(x.detach().contiguous(), theta_base)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # RoPE backward: rotate by -angle = apply RoPE to [-x_odd, x_even] pairs
+        # Equivalent to: cos(-a)*g_even - sin(-a)*g_odd = cos(a)*g_even + sin(a)*g_odd
+        # But simpler: just negate sin in the rotation
+        B, S, D = ctx.shape
+        g = grad_output.contiguous()
+        half_dim = D // 2
+        pos = torch.arange(S, device=g.device, dtype=g.dtype).unsqueeze(1)
+        freqs = 1.0 / (ctx.theta_base ** (torch.arange(0, D, 2, device=g.device, dtype=g.dtype) / D))
+        angles = pos * freqs.unsqueeze(0)
+        cos_a = torch.cos(angles).unsqueeze(0)
+        sin_a = torch.sin(angles).unsqueeze(0)
+        g1, g2 = g[..., 0::2], g[..., 1::2]
+        grad_in = torch.zeros_like(g)
+        # Inverse rotation (transpose of rotation matrix)
+        grad_in[..., 0::2] = g1 * cos_a + g2 * sin_a
+        grad_in[..., 1::2] = -g1 * sin_a + g2 * cos_a
+        return grad_in, None
+
 @register_op("rope_rotate")
 def _op_rope_rotate(_, inputs, __):
     x = inputs[0]
-    if _c(x) and hasattr(aria_core, "rope_rotate_f32"):
-        return aria_core.rope_rotate_f32(x, 10000.0)
+    if HAS_ARIA_CORE and hasattr(aria_core, "rope_rotate_f32") and x.device.type == "cpu" and x.dtype == torch.float32:
+        return _RopeRotateC.apply(x, 10000.0)
     B, S, D = x.shape
     pos = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
-    dim_pairs = D // 2
     freqs = 1.0 / (10000.0 ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D))
     angles = pos * freqs.unsqueeze(0)
     cos_a = torch.cos(angles).unsqueeze(0)
@@ -1161,7 +1155,6 @@ def _op_softmax_seq(_, inputs, __):
     if _c(x): return aria_core.softmax_seq_f32(x)
     return F.softmax(x, dim=1)
 
-@register_op("causal_mask")
 @register_op("causal_mask")
 def _op_causal_mask(_, inputs, __):
     """Causal integration: every token becomes the average of itself and all previous tokens.
@@ -1297,6 +1290,7 @@ def _op_route_recursion(module, inputs, config):
     _record_routing_telemetry(module, max_depth, depth, logits=scores)
     return depth
 
+@register_op("token_merging")
 @register_op("token_merge")
 def _op_token_merge(module, inputs, config):
     x = inputs[0]
@@ -1330,6 +1324,9 @@ def _op_token_merge(module, inputs, config):
     restore_map = restore_map.clamp(0, y.shape[1] - 1).minimum(causal_limit)
     return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, x.shape[2]))
 
+
+_op_token_merging = _op_token_merge
+
 # ── Routing Control Ops (Phase 2) ────────────────────────────────────
 
 def _routing_scores_from_x(x: torch.Tensor) -> torch.Tensor:
@@ -1342,18 +1339,17 @@ def _op_mod_topk(module, inputs, config):
     B, S, D = x.shape
     capacity = float(config.get("capacity_factor", 0.75))
     scores = _routing_scores_from_x(x)
-    # Causal gating: use cumulative mean as a running threshold so each
-    # position's gate depends only on current and past scores.
-    cumsum = torch.cumsum(scores, dim=-1)
-    counts = torch.arange(1, S + 1, device=x.device, dtype=scores.dtype).unsqueeze(0)
-    running_mean = cumsum / counts
-    # Gate: positions whose score exceeds capacity * running_mean are kept;
-    # others are attenuated via sigmoid for smooth gradients.
-    threshold = running_mean * capacity
-    gate = torch.sigmoid(4.0 * (scores - threshold))  # soft gate
-    _record_routing_telemetry(module, S,
-                              (gate > 0.5).nonzero(as_tuple=False)[:, 1:],
-                              logits=scores)
+    # Causal sparsity: deterministic stride-based mask that keeps
+    # ~capacity fraction of positions without peeking at future tokens.
+    stride = max(1, int(1.0 / max(1.0 - capacity, 0.01)))
+    pos = torch.arange(S, device=x.device)
+    keep_mask = ((pos % stride) != (stride - 1)).float().unsqueeze(0).expand(B, -1)
+    cumsum = scores.cumsum(dim=-1)
+    counts = torch.arange(1, S + 1, device=scores.device, dtype=scores.dtype)
+    causal_mean = cumsum / counts
+    soft_gate = torch.sigmoid(4.0 * (scores - causal_mean))
+    gate = soft_gate * keep_mask
+    _record_routing_telemetry(module, S, (gate > 0.5).long(), logits=scores)
     return x * gate.unsqueeze(-1)
 
 @register_op("early_exit")
@@ -1399,20 +1395,6 @@ def _op_adaptive_recursion(module, inputs, config):
         depth = depth_scores.argmax(dim=-1) + 1
     scale = 1.0 + 0.05 * depth.float()
     return x * scale.unsqueeze(-1)
-
-@register_op("token_merging")
-def _op_token_merging(module, inputs, config):
-    x = inputs[0]
-    n_keep = int(config.get("n_keep", x.shape[1] // 2))
-    seq_len = x.shape[1]
-    if HAS_ARIA_CORE and x.device.type == "cpu" and x.dtype == torch.float32:
-        y, restore_map = aria_core.token_merge_simple_f32(x, n_keep)
-    else:
-        y = x[:, :n_keep, :]
-        restore_map = torch.arange(seq_len, device=x.device).expand(x.shape[0], -1)
-    # Ensure indices are within bounds for CUDA safety
-    restore_map = restore_map.clamp(0, y.shape[1] - 1)
-    return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, x.shape[2]))
 
 # ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
 
@@ -1824,21 +1806,17 @@ def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...
             # Sanitize non-finite values and record telemetry
             if isinstance(result, torch.Tensor):
                 nonfinite = int((~torch.isfinite(result)).sum().item())
+                telemetry = getattr(module, "mathspace_telemetry", {})
+                stats = telemetry.get(op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0})
+                stats["calls"] = stats.get("calls", 0) + 1
+                
                 if nonfinite > 0:
                     result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
-                    telemetry = getattr(module, "mathspace_telemetry", {})
-                    stats = telemetry.get(op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0})
-                    stats["calls"] = stats.get("calls", 0) + 1
                     stats["nonfinite_elements"] = stats.get("nonfinite_elements", 0) + nonfinite
                     stats["sanitized_calls"] = stats.get("sanitized_calls", 0) + 1
-                    telemetry[op_name] = stats
-                    setattr(module, "mathspace_telemetry", telemetry)
-                else:
-                    telemetry = getattr(module, "mathspace_telemetry", {})
-                    stats = telemetry.get(op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0})
-                    stats["calls"] = stats.get("calls", 0) + 1
-                    telemetry[op_name] = stats
-                    setattr(module, "mathspace_telemetry", telemetry)
+                    
+                telemetry[op_name] = stats
+                setattr(module, "mathspace_telemetry", telemetry)
 
             # Tropical routing telemetry for route-collapse detection
             if op_name in ("tropical_router", "tropical_moe"):

@@ -26,12 +26,13 @@ def get_survivors(
     n: int = Query(10, ge=1, le=100),
     sort_by: str = Query("validation_loss_ratio"),
     min_novelty: float = Query(0.0, ge=0.0, le=1.0),
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """List top survivors from the research pipeline as importable workflows."""
     if not HAS_IMPORTER:
         raise HTTPException(status_code=501, detail="Importer not available")
     try:
-        return import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
+        survivors = import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
+        return {"survivors": survivors}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

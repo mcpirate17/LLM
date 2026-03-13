@@ -2,7 +2,6 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
-import math
 import os
 import queue
 import sqlite3
@@ -15,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ._shared import LOGGER, NOTEBOOK_SCHEMA, _PROGRAM_RESULTS_NEW_COLUMNS, infer_insight_identity, sanitize_for_db
+from ._shared import LOGGER, NOTEBOOK_SCHEMA, _PROGRAM_RESULTS_NEW_COLUMNS, infer_insight_identity
 
 
 class _NotebookCore:
@@ -60,6 +59,7 @@ class _NotebookCore:
         self.db_path = self.resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path))
+        self.conn.execute("PRAGMA foreign_keys=ON")
         # Enable WAL mode for high-concurrency performance
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -67,6 +67,8 @@ class _NotebookCore:
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
         self._leaderboard_columns: Optional[set[str]] = None
+        self._dashboard_summary_cache: Optional[Dict[str, Any]] = None
+        self._dashboard_summary_cache_expires_at: float = 0.0
         self.conn.executescript(NOTEBOOK_SCHEMA)
         self._maybe_commit()
         self._migrate()
@@ -81,6 +83,7 @@ class _NotebookCore:
         """Background thread that handles all database writes."""
         # Use a separate connection for the writer thread
         writer_conn = sqlite3.connect(str(self.db_path))
+        writer_conn.execute("PRAGMA foreign_keys=ON")
         writer_conn.execute("PRAGMA journal_mode=WAL")
         writer_conn.execute("PRAGMA synchronous=NORMAL")
         
@@ -129,6 +132,7 @@ class _NotebookCore:
 
     def _submit_write(self, sql: str, params: Any):
         """Submit a write task to the background queue."""
+        self._invalidate_dashboard_summary_cache()
         self._write_queue.put((sql, params))
 
 
@@ -142,6 +146,9 @@ class _NotebookCore:
         flush_event = threading.Event()
         self._write_queue.put(("__flush__", flush_event))
         flush_event.wait(timeout=timeout)
+        # Refresh the reader connection so subsequent reads observe the
+        # writer thread's committed WAL snapshot immediately.
+        self.conn.commit()
 
 
     def _migrate(self):
@@ -207,6 +214,12 @@ class _NotebookCore:
             CREATE INDEX IF NOT EXISTS idx_leaderboard_tier ON leaderboard(tier);
             CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON leaderboard(composite_score);
             CREATE INDEX IF NOT EXISTS idx_leaderboard_result ON leaderboard(result_id);
+            CREATE INDEX IF NOT EXISTS idx_leaderboard_model_source ON leaderboard(model_source);
+        """)
+        self.conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_programs_stage1_passed ON program_results(stage1_passed);
+            CREATE INDEX IF NOT EXISTS idx_programs_graph_fingerprint ON program_results(graph_fingerprint);
+            CREATE INDEX IF NOT EXISTS idx_programs_routing_mode ON program_results(routing_mode);
         """)
         # Migrate decisions: add evidence_pack_json if missing
         try:
@@ -245,6 +258,37 @@ class _NotebookCore:
         if "preregistration_id" not in exp_cols:
             self.conn.execute(
                 "ALTER TABLE experiments ADD COLUMN preregistration_id TEXT"
+            )
+
+        training_curves_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'training_curves'"
+        ).fetchone()
+        training_curves_sql = str(training_curves_row[0] or "") if training_curves_row else ""
+        if "REFERENCES program_results" not in training_curves_sql:
+            self.conn.execute(
+                "DELETE FROM training_curves "
+                "WHERE NOT EXISTS (SELECT 1 FROM program_results pr WHERE pr.result_id = training_curves.result_id)"
+            )
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS training_curves_new (
+                    result_id TEXT NOT NULL REFERENCES program_results(result_id) ON DELETE CASCADE,
+                    step INTEGER NOT NULL,
+                    loss REAL,
+                    grad_norm REAL,
+                    step_time_ms REAL,
+                    PRIMARY KEY (result_id, step)
+                )
+            """)
+            self.conn.execute("""
+                INSERT OR REPLACE INTO training_curves_new (result_id, step, loss, grad_norm, step_time_ms)
+                SELECT tc.result_id, tc.step, tc.loss, tc.grad_norm, tc.step_time_ms
+                FROM training_curves tc
+                JOIN program_results pr ON pr.result_id = tc.result_id
+            """)
+            self.conn.execute("DROP TABLE training_curves")
+            self.conn.execute("ALTER TABLE training_curves_new RENAME TO training_curves")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_training_curves_result ON training_curves(result_id)"
             )
 
         # Migrate hypotheses: add metadata_json if missing
@@ -568,7 +612,11 @@ class _NotebookCore:
     def _maybe_commit(self):
         """Commit unless inside a batch() context."""
         if self._batch_depth == 0:
+            self._invalidate_dashboard_summary_cache()
             self.conn.commit()
 
 
-
+    def _invalidate_dashboard_summary_cache(self) -> None:
+        """Clear the short-lived dashboard summary cache after writes."""
+        self._dashboard_summary_cache = None
+        self._dashboard_summary_cache_expires_at = 0.0

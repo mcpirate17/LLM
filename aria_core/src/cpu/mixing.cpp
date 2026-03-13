@@ -536,6 +536,75 @@ void aria_entropy_router_f32(const float *logits, float *entropy,
     }
 }
 
+/* ── RWKV WKV Parallel Scan ────────────────────────────────────────── */
+/*
+ * RWKV time-mixing WKV computation (sequential scan along S dimension).
+ *
+ * For each (b, d):
+ *   wkv[0] = 0, wkv_denom[0] = 0
+ *   for t in 0..S:
+ *     kt = k[b,t,d], vt = v[b,t,d], rt = sigmoid(r[b,t,d])
+ *     p = exp(u + kt)
+ *     out[b,t,d] = rt * (wkv + p * vt) / max(wkv_denom + p, 1e-8)
+ *     wkv = wkv * exp(w) + exp(kt) * vt
+ *     wkv_denom = wkv_denom * exp(w) + exp(kt)
+ *
+ * Inputs:
+ *   k, v, r:     (batch * seq * dim)  — row-major [B, S, D]
+ *   w_decay:     (dim)                — per-channel decay (negative log)
+ *   u_bonus:     (dim)                — per-channel bonus
+ *   out:         (batch * seq * dim)  — output buffer
+ */
+void aria_rwkv_wkv_scan_f32(const float *k, const float *v, const float *r,
+                              const float *w_decay, const float *u_bonus,
+                              float *out,
+                              int64_t batch, int64_t seq, int64_t dim) {
+    /* exp_w[d] = exp(-exp(w_decay[d])) — precompute once */
+    float *exp_w = (float *)malloc((size_t)dim * sizeof(float));
+    if (!exp_w) return;
+    for (int64_t d = 0; d < dim; d++) {
+        exp_w[d] = expf(-expf(w_decay[d]));
+    }
+
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for collapse(2) schedule(static) if(batch * dim > 256)
+#endif
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t d = 0; d < dim; d++) {
+            float wkv = 0.0f;
+            float wkv_denom = 0.0f;
+            float ew = exp_w[d];
+            float u = u_bonus[d];
+
+            for (int64_t t = 0; t < seq; t++) {
+                int64_t idx = (b * seq + t) * dim + d;
+                float kt = k[idx];
+                float vt = v[idx];
+                float rt_raw = r[idx];
+
+                /* sigmoid(rt_raw) */
+                float rt = 1.0f / (1.0f + expf(-rt_raw));
+
+                /* p = exp(u + kt) */
+                float ekt = expf(kt);
+                float p = expf(u + kt);
+
+                /* output */
+                float num = wkv + p * vt;
+                float den = wkv_denom + p;
+                if (den < 1e-8f) den = 1e-8f;
+                out[idx] = rt * num / den;
+
+                /* state update */
+                wkv = wkv * ew + ekt * vt;
+                wkv_denom = wkv_denom * ew + ekt;
+            }
+        }
+    }
+
+    free(exp_w);
+}
+
 #ifdef __cplusplus
 }
 #endif

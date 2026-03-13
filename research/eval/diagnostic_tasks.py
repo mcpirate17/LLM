@@ -127,26 +127,25 @@ def generate_induction_task(
     )
     mask = torch.zeros(batch_size, seq_len - 1, dtype=torch.bool, device=dev)
 
-    # Place bigram pairs: first occurrence early, second occurrence later
-    for b in range(batch_size):
-        positions_first = list(range(2, 2 + n_bigrams * 2, 2))
-        positions_second = list(range(seq_len // 2, seq_len // 2 + n_bigrams * 2, 2))
-        for i in range(n_bigrams):
-            if positions_first[i] + 1 >= seq_len:
-                break
-            if positions_second[i] + 1 >= seq_len:
-                break
-            a_tok = torch.randint(0, DIAG_MARK_TOKEN, (1,), device=dev, generator=rng).item()
-            b_tok = torch.randint(0, DIAG_MARK_TOKEN, (1,), device=dev, generator=rng).item()
-            # First occurrence: A B
-            ids[b, positions_first[i]] = a_tok
-            ids[b, positions_first[i] + 1] = b_tok
-            # Second occurrence: A B (model should predict B after seeing A)
-            ids[b, positions_second[i]] = a_tok
-            ids[b, positions_second[i] + 1] = b_tok
-            # Critical: target position for predicting B is positions_second[i]
-            # (target[pos] = ids[pos+1], so target at positions_second[i] = B)
-            mask[b, positions_second[i]] = True
+    # Vectorized: compute positions once, generate all tokens at once
+    pos_first = torch.arange(2, 2 + n_bigrams * 2, 2, device=dev)
+    pos_second = torch.arange(seq_len // 2, seq_len // 2 + n_bigrams * 2, 2, device=dev)
+    valid = (pos_first + 1 < seq_len) & (pos_second + 1 < seq_len)
+    n_valid = valid.sum().item()
+
+    if n_valid > 0:
+        pos_first = pos_first[valid]
+        pos_second = pos_second[valid]
+        # Generate all bigram tokens at once: (batch_size, n_valid)
+        a_toks = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng)
+        b_toks = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng)
+        # Scatter into ids using advanced indexing
+        batch_idx = torch.arange(batch_size, device=dev).unsqueeze(1).expand(-1, n_valid)
+        ids[batch_idx, pos_first.unsqueeze(0).expand(batch_size, -1)] = a_toks
+        ids[batch_idx, (pos_first + 1).unsqueeze(0).expand(batch_size, -1)] = b_toks
+        ids[batch_idx, pos_second.unsqueeze(0).expand(batch_size, -1)] = a_toks
+        ids[batch_idx, (pos_second + 1).unsqueeze(0).expand(batch_size, -1)] = b_toks
+        mask[:, pos_second] = True
 
     targets = ids[:, 1:]
     return ids, mask, targets
@@ -164,19 +163,19 @@ def generate_periodic_task(
     Critical positions: every position in 2nd+ repetition.
     """
     dev = torch.device(device)
+    max_period = 6
     ids = torch.zeros(batch_size, seq_len, dtype=torch.long, device=dev)
     mask = torch.zeros(batch_size, seq_len - 1, dtype=torch.bool, device=dev)
 
+    # Generate all periods and patterns at once
+    periods = torch.randint(3, 7, (batch_size,), device=dev, generator=rng)
+    patterns = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, max_period), device=dev, generator=rng)
+    pos_idx = torch.arange(seq_len, device=dev).unsqueeze(0)  # (1, S)
+
     for b in range(batch_size):
-        period = torch.randint(3, 7, (1,), device=dev, generator=rng).item()
-        pattern = torch.randint(
-            0, DIAG_MARK_TOKEN, (period,), device=dev, generator=rng,
-        )
-        for pos in range(seq_len):
-            ids[b, pos] = pattern[pos % period]
-        # Critical: positions in 2nd+ repetition (target-space)
-        # target[i] = ids[i+1], critical when i+1 >= period
-        mask[b, period - 1 :] = True
+        p = periods[b].item()
+        ids[b] = patterns[b, pos_idx[0] % p]
+        mask[b, p - 1:] = True
 
     targets = ids[:, 1:]
     return ids, mask, targets
@@ -208,38 +207,36 @@ def generate_selective_copy_task(
     )
     mask = torch.zeros(batch_size, seq_len - 1, dtype=torch.bool, device=dev)
 
-    for b in range(batch_size):
-        marked_values = []
-        for i in range(n_marks):
-            pos = i * 4
-            if pos + 1 >= source_len:
-                break
-            ids[b, pos] = DIAG_MARK_TOKEN
-            val = torch.randint(0, DIAG_MARK_TOKEN, (1,), device=dev, generator=rng).item()
-            ids[b, pos + 1] = val
-            marked_values.append(val)
+    # Vectorized: mark positions are at 0, 4, 8, ... and values at 1, 5, 9, ...
+    mark_positions = torch.arange(0, n_marks * 4, 4, device=dev)
+    val_positions = mark_positions + 1
+    valid = val_positions < source_len
+    mark_positions = mark_positions[valid]
+    val_positions = val_positions[valid]
+    n_valid = mark_positions.shape[0]
 
-        sep_pos = source_len
-        ids[b, sep_pos] = DIAG_SEP_TOKEN
-        for j, val in enumerate(marked_values):
-            if sep_pos + 1 + j < seq_len:
-                ids[b, sep_pos + 1 + j] = val
+    # Generate all marked values at once
+    marked_vals = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng)
 
-        # Fill remainder with random filler
-        fill_start = sep_pos + 1 + len(marked_values)
-        if fill_start < seq_len:
-            ids[b, fill_start:] = torch.randint(
-                0, DIAG_MARK_TOKEN, (seq_len - fill_start,),
-                device=dev, generator=rng,
-            )
+    # Set mark tokens and values for all batches
+    ids[:, mark_positions] = DIAG_MARK_TOKEN
+    batch_idx = torch.arange(batch_size, device=dev).unsqueeze(1).expand(-1, n_valid)
+    ids[batch_idx, val_positions.unsqueeze(0).expand(batch_size, -1)] = marked_vals
 
-        # Critical: target positions for the copy region
-        # target[i] = ids[i+1], copy region starts at sep_pos+1
-        # so target positions sep_pos .. sep_pos+len(marked_values)-1
-        for j in range(len(marked_values)):
-            t_pos = sep_pos + j
-            if t_pos < seq_len - 1:
-                mask[b, t_pos] = True
+    # Set SEP and copy region
+    sep_pos = source_len
+    ids[:, sep_pos] = DIAG_SEP_TOKEN
+    copy_positions = sep_pos + 1 + torch.arange(n_valid, device=dev)
+    copy_valid = copy_positions < seq_len
+    if copy_valid.any():
+        cp = copy_positions[copy_valid]
+        ids[batch_idx[:, :cp.shape[0]], cp.unsqueeze(0).expand(batch_size, -1)] = marked_vals[:, :cp.shape[0]]
+
+    # Critical: target positions for the copy region
+    target_positions = sep_pos + torch.arange(n_valid, device=dev)
+    target_valid = target_positions < seq_len - 1
+    if target_valid.any():
+        mask[:, target_positions[target_valid]] = True
 
     targets = ids[:, 1:]
     return ids, mask, targets

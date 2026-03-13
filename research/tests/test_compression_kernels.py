@@ -13,11 +13,7 @@ from research.mathspaces.compression import (
 
 pytestmark = pytest.mark.native
 
-try:
-    import aria_core
-    HAS_ARIA_CORE = True
-except ImportError:
-    HAS_ARIA_CORE = False
+from research.env import aria_core, HAS_ARIA_CORE
 
 class MockModule(nn.Module):
     def __init__(self, **kwargs):

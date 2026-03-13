@@ -14,7 +14,8 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "e2e": "playwright test",
-    "check:hook-order": "node scripts/check-hook-order.js"
+    "check:hook-order": "node scripts/check-hook-order.js",
+    "check:ui-standards": "node ../../scripts/check-ui-standards.js dashboard"
   },
   "proxy": "http://localhost:5000",
   "browserslist": {

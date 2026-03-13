@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 import torch
 import torch.nn as nn

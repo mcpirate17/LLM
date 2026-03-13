@@ -12,7 +12,7 @@ from ..notebook import LabNotebook
 from ..persona import get_aria
 from ..shared_utils import safe_float as _to_safe_float
 from ._helpers import deduplicate_insights, native_runner_canary_status_payload
-from ._strategy import compute_compression_opportunities
+from ._strategy_recommendations import compute_compression_opportunities
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -254,13 +254,45 @@ def register_analytics_routes(app, context: ApiRouteContext):
                 for row in insights
             ]
 
+            op_pair_priors = nb.get_op_pair_priors(min_support=5, limit=100)
+            fingerprint_buckets = nb.get_fingerprint_buckets(limit=5)
+            lineage_successors = nb.get_lineage_successor_stats(limit=50)
+            failure_risks = nb.get_failure_risk_signatures(limit=100)
+
+            # 1.5 Expand recommendation-signals: top leaderboard + grammar weights
+            leaderboard = nb.get_leaderboard(limit=5)
+            top_entries = [
+                {
+                    "result_id": entry.get("result_id"),
+                    "composite_score": round(float(entry.get("composite_score") or 0.0), 4),
+                    "tier": entry.get("tier"),
+                    "fingerprint": entry.get("graph_fingerprint"),
+                }
+                for entry in leaderboard
+            ]
+
+            op_weights = {}
+            try:
+                weights = analytics.compute_grammar_weights()
+                if weights:
+                    op_weights = {k: round(float(v), 3) for k, v in weights.items()}
+            except Exception as e:
+                logger.warning("Could not compute grammar weights: %s", e)
+
             payload = {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "source": "research.analytics",
                 "summary": nb.get_dashboard_summary(),
                 "op_priors": op_priors[:80],
+                "op_pair_priors": op_pair_priors,
+                "fingerprint_buckets": fingerprint_buckets,
+                "lineage_successors": lineage_successors,
+                "top_entries": top_entries,
+                "op_weights": op_weights,
                 "toxic_signatures": toxic_signatures[:80],
                 "toxic_ops": sorted(toxic_op_names),
+                "failure_risk_signatures": failure_risks.get("failure_risk_signatures", []),
+                "critical_failures": failure_risks.get("critical_failures", []),
                 "compression_opportunities": comp_opps,
                 "compression_techniques": compression_techniques[:20],
                 "insights": compressed_insights[:80],

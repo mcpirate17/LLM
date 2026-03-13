@@ -101,25 +101,35 @@ void aria_tropical_matmul_f32(const float *A, const float *B, float *C,
         const float *Ai = A + i * K;
         for (int64_t j = 0; j < N; j++) {
             const float *BTj = BT + j * K;
-            float best = -INFINITY;
+            float best = INFINITY;
 #ifdef __AVX2__
-            __m256 vbest = _mm256_set1_ps(-INFINITY);
+            __m256 vbest = _mm256_set1_ps(INFINITY);
             int64_t k = 0;
             for (; k <= K - 8; k += 8) {
                 __m256 va = _mm256_loadu_ps(Ai + k);
                 __m256 vb = _mm256_loadu_ps(BTj + k);
-                vbest = _mm256_max_ps(vbest, _mm256_add_ps(va, vb));
+                vbest = _mm256_min_ps(vbest, _mm256_add_ps(va, vb));
             }
             float tmp[8]; _mm256_storeu_ps(tmp, vbest);
-            for (int h = 0; h < 8; h++) if (tmp[h] > best) best = tmp[h];
-            for (; k < K; k++) { float v = Ai[k] + BTj[k]; if (v > best) best = v; }
+            for (int h = 0; h < 8; h++) if (tmp[h] < best) best = tmp[h];
+            for (; k < K; k++) { float v = Ai[k] + BTj[k]; if (v < best) best = v; }
 #else
-            for (int64_t k = 0; k < K; k++) { float v = Ai[k] + BTj[k]; if (v > best) best = v; }
+            for (int64_t k = 0; k < K; k++) { float v = Ai[k] + BTj[k]; if (v < best) best = v; }
 #endif
             C[i * N + j] = best;
         }
     }
     free(BT);
+}
+
+void aria_tropical_matmul_batched_f32(const float *A, const float *B, float *C,
+                                      int64_t batch, int64_t M, int64_t K, int64_t N) {
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (int64_t b = 0; b < batch; b++) {
+        aria_tropical_matmul_f32(A + b * M * K, B + b * K * N, C + b * M * N, M, K, N);
+    }
 }
 
 void aria_linear_f32(const float *x, const float *W, const float *bias,
@@ -165,6 +175,82 @@ void aria_linear_f32(const float *x, const float *W, const float *bias,
 
 void aria_transpose2d_f32(const float *input, float *output, int64_t rows, int64_t cols) {
     for (int64_t i = 0; i < rows; i++) for (int64_t j = 0; j < cols; j++) output[j * rows + i] = input[i * cols + j];
+}
+
+/* ── Gromov 4-Point Delta-Hyperbolicity ────────────────────────────── */
+/*
+ * Computes Gromov's delta for a distance matrix d[n x n].
+ *
+ * For all 4-tuples (x,y,z,w) from the index set:
+ *   S1 = d(x,y) + d(z,w)
+ *   S2 = d(x,z) + d(y,w)
+ *   S3 = d(x,w) + d(y,z)
+ *   Sort so S1 <= S2 <= S3
+ *   delta = (S3 - S2) / 2
+ *   max_delta = max over all 4-tuples
+ *
+ * Inputs:
+ *   d:       (n * n) row-major distance matrix
+ *   indices: array of index values to iterate over (length n_idx)
+ *   n:       full matrix dimension
+ *   n_idx:   number of indices to use
+ * Returns:
+ *   max delta value
+ */
+float aria_gromov_delta_f32(const float *d, const int32_t *indices,
+                             int64_t n, int64_t n_idx) {
+    if (n_idx < 4) return 0.0f;
+
+    float max_delta = 0.0f;
+
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for reduction(max:max_delta) schedule(dynamic, 4) if(n_idx > 10)
+#endif
+    for (int64_t i = 0; i < n_idx; i++) {
+        int32_t xi = indices[i];
+        float local_max = 0.0f;
+
+        for (int64_t j = i + 1; j < n_idx; j++) {
+            int32_t yj = indices[j];
+            float dxy = d[xi * n + yj];
+
+            for (int64_t k = j + 1; k < n_idx; k++) {
+                int32_t zk = indices[k];
+                float dxz = d[xi * n + zk];
+                float dyz = d[yj * n + zk];
+
+                for (int64_t l = k + 1; l < n_idx; l++) {
+                    int32_t wl = indices[l];
+                    float dzw = d[zk * n + wl];
+                    float dyw = d[yj * n + wl];
+                    float dxw = d[xi * n + wl];
+
+                    float s1 = dxy + dzw;
+                    float s2 = dxz + dyw;
+                    float s3 = dxw + dyz;
+
+                    /* Sort three values: we only need the top two */
+                    float mid, top;
+                    if (s1 <= s2) {
+                        if (s2 <= s3) { mid = s2; top = s3; }
+                        else if (s1 <= s3) { mid = s3; top = s2; }
+                        else { mid = s1; top = s2; }
+                    } else {
+                        if (s1 <= s3) { mid = s1; top = s3; }
+                        else if (s2 <= s3) { mid = s3; top = s1; }
+                        else { mid = s2; top = s1; }
+                    }
+
+                    float delta_val = (top - mid) * 0.5f;
+                    if (delta_val > local_max) local_max = delta_val;
+                }
+            }
+        }
+
+        if (local_max > max_delta) max_delta = local_max;
+    }
+
+    return max_delta;
 }
 
 #ifdef __cplusplus

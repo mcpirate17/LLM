@@ -5,6 +5,7 @@ import json
 import os
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -119,6 +120,382 @@ class _AnalyticsMixin:
                ORDER BY n_stage1_passed DESC, n_used DESC"""
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+    def get_op_pair_priors(self, min_support: int = 5, limit: int = 100) -> List[Dict[str, Any]]:
+        """Aggregate op bigram priors from program results."""
+        rows = self.conn.execute(
+            """SELECT graph_json, stage1_passed, loss_ratio, novelty_score
+               FROM program_results
+               WHERE graph_json IS NOT NULL"""
+        ).fetchall()
+        aggregates: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            for signature in self._extract_op_bigrams(row["graph_json"]):
+                bucket = aggregates.setdefault(signature, self._new_pair_bucket(signature))
+                bucket["support"] += 1
+                bucket["n_stage1_passed"] += int(bool(row["stage1_passed"]))
+                if row["loss_ratio"] is not None:
+                    bucket["loss_sum"] += float(row["loss_ratio"])
+                    bucket["loss_n"] += 1
+                if row["novelty_score"] is not None:
+                    bucket["novelty_sum"] += float(row["novelty_score"])
+                    bucket["novelty_n"] += 1
+        priors = [
+            self._finalize_pair_bucket(signature, bucket)
+            for signature, bucket in aggregates.items()
+            if bucket["support"] >= min_support
+        ]
+        priors.sort(key=lambda item: (item["success_rate"], item["support"]), reverse=True)
+        return priors[:limit]
+
+
+    def get_fingerprint_buckets(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Bucket fingerprints into coarse structural families with top ops/pairs."""
+        rows = self.conn.execute(
+            """SELECT graph_json, stage1_passed, novelty_score, graph_category_histogram,
+                      fp_interaction_sparsity, fp_cka_vs_transformer, fp_cka_vs_ssm, fp_cka_vs_conv
+               FROM program_results
+               WHERE graph_json IS NOT NULL"""
+        ).fetchall()
+        buckets: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            record = dict(row)
+            bucket_name = self._assign_fingerprint_bucket(record)
+            bucket = buckets.setdefault(bucket_name, self._new_fingerprint_bucket(bucket_name))
+            ops = self._extract_op_names(record["graph_json"])
+            pairs = self._extract_op_bigrams(record["graph_json"])
+            bucket["n_graphs"] += 1
+            bucket["n_stage1_passed"] += int(bool(record["stage1_passed"]))
+            if record["novelty_score"] is not None:
+                bucket["novelty_sum"] += float(record["novelty_score"])
+                bucket["novelty_n"] += 1
+            for op_name in ops:
+                bucket["op_counts"][op_name] = bucket["op_counts"].get(op_name, 0) + 1
+            for signature in pairs:
+                bucket["pair_counts"][signature] = bucket["pair_counts"].get(signature, 0) + 1
+        ranked = [self._finalize_fingerprint_bucket(bucket) for bucket in buckets.values()]
+        ranked.sort(key=lambda item: item["n_graphs"], reverse=True)
+        return ranked[:limit]
+
+
+    def get_lineage_successor_stats(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Aggregate parent→child fingerprint transitions from designer lineage."""
+        rows = self.conn.execute(
+            """SELECT workflow_id, workflow_version, graph_fingerprint, payload_json, updated_at
+               FROM designer_run_lineage
+               WHERE graph_fingerprint IS NOT NULL
+               ORDER BY workflow_id ASC, workflow_version ASC, updated_at ASC"""
+        ).fetchall()
+        leaderboard = self._leaderboard_by_fingerprint()
+        transitions: Dict[str, Dict[str, Any]] = {}
+        previous_by_workflow: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            record = dict(row)
+            payload = self._json_dict(record.get("payload_json"))
+            previous = previous_by_workflow.get(str(record.get("workflow_id"))) or {}
+            child_fp = str(record.get("graph_fingerprint") or "").strip()
+            if not child_fp:
+                continue
+            parent_fp = self._payload_parent_fingerprint(payload) or str(previous.get("graph_fingerprint") or "").strip()
+            previous_by_workflow[str(record.get("workflow_id"))] = {"graph_fingerprint": child_fp, "payload": payload}
+            if not parent_fp or parent_fp == child_fp:
+                continue
+            key = f"{parent_fp}->{child_fp}"
+            bucket = transitions.setdefault(key, self._new_lineage_bucket(parent_fp, child_fp))
+            bucket["support"] += 1
+            parent_metrics = leaderboard.get(parent_fp, {})
+            child_metrics = leaderboard.get(child_fp, {})
+            parent_score = float(parent_metrics.get("composite_score") or 0.0)
+            child_score = float(child_metrics.get("composite_score") or 0.0)
+            improved = child_score > parent_score
+            bucket["improved"] += int(improved)
+            bucket["child_successes"] += int(bool(child_metrics.get("stage1_passed")))
+            bucket["delta_sum"] += child_score - parent_score
+            parent_payload = previous.get("payload")
+            for change in self._summarize_workflow_changes(parent_payload, payload):
+                bucket["change_counts"][change] = bucket["change_counts"].get(change, 0) + 1
+        results = [self._finalize_lineage_bucket(bucket) for bucket in transitions.values()]
+        results.sort(key=lambda item: (item["improved_rate"], item["support"]), reverse=True)
+        return results[:limit]
+
+
+    def get_failure_risk_signatures(self, limit: int = 100) -> Dict[str, List[Dict[str, Any]]]:
+        """Compute soft failure-risk penalties with positive-evidence filtering."""
+        support = self._top_performer_bigram_support()
+        rows = self.conn.execute(
+            """SELECT signature, n_failures, n_successes, error_types
+               FROM failure_signatures"""
+        ).fetchall()
+        risk_signatures: List[Dict[str, Any]] = []
+        critical: List[Dict[str, Any]] = []
+        for row in rows:
+            positive_support = int(support.get(str(row["signature"]), 0))
+            if positive_support < 3:
+                continue
+            total = int(row["n_failures"] or 0) + int(row["n_successes"] or 0)
+            if total <= 0:
+                continue
+            fail_rate = float(row["n_failures"] or 0) / float(total)
+            weight = self._failure_penalty_weight(fail_rate, total, positive_support)
+            if weight is None:
+                continue
+            item = {
+                "signature": row["signature"],
+                "support": total,
+                "fail_rate": round(fail_rate, 4),
+                "positive_support": positive_support,
+                "weight": weight,
+                "error_types": row["error_types"],
+            }
+            risk_signatures.append(item)
+            if fail_rate >= 0.98 and total >= 50 and positive_support >= 5:
+                critical.append(item)
+        risk_signatures.sort(key=lambda item: (item["weight"], -item["support"]))
+        critical.sort(key=lambda item: (-item["fail_rate"], -item["support"]))
+        return {
+            "failure_risk_signatures": risk_signatures[:limit],
+            "critical_failures": critical[: min(limit, 25)],
+        }
+
+
+    @staticmethod
+    def _new_pair_bucket(signature: str) -> Dict[str, Any]:
+        return {
+            "signature": signature,
+            "support": 0,
+            "n_stage1_passed": 0,
+            "loss_sum": 0.0,
+            "loss_n": 0,
+            "novelty_sum": 0.0,
+            "novelty_n": 0,
+        }
+
+
+    @staticmethod
+    def _finalize_pair_bucket(signature: str, bucket: Dict[str, Any]) -> Dict[str, Any]:
+        support = int(bucket["support"])
+        avg_loss = (bucket["loss_sum"] / bucket["loss_n"]) if bucket["loss_n"] else None
+        avg_novelty = (bucket["novelty_sum"] / bucket["novelty_n"]) if bucket["novelty_n"] else None
+        return {
+            "signature": signature,
+            "success_rate": round(float(bucket["n_stage1_passed"]) / support, 4),
+            "support": support,
+            "avg_loss_ratio": round(avg_loss, 4) if avg_loss is not None else None,
+            "avg_novelty": round(avg_novelty, 4) if avg_novelty is not None else None,
+        }
+
+
+    @staticmethod
+    def _new_fingerprint_bucket(bucket_name: str) -> Dict[str, Any]:
+        return {
+            "bucket": bucket_name,
+            "n_graphs": 0,
+            "n_stage1_passed": 0,
+            "novelty_sum": 0.0,
+            "novelty_n": 0,
+            "op_counts": {},
+            "pair_counts": {},
+        }
+
+
+    @staticmethod
+    def _finalize_fingerprint_bucket(bucket: Dict[str, Any]) -> Dict[str, Any]:
+        novelty = (bucket["novelty_sum"] / bucket["novelty_n"]) if bucket["novelty_n"] else None
+        return {
+            "bucket": bucket["bucket"],
+            "n_graphs": int(bucket["n_graphs"]),
+            "s1_rate": round(float(bucket["n_stage1_passed"]) / max(int(bucket["n_graphs"]), 1), 4),
+            "avg_novelty": round(novelty, 4) if novelty is not None else None,
+            "top_ops": [
+                {"op_name": op_name, "count": count}
+                for op_name, count in sorted(bucket["op_counts"].items(), key=lambda item: item[1], reverse=True)[:10]
+            ],
+            "top_pairs": [
+                {"signature": signature, "count": count}
+                for signature, count in sorted(bucket["pair_counts"].items(), key=lambda item: item[1], reverse=True)[:10]
+            ],
+        }
+
+
+    @staticmethod
+    def _new_lineage_bucket(parent_fp: str, child_fp: str) -> Dict[str, Any]:
+        return {
+            "parent_fingerprint": parent_fp,
+            "child_fingerprint": child_fp,
+            "support": 0,
+            "improved": 0,
+            "child_successes": 0,
+            "delta_sum": 0.0,
+            "change_counts": {},
+        }
+
+
+    @staticmethod
+    def _finalize_lineage_bucket(bucket: Dict[str, Any]) -> Dict[str, Any]:
+        support = max(int(bucket["support"]), 1)
+        return {
+            "parent_fingerprint": bucket["parent_fingerprint"],
+            "child_fingerprint": bucket["child_fingerprint"],
+            "support": int(bucket["support"]),
+            "improved_rate": round(float(bucket["improved"]) / support, 4),
+            "child_success_rate": round(float(bucket["child_successes"]) / support, 4),
+            "avg_composite_delta": round(float(bucket["delta_sum"]) / support, 4),
+            "change_patterns": [
+                {"change": change, "count": count}
+                for change, count in sorted(bucket["change_counts"].items(), key=lambda item: item[1], reverse=True)[:6]
+            ],
+        }
+
+
+    def _assign_fingerprint_bucket(self, row: Dict[str, Any]) -> str:
+        ops = set(self._extract_op_names(row.get("graph_json") or ""))
+        hist = self._json_dict(row.get("graph_category_histogram"))
+        sparse = float(row.get("fp_interaction_sparsity") or 0.0) >= 0.55 or self._hist_score(hist, "sparse") >= 0.2
+        attention = (
+            float(row.get("fp_cka_vs_transformer") or 0.0) >= 0.5
+            or any("attention" in op for op in ops)
+            or self._hist_score(hist, "attention") >= 0.2
+        )
+        mixing = (
+            max(float(row.get("fp_cka_vs_ssm") or 0.0), float(row.get("fp_cka_vs_conv") or 0.0)) >= 0.5
+            or any(token in op for op in ops for token in ("state_space", "scan", "conv", "mix"))
+            or self._hist_score(hist, "mix") >= 0.2
+        )
+        if attention and mixing:
+            return "hybrid"
+        if sparse:
+            return "sparse"
+        if attention:
+            return "attention-heavy"
+        if mixing:
+            return "mixing-heavy"
+        return "exotic"
+
+
+    @staticmethod
+    def _hist_score(histogram: Dict[str, Any], token: str) -> float:
+        total = sum(float(value or 0.0) for value in histogram.values())
+        if total <= 0.0:
+            return 0.0
+        matched = sum(float(value or 0.0) for key, value in histogram.items() if token in str(key).lower())
+        return matched / total
+
+
+    @staticmethod
+    def _json_dict(payload: Any) -> Dict[str, Any]:
+        try:
+            loaded = json.loads(payload) if isinstance(payload, str) else payload
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+    @staticmethod
+    def _payload_parent_fingerprint(payload: Dict[str, Any]) -> str:
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("parent_fingerprint"):
+            return str(metadata["parent_fingerprint"])
+        if payload.get("parent_fingerprint"):
+            return str(payload["parent_fingerprint"])
+        return ""
+
+
+    def _extract_op_names(self, graph_json: str) -> List[str]:
+        from research.scientist.analytics.analytics_ops import _OpsMixin
+
+        ops = _OpsMixin._extract_ops_fast(graph_json)
+        if ops is None:
+            ops = _OpsMixin._extract_ops_fallback(graph_json)
+        return list(ops or [])
+
+
+    def _leaderboard_by_fingerprint(self) -> Dict[str, Dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT pr.graph_fingerprint, pr.stage1_passed, l.composite_score
+               FROM program_results pr
+               LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+               WHERE pr.graph_fingerprint IS NOT NULL"""
+        ).fetchall()
+        scores: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            fingerprint = str(row["graph_fingerprint"] or "").strip()
+            if not fingerprint:
+                continue
+            existing = scores.get(fingerprint)
+            composite = float(row["composite_score"] or 0.0)
+            if existing is None or composite >= float(existing.get("composite_score") or 0.0):
+                scores[fingerprint] = {
+                    "composite_score": composite,
+                    "stage1_passed": int(bool(row["stage1_passed"])),
+                }
+        return scores
+
+
+    def _top_performer_bigram_support(self) -> Dict[str, int]:
+        rows = self.conn.execute(
+            """SELECT pr.graph_json, pr.loss_ratio, l.tier
+               FROM program_results pr
+               LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+               WHERE pr.stage1_passed = 1 AND pr.graph_json IS NOT NULL"""
+        ).fetchall()
+        losses = sorted(float(row["loss_ratio"]) for row in rows if row["loss_ratio"] is not None)
+        threshold = losses[max(0, (len(losses) // 4) - 1)] if losses else None
+        support: Dict[str, int] = defaultdict(int)
+        for row in rows:
+            tier = str(row["tier"] or "").lower()
+            in_top_loss = threshold is not None and row["loss_ratio"] is not None and float(row["loss_ratio"]) <= threshold
+            in_top_tier = tier in {"investigation", "validation", "breakthrough"}
+            if not in_top_loss and not in_top_tier:
+                continue
+            for signature in self._extract_op_bigrams(row["graph_json"]):
+                support[signature] += 1
+        return dict(support)
+
+
+    @staticmethod
+    def _failure_penalty_weight(fail_rate: float, total: int, positive_support: int) -> Optional[float]:
+        if fail_rate >= 0.95 and total >= 20 and positive_support >= 5:
+            return 0.05
+        if fail_rate >= 0.85 and total >= 10 and positive_support >= 3:
+            return 0.3
+        if fail_rate >= 0.70 and total >= 5 and positive_support >= 3:
+            return 0.6
+        return None
+
+
+    @staticmethod
+    def _summarize_workflow_changes(parent_payload: Any, child_payload: Any) -> List[str]:
+        parent_nodes = _AnalyticsMixin._workflow_nodes(parent_payload)
+        child_nodes = _AnalyticsMixin._workflow_nodes(child_payload)
+        if not parent_nodes or not child_nodes:
+            return []
+        changes: List[str] = []
+        parent_types = {node_id: comp for node_id, comp in parent_nodes.items()}
+        child_types = {node_id: comp for node_id, comp in child_nodes.items()}
+        for node_id, parent_type in parent_types.items():
+            child_type = child_types.get(node_id)
+            if child_type and child_type != parent_type:
+                changes.append(f"swap:{parent_type}->{child_type}")
+        added = sorted(set(child_types.values()) - set(parent_types.values()))
+        removed = sorted(set(parent_types.values()) - set(child_types.values()))
+        changes.extend(f"add:{comp}" for comp in added[:3])
+        changes.extend(f"remove:{comp}" for comp in removed[:3])
+        return changes
+
+
+    @staticmethod
+    def _workflow_nodes(payload: Any) -> Dict[str, str]:
+        if not isinstance(payload, dict):
+            return {}
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list):
+            return {}
+        return {
+            str(node.get("id")): str(node.get("component_type"))
+            for node in nodes
+            if isinstance(node, dict) and node.get("id") and node.get("component_type")
+        }
 
 
     def update_failure_signatures(self, experiment_id: str) -> None:
@@ -818,4 +1195,3 @@ class _AnalyticsMixin:
         except Exception as e:
             logger.warning(f"Failed to save report markdown: {e}")
             return None
-

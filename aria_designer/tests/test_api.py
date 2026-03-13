@@ -494,6 +494,46 @@ def test_aria_suggest_components_data_control_prompt(client):
     assert any("schema" in reason or "join" in reason or "filter" in reason for reason in reasons)
 
 
+def test_router_suggest_components_forwards_research_signals(monkeypatch):
+    from app.models import SuggestComponentsRequest, WorkflowGraphModel
+    from app.routers import aria as aria_router
+
+    captured = {}
+
+    monkeypatch.setattr(
+        aria_router,
+        "fetch_research_recommendation_signals",
+        lambda force=False: {"op_priors": [{"op_name": "layernorm", "s1_rate": 0.8}]},
+    )
+
+    def _fake_suggest_components(workflow, prompt=None, research_signals=None):
+        captured["workflow"] = workflow
+        captured["prompt"] = prompt
+        captured["research_signals"] = research_signals
+        return [{"component_type": "normalization/layernorm_pre", "reason": "test"}]
+
+    monkeypatch.setattr(aria_router, "suggest_components", _fake_suggest_components)
+    monkeypatch.setattr(aria_router, "HAS_SUGGESTIONS", True)
+
+    req = SuggestComponentsRequest(
+        workflow=WorkflowGraphModel(
+            schema_version="workflow_graph.v1",
+            workflow_id="wf_router_signals",
+            name="Router Signals",
+            nodes=[],
+            edges=[],
+        ),
+        prompt="Improve stability",
+    )
+
+    resp = aria_router.post_suggest_components(req)
+    assert resp[0]["component_type"] == "normalization/layernorm_pre"
+    assert captured["prompt"] == "Improve stability"
+    assert captured["research_signals"] == {
+        "op_priors": [{"op_name": "layernorm", "s1_rate": 0.8}]
+    }
+
+
 def test_save_and_get_workflow(client):
     workflow = {
         "schema_version": "workflow_graph.v1",

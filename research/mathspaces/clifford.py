@@ -23,11 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    import aria_core
-    _HAS_ARIA_CORE = hasattr(aria_core, 'clifford_geometric_product_cl30_f32')
-except ImportError:
-    _HAS_ARIA_CORE = False
+from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 
 # Cl(3,0) has 8 basis elements

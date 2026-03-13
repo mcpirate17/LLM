@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import gc
 import os
 from types import SimpleNamespace
 
@@ -16,7 +17,8 @@ _KNOWN_MARKS = {"unit", "native", "api", "pipeline", "e2e", "designer", "slow"}
 
 
 def pytest_collection_modifyitems(config, items):
-    """Abort if no marker filter is specified — forces category selection."""
+    """Abort if no marker filter is specified — forces category selection.
+    Also assign xdist worker groups to avoid duplicate CUDA contexts."""
     marker_expr = config.getoption("-m", default="")
     if not marker_expr:
         # Allow running a single file without -m
@@ -24,16 +26,25 @@ def pytest_collection_modifyitems(config, items):
         if specified_paths and all(
             os.path.isfile(p) or (not os.path.isdir(p)) for p in specified_paths
         ):
-            return  # Single file mode — allow
-        pytest.exit(
-            "ERROR: Running all tests at once is not allowed.\n"
-            "Use a marker filter:  pytest -m unit  |  pytest -m native  |  "
-            "pytest -m api  |  pytest -m pipeline  |  pytest -m e2e  |  "
-            "pytest -m designer\n"
-            "Or combine:  pytest -m 'unit or api'\n"
-            "Or run a single file:  pytest tests/test_notebook.py",
-            returncode=4,
-        )
+            pass  # Single file mode — allow, but still apply xdist groups below
+        else:
+            pytest.exit(
+                "ERROR: Running all tests at once is not allowed.\n"
+                "Use a marker filter:  pytest -m unit  |  pytest -m native  |  "
+                "pytest -m api  |  pytest -m pipeline  |  pytest -m e2e  |  "
+                "pytest -m designer\n"
+                "Or combine:  pytest -m 'unit or api'\n"
+                "Or run a single file:  pytest tests/test_notebook.py",
+                returncode=4,
+            )
+
+    # xdist worker groups — group heavy tests to avoid duplicate CUDA contexts
+    for item in items:
+        marker_names = {m.name for m in item.iter_markers()}
+        if "native" in marker_names:
+            item.add_marker(pytest.mark.xdist_group("native"))
+        elif "api" in marker_names:
+            item.add_marker(pytest.mark.xdist_group("api"))
 
 # ── Native library loading ────────────────────────────────────────────
 
@@ -81,3 +92,38 @@ def make_fake_graph(op_names):
         node = SimpleNamespace(op_name=name)
         nodes[f"n{i}"] = node
     return SimpleNamespace(nodes=nodes)
+
+
+# ── Autouse cleanup fixture (P0 OOM prevention) ─────────────────────
+
+@pytest.fixture(autouse=True)
+def _cleanup_after_test():
+    """Reclaim memory after every test — prevents OOM in parallel runs."""
+    yield
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
+# ── Shared fixtures ──────────────────────────────────────────────────
+
+@pytest.fixture
+def tmp_notebook(tmp_path):
+    """Provide a LabNotebook that auto-closes on teardown."""
+    from research.scientist.notebook import LabNotebook
+    nb = LabNotebook(str(tmp_path / "test.db"))
+    yield nb
+    nb.close()
+
+
+@pytest.fixture
+def flask_client(tmp_path):
+    """Provide a Flask test client with auto-cleanup."""
+    from research.scientist.api import create_app
+    app = create_app(notebook_path=str(tmp_path / "test_api.db"))
+    with app.test_client() as client:
+        yield client

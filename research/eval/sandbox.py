@@ -21,8 +21,7 @@ import time
 import traceback
 
 logger = logging.getLogger(__name__)
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -471,7 +470,19 @@ def safe_eval(
                 result.error = "Strict Causality Gate Failed: Model looks ahead at future tokens."
                 result.error_type = "causality_violation"
                 return result
-                
+
+            # Hard gate: reject architectures with chaotic training dynamics
+            if stability.get("training_dynamics_passed") is False:
+                result.passed = False
+                _cv = stability.get("training_dynamics_cv", 0)
+                _trend = stability.get("training_dynamics_trend", 0)
+                result.error = (
+                    f"Training dynamics unstable: CV={_cv:.3f}, "
+                    f"trend={_trend:.3f} (10-step probe)"
+                )
+                result.error_type = "unstable_dynamics"
+                return result
+
             if tracer is not None:
                 tracer.stop("stability")
 
@@ -636,6 +647,68 @@ def _stability_probe(
                 results["causality_passed"] = False
     except Exception:
         results["causality_passed"] = False
+
+    # Test 6: Training dynamics probe — fast gradient steps to detect chaotic loss
+    # Uses higher LR (3e-3) to amplify instability faster in fewer steps
+    total_checks += 1
+    try:
+        model.train()
+        _probe_steps = 20
+        _probe_lr = 3e-3
+        _probe_optimizer = torch.optim.Adam(model.parameters(), lr=_probe_lr)
+        _probe_losses: List[float] = []
+
+        for _ in range(_probe_steps):
+            ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+            _probe_optimizer.zero_grad()
+            logits = model(ids)
+            loss = F.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)),
+                ids[:, 1:].reshape(-1),
+            )
+            if torch.isnan(loss) or torch.isinf(loss):
+                break
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            _probe_optimizer.step()
+            _probe_losses.append(loss.item())
+
+        if len(_probe_losses) >= _probe_steps:
+            _mean_l = sum(_probe_losses) / len(_probe_losses)
+            if _mean_l > 0:
+                _var_l = sum((x - _mean_l) ** 2 for x in _probe_losses) / len(_probe_losses)
+                _cv = (_var_l ** 0.5) / _mean_l
+                # Check consecutive step-to-step sign changes (direction reversals)
+                _sign_changes = sum(
+                    1 for i in range(2, len(_probe_losses))
+                    if (_probe_losses[i] - _probe_losses[i-1]) *
+                       (_probe_losses[i-1] - _probe_losses[i-2]) < 0
+                )
+                _reversal_rate = _sign_changes / max(len(_probe_losses) - 2, 1)
+                # Also check if loss decreased at all (last 5 vs first 5)
+                _first5 = sum(_probe_losses[:5]) / 5
+                _last5 = sum(_probe_losses[-5:]) / 5
+                # Fail if: high volatility OR loss diverging
+                # Reversal rate is noisy early in training, so only use CV + trend
+                _dynamics_bad = (
+                    _cv > 0.25  # moderate CV threshold
+                    or (_last5 > _first5 * 1.05 and _cv > 0.10)  # loss increasing + unstable
+                )
+                if not _dynamics_bad:
+                    checks_passed += 1
+                    results["training_dynamics_passed"] = True
+                else:
+                    results["training_dynamics_passed"] = False
+                    results["training_dynamics_cv"] = round(_cv, 4)
+                    results["training_dynamics_trend"] = round(_last5 / max(_first5, 1e-8), 4)
+                    results["training_dynamics_reversal_rate"] = round(_reversal_rate, 4)
+            else:
+                checks_passed += 1  # zero loss is fine
+                results["training_dynamics_passed"] = True
+        else:
+            results["training_dynamics_passed"] = False  # NaN/Inf during probe
+    except Exception:
+        results["training_dynamics_passed"] = False
 
     results["score"] = checks_passed / max(total_checks, 1)
     model.train()

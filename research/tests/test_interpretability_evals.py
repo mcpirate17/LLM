@@ -299,46 +299,46 @@ class TestWikiTextEval:
     def test_tokenize_file(self):
         import tempfile
         from pathlib import Path
-        from research.eval.wikitext_eval import _tokenize_file
+        from research.eval.utils import tokenize_file
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("Hello world! This is a test.")
             f.flush()
-            tokens = _tokenize_file(Path(f.name), vocab_size=256)
+            tokens = tokenize_file(Path(f.name), vocab_size=256)
             assert len(tokens) > 0
             assert all(0 <= t < 256 for t in tokens)
 
     def test_make_batches(self):
-        from research.eval.wikitext_eval import _make_batches
+        from research.eval.utils import make_batches
 
         tokens = list(range(1000))
-        batches = _make_batches(tokens, batch_size=4, seq_len=32, n_batches=3,
-                                device=torch.device("cpu"))
+        batches = make_batches(tokens, batch_size=4, seq_len=32, n_batches=3,
+                               device=torch.device("cpu"))
         assert len(batches) == 3
         assert batches[0].shape == (4, 32)
 
     def test_make_batches_empty(self):
-        from research.eval.wikitext_eval import _make_batches
+        from research.eval.utils import make_batches
 
-        batches = _make_batches([1, 2], batch_size=4, seq_len=32, n_batches=3,
-                                device=torch.device("cpu"))
+        batches = make_batches([1, 2], batch_size=4, seq_len=32, n_batches=3,
+                               device=torch.device("cpu"))
         assert len(batches) == 0
 
     def test_compute_perplexity(self):
-        from research.eval.wikitext_eval import _compute_perplexity
+        from research.eval.utils import compute_perplexity
 
         model = self._make_simple_model()
         batches = [torch.randint(0, 256, (2, 16)) for _ in range(2)]
-        ppl = _compute_perplexity(model, batches, vocab_size=256)
+        ppl = compute_perplexity(model, batches, vocab_size=256)
         assert ppl is not None
         assert ppl > 0
 
     def test_micro_train_reduces_loss(self):
-        from research.eval.wikitext_eval import _micro_train, _make_batches
+        from research.eval.utils import micro_train_loop, make_batches
 
         model = self._make_simple_model()
         tokens = [t % 256 for t in range(500)] * 10  # Repeated pattern, within vocab
-        batches = _make_batches(tokens, 4, 32, 8, torch.device("cpu"))
+        batches = make_batches(tokens, 4, 32, 8, torch.device("cpu"))
 
         # Get initial loss
         model.eval()
@@ -349,7 +349,7 @@ class TestWikiTextEval:
             ).item()
 
         model.train()
-        final_loss = _micro_train(model, batches, vocab_size=256, n_steps=50, lr=1e-3)
+        final_loss = micro_train_loop(model, batches, vocab_size=256, n_steps=50, lr=1e-3)
         # Training should reduce loss (or at least not crash)
         assert final_loss < initial_loss * 1.5  # Allow some tolerance
 

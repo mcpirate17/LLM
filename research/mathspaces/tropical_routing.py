@@ -3,8 +3,7 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from .tropical import tropical_matmul, tropical_softmax
+from .tropical import tropical_softmax
 
 class TropicalRouter(nn.Module):
     """

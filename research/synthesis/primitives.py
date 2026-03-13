@@ -15,11 +15,10 @@ Each primitive declares:
 from __future__ import annotations
 
 import ast
-import math
 import operator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 
 class OpCategory(Enum):
@@ -67,6 +66,11 @@ class PrimitiveOp:
     # False for routing signal helpers that produce non-standard outputs
     # (tuples, indices, reduced dims) consumed by specific routing ops.
     standalone: bool = True
+    # Algebraic space this op operates in. Used by grammar to prevent
+    # incompatible compositions (e.g., tropical_matmul after exp_map).
+    # "euclidean" ops compose with anything; non-euclidean ops require
+    # matching space context.
+    algebraic_space: str = "euclidean"
 
     def __hash__(self):
         return hash(self.name)
@@ -555,6 +559,66 @@ try:
         load_primitives_from_designer(_DESIGNER_COMPONENTS)
 except Exception:
     pass
+
+
+# ── Algebraic Space Tags ──────────────────────────────────────────────
+# Valid spaces: "euclidean", "poincare", "tropical", "clifford", "padic",
+# "spiking", "any".  Default is "euclidean" (composes with everything).
+# Non-euclidean ops require matching space context in the grammar.
+
+_ALGEBRAIC_SPACE_TAGS: Dict[str, str] = {
+    # Poincaré / hyperbolic
+    "poincare_add": "poincare",
+    "exp_map": "poincare",
+    "log_map": "poincare",
+    "hyp_distance": "poincare",
+    "hyp_linear": "poincare",
+    "hyp_tangent_nonlinear": "poincare",
+    "hyperbolic_norm": "poincare",
+    # Tropical
+    "tropical_add": "tropical",
+    "tropical_matmul": "tropical",
+    "tropical_attention": "tropical",
+    "tropical_gate": "tropical",
+    "tropical_center": "tropical",
+    # Clifford
+    "clifford_attention": "clifford",
+    "geometric_product": "clifford",
+    "rotor_transform": "clifford",
+    "grade_select": "clifford",
+    "grade_mix": "clifford",
+    # p-adic
+    "padic_expand": "padic",
+    "padic_gate": "padic",
+    "padic_residual": "padic",
+    "ultrametric_attention": "padic",
+    # Tropical (additional)
+    "tropical_router": "tropical",
+    "tropical_moe": "tropical",
+    # Spiking
+    "lif_neuron": "spiking",
+    "spike_rate_code": "spiking",
+    "stdp_attention": "spiking",
+    "sparse_threshold": "spiking",
+}
+
+VALID_ALGEBRAIC_SPACES: frozenset = frozenset({
+    "euclidean", "poincare", "tropical", "clifford", "padic", "spiking", "any",
+})
+
+
+def _apply_algebraic_space_tags() -> None:
+    """Apply algebraic space tags to registered primitives.
+
+    Uses object.__setattr__ because PrimitiveOp is frozen.
+    """
+    for op_name, space in _ALGEBRAIC_SPACE_TAGS.items():
+        op = PRIMITIVE_REGISTRY.get(op_name)
+        if op is not None:
+            object.__setattr__(op, "algebraic_space", space)
+
+
+_apply_algebraic_space_tags()
 
 
 # ── Helper Functions ──────────────────────────────────────────────────

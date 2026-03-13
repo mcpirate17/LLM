@@ -258,28 +258,36 @@ void aria_token_pool_restore_f32(const float *x, float *y,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * Selective Scan (SSM / Mamba-style)
+ * Selective Scan (SSM / Mamba-style) — Parallelized across batch × dim
+ *
+ * Recurrence per (batch, dim) pair:
+ *   h[t] = a * h[t-1] + b * x[t]
+ *   y[t] = c * h[t] + d * x[t]
+ *
+ * Each (batch, dim) recurrence is independent → parallelizes perfectly.
+ * Inner seq loop is sequential but cache-friendly (stride = dim).
  * ══════════════════════════════════════════════════════════════════════ */
 
 void aria_selective_scan_f32(const float *x, const float *A, const float *B,
                               const float *C, const float *D,
                               float *y, int64_t batch, int64_t seq, int64_t dim) {
-    /* Linear recurrence: h[t] = A[d] * h[t-1] + B[d] * x[t,d]
-     *                    y[t,d] = C[d] * h[t] + D[d] * x[t,d]
-     * A, B, C, D are [dim]-shaped (per-channel parameters).
-     * This is the "diagonal" SSM variant (S4D / Mamba simplified). */
-    for (int64_t b = 0; b < batch; b++) {
-        for (int64_t d = 0; d < dim; d++) {
-            float h = 0.0f;
-            float a = A ? A[d] : 0.9f;    /* decay */
-            float bv = B ? B[d] : 1.0f;   /* input scale */
-            float c = C ? C[d] : 1.0f;    /* output scale */
-            float dv = D ? D[d] : 0.0f;   /* skip connection */
-            for (int64_t t = 0; t < seq; t++) {
-                float xt = x[(b * seq + t) * dim + d];
-                h = a * h + bv * xt;
-                y[(b * seq + t) * dim + d] = c * h + dv * xt;
-            }
+    int64_t total_lanes = batch * dim;
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for schedule(static) if(total_lanes > 32)
+#endif
+    for (int64_t lane = 0; lane < total_lanes; lane++) {
+        int64_t b = lane / dim;
+        int64_t d = lane % dim;
+        float h  = 0.0f;
+        float a  = A ? A[d] : 0.9f;
+        float bv = B ? B[d] : 1.0f;
+        float c  = C ? C[d] : 1.0f;
+        float dv = D ? D[d] : 0.0f;
+        for (int64_t t = 0; t < seq; t++) {
+            int64_t idx = (b * seq + t) * dim + d;
+            float xt = x[idx];
+            h = a * h + bv * xt;
+            y[idx] = c * h + dv * xt;
         }
     }
 }

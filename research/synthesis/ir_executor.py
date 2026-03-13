@@ -13,7 +13,7 @@ import logging
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Tuple, Optional
 
 from .graph import ComputationGraphIR
 from .primitives import REVERSE_OPCODE_MAP

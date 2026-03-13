@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { formatTime, scoreColor } from '../utils/format';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
-import { filterRowsByQuery } from '../utils/tableFiltering';
+import { SortableHeader, TableFilterInput } from './shared/DataTableControls';
+import useInteractiveTable from './shared/useInteractiveTable';
 
 const TYPE_ORDER = {
   insight: 6,
@@ -102,40 +103,8 @@ const COLUMNS = [
 const LAB_NOTEBOOK_SORT_PREFS_KEY = 'dashboard.lab-notebook.sort.v1';
 
 function LabNotebook({ entries, onSelectExperiment }) {
-  const [sortKey, setSortKey] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(LAB_NOTEBOOK_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.sortKey === 'string' && COLUMNS.some((column) => column.key === stored.sortKey)) {
-        return stored.sortKey;
-      }
-    } catch {}
-    return '_score';
-  });
-  const [sortDesc, setSortDesc] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(LAB_NOTEBOOK_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.sortDesc === 'boolean') {
-        return stored.sortDesc;
-      }
-    } catch {}
-    return true;
-  });
-  const [filterQuery, setFilterQuery] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [copiedValue, copyText] = useCopyToClipboard();
-
-  useEffect(() => {
-    localStorage.setItem(LAB_NOTEBOOK_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
-  }, [sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDesc(!sortDesc);
-    } else {
-      setSortKey(key);
-      setSortDesc(true);
-    }
-  };
 
   const augmented = useMemo(() => {
     if (!entries) return [];
@@ -152,37 +121,30 @@ function LabNotebook({ entries, onSelectExperiment }) {
     });
   }, [entries]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(augmented, filterQuery, [
+  const {
+    sortKey,
+    sortDesc,
+    filterQuery,
+    setFilterQuery,
+    sortedRows: sorted,
+    handleSort,
+  } = useInteractiveTable({
+    rows: augmented,
+    filterFields: [
       'entry_type',
       'title',
       'content',
       (row) => row?.metadata?.source,
-    ])
-  ), [augmented, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va, vb;
-      if (sortKey === '_score') {
-        va = a._score; vb = b._score;
-      } else if (sortKey === 'entry_type') {
-        va = TYPE_ORDER[a.entry_type] || 0;
-        vb = TYPE_ORDER[b.entry_type] || 0;
-      } else {
-        va = a[sortKey]; vb = b[sortKey];
-      }
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') {
-        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
+    ],
+    initialSortKey: '_score',
+    initialSortDesc: true,
+    storageKey: LAB_NOTEBOOK_SORT_PREFS_KEY,
+    getSortValue: (row, key) => {
+      if (key === '_score') return row._score;
+      if (key === 'entry_type') return TYPE_ORDER[row.entry_type] || 0;
+      return row?.[key];
+    },
+  });
 
   const latestTimestamp = useMemo(() => {
     if (!entries || entries.length === 0) return null;
@@ -214,19 +176,11 @@ function LabNotebook({ entries, onSelectExperiment }) {
               Updated {formatTime(latestTimestamp)}
             </span>
           )}
-          <input
+          <TableFilterInput
             value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
+            onChange={setFilterQuery}
             placeholder="Filter entries"
-            style={{
-              fontSize: 11,
-              padding: '4px 8px',
-              borderRadius: 4,
-              border: '1px solid var(--border)',
-              background: 'var(--bg-tertiary)',
-              color: 'var(--text-primary)',
-              minWidth: 160,
-            }}
+            ariaLabel="Filter notebook entries"
           />
         </div>
       </div>
@@ -241,19 +195,15 @@ function LabNotebook({ entries, onSelectExperiment }) {
         <thead>
           <tr>
             {COLUMNS.map(col => (
-              <th
+              <SortableHeader
                 key={col.key}
-                onClick={() => handleSort(col.key)}
-                aria-label={`Sort notebook entries by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
-                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-              >
-                {col.label}
-                {sortKey === col.key && (
-                  <span style={{ marginLeft: 4, fontSize: 10 }}>
-                    {sortDesc ? '\u25BC' : '\u25B2'}
-                  </span>
-                )}
-              </th>
+                sortKey={col.key}
+                activeSortKey={sortKey}
+                sortDesc={sortDesc}
+                onSort={handleSort}
+                label={col.label}
+                ariaLabel={`Sort notebook entries by ${col.label}${sortKey === col.key ? `, currently ${sortDesc ? 'descending' : 'ascending'}` : ''}`}
+              />
             ))}
           </tr>
         </thead>
@@ -334,10 +284,10 @@ function LabNotebook({ entries, onSelectExperiment }) {
                       </span>
                     )}
                   </td>
-                  <td style={{ fontWeight: 500, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <td style={{ fontWeight: 500, maxWidth: 240, whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35 }}>
                     {entry.title}
                   </td>
-                  <td style={{ color: 'var(--text-secondary)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
+                  <td style={{ color: 'var(--text-secondary)', maxWidth: 360, whiteSpace: 'normal', overflowWrap: 'anywhere', fontSize: 12, lineHeight: 1.4 }}>
                     {contentPreview}
                   </td>
                   <td>

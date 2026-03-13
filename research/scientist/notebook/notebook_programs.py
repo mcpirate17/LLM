@@ -13,6 +13,23 @@ class _ProgramsMixin:
     """Programs operations for the Lab Notebook."""
     __slots__ = ()
 
+    def _ensure_experiment_row(self, experiment_id: Optional[str]) -> None:
+        if not experiment_id:
+            return
+        row = self.conn.execute(
+            "SELECT 1 FROM experiments WHERE experiment_id = ? LIMIT 1",
+            (experiment_id,),
+        ).fetchone()
+        if row is not None:
+            return
+        now = time.time()
+        self.conn.execute(
+            """INSERT INTO experiments
+            (experiment_id, timestamp, experiment_type, status, config_json, started_at)
+            VALUES (?, ?, 'unknown', 'running', ?, ?)""",
+            (experiment_id, now, json.dumps({}), now),
+        )
+
     def purge_junk_programs(self, *, dry_run: bool = False) -> Dict[str, Any]:
         """Delete Stage 0 failure program results that carry no useful data.
 
@@ -21,6 +38,7 @@ class _ProgramsMixin:
 
         Returns dict with 'deleted' or 'would_delete' count and 'dry_run' flag.
         """
+        self.flush_writes()
         junk_query = """
             SELECT result_id, experiment_id FROM program_results
             WHERE (stage0_passed = 0 OR stage0_passed IS NULL)
@@ -67,6 +85,7 @@ class _ProgramsMixin:
     def add_entry(self, entry: ExperimentEntry) -> str:
         """Add a notebook entry."""
         entry_id = str(uuid.uuid4())[:12]
+        self._ensure_experiment_row(entry.experiment_id)
         self.conn.execute(
             """INSERT INTO entries
             (entry_id, experiment_id, timestamp, entry_type, title, content,
@@ -135,6 +154,8 @@ class _ProgramsMixin:
         if not result_id:
             result_id = str(uuid.uuid4())[:12]
         now = time.time()
+        if kwargs.get("novelty_score") is not None and "novelty_scoring_policy_version" not in kwargs:
+            kwargs["novelty_scoring_policy_version"] = "gated_lightning_v1"
 
         # Convert booleans to int for SQLite
         bool_fields = {
@@ -142,7 +163,7 @@ class _ProgramsMixin:
             "extreme_input_passed", "random_input_passed",
             "has_nan_output", "has_inf_output", "has_nan_grad", "has_zero_grad",
             "graph_has_gradient_path", "graph_uses_math_spaces",
-            "graph_uses_frequency_domain", "regression_gate_pass",
+            "graph_uses_frequency_domain", "regression_gate_pass", "fingerprint_full_ran",
         }
         for f in bool_fields:
             if f in kwargs and kwargs[f] is not None:
@@ -213,6 +234,7 @@ class _ProgramsMixin:
 
     def get_top_programs(self, n: int = 20,
                          sort_by: str = "novelty_score") -> List[Dict]:
+        self.flush_writes()
         valid_sorts = {"novelty_score", "loss_ratio", "structural_novelty",
                        "behavioral_novelty", "validation_loss_ratio",
                        "discovery_loss_ratio"}
@@ -509,9 +531,7 @@ class _ProgramsMixin:
             merged["tier"] = highest_tier
 
         nov_conf = self._best_max(pr_rows, "novelty_confidence")
-        n_routing = self._count_routing_ops(result_id)
-        n_sparse = self._count_sparse_ops(result_id)
-        n_moe = self._count_moe_ops(result_id)
+        structural_counts = self._graph_structural_counts(result_id)
         composite = self.compute_composite_score(
             screening_lr=merged.get("screening_loss_ratio"),
             screening_nov=merged.get("screening_novelty"),
@@ -534,9 +554,9 @@ class _ProgramsMixin:
             loss_improvement_rate=merged.get("loss_improvement_rate"),
             quant_quality_per_byte=merged.get("quant_quality_per_byte"),
             ncd_score=merged.get("ncd_score"),
-            n_routing_ops=n_routing,
-            n_sparse_ops=n_sparse,
-            n_moe_ops=n_moe,
+            n_routing_ops=structural_counts.get("routing"),
+            n_sparse_ops=structural_counts.get("sparse"),
+            n_moe_ops=structural_counts.get("moe"),
             recursion_savings=merged.get("recursion_savings_ratio"),
             depth_savings=merged.get("depth_savings_ratio"),
             activation_sparsity=merged.get("activation_sparsity_score"),
@@ -710,4 +730,3 @@ class _ProgramsMixin:
             result_ids,
         ).fetchall()
         return {r["result_id"]: r["tier"] for r in rows}
-

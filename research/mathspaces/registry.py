@@ -26,6 +26,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D",
         description="Mobius addition with learnable bias in Poincare ball",
+        algebraic_space="poincare",
     )
     op = _with_execute(op, hyperbolic.execute_poincare_add)
     register_external_primitive(op)
@@ -37,6 +38,7 @@ def register_all_mathspaces():
         shape_rule="identity",
         description="Exponential map: Euclidean -> Poincare ball",
         numerically_risky=True,
+        algebraic_space="poincare",
     )
     op = _with_execute(op, hyperbolic.execute_exp_map)
     register_external_primitive(op)
@@ -48,6 +50,7 @@ def register_all_mathspaces():
         shape_rule="identity",
         description="Logarithmic map: Poincare ball -> Euclidean",
         numerically_risky=True,
+        algebraic_space="poincare",
     )
     op = _with_execute(op, hyperbolic.execute_log_map)
     register_external_primitive(op)
@@ -61,6 +64,7 @@ def register_all_mathspaces():
         param_formula="D*D",
         description="Linear transformation in hyperbolic space",
         numerically_risky=True,
+        algebraic_space="poincare",
     )
     op = _with_execute(op, hyperbolic.execute_hyp_linear)
     register_external_primitive(op)
@@ -72,6 +76,7 @@ def register_all_mathspaces():
         shape_rule="reduce_last",
         description="Hyperbolic distance between two points in the Poincare ball",
         numerically_risky=True,
+        algebraic_space="poincare",
     )
     op = _with_execute(op, hyperbolic.execute_hyp_distance)
     register_external_primitive(op)
@@ -83,6 +88,7 @@ def register_all_mathspaces():
         shape_rule="identity",
         description="Tangent-space nonlinearity with exp/log manifold mapping",
         numerically_risky=True,
+        algebraic_space="poincare",
     )
     op = _with_execute(op, hyperbolic.execute_hyp_tangent_nonlinear)
     register_external_primitive(op)
@@ -94,6 +100,7 @@ def register_all_mathspaces():
         n_inputs=2,
         shape_rule="binary_broadcast",
         description="Tropical (min-plus) matrix multiply — shortest path distances",
+        algebraic_space="tropical",
     )
     op = _with_execute(op, tropical.execute_tropical_matmul)
     register_external_primitive(op)
@@ -104,6 +111,7 @@ def register_all_mathspaces():
         n_inputs=2,
         shape_rule="binary_broadcast",
         description="Tropical addition (element-wise minimum)",
+        algebraic_space="tropical",
     )
     op = _with_execute(op, tropical.execute_tropical_add)
     register_external_primitive(op)
@@ -116,6 +124,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*D",
         description="Self-attention using tropical geometry (shortest-path)",
+        algebraic_space="tropical",
     )
     op = _with_execute(op, tropical.execute_tropical_attention)
     register_external_primitive(op)
@@ -126,6 +135,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Subtract sequence-wise tropical baseline (min) from features",
+        algebraic_space="tropical",
     )
     op = _with_execute(op, tropical.execute_tropical_center)
     register_external_primitive(op)
@@ -139,6 +149,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*2*D",
         description="Multi-scale p-adic expansion and projection",
+        algebraic_space="padic",
     )
     op = _with_execute(op, padic.execute_padic_expand)
     register_external_primitive(op)
@@ -149,6 +160,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Attention using ultrametric (p-adic) distance",
+        algebraic_space="padic",
     )
     op = _with_execute(op, padic.execute_ultrametric_attn)
     register_external_primitive(op)
@@ -159,6 +171,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Gate activations by smooth p-adic valuation strength",
+        algebraic_space="padic",
     )
     op = _with_execute(op, padic.execute_padic_gate)
     register_external_primitive(op)
@@ -170,6 +183,7 @@ def register_all_mathspaces():
         n_inputs=2,
         shape_rule="binary_broadcast",
         description="Clifford geometric product (dot + wedge)",
+        algebraic_space="clifford",
     )
     op = _with_execute(op, clifford.execute_geometric_product)
     register_external_primitive(op)
@@ -182,6 +196,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="8",
         description="Clifford rotor transformation (efficient rotation)",
+        algebraic_space="clifford",
     )
     op = _with_execute(op, clifford.execute_rotor_transform)
     register_external_primitive(op)
@@ -192,6 +207,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Select vector grade from Clifford multivector",
+        algebraic_space="clifford",
     )
     op = _with_execute(op, clifford.execute_grade_select)
     register_external_primitive(op)
@@ -202,6 +218,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Blend vector and bivector grades in Clifford multivectors",
+        algebraic_space="clifford",
     )
     op = _with_execute(op, clifford.execute_grade_mix)
     register_external_primitive(op)
@@ -217,6 +234,7 @@ def register_all_mathspaces():
         param_formula="D+D",
         description="Manifold-aware normalization: log-map → LayerNorm → exp-map",
         numerically_risky=True,
+        algebraic_space="poincare",
     )
     op = _with_execute(op, hyperbolic.execute_hyperbolic_norm)
     register_external_primitive(op)
@@ -229,6 +247,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*D",
         description="Shortest-path tropical distances as a gating mechanism",
+        algebraic_space="tropical",
     )
     op = _with_execute(op, tropical.execute_tropical_gate)
     register_external_primitive(op)
@@ -241,6 +260,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*D//4",
         description="Tropical (shortest-path) routing as a gating signal",
+        algebraic_space="tropical",
     )
     op = _with_execute(op, tropical_routing.execute_tropical_router)
     register_external_primitive(op)
@@ -253,6 +273,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*D*4",
         description="Full Mixture-of-Experts with tropical (shortest-path) routing",
+        algebraic_space="tropical",
     )
     op = _with_execute(op, tropical_routing.execute_tropical_moe)
     register_external_primitive(op)
@@ -265,6 +286,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*D",
         description="Attention via geometric product (dot + wedge) for richer token scores",
+        algebraic_space="clifford",
     )
     op = _with_execute(op, clifford.execute_clifford_attention)
     register_external_primitive(op)
@@ -277,6 +299,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="D*2*D",
         description="Multi-resolution p-adic expansion with per-scale transform + residual",
+        algebraic_space="padic",
     )
     op = _with_execute(op, padic.execute_padic_residual)
     register_external_primitive(op)
@@ -349,6 +372,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Leaky Integrate-and-Fire neuron with surrogate gradient",
+        algebraic_space="spiking",
     )
     op = _with_execute(op, spiking.execute_lif)
     register_external_primitive(op)
@@ -359,6 +383,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Continuous-to-spike-to-continuous rate coding with STE",
+        algebraic_space="spiking",
     )
     op = _with_execute(op, spiking.execute_spike_rate_code)
     register_external_primitive(op)
@@ -371,6 +396,7 @@ def register_all_mathspaces():
         has_params=True,
         param_formula="1",
         description="STDP-inspired causal attention with learnable temporal decay",
+        algebraic_space="spiking",
     )
     op = _with_execute(op, spiking.execute_stdp_attention)
     register_external_primitive(op)
@@ -381,6 +407,7 @@ def register_all_mathspaces():
         n_inputs=1,
         shape_rule="identity",
         description="Adaptive median-based threshold gate (~50% sparsity)",
+        algebraic_space="spiking",
     )
     op = _with_execute(op, spiking.execute_sparse_threshold)
     register_external_primitive(op)

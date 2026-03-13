@@ -7,7 +7,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from runtime.profiler import profile_static, profile_runtime, ProfileReport
+from runtime.bridge import workflow_to_graph
+from runtime.profiler import profile_static, profile_static_graph, profile_runtime, ProfileReport
 
 
 def _simple_mlp():
@@ -73,6 +74,13 @@ def test_static_profile_attention():
     assert len(report.op_profiles) == 7
 
 
+def test_static_profile_graph_reuses_existing_graph():
+    graph = workflow_to_graph(_simple_mlp(), model_dim=256)
+    report = profile_static_graph(graph, model_dim=256)
+    assert report.total_params > 0
+    assert len(report.op_profiles) == 3
+
+
 def test_static_flops_breakdown():
     report = profile_static(_simple_mlp(), model_dim=256)
     assert "parameterized" in report.flops_by_category
@@ -105,6 +113,8 @@ def test_static_json_serializable():
     d = report.to_dict()
     json_str = json.dumps(d)
     assert "total_params" in json_str
+    assert "perf_contract" in d
+    assert d["perf_contract"]["component"] == "aria_designer"
 
 
 # ── Runtime profiling tests ──────────────────────────────────────────

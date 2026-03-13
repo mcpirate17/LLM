@@ -1,11 +1,8 @@
 from __future__ import annotations
 import json
-import math
 import re
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
-import numpy as np
-from ...eval.utils import safe_parse_float
+from typing import Dict, List, Optional
+
 
 
 class _CampaignsMixin:

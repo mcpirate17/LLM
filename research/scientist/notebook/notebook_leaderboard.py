@@ -8,6 +8,20 @@ from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
 
+_LEADERBOARD_MANAGED_COLUMNS = frozenset({
+    "entry_id",
+    "result_id",
+    "timestamp",
+    "model_source",
+    "architecture_desc",
+    "tier",
+    "composite_score",
+    "is_reference",
+    "reference_name",
+    "tags",
+    "notes",
+})
+
 
 class _LeaderboardMixin:
     """Leaderboard operations for the Lab Notebook."""
@@ -18,6 +32,15 @@ class _LeaderboardMixin:
         if not tiers:
             return None
         return max(tiers, key=lambda t: self._TIER_ORDER.get(t, -1))
+
+    def _leaderboard_update_items(self, kwargs: Dict[str, Any]) -> List[tuple[str, Any]]:
+        allowed = self._get_leaderboard_columns() - _LEADERBOARD_MANAGED_COLUMNS
+        update_items: List[tuple[str, Any]] = []
+        for col, val in kwargs.items():
+            if col not in allowed or val is None:
+                continue
+            update_items.append((col, int(val) if isinstance(val, bool) else val))
+        return update_items
 
 
     def upsert_leaderboard(
@@ -37,18 +60,32 @@ class _LeaderboardMixin:
         Accepts all leaderboard columns as keyword arguments.
         Fields are only updated if provided and not None (prevents accidental NULLing).
         """
+        self.flush_writes()
+        resolved_result_id = result_id
+        pr_row = self.conn.execute(
+            "SELECT result_id, novelty_confidence, loss_ratio, param_count, flops_forward, "
+            "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json "
+            "FROM program_results WHERE result_id = ? "
+            "OR graph_fingerprint = ? "
+            "ORDER BY CASE WHEN result_id = ? THEN 0 ELSE 1 END, timestamp DESC "
+            "LIMIT 1",
+            (result_id, result_id, result_id),
+        ).fetchone()
+        if pr_row:
+            resolved_result_id = pr_row["result_id"]
         # Check if entry exists for this result_id
         existing = self.conn.execute(
             "SELECT * FROM leaderboard WHERE result_id = ?",
-            (result_id,),
+            (resolved_result_id,),
         ).fetchone()
 
         # Combine kwargs with existing data for composite score recomputation
         d = dict(existing) if existing else {}
         # Sanitize all incoming values
         kwargs = sanitize_for_db(kwargs)
+        update_items = self._leaderboard_update_items(kwargs)
         
-        d.update({k: v for k, v in kwargs.items() if v is not None})
+        d.update(dict(update_items))
         if tags is not None: d["tags"] = tags
         if notes is not None: d["notes"] = notes
         d["tier"] = tier
@@ -57,15 +94,13 @@ class _LeaderboardMixin:
         d["is_reference"] = int(is_reference)
         if reference_name: d["reference_name"] = reference_name
 
-        # Look up novelty_confidence from linked program_results
         nov_conf = d.get("novelty_confidence")
-        if nov_conf is None:
-            pr = self.conn.execute(
-                "SELECT novelty_confidence FROM program_results WHERE result_id = ?",
-                (result_id,),
-            ).fetchone()
-            if pr:
-                nov_conf = pr["novelty_confidence"]
+        if nov_conf is None and pr_row:
+            nov_conf = pr_row["novelty_confidence"]
+        structural_counts = self._graph_structural_counts(
+            resolved_result_id,
+            graph_json=pr_row["graph_json"] if pr_row else None,
+        )
 
         composite = self.compute_composite_score(
             screening_lr=d.get("screening_loss_ratio"),
@@ -89,9 +124,9 @@ class _LeaderboardMixin:
             loss_improvement_rate=d.get("loss_improvement_rate"),
             quant_quality_per_byte=d.get("quant_quality_per_byte"),
             ncd_score=d.get("ncd_score"),
-            n_routing_ops=self._count_routing_ops(result_id),
-            n_sparse_ops=self._count_sparse_ops(result_id),
-            n_moe_ops=self._count_moe_ops(result_id),
+            n_routing_ops=structural_counts.get("routing"),
+            n_sparse_ops=structural_counts.get("sparse"),
+            n_moe_ops=structural_counts.get("moe"),
             recursion_savings=d.get("recursion_savings_ratio"),
             depth_savings=d.get("depth_savings_ratio"),
             activation_sparsity=d.get("activation_sparsity_score"),
@@ -107,24 +142,17 @@ class _LeaderboardMixin:
 
         # Compute efficiency_multiple from program_results operational metrics
         eff_mult = kwargs.get("efficiency_multiple")
-        if eff_mult is None:
-            pr_row = self.conn.execute(
-                "SELECT loss_ratio, param_count, flops_forward, "
-                "throughput_tok_s, peak_memory_mb, forward_time_ms "
-                "FROM program_results WHERE result_id = ?",
-                (result_id,),
-            ).fetchone()
-            if pr_row:
-                eff_result = self.compute_efficiency_multiple(
-                    loss_ratio=pr_row["loss_ratio"],
-                    param_count=pr_row["param_count"],
-                    flops_forward=pr_row["flops_forward"],
-                    throughput_tok_s=pr_row["throughput_tok_s"],
-                    peak_memory_mb=pr_row["peak_memory_mb"],
-                    forward_time_ms=pr_row["forward_time_ms"],
-                )
-                if eff_result is not None:
-                    eff_mult = eff_result["geomean"]
+        if eff_mult is None and pr_row:
+            eff_result = self.compute_efficiency_multiple(
+                loss_ratio=pr_row["loss_ratio"],
+                param_count=pr_row["param_count"],
+                flops_forward=pr_row["flops_forward"],
+                throughput_tok_s=pr_row["throughput_tok_s"],
+                peak_memory_mb=pr_row["peak_memory_mb"],
+                forward_time_ms=pr_row["forward_time_ms"],
+            )
+            if eff_result is not None:
+                eff_mult = eff_result["geomean"]
         if eff_mult is not None:
             kwargs["efficiency_multiple"] = eff_mult
 
@@ -146,38 +174,9 @@ class _LeaderboardMixin:
                 sets.append("reference_name = ?")
                 params.append(reference_name)
 
-            # Whitelist for other columns from kwargs
-            for col in ("screening_loss_ratio", "screening_novelty", "screening_passed",
-                         "investigation_loss_ratio", "investigation_robustness",
-                         "investigation_best_training", "investigation_passed",
-                         "validation_loss_ratio", "validation_baseline_ratio",
-                         "validation_multi_seed_std", "validation_passed",
-                         "normalized_baseline_ratio", "param_efficiency",
-                         "quant_int8_retention", "quant_quality_per_byte",
-                         "robustness_long_ctx_score", "robustness_noise_score",
-                         "init_sensitivity_std", "fp_jacobian_spectral_norm",
-                         "scaling_param_efficiency", "scaling_flop_efficiency",
-                         "scaling_gate_passed", "scaling_best_family",
-                         "scaling_d512_param_efficiency", "scaling_confidence",
-                         "routing_savings_ratio", "compression_ratio",
-                         "discovery_loss_ratio", "ncd_score",
-                         "robustness_long_ctx_scaling_score",
-                         "robustness_long_ctx_assoc_score",
-                         "robustness_long_ctx_multi_hop_score",
-                         "robustness_long_ctx_passkey_score",
-                         "robustness_long_ctx_retrieval_aggregate",
-                         "robustness_long_ctx_combined_score",
-                         "depth_savings_ratio", "recursion_savings_ratio",
-                         "activation_sparsity_score", "routing_expert_count",
-                         "routing_confidence_mean", "routing_drop_rate",
-                         "efficiency_multiple",
-                         "wikitext_perplexity", "wikitext_score",
-                         "tinystories_perplexity", "tinystories_score"):
-                if col in kwargs and kwargs[col] is not None:
-                    sets.append(f"{col} = ?")
-                    val = kwargs[col]
-                    if isinstance(val, bool): val = int(val)
-                    params.append(val)
+            for col, val in update_items:
+                sets.append(f"{col} = ?")
+                params.append(val)
 
             params.append(entry_id)
             self.conn.execute(
@@ -188,38 +187,12 @@ class _LeaderboardMixin:
             entry_id = str(uuid.uuid4())[:12]
             cols = ["entry_id", "result_id", "timestamp", "model_source", "architecture_desc",
                     "tier", "composite_score", "is_reference", "reference_name", "tags", "notes"]
-            vals = [entry_id, result_id, time.time(), model_source, architecture_desc,
+            vals = [entry_id, resolved_result_id, time.time(), model_source, architecture_desc,
                     tier, composite, int(is_reference), reference_name, tags, notes]
 
-            for col in ("screening_loss_ratio", "screening_novelty", "screening_passed",
-                         "investigation_loss_ratio", "investigation_robustness",
-                         "investigation_best_training", "investigation_passed",
-                         "validation_loss_ratio", "validation_baseline_ratio",
-                         "validation_multi_seed_std", "validation_passed",
-                         "normalized_baseline_ratio", "param_efficiency",
-                         "quant_int8_retention", "quant_quality_per_byte",
-                         "robustness_long_ctx_score", "robustness_noise_score",
-                         "init_sensitivity_std", "fp_jacobian_spectral_norm",
-                         "scaling_param_efficiency", "scaling_flop_efficiency",
-                         "scaling_gate_passed", "scaling_best_family",
-                         "scaling_d512_param_efficiency", "scaling_confidence",
-                         "routing_savings_ratio", "compression_ratio",
-                         "discovery_loss_ratio", "ncd_score",
-                         "robustness_long_ctx_scaling_score",
-                         "robustness_long_ctx_assoc_score",
-                         "robustness_long_ctx_multi_hop_score",
-                         "robustness_long_ctx_passkey_score",
-                         "robustness_long_ctx_retrieval_aggregate",
-                         "robustness_long_ctx_combined_score",
-                         "depth_savings_ratio", "recursion_savings_ratio",
-                         "activation_sparsity_score", "routing_expert_count",
-                         "routing_confidence_mean", "routing_drop_rate",
-                         "efficiency_multiple"):
-                if col in kwargs and kwargs[col] is not None:
-                    cols.append(col)
-                    val = kwargs[col]
-                    if isinstance(val, bool): val = int(val)
-                    vals.append(val)
+            for col, val in update_items:
+                cols.append(col)
+                vals.append(val)
             
             placeholders = ", ".join(["?"] * len(cols))
             self.conn.execute(
@@ -255,7 +228,11 @@ class _LeaderboardMixin:
             "pr.param_count AS _param_count, "
             "pr.graph_n_params_estimate AS _graph_n_params_estimate, "
             "pr.novelty_confidence AS _novelty_confidence, "
+            "pr.novelty_valid_for_promotion AS novelty_valid_for_promotion, "
+            "pr.novelty_validity_reason AS novelty_validity_reason, "
             "pr.cka_source AS _cka_source, "
+            "pr.stage0_passed AS stage0_passed, "
+            "pr.stage1_passed AS stage1_passed, "
             "pr.routing_confidence_mean AS _routing_confidence_mean, "
             "pr.fp_jacobian_spectral_norm AS jacobian_spectral_norm, "
             # Fields for client-side candidateScore computation
@@ -326,8 +303,13 @@ class _LeaderboardMixin:
             # program_results when leaderboard fields are absent.
             if d.get("discovery_loss_ratio") is None and d.get("_pr_discovery_loss_ratio") is not None:
                 d["discovery_loss_ratio"] = d.get("_pr_discovery_loss_ratio")
-            if d.get("validation_loss_ratio") is None and d.get("_pr_validation_loss_ratio") is not None:
-                d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
+            # Only backfill validation metrics for entries actually at
+            # validation tier — program_results stores val eval data from
+            # training but that doesn't mean the entry was promoted.
+            tier = str(d.get("tier") or "").strip().lower()
+            if tier in ("validation", "breakthrough"):
+                if d.get("validation_loss_ratio") is None and d.get("_pr_validation_loss_ratio") is not None:
+                    d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
             if include_family:
                 d["architecture_family"] = self._classify_architecture_family(
                     graph_json=d.get("_graph_json"),
@@ -439,33 +421,11 @@ class _LeaderboardMixin:
 
         # Sanitize all incoming values
         kwargs = sanitize_for_db(kwargs)
+        update_items = self._leaderboard_update_items(kwargs)
 
-        for col in ("investigation_loss_ratio", "investigation_robustness",
-                     "investigation_best_training", "investigation_passed",
-                     "validation_loss_ratio", "validation_baseline_ratio",
-                     "validation_multi_seed_std", "validation_passed",
-                     "normalized_baseline_ratio", "param_efficiency",
-                     "quant_int8_retention", "quant_quality_per_byte",
-                     "robustness_long_ctx_score", "robustness_noise_score",
-                     "init_sensitivity_std", "fp_jacobian_spectral_norm",
-                     "scaling_param_efficiency", "scaling_flop_efficiency",
-                     "scaling_gate_passed", "scaling_best_family",
-                     "scaling_d512_param_efficiency", "scaling_confidence",
-                     "routing_savings_ratio", "compression_ratio",
-                     "activation_sparsity_score", "dead_neuron_ratio",
-                     "routing_collapse_score",
-                     "wikitext_perplexity", "wikitext_score",
-                     "tinystories_perplexity", "tinystories_score",
-                     "cross_task_score",
-                     "efficiency_wall_score", "max_viable_seq_len",
-                     "scaling_regime",
-                     "notes"):
-            if col in kwargs and kwargs[col] is not None:
-                sets.append(f"{col} = ?")
-                val = kwargs[col]
-                if isinstance(val, bool):
-                    val = int(val)
-                params.append(val)
+        for col, val in update_items:
+            sets.append(f"{col} = ?")
+            params.append(val)
 
         # Recompute composite score
         row = self.conn.execute(
@@ -475,17 +435,21 @@ class _LeaderboardMixin:
         if row:
             d = dict(row)
             # Only update with non-None values from kwargs
-            d.update({k: v for k, v in kwargs.items() if v is not None})
+            d.update(dict(update_items))
             # Look up novelty_confidence from linked program_results
             nov_conf = None
+            structural_counts = {"routing": None}
             if d.get("result_id"):
                 pr = self.conn.execute(
-                    "SELECT novelty_confidence FROM program_results WHERE result_id = ?",
+                    "SELECT novelty_confidence, graph_json FROM program_results WHERE result_id = ?",
                     (d["result_id"],),
                 ).fetchone()
                 if pr:
                     nov_conf = pr["novelty_confidence"]
-            n_routing = self._count_routing_ops(d["result_id"]) if d.get("result_id") else None
+                    structural_counts = self._graph_structural_counts(
+                        d["result_id"],
+                        graph_json=pr["graph_json"],
+                    )
             composite = self.compute_composite_score(
                 screening_lr=d.get("screening_loss_ratio"),
                 screening_nov=d.get("screening_novelty"),
@@ -499,10 +463,17 @@ class _LeaderboardMixin:
                 is_reference=bool(d.get("is_reference")),
                 routing_savings=d.get("routing_savings_ratio"),
                 compression_ratio=d.get("compression_ratio"),
-                n_routing_ops=n_routing,
+                n_routing_ops=structural_counts.get("routing"),
             )
             sets.append("composite_score = ?")
             params.append(composite)
+
+        # Handle 'notes' explicitly (it's in _LEADERBOARD_MANAGED_COLUMNS
+        # so _leaderboard_update_items filters it out, but promote_to_tier
+        # should still allow updating it).
+        if "notes" in kwargs and kwargs["notes"] is not None:
+            sets.append("notes = ?")
+            params.append(kwargs["notes"])
 
         sets.append("timestamp = ?")
         params.append(time.time())
@@ -583,4 +554,3 @@ class _LeaderboardMixin:
                 for e in entries[:10]
             ],
         }
-

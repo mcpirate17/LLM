@@ -18,6 +18,7 @@ from typing import Callable, Dict, List, Optional
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
 from ..synthesis.primitives import get_primitive
+from ..scientist.shared_utils import clamp
 
 logger = logging.getLogger(__name__)
 
@@ -472,6 +473,24 @@ def _derive_mutation_grammar(
             category_weights[cat_name] = max(0.1, category_weights[cat_name] * 0.9)
         category_weights[cat_name] = max(0.1, category_weights[cat_name] * rng.uniform(0.9, 1.1))
 
+    # Propagate template/motif weights from parent grammar
+    template_weights = dict(base.template_weights) if base.template_weights else {}
+    motif_weights = dict(base.motif_weights) if base.motif_weights else {}
+
+    # If parent has sparse/routing ops, bias child toward efficiency
+    _SPARSE_ROUTING_OPS = frozenset({
+        "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
+        "ternary_projection", "entropy_router", "moe_topk", "moe_2expert",
+        "token_merging",
+    })
+    parent_has_efficiency = any(
+        n.op_name in _SPARSE_ROUTING_OPS
+        for n in graph.nodes.values() if not n.is_input
+    )
+    sparsity_bias = base.structured_sparsity_bias
+    if parent_has_efficiency:
+        sparsity_bias = max(sparsity_bias, 0.6)
+
     return GrammarConfig(
         model_dim=graph.model_dim,
         min_depth=min_depth,
@@ -479,13 +498,16 @@ def _derive_mutation_grammar(
         max_width=base.max_width,
         max_ops=max_ops,
         max_params_ratio=base.max_params_ratio,
-        residual_prob=_clamp(base.residual_prob + rng.uniform(-0.1, 0.1), 0.0, 1.0),
-        split_prob=_clamp(base.split_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
-        merge_prob=_clamp(base.merge_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
-        risky_op_prob=_clamp(base.risky_op_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
-        freq_domain_prob=_clamp(base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
+        residual_prob=clamp(base.residual_prob + rng.uniform(-0.1, 0.1), 0.0, 1.0),
+        split_prob=clamp(base.split_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
+        merge_prob=clamp(base.merge_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
+        risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
+        freq_domain_prob=clamp(base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
         category_weights=category_weights,
         excluded_ops=set(base.excluded_ops),
+        template_weights=template_weights,
+        motif_weights=motif_weights,
+        structured_sparsity_bias=sparsity_bias,
     )
 
 
@@ -529,6 +551,22 @@ def _derive_crossover_grammar(
             category_weights[cat_name] = max(0.1, weight * 0.85)
         category_weights[cat_name] = max(0.1, category_weights[cat_name] * rng.uniform(0.92, 1.08))
 
+    # Propagate template/motif weights from parent grammar
+    template_weights = dict(base.template_weights) if base.template_weights else {}
+    motif_weights = dict(base.motif_weights) if base.motif_weights else {}
+
+    # If either parent has sparse/routing ops, bias child toward efficiency
+    _SPARSE_ROUTING_OPS = frozenset({
+        "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
+        "ternary_projection", "entropy_router", "moe_topk", "moe_2expert",
+        "token_merging",
+    })
+    sparsity_bias = base.structured_sparsity_bias
+    for g in (g1, g2):
+        if any(n.op_name in _SPARSE_ROUTING_OPS for n in g.nodes.values() if not n.is_input):
+            sparsity_bias = max(sparsity_bias, 0.6)
+            break
+
     return GrammarConfig(
         model_dim=g1.model_dim,
         min_depth=min_depth,
@@ -536,13 +574,16 @@ def _derive_crossover_grammar(
         max_width=max(base.max_width, 2),
         max_ops=max_ops,
         max_params_ratio=base.max_params_ratio,
-        residual_prob=_clamp((base.residual_prob + 0.65) / 2 + rng.uniform(-0.08, 0.08), 0.0, 1.0),
-        split_prob=_clamp((base.split_prob + 0.35) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
-        merge_prob=_clamp((base.merge_prob + 0.45) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
-        risky_op_prob=_clamp(base.risky_op_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
-        freq_domain_prob=_clamp(base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
+        residual_prob=clamp((base.residual_prob + 0.65) / 2 + rng.uniform(-0.08, 0.08), 0.0, 1.0),
+        split_prob=clamp((base.split_prob + 0.35) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
+        merge_prob=clamp((base.merge_prob + 0.45) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
+        risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
+        freq_domain_prob=clamp(base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
         category_weights=category_weights,
         excluded_ops=set(base.excluded_ops),
+        template_weights=template_weights,
+        motif_weights=motif_weights,
+        structured_sparsity_bias=sparsity_bias,
     )
 
 
@@ -559,5 +600,3 @@ def _category_histogram(graph: ComputationGraph) -> Dict[str, int]:
     return hist
 
 
-def _clamp(value: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, value))

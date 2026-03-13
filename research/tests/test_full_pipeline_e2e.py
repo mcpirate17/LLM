@@ -6,7 +6,7 @@ from research.scientist.notebook import LabNotebook
 from research.synthesis.reference_architectures import build_reference
 from research.synthesis.compiler import compile_model
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
 def test_full_nas_pipeline_flow(tmp_path):
     """

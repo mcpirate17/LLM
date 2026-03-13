@@ -1,6 +1,9 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { CheckCircle2, Loader, Circle, XCircle, ChevronRight } from 'lucide-react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import ChartActionRail from './ChartActionRail.jsx'
+import OpProfileTable from './RunResults/OpProfileTable.jsx'
+import BenchmarkTargets from './RunResults/BenchmarkTargets.jsx'
 
 const STAGE_ORDER = ['conversion', 'profiling', 'compilation', 'sandbox', 'compression', 'fingerprint', 'novelty']
 
@@ -25,15 +28,6 @@ function formatNum(n) {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
   return typeof n === 'number' ? n.toFixed(n % 1 ? 2 : 0) : String(n)
-}
-
-function formatBenchmarkValue(value, unit) {
-  if (value == null) return '-'
-  if (unit === 'percent') return `${Number(value).toFixed(2)}%`
-  if (unit === 'x') return `${Number(value).toFixed(2)}x`
-  if (unit === 'ms') return `${formatNum(Number(value))}ms`
-  if (unit === 'score') return Number(value).toFixed(2)
-  return formatNum(Number(value))
 }
 
 function StageIcon({ status }) {
@@ -71,11 +65,7 @@ export default function RunResultsPanel({
   benchmarkObserved = {},
   onBenchmarkObservedChange = null,
 }) {
-  const { stages = [], status, totalTimeMs, error } = evalState || {}
-  const [sortCol, setSortCol] = useState('flops')
-  const [sortAsc, setSortAsc] = useState(false)
-  const [benchmarkInputDraft, setBenchmarkInputDraft] = useState('')
-  const [benchmarkInputError, setBenchmarkInputError] = useState('')
+  const { stages = [], totalTimeMs, error } = evalState || {}
 
   const stageMap = useMemo(() => {
     const m = {}
@@ -118,57 +108,12 @@ export default function RunResultsPanel({
   }, [profilingMetrics])
 
   // Sorted op profiles
-  const opProfiles = useMemo(() => {
-    const ops = profilingMetrics?.op_profiles || []
-    const sorted = [...ops].sort((a, b) => {
-      const av = a[sortCol] ?? 0
-      const bv = b[sortCol] ?? 0
-      return sortAsc ? av - bv : bv - av
-    })
-    return sorted
-  }, [profilingMetrics, sortCol, sortAsc])
-
-  const handleSort = (col) => {
-    if (sortCol === col) setSortAsc(!sortAsc)
-    else { setSortCol(col); setSortAsc(false) }
-  }
-  const sortDirection = (col) => (sortCol === col ? (sortAsc ? 'ascending' : 'descending') : 'none')
-  const sortGlyph = (col) => (sortCol === col ? (sortAsc ? '▲' : '▼') : '')
+  const opProfiles = profilingMetrics?.op_profiles || []
+  const topBottleneck = opProfiles[0] || null
   const benchmarkInputCount = useMemo(() => {
     const src = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {}
     return Object.entries(src).filter(([, v]) => Number.isFinite(Number(v))).length
   }, [benchmarkObserved])
-
-  useEffect(() => {
-    const src = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {}
-    setBenchmarkInputDraft(JSON.stringify(src, null, 2))
-  }, [benchmarkObserved])
-
-  const handleApplyBenchmarkObserved = () => {
-    if (typeof onBenchmarkObservedChange !== 'function') return
-    try {
-      const parsed = benchmarkInputDraft.trim() ? JSON.parse(benchmarkInputDraft) : {}
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        setBenchmarkInputError('Input must be a JSON object of metric keys to numeric values.')
-        return
-      }
-      const cleaned = {}
-      for (const [k, v] of Object.entries(parsed)) {
-        const n = Number(v)
-        if (Number.isFinite(n)) cleaned[k] = n
-      }
-      onBenchmarkObservedChange(cleaned)
-      setBenchmarkInputError('')
-    } catch (err) {
-      setBenchmarkInputError(`Invalid JSON: ${err.message}`)
-    }
-  }
-
-  const handleResetBenchmarkObserved = () => {
-    if (typeof onBenchmarkObservedChange !== 'function') return
-    onBenchmarkObservedChange({})
-    setBenchmarkInputError('')
-  }
 
   if (!evalState || stages.length === 0) {
     return (
@@ -343,6 +288,10 @@ export default function RunResultsPanel({
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+            <ChartActionRail
+              insight={topBottleneck ? `Highest-cost op: ${topBottleneck.op_name}` : null}
+              recommendation={topBottleneck ? 'Next best action: inspect the top FLOP consumer and compare its native-kernel coverage before re-running.' : 'Next best action: review the heaviest compute category before re-running.'}
+            />
           </div>
         </CollapsibleSection>
       )}
@@ -350,46 +299,10 @@ export default function RunResultsPanel({
       {/* Per-Op Profile Table */}
       {opProfiles.length > 0 && (
         <CollapsibleSection title={`Per-Op Profile (${opProfiles.length})`}>
-          <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-            <table className="op-profile-table">
-              <thead>
-                <tr>
-                  <th aria-sort={sortDirection('op_name')}>
-                    <button type="button" className="th-sort-btn" onClick={() => handleSort('op_name')}>
-                      Op {sortGlyph('op_name')}
-                    </button>
-                  </th>
-                  <th aria-sort={sortDirection('flops')}>
-                    <button type="button" className="th-sort-btn" onClick={() => handleSort('flops')}>
-                      FLOPs {sortGlyph('flops')}
-                    </button>
-                  </th>
-                  <th aria-sort={sortDirection('params')}>
-                    <button type="button" className="th-sort-btn" onClick={() => handleSort('params')}>
-                      Params {sortGlyph('params')}
-                    </button>
-                  </th>
-                  <th aria-sort={sortDirection('memory_bytes')}>
-                    <button type="button" className="th-sort-btn" onClick={() => handleSort('memory_bytes')}>
-                      Mem {sortGlyph('memory_bytes')}
-                    </button>
-                  </th>
-                  <th>K</th>
-                </tr>
-              </thead>
-              <tbody>
-                {opProfiles.map((op, i) => (
-                  <tr key={i}>
-                    <td>{op.op_name}</td>
-                    <td>{formatNum(op.flops)}</td>
-                    <td>{formatNum(op.params)}</td>
-                    <td>{formatNum(op.memory_bytes)}</td>
-                    <td>{op.has_native_kernel ? <span className="native-badge">C</span> : null}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <OpProfileTable
+            opProfiles={opProfiles}
+            actionHint={topBottleneck ? `Next best action: inspect ${topBottleneck.op_name} first; it is currently the top bottleneck candidate.` : null}
+          />
         </CollapsibleSection>
       )}
 
@@ -433,7 +346,7 @@ export default function RunResultsPanel({
           {compressionMetrics.pruning_curve?.length > 0 && (
             <div className="chart-container" style={{ marginTop: 8 }}>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>Pruning Curve</div>
-              <ResponsiveContainer width="100%" height={120}>
+            <ResponsiveContainer width="100%" height={120}>
                 <LineChart data={compressionMetrics.pruning_curve} margin={{ left: 10, right: 10, top: 4, bottom: 4 }}>
                   <XAxis dataKey="sparsity" tick={{ fill: '#8fa8c2', fontSize: 10 }} tickFormatter={v => (v * 100) + '%'} />
                   <YAxis tick={{ fill: '#8fa8c2', fontSize: 10 }} domain={[0, 'auto']} tickFormatter={v => v.toFixed(1) + 'x'} />
@@ -444,8 +357,12 @@ export default function RunResultsPanel({
                   />
                   <Line type="monotone" dataKey="loss_ratio" stroke="#a060ff" strokeWidth={2} dot={{ r: 3, fill: '#a060ff' }} />
                 </LineChart>
-              </ResponsiveContainer>
-            </div>
+            </ResponsiveContainer>
+            <ChartActionRail
+              insight={compressionMetrics.compression_ratio != null ? `Compression ratio: ${Number(compressionMetrics.compression_ratio).toFixed(2)}x` : null}
+              recommendation="Next best action: compare loss-vs-sparsity tradeoffs, then keep only sparse ops that preserve quality before another deep run."
+            />
+          </div>
           )}
 
           {/* Compression Metrics Grid */}
@@ -527,102 +444,11 @@ export default function RunResultsPanel({
 
       {benchmarkMetrics && (
         <CollapsibleSection title="Benchmark Targets" defaultOpen>
-          <div style={{ marginBottom: 8, padding: '8px 10px', border: '1px solid #1f3147', borderRadius: 8, background: '#0f1928' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <strong style={{ fontSize: 12, color: '#d8e6f5' }}>External Benchmark Inputs</strong>
-              <span style={{ fontSize: 11, color: '#8fa8c2' }}>{benchmarkInputCount} loaded</span>
-            </div>
-            <div style={{ fontSize: 11, color: '#8fa8c2', marginTop: 4 }}>
-              Provide measured values as JSON to resolve task-level "not measured" rows, then run Deep Run again.
-            </div>
-            <textarea
-              value={benchmarkInputDraft}
-              onChange={(e) => setBenchmarkInputDraft(e.target.value)}
-              spellCheck={false}
-              style={{
-                width: '100%',
-                minHeight: 90,
-                marginTop: 8,
-                resize: 'vertical',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                fontSize: 11,
-                color: '#d8e6f5',
-                background: '#0b1624',
-                border: '1px solid #1f3147',
-                borderRadius: 6,
-                padding: 8,
-              }}
-              aria-label="External benchmark observed metrics JSON"
-              placeholder={'{\n  "mmlu_5shot": 67.1,\n  "humaneval_0shot": 61.2,\n  "gsm8k_8shot_cot": 80.3,\n  "arc_challenge_25shot": 77.4,\n  "throughput_vs_transformer": 5.8\n}'}
-            />
-            {benchmarkInputError && (
-              <div style={{ marginTop: 6, color: '#ff7070', fontSize: 11 }}>{benchmarkInputError}</div>
-            )}
-            <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-              <button type="button" onClick={handleApplyBenchmarkObserved}>Apply Inputs</button>
-              <button type="button" onClick={handleResetBenchmarkObserved}>Clear Inputs</button>
-            </div>
-          </div>
-
-          <div className="metrics-grid" style={{ marginBottom: 8 }}>
-            <div className="stat">
-              <div className="stat-val">{Math.round((benchmarkMetrics.summary?.score || 0) * 100)}%</div>
-              <div className="stat-label">Target Score</div>
-            </div>
-            <div className="stat">
-              <div className="stat-val">{benchmarkMetrics.summary?.on_target ?? 0}</div>
-              <div className="stat-label">On Target</div>
-            </div>
-            <div className="stat">
-              <div className="stat-val">{benchmarkMetrics.summary?.off_target ?? 0}</div>
-              <div className="stat-label">Off Target</div>
-            </div>
-            <div className="stat">
-              <div className="stat-val">{benchmarkMetrics.summary?.not_measured ?? 0}</div>
-              <div className="stat-label">Not Measured</div>
-            </div>
-          </div>
-
-          {Array.isArray(benchmarkMetrics.targets) && benchmarkMetrics.targets.length > 0 && (
-            <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #1f3147', borderRadius: 8 }}>
-              <table className="op-profile-table">
-                <thead>
-                  <tr>
-                    <th>Metric</th>
-                    <th>Observed</th>
-                    <th>Target</th>
-                    <th>Unit</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {benchmarkMetrics.targets.map((target) => {
-                    const statusColor = target.status === 'on_target'
-                      ? '#24d1a0'
-                      : target.status === 'off_target'
-                        ? '#ff5050'
-                        : '#8fa8c2'
-                    const statusLabel = target.status === 'on_target'
-                      ? 'on target'
-                      : target.status === 'off_target'
-                        ? 'off target'
-                        : 'not measured'
-                    return (
-                      <tr key={target.id}>
-                        <td>{target.label}</td>
-                        <td>{formatBenchmarkValue(target.observed, target.unit)}</td>
-                        <td>{formatBenchmarkValue(target.target, target.unit)}</td>
-                        <td>{target.unit || '-'}</td>
-                        <td>
-                          <span style={{ color: statusColor, fontSize: 11 }} title={target.measurement || ''}>{statusLabel}</span>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <BenchmarkTargets
+            benchmarkMetrics={benchmarkMetrics}
+            benchmarkObserved={benchmarkObserved}
+            onBenchmarkObservedChange={onBenchmarkObservedChange}
+          />
 
           {notMeasuredTargets.length > 0 && (
             <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.55 }}>
@@ -654,6 +480,10 @@ export default function RunResultsPanel({
               </div>
             </div>
           )}
+          <ChartActionRail
+            insight={benchmarkInputCount > 0 ? `${benchmarkInputCount} external benchmark values loaded` : null}
+            recommendation={notMeasuredTargets.length > 0 ? 'Next best action: fill the remaining benchmark inputs, then rerun Deep Run to convert “not measured” rows into actionable evidence.' : 'Next best action: use these targets to decide whether another deep run or a benchmark-focused comparison is warranted.'}
+          />
         </CollapsibleSection>
       )}
     </div>

@@ -196,9 +196,11 @@ class ComponentRegistry:
             component_dir = os.path.join(self.components_dir, cat, cid)
             if os.path.isdir(component_dir):
                 return component_dir
-            return None
+            # Category mismatch (e.g. functional/mod_topk vs routing/mod_topk)
+            # — fall through to search by op name alone
+            parts = [cid]
 
-        cid = component_type
+        cid = parts[0]
         for cat in os.listdir(self.components_dir):
             category_dir = os.path.join(self.components_dir, cat)
             if not os.path.isdir(category_dir):

@@ -27,6 +27,8 @@ _RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "
 if _RESEARCH_ROOT not in sys.path:
     sys.path.insert(0, os.path.dirname(_RESEARCH_ROOT))
 
+from research.eval.perf_budget import evaluate_perf_budget_gate
+from research.perf_contract import build_duplicate_work_report, build_perf_contract
 from research.synthesis.primitives import PRIMITIVE_REGISTRY, get_primitive, safe_eval_formula
 
 
@@ -57,10 +59,12 @@ class ProfileReport:
     params_by_category: Dict[str, int] = field(default_factory=dict)
 
     # Runtime profiling (if executed)
+    compile_time_ms: float = 0.0
     forward_time_ms: float = 0.0
     backward_time_ms: float = 0.0
     peak_memory_mb: float = 0.0
     throughput_tokens_per_sec: float = 0.0
+    total_time_ms: float = 0.0
 
     # Per-op latency (if profiled)
     op_latencies_ms: Dict[str, float] = field(default_factory=dict)
@@ -68,6 +72,7 @@ class ProfileReport:
     # Bottleneck analysis
     bottleneck_ops: List[str] = field(default_factory=list)
     native_coverage: float = 0.0  # fraction of ops with native C kernels
+    avoided_duplicate_conversions: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -75,6 +80,39 @@ class ProfileReport:
         for k, v in d.items():
             if hasattr(v, "item"):
                 d[k] = v.item()
+        metrics = {
+            "total_params": d.get("total_params", 0),
+            "total_flops_per_token": d.get("total_flops_per_token", 0),
+            "total_memory_bytes": d.get("total_memory_bytes", 0),
+            "forward_time_ms": d.get("forward_time_ms", 0.0),
+            "backward_time_ms": d.get("backward_time_ms", 0.0),
+            "peak_memory_mb": d.get("peak_memory_mb", 0.0),
+            "throughput_tokens_per_sec": d.get("throughput_tokens_per_sec", 0.0),
+            "native_coverage": d.get("native_coverage", 0.0),
+            "compile_time_ms": d.get("compile_time_ms", 0.0),
+            "total_time_ms": d.get("total_time_ms", 0.0),
+        }
+        duplicate_work = build_duplicate_work_report(
+            repeated_keys={},
+            avoided_keys={"workflow_to_graph": int(d.get("avoided_duplicate_conversions", 0) or 0)},
+        )
+        contract = build_perf_contract(
+            component="aria_designer",
+            workload="workflow_profile_runtime" if metrics["forward_time_ms"] else "workflow_profile_static",
+            identity={},
+            metrics=metrics,
+            budget_profile="designer_interactive",
+            budget_verdict=evaluate_perf_budget_gate(
+                {
+                    "metrics": metrics,
+                    "duplicate_work": duplicate_work,
+                },
+                budget_profile="designer_interactive",
+            ),
+            duplicate_work=duplicate_work,
+            warnings=d.get("bottleneck_ops", []),
+        )
+        d["perf_contract"] = contract
         return d
 
 
@@ -200,6 +238,16 @@ def profile_static(
     identify bottleneck operations.
     """
     graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+    return profile_static_graph(graph, model_dim=model_dim, batch_size=batch_size, seq_len=seq_len)
+
+
+def profile_static_graph(
+    graph: Any,
+    model_dim: int = 256,
+    batch_size: int = 2,
+    seq_len: int = 128,
+) -> ProfileReport:
+    """Static performance analysis for an already materialized ComputationGraph."""
     report = ProfileReport()
 
     native_count = 0
@@ -265,19 +313,27 @@ def profile_runtime(
 
     Compiles the workflow and benchmarks forward/backward passes.
     """
+    total_started = time.perf_counter()
+    graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+
     # Start with static analysis
-    report = profile_static(workflow_json, model_dim, batch_size, seq_len)
+    report = profile_static_graph(graph, model_dim, batch_size, seq_len)
+    report.avoided_duplicate_conversions = 1
+    report.compile_time_ms = 0.0
+    report.total_time_ms = 0.0
 
     # Compile
     try:
         from research.synthesis.compiler import compile_model
-        graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+        compile_started = time.perf_counter()
         model = compile_model([graph], vocab_size=vocab_size)
+        report.compile_time_ms = (time.perf_counter() - compile_started) * 1000.0
         model = model.to(device)
         model.train()
     except Exception as e:
         report.forward_time_ms = -1
         report.bottleneck_ops.append(f"Compilation failed: {e}")
+        report.total_time_ms = (time.perf_counter() - total_started) * 1000.0
         return report
 
     # Prepare input
@@ -325,6 +381,7 @@ def profile_runtime(
     total_time_s = (report.forward_time_ms + report.backward_time_ms) / 1000
     if total_time_s > 0:
         report.throughput_tokens_per_sec = total_tokens / total_time_s
+    report.total_time_ms = (time.perf_counter() - total_started) * 1000.0
 
     return report
 

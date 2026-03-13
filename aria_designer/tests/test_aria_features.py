@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import sys
 import os
 import pytest
@@ -97,6 +98,25 @@ def test_refine_winner(mock_db):
     p = db.get_proposal(proposals[0])
     assert p["workflow_id"] == wf_id
     assert "Evolution" in p["rationale"]
+
+
+def test_refine_winner_compression_intent_stays_in_scope(mock_db):
+    wf_id = "wf_compress"
+    db.save_workflow(wf_id, "Compress", json_graph(), author="aria")
+
+    proposals = refine_winner(
+        wf_id,
+        num_variations=1,
+        intent="refine_compression",
+        parent_scores={"tier": "investigation", "composite_score": 120.0},
+    )
+    assert len(proposals) == 1
+
+    proposal = db.get_proposal(proposals[0])
+    patch = json.loads(proposal["patch_json"])
+    op_kinds = {op["op"] for op in patch["ops"]}
+    assert op_kinds <= {"mutate_param", "replace_node"}
+    assert "add_node" not in op_kinds
 
 
 def test_suggestions_use_research_op_priors(mock_db):

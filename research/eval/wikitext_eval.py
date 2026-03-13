@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, Any
 
 
 from .utils import (

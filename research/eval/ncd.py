@@ -14,7 +14,6 @@ Where C = zlib.compress(level=9).
 
 from __future__ import annotations
 
-import json
 import zlib
 from typing import Any, Dict, List, Optional, Union
 

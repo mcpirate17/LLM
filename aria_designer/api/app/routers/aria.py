@@ -242,6 +242,7 @@ from ..models import (
     SuggestComponentsRequest,
     utc_now_iso as _utc_now
 )
+from ..research_signals import fetch_research_recommendation_signals
 
 # Optional runtime imports
 try:
@@ -283,11 +284,10 @@ def propose_patch(patch: AriaPatchProposalModel) -> Dict[str, Any]:
 def post_suggest_components(req: SuggestComponentsRequest) -> List[Dict[str, Any]]:
     if not HAS_SUGGESTIONS:
         raise HTTPException(status_code=501, detail="Suggestions module not available")
-    # Placeholder for research_signals since they were in main.py
     return suggest_components(
         req.workflow.model_dump(),
         prompt=req.prompt,
-        research_signals={},
+        research_signals=fetch_research_recommendation_signals(force=False),
     )
 
 @router.get("/proposals")
@@ -374,16 +374,3 @@ def reject_patch(proposal_id: str) -> Dict[str, str]:
         raise HTTPException(status_code=404, detail="Proposal not found")
     return {"status": "rejected", "proposal_id": proposal_id}
 
-@router.post("/refine-winner")
-def post_refine_winner(workflow_id: str, num_variations: int = Query(3, ge=1, le=10)) -> Dict[str, Any]:
-    """Generate evolutionary variations for a workflow via ARIA's refine_winner."""
-    try:
-        from ..mutation import refine_winner
-        proposal_ids = refine_winner(workflow_id, num_variations)
-        return {"success": True, "generated_proposals": proposal_ids}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ImportError:
-        raise HTTPException(status_code=501, detail="Evolutionary mutation module not available")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Refinement failed: {str(e)}")

@@ -55,7 +55,7 @@ def _block_sparse_matmul_kernel(
     for k in range(0, K, BLOCK_SIZE_K):
         a = tl.load(a_ptrs)
         b = tl.load(b_ptrs)
-        accumulator += tl.dot(a, b)
+        accumulator += tl.dot(a.to(tl.float16), b.to(tl.float16))
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
         
@@ -188,7 +188,7 @@ def _fused_linear_gelu_kernel(
     for k in range(0, K, BLOCK_K):
         x_val = tl.load(x_ptrs, mask=offs_m[:, None] < M, other=0.0)
         w_val = tl.load(w_ptrs, mask=offs_n[None, :] < N, other=0.0)
-        accumulator += tl.dot(x_val, w_val)
+        accumulator += tl.dot(x_val.to(tl.float16), w_val.to(tl.float16))
         x_ptrs += BLOCK_K * stride_xk
         w_ptrs += BLOCK_K * stride_wk
         
@@ -330,7 +330,7 @@ def _local_attn_kernel(
         k = tl.load(k_ptrs, mask=(offs_k[None, :] < S) & (offs_d[:, None] < d_head), other=0.0)
         
         # Dot product
-        qk = tl.dot(q, k)
+        qk = tl.dot(q.to(tl.float16), k.to(tl.float16))
         qk = qk / tl.sqrt(d_head.to(tl.float32))
         
         # Apply local window mask
@@ -623,3 +623,81 @@ def validate_numerical_stability(
 
     report["all_passed"] = report["pass_count"] == report["total_count"] and report["total_count"] > 0
     return report
+
+@triton.jit
+def _tropical_matmul_kernel(
+    A_ptr, B_ptr, C_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bn, stride_bk,
+    stride_cm, stride_cn,
+    BLOCK_SIZE_M: tl.constexpr, 
+    BLOCK_SIZE_N: tl.constexpr, 
+    BLOCK_SIZE_K: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
+    
+    a_ptrs = A_ptr + (offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak)
+    b_ptrs = B_ptr + (offs_n[None, :] * stride_bn + offs_k[:, None] * stride_bk)
+    
+    accumulator = tl.full((BLOCK_SIZE_M, BLOCK_SIZE_N), float('inf'), dtype=tl.float32)
+    
+    for k in range(0, K, BLOCK_SIZE_K):
+        a = tl.load(a_ptrs, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K), other=float('inf'))
+        b = tl.load(b_ptrs, mask=(offs_n[None, :] < N) & (offs_k[:, None] < K), other=float('inf'))
+        
+        a_ex = tl.expand_dims(a, 1) # (BLOCK_M, 1, BLOCK_K)
+        b_ex = tl.expand_dims(b, 0) # (1, BLOCK_N, BLOCK_K)
+        
+        val = a_ex + b_ex
+        min_val = tl.min(val, axis=2) # (BLOCK_M, BLOCK_N)
+        accumulator = tl.minimum(accumulator, min_val)
+        
+        a_ptrs += BLOCK_SIZE_K * stride_ak
+        b_ptrs += BLOCK_SIZE_K * stride_bk
+        offs_k += BLOCK_SIZE_K
+        
+    c_ptrs = C_ptr + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
+    tl.store(c_ptrs, accumulator, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
+
+def triton_tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Triton-accelerated min-plus matrix multiplication.
+    Computes min_k (A[..., m, k] + B[..., n, k])
+    """
+    assert a.ndim == 3 and b.ndim == 3
+    B_sz, M, K = a.shape
+    if b.shape[-1] != K and b.shape[1] == K:
+        N = b.shape[2]
+        b_t = b.transpose(1, 2).contiguous()
+    else:
+        N = b.shape[1]
+        b_t = b.contiguous()
+        
+    a_c = a.contiguous()
+    c = torch.empty((B_sz, M, N), device=a.device, dtype=a.dtype)
+    
+    BLOCK_SIZE_M = 32
+    BLOCK_SIZE_N = 32
+    BLOCK_SIZE_K = 64
+    
+    def grid(META):
+        return (triton.cdiv(M, META['BLOCK_SIZE_M']), triton.cdiv(N, META['BLOCK_SIZE_N']))
+
+    for b_idx in range(B_sz):
+        # We loop over batch dim to keep kernel simple
+        _tropical_matmul_kernel[grid](
+            a_c[b_idx], b_t[b_idx], c[b_idx],
+            M, N, K,
+            a_c.stride(1), a_c.stride(2),
+            b_t.stride(1), b_t.stride(2),
+            c.stride(1), c.stride(2),
+            BLOCK_SIZE_M=BLOCK_SIZE_M, 
+            BLOCK_SIZE_N=BLOCK_SIZE_N, 
+            BLOCK_SIZE_K=BLOCK_SIZE_K,
+        )
+    return c

@@ -11,12 +11,18 @@ space, the delta measures how tree-like the space is. Low delta = tree-like.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 import torch
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+try:
+    import aria_core
+    _HAS_GROMOV_C = hasattr(aria_core, 'gromov_delta_f32')
+except ImportError:
+    _HAS_GROMOV_C = False
 
 # Maximum number of point samples for delta computation (O(n^4) complexity)
 _MAX_SAMPLE_POINTS = 50
@@ -50,12 +56,19 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
         n = _MAX_SAMPLE_POINTS
 
     d = distance_matrix
-    max_delta = 0.0
 
     # Sample 4-tuples
     n_sample = min(n, 30)
     indices = np.random.choice(n, n_sample, replace=False) if n > n_sample else np.arange(n)
 
+    # C kernel fast path: ~10-20x faster for n>=15
+    if _HAS_GROMOV_C:
+        d_contig = np.ascontiguousarray(d, dtype=np.float32)
+        d_tensor = torch.from_numpy(d_contig)
+        idx_tensor = torch.from_numpy(indices.astype(np.int32))
+        return float(aria_core.gromov_delta_f32(d_tensor, idx_tensor))
+
+    max_delta = 0.0
     for i_idx in range(len(indices)):
         for j_idx in range(i_idx + 1, len(indices)):
             for k_idx in range(j_idx + 1, len(indices)):
