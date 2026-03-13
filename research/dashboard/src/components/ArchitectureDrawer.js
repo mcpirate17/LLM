@@ -187,9 +187,13 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
     // Only use the standalone Vite server when the dashboard itself is running
     // from CRA dev-server (port 3000). Otherwise, force same-origin proxy.
     const onDashboardDevServer = window.location.port === '3000';
+    // Chrome 128+ blocks 0.0.0.0 for iframe/subresource requests (PNA).
+    const safeOrigin = window.location.hostname === '0.0.0.0'
+      ? `${window.location.protocol}//localhost:${window.location.port}`
+      : window.location.origin;
     const base = onDashboardDevServer
       ? 'http://localhost:5174/'
-      : new URL('/designer-proxy/', window.location.origin).toString();
+      : new URL('/designer-proxy/', safeOrigin).toString();
 
     return `${base.replace(/\/?$/, '/')}?${params.toString()}`;
   }, [resultId, readOnly]);

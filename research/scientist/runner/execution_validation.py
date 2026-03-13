@@ -19,7 +19,7 @@ from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...training.checkpointing import CheckpointManager
 from ..notebook import LabNotebook, ExperimentEntry
 from ..llm.context_experiment import build_validation_context
-from ..shared_utils import resolve_device
+from ..shared_utils import coerce_dict_payload, resolve_device
 
 import logging
 logger = logging.getLogger(__name__)
@@ -375,11 +375,10 @@ class _ExecutionValidationMixin:
                         )
                         # Store detailed benchmark payload
                         external_benchmarks_payload = {}
-                        if scaling_result is not None:
-                            scaling_payload = scaling_result.to_dict()
-                            if isinstance(scaling_payload, dict):
-                                external_benchmarks_payload.update(scaling_payload)
-                                external_benchmarks_payload["scaling_comparison"] = scaling_payload
+                        scaling_payload = coerce_dict_payload(scaling_result)
+                        if scaling_payload is not None:
+                            external_benchmarks_payload.update(scaling_payload)
+                            external_benchmarks_payload["scaling_comparison"] = scaling_payload
                         if long_context_details is not None:
                             external_benchmarks_payload["long_context"] = long_context_details
                         if external_benchmarks_payload:

@@ -173,11 +173,50 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
 
     const origin = project(0, 0, 0);
     const axisDefs = [
-      { label: 'Size (M params)', to: [1.5, 0, 0], color: '#58a6ff' },
-      { label: 'Accuracy', to: [0, 1.5, 0], color: '#3fb950' },
-      { label: 'Novelty', to: [0, 0, 1.5], color: '#d29922' },
+      {
+        label: 'Size',
+        from: [-1.5, 0, 0],
+        to: [1.5, 0, 0],
+        lowLabel: 'Smaller',
+        highLabel: 'Larger',
+        labelOffset: [22, -28],
+        lowOffset: [-44, -18],
+        highOffset: [20, -18],
+        color: '#58a6ff',
+      },
+      {
+        label: 'Accuracy',
+        from: [0, -1.5, 0],
+        to: [0, 1.5, 0],
+        lowLabel: 'Lower',
+        highLabel: 'Higher',
+        labelOffset: [18, 2],
+        lowOffset: [10, 26],
+        highOffset: [12, -20],
+        color: '#3fb950',
+      },
+      {
+        label: 'Novelty',
+        from: [0, 0, -1.5],
+        to: [0, 0, 1.5],
+        lowLabel: 'Lower',
+        highLabel: 'Higher',
+        labelOffset: [-10, -30],
+        lowOffset: [14, 24],
+        highOffset: [-46, -12],
+        color: '#d29922',
+      },
     ];
-    const axes = axisDefs.map((a) => ({ ...a, end: project(a.to[0], a.to[1], a.to[2]) }));
+    const axes = axisDefs.map((a) => ({
+              ...a,
+              start: project(a.from[0], a.from[1], a.from[2]),
+      end: project(a.to[0], a.to[1], a.to[2]),
+      labelPos: project(
+        a.to[0] * 0.32,
+        a.to[1] * 0.32,
+        a.to[2] * 0.32,
+      ),
+    }));
 
     const pts = points3d
       .map((p) => {
@@ -395,8 +434,10 @@ const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => 
         <svg width="100%" height="100%" style={{ display: 'block', overflow: 'hidden' }}>
           {projected.origin && projected.axes.map((a) => (
             <g key={a.label}>
-              <line x1={projected.origin.sx} y1={projected.origin.sy} x2={a.end.sx} y2={a.end.sy} stroke={a.color} strokeWidth="1.4" />
-              <text x={a.end.sx + 6} y={a.end.sy - 4} fill={a.color} fontSize="14" fontFamily="monospace">{a.label}</text>
+              <line x1={a.start.sx} y1={a.start.sy} x2={a.end.sx} y2={a.end.sy} stroke={a.color} strokeWidth="1.4" />
+              <text x={a.labelPos.sx + a.labelOffset[0]} y={a.labelPos.sy + a.labelOffset[1]} fill={a.color} fontSize="14" fontFamily="monospace">{a.label}</text>
+              <text x={a.start.sx + a.lowOffset[0]} y={a.start.sy + a.lowOffset[1]} fill={a.color} fontSize="11" fontFamily="monospace" opacity="0.9">{a.lowLabel}</text>
+              <text x={a.end.sx + a.highOffset[0]} y={a.end.sy + a.highOffset[1]} fill={a.color} fontSize="11" fontFamily="monospace" opacity="0.9">{a.highLabel}</text>
             </g>
           ))}
 

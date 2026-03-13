@@ -514,7 +514,12 @@ def _op_selective_scan(module, inputs, _):
     A = -torch.exp(module.A_log.clamp(-10, 10))
     # Ensure dt matches input dim D
     dt = F.softplus(module.dt_proj[:D])
-    log_a = (A * dt).clamp(-10, 0)  # (D,) — clamp to stable range
+    # Clamp to [-10, -0.05]: upper bound -0.05 ensures minimum 5% decay
+    # per step, bounding kernel sum to ~20 (geometric series) instead of
+    # S (~128).  log_a=0 creates a pure integrator (no decay) whose
+    # gradient amplification is O(S²) — the primary cause of grad explosion
+    # in selective_scan architectures.
+    log_a = (A * dt).clamp(-10, -0.05)  # (D,)
 
     u = torch.sigmoid(module.B_proj(x)) * x  # (B, S, D)
 
@@ -530,7 +535,7 @@ def _op_selective_scan(module, inputs, _):
     # Causal convolution via padding
     h_swapped = F.conv1d(F.pad(u_swapped, (S - 1, 0)), kernel, groups=D) # (B, D, S)
     h = h_swapped.permute(0, 2, 1) # (B, S, D)
-    
+
     C_x = torch.sigmoid(module.C_proj(x))
     return C_x * h
 

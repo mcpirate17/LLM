@@ -1,0 +1,85 @@
+{
+  "artifact_path": "/home/tim/Projects/LLM/research/perf_artifacts/research/2026-03-12/research_perf_1773280897.json",
+  "budget_profile": "research_default",
+  "budget_verdict": {
+    "checks": [
+      {
+        "limit": 250.0,
+        "metric": "trace_avg_ms.compile",
+        "observed": null,
+        "passed": false,
+        "reason": "missing_metric"
+      },
+      {
+        "limit": 35.0,
+        "metric": "trace_avg_ms.forward_pass",
+        "observed": 1696.4369,
+        "passed": false
+      },
+      {
+        "limit": 55.0,
+        "metric": "trace_avg_ms.backward_pass",
+        "observed": 1731.6525,
+        "passed": false
+      },
+      {
+        "limit": 40.0,
+        "metric": "queue_telemetry.scheduling_wait_avg_ms",
+        "observed": 2950.882464647293,
+        "passed": false
+      },
+      {
+        "limit": 30.0,
+        "metric": "gpu_starvation.max_stall_ms",
+        "observed": 0.0,
+        "passed": true
+      },
+      {
+        "limit": 0.0,
+        "metric": "duplicate_work.detected_count",
+        "observed": 0.0,
+        "passed": true
+      }
+    ],
+    "n_failed": 4,
+    "passed": false,
+    "profile": "research_default"
+  },
+  "component": "research",
+  "duplicate_work": {
+    "avoided_count": 0,
+    "avoided_keys": {},
+    "detected_count": 0,
+    "estimated_wasted_ms": 0.0,
+    "hints": [
+      "Large dedup counts indicate search-space waste rather than runtime overhead."
+    ],
+    "repeated_keys": {}
+  },
+  "generated_at": "2026-03-12T02:01:37Z",
+  "identity": {
+    "experiment_id": null,
+    "stage1_passed": 0,
+    "total_programs": 60
+  },
+  "metrics": {
+    "avg_throughput_tok_s": 0.0,
+    "backward_pass_ms": 1731.6525,
+    "compile_time_ms": 0.0,
+    "forward_pass_ms": 1696.4369,
+    "gpu_starvation_max_ms": 0.0,
+    "optimizer_step_ms": 7.2007,
+    "programs_profiled": 5,
+    "queue_scheduling_wait_ms": 2950.882464647293,
+    "queue_submit_wait_ms": 0.010786249731609132,
+    "total_time_ms": 21420.8395
+  },
+  "runtime": {
+    "pid": 41470,
+    "platform": "linux",
+    "python": "3.12.3"
+  },
+  "version": 1,
+  "warnings": [],
+  "workload": "experiment_screening"
+}

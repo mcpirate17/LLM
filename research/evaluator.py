@@ -23,6 +23,7 @@ import torch.nn.functional as F
 
 from .morphological_box import ArchSpec
 from .arch_builder import BuildConfig, ExplorerModel, build_model
+from .scientist.runner._helpers import normalized_loss_ratio
 
 
 # ── Result Types ───────────────────────────────────────────────────────
@@ -370,7 +371,7 @@ def stage1_micro_train(
         
         if val_losses:
             result.validation_loss = sum(val_losses) / len(val_losses)
-            result.validation_loss_ratio = result.validation_loss / max(result.initial_loss, 1e-6)
+            result.validation_loss_ratio = normalized_loss_ratio(result.validation_loss, config.vocab_size)
             result.generalization_gap = result.validation_loss - result.final_loss
 
         # Summary stats
@@ -381,7 +382,7 @@ def stage1_micro_train(
             result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
 
         # Convergence analysis
-        result.loss_ratio = result.final_loss / max(result.initial_loss, 1e-6)
+        result.loss_ratio = normalized_loss_ratio(result.final_loss, config.vocab_size)
         result.loss_stable = not any(math.isnan(l) or math.isinf(l) for l in result.loss_curve)
         result.loss_decreasing = len(result.loss_curve) >= 2 and result.loss_curve[-1] < result.loss_curve[0]
         

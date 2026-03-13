@@ -97,6 +97,21 @@ def ensure_metadata_dict(entry: Dict[str, Any],
     return {}
 
 
+def coerce_dict_payload(payload: Any) -> Optional[Dict[str, Any]]:
+    """Return a dict payload from either a mapping or a ``to_dict`` object."""
+    if isinstance(payload, dict):
+        return payload
+    to_dict = getattr(payload, "to_dict", None)
+    if callable(to_dict):
+        try:
+            coerced = to_dict()
+        except Exception:
+            return None
+        if isinstance(coerced, dict):
+            return coerced
+    return None
+
+
 def canonicalize_text(text: str) -> str:
     """Collapse whitespace, lowercase, strip numbers for fuzzy comparison."""
     import re

@@ -58,7 +58,7 @@ class NativeForwardWrapper(_autograd_mod.NativeForwardWrapper):
 
 
 def _try_load_native_lib():
-    _abi_mod.os.environ = os.environ
+    _abi_mod.os = os
     _abi_mod.Path = Path
     _abi_mod.ctypes = ctypes
     return _try_load_native_lib_impl()

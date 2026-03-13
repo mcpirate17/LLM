@@ -87,6 +87,8 @@ PROTECTED_OPS: frozenset = frozenset({
     "rwkv_time_mixing", "mod_topk", "adaptive_recursion", "speculative",
     "entropy_router", "latent_attention_compressor", "token_type_classifier",
     "route_topk", "route_lanes", "route_recursion", "token_merging",
+    "moe_topk", "nm_sparse_linear", "block_sparse_linear", "ternary_projection",
+    "selective_scan", "gated_linear",
 })
 
 

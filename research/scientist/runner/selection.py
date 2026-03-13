@@ -28,6 +28,7 @@ from ..evidence import build_evidence_pack
 import logging
 logger = logging.getLogger(__name__)
 
+from ._helpers import normalized_loss_ratio
 from ._types import RunConfig
 
 class _SelectionMixin:
@@ -667,7 +668,7 @@ class _SelectionMixin:
                         initial_loss = loss_val
                     final_loss = loss_val
 
-                loss_ratio = (final_loss / max(initial_loss, 1e-6)
+                loss_ratio = (normalized_loss_ratio(final_loss, config.vocab_size)
                               if initial_loss and final_loss else None)
                 recipe_results.append({
                     "recipe": recipe["name"],
@@ -771,7 +772,7 @@ class _SelectionMixin:
                         initial_loss = loss_val
                     final_loss = loss_val
 
-                loss_ratio = (final_loss / max(initial_loss, 1e-6)
+                loss_ratio = (normalized_loss_ratio(final_loss, config.vocab_size)
                               if initial_loss and final_loss else None)
 
                 # How much did loss_ratio change vs the base run?

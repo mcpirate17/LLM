@@ -6,11 +6,42 @@ Centralised here to avoid duplication across submodules.
 from __future__ import annotations
 
 import logging
+import math
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+# ── Normalized loss_ratio ──
+# loss_ratio = final_loss / initial_loss is init-dependent: Kaiming init
+# yields initial_loss ~250 while small/ortho init yields ~ln(V).  This makes
+# screening ratios (0.008) and investigation ratios (0.24) incomparable for
+# the SAME architecture.  Normalizing against ln(vocab_size) — the expected
+# cross-entropy of a uniform distribution — gives a consistent, interpretable
+# metric across all stages and init schemes.
+
+_DEFAULT_VOCAB_SIZE: int = 32_000
+_REFERENCE_INITIAL_LOSS: float = math.log(_DEFAULT_VOCAB_SIZE)  # ~10.37
+
+
+def normalized_loss_ratio(
+    final_loss: float,
+    vocab_size: int = _DEFAULT_VOCAB_SIZE,
+) -> float:
+    """Compute init-independent loss ratio.
+
+    Returns final_loss / ln(vocab_size), measuring what fraction of
+    maximum-entropy loss the model achieves.  Lower is better.
+    A value of 0.2 means the model achieved 80% of the possible
+    entropy reduction from a uniform distribution over the vocabulary.
+
+    This replaces the old final_loss/initial_loss which was wildly
+    init-dependent (Kaiming gave 0.008, small-init gave 0.24 for
+    the same architecture and final loss).
+    """
+    ref = math.log(vocab_size) if vocab_size > 0 else _REFERENCE_INITIAL_LOSS
+    return final_loss / max(ref, 1e-6)
 
 
 # ── Inflight training health checks ──

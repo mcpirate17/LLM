@@ -1,0 +1,79 @@
+{
+  "artifact_path": "/home/tim/Projects/LLM/research/perf_artifacts/aria_designer/2026-03-12/eval_693d8b5255f6.json",
+  "budget_profile": "designer_interactive",
+  "budget_verdict": {
+    "checks": [
+      {
+        "limit": 1200.0,
+        "metric": "metrics.total_time_ms",
+        "observed": 1375.3,
+        "passed": false
+      },
+      {
+        "limit": 400.0,
+        "metric": "metrics.compile_time_ms",
+        "observed": 36.5,
+        "passed": true
+      },
+      {
+        "limit": 0.4,
+        "metric": "metrics.native_coverage",
+        "observed": 0.5714285714285714,
+        "passed": true
+      },
+      {
+        "limit": 0.0,
+        "metric": "duplicate_work.detected_count",
+        "observed": 0.0,
+        "passed": true
+      }
+    ],
+    "n_failed": 1,
+    "passed": false,
+    "profile": "designer_interactive"
+  },
+  "component": "aria_designer",
+  "duplicate_work": {
+    "avoided_count": 1,
+    "avoided_keys": {
+      "workflow_to_graph": 1
+    },
+    "detected_count": 0,
+    "estimated_wasted_ms": 0.0,
+    "hints": [],
+    "repeated_keys": {}
+  },
+  "generated_at": "2026-03-12T00:39:09Z",
+  "identity": {
+    "run_id": "eval_693d8b5255f6",
+    "status": "success",
+    "workflow_id": "imported_7892e212-cfd"
+  },
+  "metrics": {
+    "backward_time_ms": 32.842964000337815,
+    "compilation_time_ms": 36.5,
+    "compile_time_ms": 36.5,
+    "compression_time_ms": 0.1,
+    "conversion_time_ms": 3.3,
+    "fingerprint_time_ms": 12.3,
+    "forward_time_ms": 25.004050999996252,
+    "native_coverage": 0.5714285714285714,
+    "novelty_time_ms": 0.2,
+    "peak_memory_mb": 0.0,
+    "profiling_time_ms": 0.3,
+    "routing_time_ms": 0.1,
+    "sandbox_time_ms": 1321.8,
+    "status_code": 1.0,
+    "total_flops_per_token": 263168.0,
+    "total_params": 131072.0,
+    "total_time_ms": 1375.3
+  },
+  "runtime": {
+    "pid": 24821,
+    "platform": "linux",
+    "python": "3.12.3"
+  },
+  "version": 1,
+  "warnings": [],
+  "workload": "workflow_evaluation"
+}

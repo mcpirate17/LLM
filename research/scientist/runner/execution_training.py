@@ -15,6 +15,7 @@ import torch.nn.functional as F
 
 from ...eval.fingerprint import compute_gated_fingerprint
 from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
+from ._helpers import normalized_loss_ratio
 
 import logging
 logger = logging.getLogger(__name__)
@@ -643,7 +644,7 @@ class _ExecutionTrainingMixin:
                 }
 
             if initial_loss and final_loss:
-                result["loss_ratio"] = final_loss / max(initial_loss, 1e-6)
+                result["loss_ratio"] = normalized_loss_ratio(final_loss, config.vocab_size)
                 result["final_loss"] = final_loss
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
@@ -990,7 +991,7 @@ class _ExecutionTrainingMixin:
             total_time_ms = (t_end - t_start) * 1000
 
             if initial_loss and final_loss:
-                result["loss_ratio"] = final_loss / max(initial_loss, 1e-6)
+                result["loss_ratio"] = normalized_loss_ratio(final_loss, config.vocab_size)
                 result["final_loss"] = final_loss
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss

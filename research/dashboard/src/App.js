@@ -1594,6 +1594,7 @@ function AppContent({ onRunningChange }) {
                   <LiveFeed
                     apiBase={API_BASE}
                     experimentId={data?.progress?.experiment_id || null}
+                    progress={data?.progress || null}
                   />
                 </div>
               </div>

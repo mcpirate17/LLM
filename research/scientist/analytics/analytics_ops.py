@@ -88,7 +88,7 @@ class _OpsMixin:
         Returns list of programs on the frontier.
         """
         rows = self.nb.conn.execute("""
-            SELECT fingerprint, param_count, graph_n_params_estimate,
+            SELECT result_id, graph_fingerprint, param_count, graph_n_params_estimate,
                    loss_ratio, validation_loss_ratio, graph_json
             FROM program_results
             WHERE (loss_ratio IS NOT NULL OR validation_loss_ratio IS NOT NULL)

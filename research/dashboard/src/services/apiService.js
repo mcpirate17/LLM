@@ -3,7 +3,17 @@
  * Handles all REST communication with the backend.
  */
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
+// Chrome 128+ blocks 0.0.0.0 for subresource/iframe requests (PNA).
+// Normalize to localhost so fetch/iframe calls succeed.
+function _resolveApiBase() {
+  const env = process.env.REACT_APP_API_URL;
+  if (env) return env;
+  if (typeof window !== 'undefined' && window.location.hostname === '0.0.0.0') {
+    return `${window.location.protocol}//localhost:${window.location.port}`;
+  }
+  return '';
+}
+const API_BASE = _resolveApiBase();
 const DEFAULT_TIMEOUT_MS = 15000;
 
 async function handleResponse(response) {

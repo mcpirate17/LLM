@@ -17,6 +17,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..scientist.runner._helpers import normalized_loss_ratio
+
 logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
@@ -109,7 +111,7 @@ def run_micro_train(
         if device.type == "cuda":
             res.peak_memory_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
             
-        res.loss_ratio = res.final_loss / max(res.initial_loss, 1e-6)
+        res.loss_ratio = normalized_loss_ratio(res.final_loss, vocab_size)
         res.passed = res.steps_completed >= (n_steps // 2) # Heuristic pass
         
     except Exception as e:

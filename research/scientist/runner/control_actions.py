@@ -8,18 +8,72 @@ import time
 from typing import Any, Dict, Optional
 
 from ..native_runner import reset_native_runner_telemetry
-from ..notebook import LabNotebook
+from ..notebook import ExperimentEntry, LabNotebook
 
 from ._types import RunConfig, _LIVE_LOSS_CURVE_MAX_POINTS, _TRAINING_STEP_SSE_EVERY
 
 import logging
 logger = logging.getLogger(__name__)
 
+_PERSISTED_LIVE_FEED_EVENTS = {
+    "experiment_started",
+    "experiment_completed",
+    "experiment_failed",
+    "experiment_stopping",
+    "scale_up_started",
+    "scale_up_progress",
+    "scale_up_completed",
+    "investigation_started",
+    "investigation_progress",
+    "investigation_completed",
+    "validation_started",
+    "validation_progress",
+    "validation_completed",
+    "breakthrough_detected",
+    "auto_investigate_queued",
+    "auto_validate_queued",
+    "auto_scale_up_queued",
+}
+
 
 class _ControlActionsMixin:
     """Stop/events/chat-action methods for ExperimentRunner."""
 
     __slots__ = ()
+
+    def _persist_live_feed_event(self, event_type: str, data: Dict[str, Any]):
+        """Persist selected lifecycle events for feed replay in the dashboard."""
+        if event_type not in _PERSISTED_LIVE_FEED_EVENTS:
+            return
+        experiment_id = data.get("experiment_id")
+        title = event_type.replace("_", " ")
+        content = str(
+            data.get("aria_message")
+            or data.get("status")
+            or data.get("summary")
+            or data.get("error")
+            or data.get("hypothesis")
+            or title
+        )[:500]
+        nb = None
+        try:
+            nb = self._make_notebook()
+            nb.add_entry(ExperimentEntry(
+                entry_type="live_feed",
+                title=title,
+                content=content,
+                experiment_id=experiment_id,
+                metadata={
+                    "live_feed_type": event_type,
+                    "event_type": event_type,
+                    "payload": data,
+                },
+            ))
+        except Exception as exc:
+            logger.debug("Failed to persist live-feed event %s: %s", event_type, exc)
+        finally:
+            if nb is not None:
+                nb.close()
 
     def stop(self):
         """Stop the current experiment gracefully."""
@@ -89,6 +143,7 @@ class _ControlActionsMixin:
                     self._event_queue.put_nowait(payload)
                 except Exception:
                     pass
+        self._persist_live_feed_event(event_type, data)
         # Buffer training_step events for REST retrieval (dashboard chart restore).
         # Keep a deep enough history so the dashboard can reconstruct near-full
         # curves for long validation/investigation runs.

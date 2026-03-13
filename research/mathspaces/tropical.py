@@ -10,6 +10,13 @@ The tropical semiring (R ∪ {+∞}, min, +) replaces:
 - Standard multiplication → +
 
 Applications: sequence alignment, shortest paths, parsing.
+
+Gradient fix (2026-03-12): Hard min/max kills gradient flow on the
+non-selected branch.  We use log-sum-exp smooth-min:
+  softmin(x, y, τ) = -τ · log(exp(-x/τ) + exp(-y/τ))
+which converges to exact min as τ→0 while giving both branches
+gradient proportional to their softmin weight.  τ=0.1 is small
+enough to preserve tropical semantics while enabling learning.
 """
 
 from __future__ import annotations
@@ -26,11 +33,41 @@ except ImportError:
     _HAS_TRITON_KERNELS = False
 
 
+# ── Smooth min/max primitives ────────────────────────────────────────
+# Hard min: gradient is 1 for selected branch, 0 for all others.
+# Over a chain of tropical ops, gradient info is multiplicatively lost.
+# Smooth min via log-sum-exp preserves gradient flow to both branches.
+
+_SMOOTH_TAU: float = 0.1  # Temperature for smooth min/max
+
+
+def _smooth_min(x: torch.Tensor, y: torch.Tensor, tau: float = _SMOOTH_TAU) -> torch.Tensor:
+    """Smooth element-wise minimum via log-sum-exp.
+
+    softmin(x, y, τ) = -τ · logsumexp(-x/τ, -y/τ)
+    Converges to min(x, y) as τ→0.  With τ=0.1, both inputs receive
+    gradient proportional to exp(-x_i/τ) / (exp(-x_i/τ) + exp(-y_i/τ)).
+    """
+    inv_tau = 1.0 / tau
+    # Stack for logsumexp along new dim 0: shape (2, *input_shape)
+    stacked = torch.stack([-x * inv_tau, -y * inv_tau], dim=0)
+    return -tau * torch.logsumexp(stacked, dim=0)
+
+
+def _smooth_min_dim(x: torch.Tensor, dim: int, tau: float = _SMOOTH_TAU) -> torch.Tensor:
+    """Smooth minimum reduction along a dimension via log-sum-exp.
+
+    Replaces x.min(dim=dim).values with a differentiable version.
+    """
+    inv_tau = 1.0 / tau
+    return -tau * torch.logsumexp(-x * inv_tau, dim=dim)
+
+
 def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Tropical addition: element-wise minimum."""
+    """Tropical addition: element-wise smooth minimum."""
     if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous() and x.device.type == "cpu":
         return aria_core.tropical_add_f32(x, y)
-    return torch.minimum(x, y)
+    return _smooth_min(x, y)
 
 
 def tropical_mul(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -78,7 +115,8 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         end = min(i + chunk_size, S1)
         a_chunk = a[:, i:end, :].unsqueeze(2)  # (B, chunk, 1, D)
         pairwise = a_chunk + b_expanded        # (B, chunk, S2, D)
-        result[:, i:end, :] = pairwise.min(dim=-1).values
+        # Smooth min: all D dimensions contribute gradient, not just argmin
+        result[:, i:end, :] = _smooth_min_dim(pairwise, dim=-1)
 
     return result
 
@@ -160,16 +198,27 @@ def execute_tropical_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
 
 
 def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """Center features by tropical (min) sequence baseline."""
+    """Center features by tropical (min) sequence baseline.
+
+    Uses smooth cumulative min to preserve gradient flow to all
+    preceding tokens, not just the argmin position.
+    """
     if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
         return aria_core.tropical_center_f32(x)
-    # Causal min centering: subtract minimum of tokens up to current position
-    # x: (B, S, D)
+    # Smooth causal min centering via log-sum-exp scan
     B, S, D = x.shape
-    # Use cummin to get cumulative minimum along sequence dimension
-    # torch.cummin returns (values, indices)
-    cmin = torch.cummin(x, dim=1).values
-    return x - cmin
+    inv_tau = 1.0 / _SMOOTH_TAU
+    # Compute smooth cumulative min in log-space
+    # log_acc[t] = logsumexp(-x[0..t] / τ), then smooth_cmin[t] = -τ * log_acc[t]
+    neg_x_scaled = -x * inv_tau  # (B, S, D)
+    # cumulative logsumexp along dim=1
+    log_acc = neg_x_scaled[:, :1, :]  # (B, 1, D) — first token
+    chunks = [log_acc]
+    for t in range(1, S):
+        log_acc = torch.logaddexp(log_acc, neg_x_scaled[:, t:t+1, :])
+        chunks.append(log_acc)
+    cmin_smooth = -_SMOOTH_TAU * torch.cat(chunks, dim=1)  # (B, S, D)
+    return x - cmin_smooth
 
 
 def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:

@@ -4,6 +4,7 @@ import apiService, { apiCall } from '../services/apiService';
 
 const LIVE_LOSS_CURVE_MAX_POINTS = 20000;
 const LIVE_FEED_MAX_EVENTS = 100;
+const LIVE_FEED_MAX_GRAPHS = 5;
 
 const RESULT_COLORS = {
   'S1 PASS': 'var(--accent-green)',
@@ -139,11 +140,65 @@ function annotateGenerationHistory(events) {
   });
 }
 
+function splitCurveIntoSegments(curve) {
+  const segments = [];
+  let current = [];
+  for (const point of curve || []) {
+    if (current.length > 0 && Number(point.step) < Number(current[current.length - 1].step)) {
+      segments.push(current);
+      current = [];
+    }
+    current.push(point);
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
+}
+
+function buildCurveSnapshot(experimentId, curve, overrides = {}) {
+  if (!experimentId || !Array.isArray(curve) || curve.length < 2) return null;
+  return {
+    experimentId,
+    curve: curve.map((point) => ({ ...point })),
+    statusText: overrides.statusText || '',
+    statusTone: overrides.statusTone || 'info',
+    label: overrides.label || `Run ${String(experimentId).slice(0, 8)}`,
+    updatedTs: Date.now(),
+  };
+}
+
+function describeCurveEvent(event) {
+  const type = String(event?.type || '');
+  const shortId = (event?.experiment_id || '').slice(0, 8);
+  if (type === 'failed') {
+    return {
+      statusText: event?.error ? `Failed: ${event.error}` : 'Experiment failed.',
+      statusTone: 'warn',
+      label: shortId ? `Failed ${shortId}` : 'Failed run',
+    };
+  }
+  if (type === 'validate_complete') {
+    return {
+      statusText: 'Validation completed. Analysis recorded.',
+      statusTone: 'success',
+      label: shortId ? `Validation ${shortId}` : 'Validation run',
+    };
+  }
+  if (type === 'invest_complete' || type === 'scaleup_complete' || type === 'nov_complete' || type === 'evo_complete' || type === 'complete') {
+    return {
+      statusText: 'Run completed.',
+      statusTone: 'success',
+      label: shortId ? `Completed ${shortId}` : 'Completed run',
+    };
+  }
+  return null;
+}
+
 // Mini inline SVG chart for live training loss
-function MiniLossChart({ curve }) {
+function MiniLossChart({ curve, statusText = '', statusTone = 'info', label = '', width = 600 }) {
   if (!curve || curve.length < 2) return null;
-  const W = 600, H = 113; // +20% wider from the previous 500px chart
+  const W = width, H = 113;
   const pad = { l: 4, r: 4, t: 4, b: 4 };
+  const segments = splitCurveIntoSegments(curve);
 
   const losses = curve.map(p => p.loss);
   const minL = Math.min(...losses);
@@ -153,11 +208,24 @@ function MiniLossChart({ curve }) {
   const xScale = i => pad.l + (i / Math.max(curve.length - 1, 1)) * (W - pad.l - pad.r);
   const yScale = v => H - pad.b - ((v - minL) / rangeL) * (H - pad.t - pad.b);
 
-  const pathD = losses.map((l, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i).toFixed(1)} ${yScale(l).toFixed(1)}`).join(' ');
+  let pointOffset = 0;
+  const segmentPaths = segments.map((segment) => {
+    const startOffset = pointOffset;
+    pointOffset += segment.length;
+    const pathD = segment
+      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${xScale(startOffset + i).toFixed(1)} ${yScale(p.loss).toFixed(1)}`)
+      .join(' ');
+    return { pathD, first: segment[0], last: segment[segment.length - 1], startOffset };
+  });
   const currentLoss = losses[losses.length - 1];
   const currentStep = curve[curve.length - 1].step;
   const totalSteps = curve[curve.length - 1].total_steps;
   const phase = curve[curve.length - 1].phase || '';
+  const statusColor = statusTone === 'warn'
+    ? 'var(--accent-yellow)'
+    : statusTone === 'success'
+      ? 'var(--accent-green)'
+      : 'var(--text-secondary)';
 
   return (
     <div style={{
@@ -168,29 +236,80 @@ function MiniLossChart({ curve }) {
     }}>
       <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block' }}>
         <rect width={W} height={H} rx={4} fill="rgba(0,0,0,0.3)" />
-        <path d={pathD} fill="none" stroke="var(--accent-green)" strokeWidth={1.5} />
+        {segmentPaths.map((segment, idx) => (
+          <g key={`${segment.startOffset}-${idx}`}>
+            <path d={segment.pathD} fill="none" stroke="var(--accent-green)" strokeWidth={1.5} />
+            {idx < segmentPaths.length - 1 && (
+              <line
+                x1={xScale(segment.startOffset + Math.max(0, segments[idx].length - 1))}
+                y1={pad.t}
+                x2={xScale(segment.startOffset + Math.max(0, segments[idx].length - 1))}
+                y2={H - pad.b}
+                stroke="rgba(255,255,255,0.14)"
+                strokeDasharray="3 3"
+              />
+            )}
+            <text
+              x={xScale(segment.startOffset) + 6}
+              y={pad.t + 12}
+              fill="var(--text-muted)"
+              fontSize="9"
+              fontFamily="monospace"
+            >
+              {`seed ${idx + 1}`}
+            </text>
+          </g>
+        ))}
       </svg>
       <div style={{ fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+        {label && (
+          <div style={{ color: 'var(--text-muted)', marginBottom: 4, maxWidth: 220 }}>
+            {label}
+          </div>
+        )}
         <div style={{ color: 'var(--accent-green)', fontWeight: 700, fontSize: 12, fontFamily: 'monospace' }}>
           {currentLoss < 0.0001 && currentLoss !== 0 ? currentLoss.toExponential(2) : currentLoss.toFixed(4)}
         </div>
         <div>step {currentStep}/{totalSteps}</div>
         {phase && <div style={{ textTransform: 'capitalize', color: 'var(--text-muted)' }}>{phase}</div>}
+        {statusText && <div style={{ color: statusColor, maxWidth: 220 }}>{statusText}</div>}
       </div>
     </div>
   );
 }
 
-function LiveFeed({ apiBase, experimentId = null }) {
+function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   const [events, setEvents] = useState([]);
   const [lossCurve, setLossCurve] = useState([]);
+  const [curveHistory, setCurveHistory] = useState([]);
   const lossCurveExpRef = useRef(null);
+  const lossCurveRef = useRef([]);
   const activeExperimentRef = useRef(experimentId || null);
   const feedRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showControls, setShowControls] = useState(false);
+  const [nowTs, setNowTs] = useState(Date.now());
   const prevConnectedRef = useRef(null);
   const displayEvents = useMemo(() => annotateGenerationHistory(events), [events]);
+
+  useEffect(() => {
+    const interval = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    lossCurveRef.current = lossCurve;
+  }, [lossCurve]);
+
+  const archiveCurveSnapshot = useCallback((experimentIdOverride = null, overrides = {}) => {
+    const experimentId = experimentIdOverride || lossCurveExpRef.current || activeExperimentRef.current || null;
+    const snapshot = buildCurveSnapshot(experimentId, lossCurveRef.current, overrides);
+    if (!snapshot) return;
+    setCurveHistory((prev) => {
+      const next = [snapshot, ...prev.filter((item) => item.experimentId !== snapshot.experimentId)];
+      return next.slice(0, LIVE_FEED_MAX_GRAPHS);
+    });
+  }, []);
 
   // Helper to add an event with a mapped type
   const addEvent = useCallback((type) => (data) => {
@@ -199,6 +318,11 @@ function LiveFeed({ apiBase, experimentId = null }) {
 
     // If this is a new run starting, clear stale feed and switch context.
     if ((type === 'start' || type === 'invest_start' || type === 'validate_start') && eventExpId && eventExpId !== currentExpId) {
+      archiveCurveSnapshot(currentExpId, {
+        statusText: 'Previous run archived.',
+        statusTone: 'info',
+        label: currentExpId ? `Run ${currentExpId.slice(0, 8)}` : 'Previous run',
+      });
       activeExperimentRef.current = eventExpId;
       lossCurveExpRef.current = eventExpId;
       setEvents([]);
@@ -220,8 +344,12 @@ function LiveFeed({ apiBase, experimentId = null }) {
 
     const normalized = normalizeLiveFeedEvent({ type, ...data, ts: Date.now() });
     if (!normalized) return;
+    const curveEventMeta = describeCurveEvent(normalized);
+    if (curveEventMeta && (!eventExpId || eventExpId === (activeExperimentRef.current || eventExpId))) {
+      archiveCurveSnapshot(eventExpId, curveEventMeta);
+    }
     setEvents(prev => [...prev.slice(-(LIVE_FEED_MAX_EVENTS - 1)), normalized]);
-  }, []);
+  }, [archiveCurveSnapshot]);
 
   // Handle training_step events for the mini loss chart
   const handleTrainingStep = useCallback((data) => {
@@ -233,9 +361,9 @@ function LiveFeed({ apiBase, experimentId = null }) {
       // Clear buffer when experiment changes
       if (lossCurveExpRef.current !== expId) {
         lossCurveExpRef.current = expId;
-        return [{ step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase }];
+        return [{ step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase, received_ts: Date.now() }];
       }
-      const next = [...prev, { step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase }];
+      const next = [...prev, { step: data.step, loss: data.loss, total_steps: data.total_steps, phase: data.phase, received_ts: Date.now() }];
       return next.length > LIVE_LOSS_CURVE_MAX_POINTS
         ? next.slice(-LIVE_LOSS_CURVE_MAX_POINTS)
         : next;
@@ -290,7 +418,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
           lossCurveExpRef.current = curve[0]?.experiment_id || '';
           setLossCurve(curve.map(p => ({
             step: p.step, loss: p.loss,
-            total_steps: p.total_steps, phase: p.phase,
+            total_steps: p.total_steps, phase: p.phase, received_ts: Date.now(),
           })));
         }
       })
@@ -302,6 +430,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
     activeExperimentRef.current = experimentId || null;
     setEvents([]);
     setLossCurve([]);
+    setCurveHistory([]);
     lossCurveExpRef.current = null;
     if (!experimentId) return;
 
@@ -325,7 +454,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
           lossCurveExpRef.current = curveExpId;
           setLossCurve(curve.map(p => ({
             step: p.step, loss: p.loss,
-            total_steps: p.total_steps, phase: p.phase,
+            total_steps: p.total_steps, phase: p.phase, received_ts: Date.now(),
           })));
         }
       })
@@ -394,7 +523,7 @@ function LiveFeed({ apiBase, experimentId = null }) {
             lossCurveExpRef.current = curveExpId;
             setLossCurve(curve.map(p => ({
               step: p.step, loss: p.loss,
-              total_steps: p.total_steps, phase: p.phase,
+              total_steps: p.total_steps, phase: p.phase, received_ts: Date.now(),
             })));
           }
         })
@@ -402,6 +531,76 @@ function LiveFeed({ apiBase, experimentId = null }) {
     }
     prevConnectedRef.current = connected;
   }, [connected, experimentId, apiBase]);
+
+  const latestValidationProgress = useMemo(
+    () => [...displayEvents].reverse().find((evt) => evt?.type === 'validate_progress'),
+    [displayEvents],
+  );
+
+  const latestValidationCompletion = useMemo(
+    () => [...displayEvents].reverse().find((evt) => evt?.type === 'validate_complete'),
+    [displayEvents],
+  );
+
+  const lossCurveMeta = useMemo(() => {
+    const lastPoint = lossCurve.length ? lossCurve[lossCurve.length - 1] : null;
+    const segments = splitCurveIntoSegments(lossCurve);
+    const staleSeconds = lastPoint?.received_ts ? Math.max(0, Math.floor((nowTs - lastPoint.received_ts) / 1000)) : 0;
+    return { lastPoint, segmentCount: segments.length, staleSeconds };
+  }, [lossCurve, nowTs]);
+
+  const liveStatus = useMemo(() => {
+    const status = String(progress?.status || '').toLowerCase();
+    if (status === 'completed') {
+      return {
+        tone: 'success',
+        text: 'Experiment completed. Analysis recorded in the notebook.',
+      };
+    }
+    if (status === 'failed') {
+      return {
+        tone: 'warn',
+        text: `Experiment failed${progress?.error ? `: ${progress.error}` : '.'}`,
+      };
+    }
+    if (status === 'validating') {
+      const seedText = latestValidationProgress?.seed && latestValidationProgress?.total_seeds
+        ? `seed ${latestValidationProgress.seed}/${latestValidationProgress.total_seeds}`
+        : `seed run ${lossCurveMeta.segmentCount || 1}`;
+      if (lossCurveMeta.staleSeconds >= 15) {
+        return {
+          tone: 'warn',
+          text: `Validation is still active on ${seedText}, but loss updates have been idle for ${lossCurveMeta.staleSeconds}s. Likely between seeds or in post-seed evaluation.`,
+        };
+      }
+      return {
+        tone: 'info',
+        text: `Running validation for ${latestValidationProgress?.source_result_id?.slice(0, 8) || 'candidate'} on ${seedText}.`,
+      };
+    }
+    if (latestValidationCompletion) {
+      return {
+        tone: 'success',
+        text: 'Validation completed. Analysis recorded in the notebook.',
+      };
+    }
+    return {
+      tone: 'info',
+      text: progress?.aria_message || '',
+    };
+  }, [progress, latestValidationProgress, latestValidationCompletion, lossCurveMeta]);
+
+  const curveCards = useMemo(() => {
+    const currentExperimentId = lossCurveExpRef.current || activeExperimentRef.current || null;
+    const currentCard = buildCurveSnapshot(currentExperimentId, lossCurve, {
+      statusText: liveStatus.text,
+      statusTone: liveStatus.tone,
+      label: currentExperimentId ? `Live ${String(currentExperimentId).slice(0, 8)}` : 'Live run',
+    });
+    const historicalCards = curveHistory.filter((card) => card.experimentId !== currentExperimentId);
+    const cards = currentCard ? [currentCard, ...historicalCards] : historicalCards;
+    return cards.slice(0, LIVE_FEED_MAX_GRAPHS);
+  }, [curveHistory, liveStatus.text, liveStatus.tone, lossCurve]);
 
   return (
     <div className="live-feed">
@@ -447,7 +646,36 @@ function LiveFeed({ apiBase, experimentId = null }) {
           Connection lost. Reconnecting and healing feed gaps...
         </div>
       )}
-      {lossCurve.length >= 2 && <MiniLossChart curve={lossCurve} />}
+      {(liveStatus.text || curveCards.length > 0) && (
+        <div style={{ marginBottom: 8 }}>
+          {liveStatus.text && (
+            <div style={{ fontSize: 11, color: liveStatus.tone === 'warn' ? 'var(--accent-yellow)' : liveStatus.tone === 'success' ? 'var(--accent-green)' : 'var(--text-secondary)', marginBottom: 6 }}>
+              {liveStatus.text}
+            </div>
+          )}
+          {curveCards.length > 0 && (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'row-reverse',
+              gap: 8,
+              overflowX: 'auto',
+              paddingBottom: 4,
+            }}>
+              {curveCards.map((card) => (
+                <div key={card.experimentId} style={{ flex: '0 0 auto' }}>
+                  <MiniLossChart
+                    curve={card.curve}
+                    statusText={card.statusText}
+                    statusTone={card.statusTone}
+                    label={card.label}
+                    width={420}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="feed-container" ref={feedRef}>
         {events.length === 0 ? (
           <div className="feed-empty">

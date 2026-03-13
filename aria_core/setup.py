@@ -24,7 +24,10 @@ setup(
             name='aria_core._C',
             sources=sources,
             include_dirs=[os.path.abspath('include')],
-            extra_compile_args=['-O3', '-march=native', '-fopenmp', '-DARIA_HAS_OPENMP'],
+            extra_compile_args={
+                'cxx': ['-O3', '-march=native', '-fopenmp', '-DARIA_HAS_OPENMP'],
+                'nvcc': ['-O3', '-DARIA_HAS_OPENMP'],
+            },
             extra_link_args=['-lgomp'],
         )
     ],

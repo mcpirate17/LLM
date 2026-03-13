@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import gc
-
 import torch
 import torch.nn as nn
 
+from ...eval.cross_task_eval import evaluate_cross_task_robustness
+from ...eval.efficiency_wall import evaluate_efficiency_wall
+from ...eval.long_context import run_long_context_sweep
+from ...eval.noise_sensitivity import evaluate_noise_sensitivity
 from ...eval.perf_budget import evaluate_perf_budget_gate
+from ...eval.quantization import evaluate_sparse_quant_quality
+from ...eval.routing_heatmap import evaluate_routing_heatmap
+from ...eval.sparsity import evaluate_activation_sparsity
 from ...training.training_program import synthesize_training_program
+from ..shared_utils import coerce_dict_payload
 from ..notebook import LabNotebook, ExperimentEntry
 from ..llm.context_experiment import build_validation_context
 
@@ -22,6 +29,235 @@ class _ContinuousValidationMixin:
     """Validation seed runs, metrics computation, external evals, and inline validation."""
 
     __slots__ = ()
+
+    def _make_validation_model_factory(
+        self,
+        model_source: str,
+        arch_spec_json_str: str,
+        graph_json_str: str,
+        config: RunConfig,
+    ):
+        seq_len = int(getattr(config, "validation_seq_len", 128) or 128)
+
+        def _factory():
+            return self._build_model_from_source(
+                model_source,
+                arch_spec_json_str,
+                graph_json_str,
+                config,
+                seq_len_override=seq_len,
+            )
+
+        return _factory
+
+    def _make_validation_input_batches(
+        self,
+        config: RunConfig,
+        dev: torch.device,
+        source_result_id: str,
+        n_batches: int = 2,
+    ):
+        seq_len = min(128, int(getattr(config, "validation_seq_len", 128) or 128))
+        batch_size = max(1, min(4, int(getattr(config, "validation_batch_size", 2) or 2)))
+        return [
+            self._sample_training_input_ids(
+                config=config,
+                dev=dev,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                seed=self._stable_seed(source_result_id, "validation_eval", idx),
+            )
+            for idx in range(n_batches)
+        ]
+
+    def _run_external_evals(
+        self,
+        *,
+        config: RunConfig,
+        dev: torch.device,
+        dev_str: str,
+        best_seed: dict | None,
+        model_source: str,
+        arch_spec_json_str: str | None,
+        graph_json_str: str | None,
+        source: dict | None,
+        source_result_id: str,
+        exp_id: str,
+        val_loss_ratio: float | None,
+        val_baseline_ratio: float | None,
+        val_normalized_ratio: float | None,
+        multi_seed_std: float,
+        passed_seeds: list,
+        source_params: float | int,
+    ) -> dict:
+        del exp_id, multi_seed_std, passed_seeds
+        result = {
+            "is_breakthrough": False,
+            "flop_gated": False,
+            "quant_int8_retention": None,
+            "quant_quality_per_byte": None,
+            "long_context_score": None,
+            "long_context_details": None,
+            "noise_score": None,
+            "ood_result": None,
+            "sensitivity_result": None,
+            "activation_sparsity_score": None,
+            "dead_neuron_ratio": None,
+            "routing_collapse_score": None,
+            "wikitext_perplexity": None,
+            "wikitext_score": None,
+            "tinystories_perplexity": None,
+            "tinystories_score": None,
+            "cross_task_score": None,
+            "efficiency_wall_score": None,
+            "max_viable_seq_len": None,
+            "scaling_regime": None,
+            "scaling_param_efficiency": val_normalized_ratio,
+            "scaling_flop_efficiency": None,
+            "scaling_gate_passed_val": None,
+            "scaling_best_family": None,
+            "scaling_confidence": None,
+            "scaling_result": None,
+        }
+        model_factory = self._make_validation_model_factory(
+            model_source,
+            arch_spec_json_str,
+            graph_json_str,
+            config,
+        )
+        base_final_loss = float(best_seed.get("final_loss")) if best_seed and best_seed.get("final_loss") is not None else None
+        input_batches = self._make_validation_input_batches(config, dev, source_result_id)
+        if val_loss_ratio is not None:
+            try:
+                result["ood_result"] = self._ood_robustness_check(
+                    model_factory, config, dev, n_steps=min(100, max(20, int(config.validation_steps) // 50))
+                )
+            except Exception as exc:
+                logger.debug("OOD robustness check failed for %s: %s", source_result_id[:8], exc)
+            try:
+                result["sensitivity_result"] = self._sensitivity_check(
+                    model_factory,
+                    config,
+                    dev,
+                    base_loss_ratio=float(val_loss_ratio),
+                    n_steps=min(100, max(20, int(config.validation_steps) // 50)),
+                )
+            except Exception as exc:
+                logger.debug("Sensitivity check failed for %s: %s", source_result_id[:8], exc)
+        model = None
+        try:
+            model = model_factory()
+            if model is None:
+                return result
+            model = model.to(dev)
+            eval_seq_len = min(128, int(getattr(config, "validation_seq_len", 128) or 128))
+            try:
+                from ...eval.wikitext_eval import evaluate_wikitext_perplexity
+                wt_result = evaluate_wikitext_perplexity(model, config.vocab_size, dev_str, n_train_steps=200, seq_len=eval_seq_len)
+                result["wikitext_perplexity"] = wt_result.get("wikitext_perplexity")
+                result["wikitext_score"] = wt_result.get("wikitext_score")
+            except Exception as exc:
+                logger.debug("WikiText eval skipped for %s: %s", source_result_id[:8], exc)
+            try:
+                from ...eval.tinystories_eval import evaluate_tinystories
+                ts_result = evaluate_tinystories(model, config.vocab_size, dev_str, n_train_steps=200, seq_len=eval_seq_len)
+                result["tinystories_perplexity"] = ts_result.get("tinystories_perplexity")
+                result["tinystories_score"] = ts_result.get("tinystories_score")
+            except Exception as exc:
+                logger.debug("TinyStories eval skipped for %s: %s", source_result_id[:8], exc)
+            try:
+                long_context = run_long_context_sweep(
+                    model_factory,
+                    config.vocab_size,
+                    dev,
+                    base_loss=base_final_loss or max(float(val_loss_ratio or 1.0), 1e-6),
+                    seq_lens=(512, 1024),
+                    n_steps=min(60, max(20, int(config.validation_steps) // 100)),
+                    batch_size=max(1, min(2, int(getattr(config, "validation_batch_size", 2) or 2))),
+                    lr=float(best_seed.get("optimizer_lr") or config.stage1_lr) if best_seed else float(config.stage1_lr),
+                )
+                result["long_context_score"] = long_context.get("long_context_score")
+                result["long_context_details"] = long_context
+                result["max_viable_seq_len"] = long_context.get("max_viable_len")
+            except Exception as exc:
+                logger.debug("Long-context sweep skipped for %s: %s", source_result_id[:8], exc)
+            try:
+                noise_result = evaluate_noise_sensitivity(model, input_batches, dev, vocab_size=int(config.vocab_size))
+                result["noise_score"] = noise_result.get("noise_sensitivity_score")
+            except Exception as exc:
+                logger.debug("Noise sensitivity skipped for %s: %s", source_result_id[:8], exc)
+            try:
+                sparsity_result = evaluate_activation_sparsity(model, input_batches, dev)
+                result["activation_sparsity_score"] = sparsity_result.get("activation_sparsity_score")
+                result["dead_neuron_ratio"] = sparsity_result.get("dead_neuron_ratio")
+            except Exception as exc:
+                logger.debug("Activation sparsity skipped for %s: %s", source_result_id[:8], exc)
+            try:
+                routing_result = evaluate_routing_heatmap(model, input_batches, dev)
+                result["routing_collapse_score"] = routing_result.get("routing_collapse_score")
+            except Exception as exc:
+                logger.debug("Routing heatmap skipped for %s: %s", source_result_id[:8], exc)
+            try:
+                quant_result = evaluate_sparse_quant_quality(model, input_batches, dev)
+                if quant_result:
+                    result["quant_int8_retention"] = quant_result.get("full_retention")
+                    result["quant_quality_per_byte"] = quant_result.get("quality_per_byte")
+            except Exception as exc:
+                logger.debug("Sparse+quant eval skipped for %s: %s", source_result_id[:8], exc)
+            try:
+                wall_result = evaluate_efficiency_wall(model, int(config.vocab_size), dev)
+                result["efficiency_wall_score"] = wall_result.get("efficiency_wall_score")
+                result["scaling_regime"] = wall_result.get("scaling_regime")
+                result["max_viable_seq_len"] = max(
+                    result["max_viable_seq_len"] or 0,
+                    int(wall_result.get("max_viable_seq_len") or 0),
+                ) or None
+                result["scaling_flop_efficiency"] = wall_result.get("time_scaling_factor")
+            except Exception as exc:
+                logger.debug("Efficiency-wall eval skipped for %s: %s", source_result_id[:8], exc)
+        finally:
+            if model is not None:
+                del model
+            if dev.type == "cuda":
+                torch.cuda.empty_cache()
+            gc.collect()
+        try:
+            cross_task = evaluate_cross_task_robustness(
+                model_factory,
+                vocab_size=int(config.vocab_size),
+                device=dev,
+                n_train_steps=min(80, max(20, int(config.validation_steps) // 100)),
+                batch_size=max(1, min(4, int(getattr(config, "validation_batch_size", 4) or 4))),
+                seq_len=min(128, int(getattr(config, "validation_seq_len", 128) or 128)),
+            )
+            result["cross_task_score"] = cross_task.get("cross_task_score")
+        except Exception as exc:
+            logger.debug("Cross-task eval skipped for %s: %s", source_result_id[:8], exc)
+        scaling_gate_passed = (
+            result["scaling_param_efficiency"] is not None
+            and float(result["scaling_param_efficiency"]) >= float(config.scaling_param_efficiency_target)
+            and (
+                result["scaling_flop_efficiency"] is None
+                or float(result["scaling_flop_efficiency"]) <= float(config.scaling_flop_ceiling)
+            )
+        )
+        result["scaling_gate_passed_val"] = scaling_gate_passed
+        result["scaling_confidence"] = "high" if scaling_gate_passed else "low"
+        result["scaling_best_family"] = str((source or {}).get("most_similar_to") or "reference")
+        result["scaling_result"] = {
+            "param_efficiency": result["scaling_param_efficiency"],
+            "flop_efficiency": result["scaling_flop_efficiency"],
+            "gate_passed": scaling_gate_passed,
+            "confidence": result["scaling_confidence"],
+        }
+        result["is_breakthrough"] = bool(
+            val_loss_ratio is not None
+            and float(val_loss_ratio) <= float(getattr(config, "investigation_loss_ratio_threshold", 0.15))
+            and scaling_gate_passed
+            and (val_baseline_ratio is None or float(val_baseline_ratio) < 1.0)
+        )
+        result["flop_gated"] = bool(not scaling_gate_passed and result["scaling_flop_efficiency"] is not None)
+        return result
 
     def _validation_run_seeds(
         self,
@@ -71,7 +307,7 @@ class _ContinuousValidationMixin:
             self._emit_event("validation_progress", {
                 "experiment_id": exp_id,
                 "current": prog_idx + 1,
-                "total": len(result_ids),
+                "total": _total_progs,
                 "source_result_id": source_result_id,
                 "seed": seed + 1,
                 "total_seeds": config.validation_n_seeds,
@@ -222,7 +458,6 @@ class _ContinuousValidationMixin:
                                 data_tag=v_data_tag,
                                 cache_data_fn=v_cache,
                             )
-                            program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
                         except Exception:
                             pass
                 except Exception:
@@ -510,11 +745,10 @@ class _ContinuousValidationMixin:
                         )
                         # Store detailed benchmark payload in external_benchmarks_json
                         external_benchmarks_payload = {}
-                        if scaling_result is not None:
-                            scaling_payload = scaling_result.to_dict()
-                            if isinstance(scaling_payload, dict):
-                                external_benchmarks_payload.update(scaling_payload)
-                                external_benchmarks_payload["scaling_comparison"] = scaling_payload
+                        scaling_payload = coerce_dict_payload(scaling_result)
+                        if scaling_payload is not None:
+                            external_benchmarks_payload.update(scaling_payload)
+                            external_benchmarks_payload["scaling_comparison"] = scaling_payload
                         if long_context_details is not None:
                             external_benchmarks_payload["long_context"] = long_context_details
                         if external_benchmarks_payload:
