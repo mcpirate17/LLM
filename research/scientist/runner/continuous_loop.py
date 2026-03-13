@@ -367,45 +367,35 @@ class _ContinuousLoopMixin:
             # Gather richer analytics for data-driven rule-based recommendation
             recent_modes = [e.get("experiment_type", "synthesis") for e in recent]
 
-            # Z16: Dynamic top-10% worthiness bar
-            # Only investigate candidates whose loss_ratio is in the top 10%
-            # of ALL unique fingerprints. This means investigation gives Aria
-            # genuinely novel data about exceptional architectures, not noise.
+            # Z16: Composite-score worthiness bar
+            # Investigate candidates whose composite_score is competitive with
+            # the investigation tier — not just loss leaders.  A model with
+            # exceptional efficiency/novelty/stability deserves study even if
+            # its loss is only moderate.
             worth_it_investigation = []
-            seen_fps = set()
+            seen_fps: set = set()
 
-            # Compute dynamic threshold: top 10% of all screening loss ratios
-            all_screening_lrs = sorted([
-                e.get("screening_loss_ratio") for e in leaderboard
-                if e.get("tier") == "screening"
-                and e.get("screening_loss_ratio") is not None
+            # Dynamic threshold: 25th percentile of investigation tier scores
+            inv_scores = sorted([
+                e.get("composite_score") for e in leaderboard
+                if e.get("tier") in ("investigation", "validation")
+                and e.get("composite_score") is not None
             ])
-            if all_screening_lrs:
-                # Top 10% = the 10th percentile value (lower is better)
-                p10_idx = max(0, len(all_screening_lrs) // 10 - 1)
-                dynamic_lr_threshold = all_screening_lrs[p10_idx]
-            else:
-                dynamic_lr_threshold = 0.05  # conservative default
+            score_threshold = inv_scores[len(inv_scores) // 4] if inv_scores else 50.0
 
-            # Sort leaderboard by best loss to prioritize performance
-            sorted_lb = sorted(leaderboard, key=lambda x: x.get("screening_loss_ratio") or 1.0)
+            # Sort by composite_score descending — best overall candidates first
+            sorted_lb = sorted(leaderboard,
+                               key=lambda x: x.get("composite_score") or 0, reverse=True)
 
             for e in sorted_lb:
                 if e.get("tier") != "screening": continue
-                lr = e.get("screening_loss_ratio") or 1.0
+                score = e.get("composite_score") or 0
                 fp = e.get("graph_fingerprint") or e.get("result_id")
 
                 if fp in seen_fps: continue
                 seen_fps.add(fp)
 
-                # Worthiness Bar: must be in top 10% of all fingerprints
-                pis = e.get("pre_inv_score")
-                if pis is not None:
-                    is_worth_it = float(pis) >= 20.0
-                else:
-                    is_worth_it = lr <= dynamic_lr_threshold
-
-                if is_worth_it and fp not in _investigated_fps:
+                if score >= score_threshold and fp not in _investigated_fps:
                     worth_it_investigation.append(e["result_id"])
 
             investigation_backlog = len(worth_it_investigation)
@@ -425,11 +415,11 @@ class _ContinuousLoopMixin:
                 if investigation_backlog >= 5 and "investigation" not in recent_modes[:3]:
                     return {
                         "mode": "investigation",
-                        "reasoning": (f"Top-10% investigation: {investigation_backlog} candidates with "
-                                      f"loss_ratio <= {dynamic_lr_threshold:.4f} (top 10% threshold). "
-                                      f"These are genuinely exceptional and worth deeper study."),
+                        "reasoning": (f"Score-based investigation: {investigation_backlog} candidates with "
+                                      f"composite_score >= {score_threshold:.1f} (investigation p25). "
+                                      f"These are competitive across loss, efficiency, novelty, and stability."),
                         "confidence": 1.0,
-                        "config": {"n_programs": min(investigation_backlog, 10)}
+                        "config": {"n_programs": min(investigation_backlog, 15)}
                     }
 
                 if validation_ready >= 5 and "validation" not in recent_modes[:3]:

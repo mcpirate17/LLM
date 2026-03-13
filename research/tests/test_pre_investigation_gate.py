@@ -149,7 +149,8 @@ class TestStageAHardReject:
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         eligible = nb.get_investigation_eligible(
             max_lr=0.5, min_stability=0.3, min_spectral_norm=0.01,
-            max_spectral_norm=50.0, min_improvement_rate=0.0)
+            max_spectral_norm=50.0, min_improvement_rate=0.0,
+            min_composite_score=0.0)
         assert any(e["result_id"] == rid for e in eligible)
 
 
@@ -249,26 +250,30 @@ class TestStageCProbe:
 # ── Integration tests ────────────────────────────────────────────────
 
 class TestIntegration:
-    def test_reference_aware_gating(self, tmp_path):
-        """Gate uses reference LR ceiling when references exist."""
+    def test_composite_score_gating(self, tmp_path):
+        """Gate uses composite_score threshold instead of loss_ratio ceiling.
+
+        A candidate with mediocre loss but passing health checks should still
+        be eligible — composite_score (which includes efficiency, novelty,
+        stability) determines worthiness, not loss alone.
+        """
         nb = _make_nb(tmp_path)
         _insert_reference(nb, "gpt2", 0.3)
-        # Candidate with LR=0.6 should fail: 0.6 > 0.3 * 1.5 = 0.45
+        # Candidate with LR=0.6 passes health checks — loss is not a hard gate
         rid = _insert_program_result(nb, loss_ratio=0.6)
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.6)
 
         runner = MagicMock(spec=ExperimentRunner)
-        runner._get_reference_baseline_lr = lambda self_inner, nb_inner: 0.3
-        # Bind the real method
         runner._get_reference_baseline_lr = MagicMock(return_value=0.3)
 
         config = RunConfig()
         config.pre_inv_gate_enabled = True
-        config.pre_inv_reference_margin = 1.5
 
         result = ExperimentRunner._pre_investigation_gate(
             runner, config, nb, nb.get_leaderboard(limit=50))
-        assert rid not in result
+        # With no investigation tier entries, score threshold defaults to 0.0
+        # so any healthy candidate passes Stage A
+        assert rid in result
 
     def test_reference_aware_pass(self, tmp_path):
         """Candidate below reference ceiling passes."""

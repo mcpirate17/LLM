@@ -110,18 +110,15 @@ class _ContinuousInvestigationMixin:
                     if c.get("result_id")]
 
         # ── Stage A: Hard reject via SQL ──
-        ref_lr = self._get_reference_baseline_lr(nb)
-        ref_lr_ceiling = None
-        if ref_lr is not None:
-            ref_lr_ceiling = ref_lr * config.pre_inv_reference_margin
-
+        # Uses composite_score as primary gate (not loss_ratio) — models
+        # with strong efficiency/novelty/stability deserve investigation
+        # even if loss is only moderate.
         eligible = nb.get_investigation_eligible(
             max_lr=config.pre_inv_max_lr,
             min_stability=config.pre_inv_min_stability,
             min_spectral_norm=config.pre_inv_min_spectral_norm,
             max_spectral_norm=config.pre_inv_max_spectral_norm,
             min_improvement_rate=config.pre_inv_min_improvement_rate,
-            ref_lr_ceiling=ref_lr_ceiling,
         )
 
         # Filter out already-investigated fingerprints
@@ -141,6 +138,7 @@ class _ContinuousInvestigationMixin:
         logger.info("Pre-inv gate Stage A: %d candidates pass hard filters", len(eligible))
 
         # ── Stage B: Composite score + rank ──
+        ref_lr = self._get_reference_baseline_lr(nb)
         for row in eligible:
             row["_pre_inv_score"] = LabNotebook.compute_pre_investigation_score(
                 row, best_ref_lr=ref_lr)

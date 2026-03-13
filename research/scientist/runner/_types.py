@@ -191,7 +191,7 @@ class RunConfig:
     # Auto-escalation pipeline
     auto_investigate: bool = True
     auto_investigate_min_survivors: int = 1
-    auto_investigate_top_n: int = 5
+    auto_investigate_top_n: int = 15
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
     auto_validate_max_baseline_ratio: float = 0.60
@@ -246,7 +246,7 @@ class RunConfig:
     pre_inv_max_spectral_norm: float = 50.0
     pre_inv_min_spectral_norm: float = 0.01
     pre_inv_min_improvement_rate: float = 0.0
-    pre_inv_top_n: int = 5
+    pre_inv_top_n: int = 15
     pre_inv_reference_margin: float = 1.5
     pre_inv_probe_enabled: bool = False
     pre_inv_probe_steps_fraction: float = 0.25

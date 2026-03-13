@@ -578,13 +578,24 @@ class _MiscMixin:
         max_spectral_norm: float,
         min_improvement_rate: float,
         ref_lr_ceiling: Optional[float] = None,
+        min_composite_score: Optional[float] = None,
     ) -> List[Dict]:
-        """Stage A hard reject: return screening candidates that pass all hard filters.
+        """Stage A hard reject: return screening candidates that pass health filters.
 
         Joins program_results with leaderboard to return full metric rows for
-        candidates eligible for investigation.
+        candidates eligible for investigation.  Uses composite_score as the
+        primary worthiness gate instead of loss_ratio — a model with excellent
+        efficiency/novelty/stability deserves investigation even with moderate loss.
         """
-        lr_ceiling = ref_lr_ceiling if ref_lr_ceiling is not None else max_lr
+        # Dynamic score floor: 25th percentile of investigation tier
+        if min_composite_score is None:
+            inv_scores = self.conn.execute(
+                "SELECT composite_score FROM leaderboard"
+                " WHERE tier IN ('investigation', 'validation')"
+                " AND composite_score IS NOT NULL"
+                " ORDER BY composite_score ASC"
+            ).fetchall()
+            min_composite_score = inv_scores[len(inv_scores) // 4][0] if inv_scores else 0.0
         rows = self.conn.execute(
             """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
                       l.screening_loss_ratio, l.screening_novelty,
@@ -603,10 +614,10 @@ class _MiscMixin:
                  AND (pr.fp_jacobian_spectral_norm IS NULL
                       OR (pr.fp_jacobian_spectral_norm >= ? AND pr.fp_jacobian_spectral_norm <= ?))
                  AND COALESCE(pr.loss_improvement_rate, 0) >= ?
-                 AND COALESCE(pr.loss_ratio, 1.0) < ?
-               ORDER BY pr.loss_ratio ASC NULLS LAST""",
+                 AND COALESCE(l.composite_score, 0) >= ?
+               ORDER BY l.composite_score DESC""",
             (min_stability, min_spectral_norm, max_spectral_norm,
-             min_improvement_rate, lr_ceiling),
+             min_improvement_rate, min_composite_score),
         ).fetchall()
         return [dict(r) for r in rows]
 

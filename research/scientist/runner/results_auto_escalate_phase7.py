@@ -115,8 +115,6 @@ class _ResultsAutoEscalatePhase7Mixin:
                 continue
             if not row.get("stage1_passed"):
                 continue
-            if row.get("loss_ratio") is not None and float(row.get("loss_ratio")) >= 0.50:
-                continue
             candidate_ids.append(item["result_id"])
             if len(candidate_ids) >= config.auto_investigate_top_n:
                 break

@@ -491,31 +491,40 @@ class _ResultsKnowledgeMixin:
         )
 
     def _check_stale_screening_candidates(self, nb: LabNotebook, config: RunConfig):
-        """Force investigation if top screening models beat references but are uninvestigated."""
+        """Force investigation if top screening models have high composite scores but are uninvestigated.
+
+        Uses composite_score (not loss_ratio) as the gate — a model that
+        excels on efficiency, novelty, or stability deserves investigation
+        even if its loss is mediocre.  The threshold is the 25th-percentile
+        composite_score of the current investigation tier, so only candidates
+        that could plausibly compete on the leaderboard are promoted.
+        """
         try:
-            # Compare screening_loss_ratio directly against best reference
-            # screening_loss_ratio (tier-neutral metric, not discounted composite).
-            best_ref_lr = nb.conn.execute(
-                "SELECT MIN(l.screening_loss_ratio) FROM leaderboard l"
-                " WHERE COALESCE(l.is_reference, 0) = 1"
-                " AND l.screening_loss_ratio IS NOT NULL"
-            ).fetchone()[0]
-            if best_ref_lr is None:
+            # Dynamic threshold: 25th percentile of investigation tier scores
+            inv_scores = nb.conn.execute(
+                "SELECT l.composite_score FROM leaderboard l"
+                " WHERE l.tier IN ('investigation', 'validation')"
+                " AND l.composite_score IS NOT NULL"
+                " ORDER BY l.composite_score ASC"
+            ).fetchall()
+            if not inv_scores:
                 return None
+            score_threshold = inv_scores[len(inv_scores) // 4][0]
+
             stale = nb.conn.execute(
                 """SELECT l.result_id FROM leaderboard l
                    WHERE l.tier = 'screening' AND l.screening_passed = 1
                      AND COALESCE(l.is_reference, 0) = 0
-                     AND l.screening_loss_ratio IS NOT NULL
-                     AND l.screening_loss_ratio <= ?
+                     AND l.composite_score IS NOT NULL
+                     AND l.composite_score >= ?
                      AND l.investigation_loss_ratio IS NULL
-                   ORDER BY l.screening_loss_ratio ASC LIMIT ?""",
-                (best_ref_lr, config.auto_investigate_top_n)
+                   ORDER BY l.composite_score DESC LIMIT ?""",
+                (score_threshold, config.auto_investigate_top_n)
             ).fetchall()
             if stale:
                 result_ids = [r["result_id"] for r in stale]
-                logger.info("Stale screening check: %d models beat best reference loss_ratio (%.4f) but are uninvestigated",
-                            len(result_ids), best_ref_lr)
+                logger.info("Stale screening check: %d models with composite_score >= %.1f uninvestigated",
+                            len(result_ids), score_threshold)
                 return result_ids
         except Exception as e:
             logger.warning("Stale screening check failed: %s", e)
