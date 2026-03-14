@@ -110,6 +110,9 @@ function Discoveries({
   const [showReferences, setShowReferences] = useState(() =>
     typeof prefs?.showReferences === 'boolean' ? prefs.showReferences : true
   );
+  const [hideFailed, setHideFailed] = useState(() =>
+    typeof prefs?.hideFailed === 'boolean' ? prefs.hideFailed : true
+  );
   const [qualityFloorEnabled, setQualityFloorEnabled] = useState(() =>
     typeof prefs?.qualityFloorEnabled === 'boolean' ? prefs.qualityFloorEnabled : true
   );
@@ -152,10 +155,10 @@ function Discoveries({
       if (typeof window === 'undefined') return;
       window.localStorage.setItem(DISCOVERIES_PREFS_KEY, JSON.stringify({
         activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences,
-        qualityFloorEnabled, visibleColumns,
+        qualityFloorEnabled, visibleColumns, hideFailed,
       }));
     } catch {}
-  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns, hideFailed]);
 
   // Handle external highlight
   useEffect(() => {
@@ -344,19 +347,40 @@ function Discoveries({
     return sorted.filter(e => !e?.is_reference);
   }, [sorted, showReferences]);
 
+  const failedFiltered = useMemo(() => {
+    if (!hideFailed) return visibilityFiltered;
+    return visibilityFiltered.filter(e => {
+      if (e.is_reference) return true;
+      const tier = String(e.tier || '').toLowerCase();
+      // Tier-based failures
+      if (tier === 'screened_out' || tier === 'failed' || tier === 'rejected') return false;
+      // Explicit flag failures
+      if (e.screening_passed === false || e.investigation_passed === false || e.validation_passed === false) return false;
+      // Derived failures (mirrors DiscoveryUiBits logic)
+      if (tier === 'investigation' && e.investigation_robustness != null && !e.investigation_passed) return false;
+      if (tier === 'validation' && e.validation_baseline_ratio != null && !e.validation_passed) return false;
+      return true;
+    });
+  }, [visibilityFiltered, hideFailed]);
+
+  const failedHiddenCount = useMemo(() => {
+    if (!hideFailed) return 0;
+    return Math.max(0, (visibilityFiltered?.length || 0) - (failedFiltered?.length || 0));
+  }, [hideFailed, visibilityFiltered, failedFiltered]);
+
   const qualityFiltered = useMemo(() => {
-    if (!qualityFloorEnabled) return visibilityFiltered;
-    return visibilityFiltered.filter((e) => {
+    if (!qualityFloorEnabled) return failedFiltered;
+    return failedFiltered.filter((e) => {
       if (e?.is_reference) return true;
       const best = bestLoss(e);
       return best != null && Number(best) <= QUALITY_FLOOR_BEST_LOSS_MAX;
     });
-  }, [visibilityFiltered, qualityFloorEnabled]);
+  }, [failedFiltered, qualityFloorEnabled]);
 
   const qualityHiddenCount = useMemo(() => {
     if (!qualityFloorEnabled) return 0;
-    return Math.max(0, (visibilityFiltered?.length || 0) - (qualityFiltered?.length || 0));
-  }, [qualityFloorEnabled, visibilityFiltered, qualityFiltered]);
+    return Math.max(0, (failedFiltered?.length || 0) - (qualityFiltered?.length || 0));
+  }, [qualityFloorEnabled, failedFiltered, qualityFiltered]);
 
   // Search filter
   const filtered = useMemo(() => {
@@ -446,6 +470,18 @@ function Discoveries({
           {showReferences ? 'Hide references' : 'Show references'}
         </button>
         <button
+          onClick={() => setHideFailed(v => !v)}
+          aria-label={hideFailed ? 'Show failed' : 'Hide failed'}
+          style={{
+            fontSize: 11, padding: '5px 12px', cursor: 'pointer',
+            background: hideFailed ? 'rgba(248, 81, 73, 0.12)' : 'transparent',
+            border: `1px solid ${hideFailed ? 'var(--accent-red)' : 'var(--border)'}`,
+            borderRadius: 4, color: hideFailed ? 'var(--accent-red)' : 'var(--text-secondary)',
+          }}
+        >
+          {hideFailed ? 'Show failed' : 'Hide failed'}
+        </button>
+        <button
           onClick={() => setQualityFloorEnabled(v => !v)}
           aria-label={qualityFloorEnabled ? 'Disable quality floor' : 'Enable quality floor'}
           style={{
@@ -527,6 +563,11 @@ function Discoveries({
         {qualityFloorEnabled && qualityHiddenCount > 0 && (
           <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent-yellow)' }}>
             {qualityHiddenCount} low-quality hidden
+          </span>
+        )}
+        {hideFailed && failedHiddenCount > 0 && (
+          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent-red)' }}>
+            {failedHiddenCount} failed hidden
           </span>
         )}
       </div>
