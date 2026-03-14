@@ -1,0 +1,68 @@
+{
+  "artifact_path": "/home/tim/Projects/LLM/research/perf_artifacts/aria_designer/2026-03-14/eval_3905f62197a2.json",
+  "budget_profile": "designer_interactive",
+  "budget_verdict": {
+    "checks": [
+      {
+        "limit": 1200.0,
+        "metric": "metrics.total_time_ms",
+        "observed": 76.97418400493916,
+        "passed": true
+      },
+      {
+        "limit": 400.0,
+        "metric": "metrics.compile_time_ms",
+        "observed": 0.03448000643402338,
+        "passed": true
+      },
+      {
+        "limit": 0.4,
+        "metric": "metrics.native_coverage",
+        "observed": 0.0,
+        "passed": false
+      },
+      {
+        "limit": 0.0,
+        "metric": "duplicate_work.detected_count",
+        "observed": 0.0,
+        "passed": true
+      }
+    ],
+    "n_failed": 1,
+    "passed": false,
+    "profile": "designer_interactive"
+  },
+  "component": "aria_designer",
+  "duplicate_work": {
+    "avoided_count": 0,
+    "avoided_keys": {},
+    "detected_count": 0,
+    "estimated_wasted_ms": 0.0,
+    "hints": [],
+    "repeated_keys": {}
+  },
+  "generated_at": "2026-03-14T14:58:46Z",
+  "identity": {
+    "run_id": "eval_3905f62197a2",
+    "status": "success",
+    "workflow_id": "wf_save_test"
+  },
+  "metrics": {
+    "backward_time_ms": 0.0,
+    "compile_time_ms": 0.03448000643402338,
+    "forward_time_ms": 0.0,
+    "native_coverage": 0.0,
+    "peak_memory_mb": 0.0,
+    "total_flops_per_token": 0.0,
+    "total_params": 8192512.0,
+    "total_time_ms": 76.97418400493916
+  },
+  "runtime": {
+    "pid": 396122,
+    "platform": "linux",
+    "python": "3.12.3"
+  },
+  "version": 1,
+  "warnings": [],
+  "workload": "workflow_evaluation_direct"
+}

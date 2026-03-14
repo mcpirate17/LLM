@@ -7,7 +7,6 @@ import LearningPanel from './components/LearningPanel';
 import SummaryCards from './components/SummaryCards';
 import LiveFeed from './components/LiveFeed';
 import GlobalParetoChart from './components/GlobalParetoChart';
-import StabilityQualityQuadrant from './components/charts/StabilityQualityQuadrant';
 import ActionQueue from './components/ActionQueue';
 import StatusBar from './components/StatusBar';
 import ReferenceArchitectures from './components/ReferenceArchitectures';
@@ -1596,9 +1595,8 @@ function AppContent({ onRunningChange }) {
               </div>
               <div className="overview-right card" style={{ padding: 24 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Discovery Frontier</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 20 }}>
+                <div>
                   <GlobalParetoChart programs={leaderboardEntries} onSelectProgram={handleSelectProgram} onNavigateTab={(tab) => setActiveTab(tab)} />
-                  <StabilityQualityQuadrant entries={leaderboardEntries} onSelectProgram={handleSelectProgram} />
                 </div>
                 <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 20 }}>
                   <LiveFeed
@@ -1660,7 +1658,9 @@ function AppContent({ onRunningChange }) {
             <AnalyticsTab
               data={data}
               insights={centralizedInsights}
+              leaderboardEntries={leaderboardEntries}
               onSelectExperiment={handleSelectExperiment}
+              onSelectProgram={handleSelectProgram}
               onRerunExperiment={handleRerunExperiment}
               onFillGapsExperiment={handleFillGapsExperiment}
               onNavigateStrategy={handleNavigateStrategy}

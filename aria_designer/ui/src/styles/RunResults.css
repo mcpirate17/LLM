@@ -1,5 +1,92 @@
 .eval-results { padding: 4px 0; font-size: 13px; }
 
+.score-discovery-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(23, 163, 255, 0.12), rgba(15, 26, 46, 0.96));
+}
+
+.score-discovery-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.composite-score-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 78px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+}
+
+.composite-score-badge.tone-strong {
+  color: #24d1a0;
+  border-color: rgba(36, 209, 160, 0.45);
+  background: rgba(36, 209, 160, 0.12);
+}
+
+.composite-score-badge.tone-promising {
+  color: #17a3ff;
+  border-color: rgba(23, 163, 255, 0.45);
+  background: rgba(23, 163, 255, 0.12);
+}
+
+.composite-score-badge.tone-weak,
+.composite-score-badge.tone-muted {
+  color: #f0a020;
+  border-color: rgba(240, 160, 48, 0.45);
+  background: rgba(240, 160, 48, 0.12);
+}
+
+.score-discovery-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.run-fingerprint-link {
+  color: #9ad1ff;
+  font-family: monospace;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.run-fingerprint-link:hover {
+  color: #d8eeff;
+  text-decoration: underline;
+}
+
+.compare-run-button {
+  border: 1px solid rgba(23, 163, 255, 0.45);
+  background: rgba(23, 163, 255, 0.12);
+  color: #d8eeff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.compare-run-button:hover {
+  background: rgba(23, 163, 255, 0.2);
+}
+
 .eval-stepper { display: flex; flex-direction: column; gap: 0; margin-bottom: 12px; }
 .eval-step {
   display: flex; align-items: center; gap: 8px;

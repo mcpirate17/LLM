@@ -7,6 +7,7 @@ import InspectorHeader from './Inspector/InspectorHeader';
 import PropertyField from './Inspector/PropertyField';
 import PortList from './Inspector/PortList';
 import PerformanceInfo from './Inspector/PerformanceInfo';
+import ContextualTip from './ContextualTip';
 
 function getParamGroup(paramName, schema) {
   const key = String(paramName || '').toLowerCase();
@@ -136,6 +137,8 @@ function InspectorMain({ selectedNode, nodeCount, edgeCount, onParamChange, help
       <InspectorHeader comp={comp} nodeId={selectedNode.id} />
 
       {comp.description && <div className="props-desc">{comp.description}</div>}
+
+      <ContextualTip componentId={comp?.componentId} />
 
       {comp.errors?.length > 0 && (
         <div className="props-errors">

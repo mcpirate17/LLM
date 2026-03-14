@@ -3,6 +3,7 @@ import LabNotebook from '../LabNotebook';
 import CycleTimeline from '../CycleTimeline';
 import InsightsPanel from '../InsightsPanel';
 import TrendCharts, { ExperimentDataTab } from '../TrendCharts';
+import StabilityQualityQuadrant from '../charts/StabilityQualityQuadrant';
 import { apiCall } from '../../services/apiService';
 
 export class ErrorBoundary extends React.Component {
@@ -214,9 +215,11 @@ function ReferenceBaselinesPanel() {
 export function AnalyticsTab({
   data,
   insights,
+  leaderboardEntries = [],
   tabData = {},
   tabErrors = {},
   onSelectExperiment,
+  onSelectProgram,
   onRerunExperiment,
   onFillGapsExperiment,
   onNavigateStrategy,
@@ -238,7 +241,13 @@ export function AnalyticsTab({
       {analyticsView === 'trends' && (
         <ErrorBoundary>
           <Suspense fallback={<LazyFallback />}>
-            <TrendCharts onSelectExperiment={onSelectExperiment} />
+            <div style={{ display: 'grid', gap: 16 }}>
+              <TrendCharts onSelectExperiment={onSelectExperiment} />
+              <StabilityQualityQuadrant
+                entries={leaderboardEntries}
+                onSelectProgram={onSelectProgram}
+              />
+            </div>
           </Suspense>
         </ErrorBoundary>
       )}

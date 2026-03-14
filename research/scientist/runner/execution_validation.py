@@ -348,10 +348,10 @@ class _ExecutionValidationMixin:
                 ):
                     results["best_novelty_score"] = source_novelty
 
-                # Update leaderboard — find the actual entry for this result
-                for entry in nb.get_leaderboard(limit=200):
-                    if entry.get("result_id") == source_result_id:
-                        nb.promote_to_tier(
+                # Update leaderboard — direct lookup by result_id
+                entry = nb.get_leaderboard_entry(source_result_id)
+                if entry:
+                    nb.promote_to_tier(
                             entry_id=entry["entry_id"],
                             tier=tier,
                             validation_loss_ratio=val_loss_ratio,
@@ -386,17 +386,97 @@ class _ExecutionValidationMixin:
                             max_viable_seq_len=max_viable_seq_len,
                             scaling_regime=scaling_regime,
                         )
-                        # Store detailed benchmark payload
-                        external_benchmarks_payload = {}
-                        scaling_payload = coerce_dict_payload(scaling_result)
-                        if scaling_payload is not None:
-                            external_benchmarks_payload.update(scaling_payload)
-                            external_benchmarks_payload["scaling_comparison"] = scaling_payload
-                        if long_context_details is not None:
-                            external_benchmarks_payload["long_context"] = long_context_details
-                        if external_benchmarks_payload:
-                            nb.set_external_benchmarks(source_result_id, external_benchmarks_payload)
-                        break
+                    # Store detailed benchmark payload
+                    external_benchmarks_payload = {}
+                    scaling_payload = coerce_dict_payload(scaling_result)
+                    if scaling_payload is not None:
+                        external_benchmarks_payload.update(scaling_payload)
+                        external_benchmarks_payload["scaling_comparison"] = scaling_payload
+                    if long_context_details is not None:
+                        external_benchmarks_payload["long_context"] = long_context_details
+                    if external_benchmarks_payload:
+                        nb.set_external_benchmarks(source_result_id, external_benchmarks_payload)
+
+                # Trajectory probe — run after leaderboard update to get
+                # peak_ppl / steps_to_divergence / ppl_500 for breakthrough
+                # detection and composite scoring.
+                trajectory_composite = None
+                try:
+                    if graph_json_str and len(passed_seeds) > 0:
+                        from ...eval.wikitext_eval import evaluate_wikitext_trajectory
+                        traj_graph = graph_from_json(graph_json_str)
+                        traj_layers = [traj_graph] * config.n_layers
+                        traj_model = compile_model(
+                            traj_layers,
+                            vocab_size=config.vocab_size,
+                            max_seq_len=128,
+                        )
+                        traj_model = traj_model.to(dev)
+                        traj_result = evaluate_wikitext_trajectory(
+                            traj_model, config.vocab_size, dev_str,
+                            checkpoints=(200, 500, 1000, 2000, 4000),
+                            seq_len=128,
+                        )
+                        del traj_model
+                        if dev.type == "cuda":
+                            torch.cuda.empty_cache()
+
+                        traj_peak_ppl = traj_result.get("peak_ppl")
+                        traj_steps_div = traj_result.get("steps_to_divergence")
+                        traj_ppl_500 = None
+                        traj_ckpts = traj_result.get("checkpoints", {})
+                        if 500 in traj_ckpts:
+                            traj_ppl_500 = traj_ckpts[500].get("ppl")
+
+                        # Update leaderboard with trajectory data
+                        entry = nb.get_leaderboard_entry(source_result_id)
+                        if entry:
+                            traj_update = {}
+                            if traj_peak_ppl is not None:
+                                traj_update["peak_ppl"] = traj_peak_ppl
+                                import math as _math
+                                _vocab = config.vocab_size or 32000
+                                _ws = max(0.0, _math.log(_vocab / traj_peak_ppl) / _math.log(_vocab))
+                                traj_update["wikitext_score"] = round(_ws, 4)
+                            if traj_result.get("peak_step") is not None:
+                                traj_update["peak_step"] = traj_result["peak_step"]
+                            if traj_steps_div is not None:
+                                traj_update["steps_to_divergence"] = traj_steps_div
+                            if traj_ppl_500 is not None:
+                                traj_update["ppl_500"] = traj_ppl_500
+                            if traj_update:
+                                nb.promote_to_tier(
+                                    entry_id=entry["entry_id"],
+                                    tier=tier,
+                                    **traj_update,
+                                )
+                                # Re-read composite for breakthrough check
+                                updated = nb.conn.execute(
+                                    "SELECT composite_score FROM leaderboard WHERE entry_id = ?",
+                                    (entry["entry_id"],),
+                                ).fetchone()
+                                if updated:
+                                    trajectory_composite = updated["composite_score"]
+                        logger.info(
+                            "Trajectory probe %s: peak_ppl=%.1f steps_to_div=%s ppl_500=%s composite=%.1f",
+                            source_result_id[:8],
+                            traj_peak_ppl or 0,
+                            traj_steps_div,
+                            traj_ppl_500,
+                            trajectory_composite or 0,
+                        )
+                except Exception as e:
+                    logger.warning("Trajectory probe failed for %s: %s", source_result_id[:8], e)
+
+                # Trajectory-aware breakthrough: composite > 300 or
+                # never-diverging with frontier-quality PPL
+                if not is_breakthrough and trajectory_composite is not None:
+                    if trajectory_composite > 300.0:
+                        is_breakthrough = True
+                        logger.info(
+                            "Trajectory-aware breakthrough: %s composite=%.1f",
+                            source_result_id[:8], trajectory_composite,
+                        )
 
                 # Breakthrough detection
                 if is_breakthrough:

@@ -756,15 +756,19 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
 
     captured = {}
 
-    monkeypatch.setattr(main_mod, "HAS_BRIDGE", True)
-    monkeypatch.setattr(main_mod, "bridge_evaluate", lambda *args, **kwargs: _FakeBridgeResult())
-    monkeypatch.setattr(main_mod.settings, "LINEAGE_SYNC_ENABLED", True)
+    from app.routers import eval as eval_mod
+    from app import shared_api as shared_mod
+
+    monkeypatch.setattr(eval_mod, "HAS_BRIDGE", True)
+    monkeypatch.setattr(eval_mod, "bridge_evaluate", lambda *args, **kwargs: _FakeBridgeResult())
+    monkeypatch.setattr(shared_mod, "HAS_BRIDGE", True)
+    monkeypatch.setattr(shared_mod.settings, "LINEAGE_SYNC_ENABLED", True)
 
     def _capture_sync(payload):
         captured["payload"] = payload
         return True
 
-    monkeypatch.setattr(main_mod, "_sync_lineage_to_research", _capture_sync)
+    monkeypatch.setattr(eval_mod, "_sync_lineage_to_research", _capture_sync)
 
     r_eval = client.post(
         "/api/v1/workflows/evaluate",

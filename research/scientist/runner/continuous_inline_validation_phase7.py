@@ -14,6 +14,7 @@ class _ContinuousInlineValidationPhase7Mixin:
     """Split helpers for continuous inline validation orchestration."""
 
     def _inline_validation_candidate_ids(self, config: RunConfig, leaderboard: List[Dict[str, Any]]) -> List[str]:
+        # Primary: investigation-tier entries ready for validation
         candidates = [
             e
             for e in leaderboard
@@ -21,6 +22,19 @@ class _ContinuousInlineValidationPhase7Mixin:
             and e.get("investigation_robustness") is not None
             and e["investigation_robustness"] >= config.investigation_robustness_threshold
         ]
+        # Recovery: validation-tier entries that were promoted but never fully
+        # validated (stuck at PROBED with validation_passed=0).  This handles
+        # the case where _pending_validation was lost on runner restart.
+        stuck = [
+            e
+            for e in leaderboard
+            if e.get("tier") == "validation"
+            and not e.get("validation_passed")
+            and e.get("evaluation_stage") == "PROBED"
+            and e.get("investigation_passed")
+        ]
+        if stuck:
+            candidates.extend(stuck)
         if not candidates:
             return []
         return [c["result_id"] for c in candidates[: config.auto_validate_top_n] if c.get("result_id")]

@@ -2,14 +2,15 @@ import React from 'react';
 import AriaAvatar from './AriaAvatar';
 import '../styles/Header.css';
 
-const Header = ({ 
-  workflowMeta, 
-  saveState, 
-  onSave, 
+const Header = ({
+  workflowMeta,
+  saveState,
+  onSave,
   onExport,
-  onImport, 
-  onAskAria, 
-  onShowShortcuts, 
+  onImport,
+  onAskAria,
+  onShowHelp,
+  onShowShortcuts,
   runStatus,
   onValidate,
   onCompile,
@@ -26,6 +27,19 @@ const Header = ({
           <span className="workflow-name">{workflowMeta.name || 'Untitled Workflow'}</span>
           {saveState.version && (
             <span className="workflow-version">v{saveState.version}</span>
+          )}
+          {saveState.discoveryUrl && saveState.fingerprint && (
+            <span className="workflow-fingerprint">
+              fp:{' '}
+              <a
+                href={saveState.discoveryUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="fingerprint-link"
+              >
+                {saveState.fingerprint.slice(0, 12)}...
+              </a>
+            </span>
           )}
         </div>
       </div>
@@ -92,6 +106,7 @@ const Header = ({
         <div className="toolbar-group ai">
           <button className="btn-aria" onClick={onAskAria} data-feedback="depress">Ask Aria</button>
         </div>
+        <button className="btn-secondary" onClick={onShowHelp} title="Help &amp; Component Guide" data-feedback="depress">Help</button>
         <button className="btn-icon" onClick={onShowShortcuts} title="Keyboard Shortcuts" data-feedback="depress">⌨️</button>
       </div>
     </header>

@@ -9,11 +9,13 @@ import json
 import logging
 import sqlite3
 import threading
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
+
+from .component_identity import canonicalize_workflow
 
 logger = logging.getLogger(__name__)
+
 
 _DB_PATH = Path(__file__).resolve().parent.parent / "aria_designer.db"
 _local = threading.local()
@@ -85,11 +87,30 @@ CREATE TABLE IF NOT EXISTS suggestion_outcomes (
     session_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS aria_conversations (
+    session_id TEXT PRIMARY KEY,
+    workflow_id TEXT,
+    started_at TEXT NOT NULL,
+    last_message_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE IF NOT EXISTS aria_messages (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES aria_conversations(session_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_components_category ON components(category);
 CREATE INDEX IF NOT EXISTS idx_components_status ON components(status);
 CREATE INDEX IF NOT EXISTS idx_workflows_author ON workflows(author);
 CREATE INDEX IF NOT EXISTS idx_proposals_status ON aria_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_suggestion_outcomes_id ON suggestion_outcomes(suggestion_id);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON aria_messages(session_id);
 """
 
 
@@ -177,12 +198,44 @@ def list_components(
 def get_component(component_id: str) -> Optional[Dict[str, Any]]:
     """Get a single component by ID."""
     conn = _get_conn()
-    row = conn.execute(
-        "SELECT manifest_json FROM components WHERE id = ?", (component_id,)
-    ).fetchone()
+    token = str(component_id or "").strip().lower()
+    if not token:
+        return None
+    if "/" in token:
+        category, _, manifest_id = token.partition("/")
+        row = conn.execute(
+            "SELECT manifest_json FROM components WHERE id = ? AND category = ?",
+            (manifest_id, category),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT manifest_json FROM components WHERE id = ?",
+                (manifest_id,),
+            ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT manifest_json FROM components WHERE id = ?",
+            (token,),
+        ).fetchone()
     if row is None:
         return None
     return json.loads(row["manifest_json"])
+
+
+def list_component_types(status: Optional[str] = None) -> Set[str]:
+    """List canonical category/id component types from the live registry."""
+    conn = _get_conn()
+    sql = "SELECT id, category FROM components WHERE 1=1"
+    params: list[str] = []
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    rows = conn.execute(sql, params).fetchall()
+    return {
+        f"{row['category']}/{row['id']}".lower()
+        for row in rows
+        if row["id"] and row["category"]
+    }
 
 
 def update_component_status(component_id: str, status: str, updated_at: str) -> bool:
@@ -213,6 +266,14 @@ def save_workflow(
     created_at: str = "", updated_at: str = "",
 ) -> int:
     """Save or update a workflow. Returns version number."""
+    # Canonicalize component IDs before saving
+    try:
+        wf = json.loads(graph_json)
+        canonicalize_workflow(wf)
+        graph_json = json.dumps(wf)
+    except Exception as e:
+        logger.warning("Failed to canonicalize workflow %s before save: %s", workflow_id, e)
+
     conn = _get_conn()
     existing = conn.execute(
         "SELECT version FROM workflows WHERE id = ?", (workflow_id,)
@@ -340,6 +401,76 @@ def record_suggestion_outcome(
         ),
     )
     conn.commit()
+
+
+# ── Conversations ─────────────────────────────────────────────────────
+
+def create_conversation(
+    session_id: str, workflow_id: Optional[str], started_at: str,
+) -> None:
+    """Create a new chat conversation session."""
+    conn = _get_conn()
+    conn.execute(
+        """INSERT INTO aria_conversations (session_id, workflow_id, started_at, last_message_at, status)
+           VALUES (?, ?, ?, ?, 'active')""",
+        (session_id, workflow_id, started_at, started_at),
+    )
+    conn.commit()
+
+
+def get_conversation(session_id: str) -> Optional[Dict[str, Any]]:
+    """Get a conversation by session ID."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM aria_conversations WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_conversation_timestamp(session_id: str, timestamp: str) -> None:
+    """Update last_message_at for a conversation."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE aria_conversations SET last_message_at = ? WHERE session_id = ?",
+        (timestamp, session_id),
+    )
+    conn.commit()
+
+
+def end_conversation(session_id: str, timestamp: str) -> bool:
+    """Mark a conversation as ended."""
+    conn = _get_conn()
+    cur = conn.execute(
+        "UPDATE aria_conversations SET status = 'ended', last_message_at = ? WHERE session_id = ?",
+        (timestamp, session_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def add_message(
+    session_id: str, role: str, content: str, created_at: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Add a message to a conversation. Returns rowid."""
+    conn = _get_conn()
+    cur = conn.execute(
+        """INSERT INTO aria_messages (session_id, role, content, metadata_json, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (session_id, role, content, json.dumps(metadata) if metadata else None, created_at),
+    )
+    conn.commit()
+    return cur.lastrowid or 0
+
+
+def get_messages(session_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """Get messages for a conversation, ordered chronologically."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM aria_messages WHERE session_id = ? ORDER BY rowid ASC LIMIT ?",
+        (session_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def cleanup_orphaned_workflows(max_age_hours: int = 24) -> int:

@@ -58,6 +58,7 @@ function AskAriaModal({
   onClose,
   onSubmitPrompt,
   onSuggest,
+  onSwitchToChat,
   suggestions = [],
   loading = false,
 }) {
@@ -206,6 +207,14 @@ function AskAriaModal({
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {onSwitchToChat && (
+          <div style={{ textAlign: 'center', marginTop: 12, borderTop: '1px solid var(--border, #ddd)', paddingTop: 12 }}>
+            <button type="button" className="btn-secondary" onClick={onSwitchToChat} style={{ fontSize: 12 }}>
+              Switch to Chat Mode
+            </button>
           </div>
         )}
       </div>

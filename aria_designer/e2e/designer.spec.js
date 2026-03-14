@@ -25,8 +25,9 @@ test.describe('Aria Designer', () => {
     // Wait for components to load
     await expect(page.locator('.statusbar')).toContainText('components loaded');
 
-    // Select an example
-    await page.selectOption('.actions select', '/examples/tropical_block.json');
+    // Select an example via File menu
+    await page.locator('button:has-text("File")').click();
+    await page.locator('button:has-text("Example: Tropical Block")').click();
     await page.waitForTimeout(500);
 
     // Should have nodes

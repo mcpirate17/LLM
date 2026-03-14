@@ -589,7 +589,13 @@ class _ExecutionScreeningMixin:
         excluded_ops = excluded_ops | self._excluded_ops_overrides
         op_weights = {**op_weights, **self._op_weights_overrides}
         grammar = self._build_grammar_config(config, excluded_ops=excluded_ops, op_weights=op_weights)
-        grammar.template_weights = template_weights
+        # Merge learned template/motif weights, but don't overwrite routing_first preset
+        if grammar.routing_mandatory:
+            # Routing-first: only merge in weights that don't conflict
+            for k, v in template_weights.items():
+                grammar.template_weights.setdefault(k, v)
+        else:
+            grammar.template_weights = template_weights
         grammar.motif_weights = motif_weights
         old_weights = dict(grammar.category_weights)
 

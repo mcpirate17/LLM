@@ -218,6 +218,13 @@ class _ExecutionInvestigationMixin:
                 results["stage0_passed"] += 1
                 results["stage05_passed"] += 1
 
+                # Gate: pass investigation if loss quality is good enough.
+                investigation_passed_early = (
+                    (best_lr or 1.0) < 0.5
+                    and (not brittle_risk
+                         or (best_lr is not None and best_lr < 0.3))
+                )
+
                 investigation_entry = {
                     "result_id": source_result_id,
                     "robustness": robustness,
@@ -227,6 +234,7 @@ class _ExecutionInvestigationMixin:
                     "novelty_confidence": source.get("novelty_confidence"),
                     "loss_ratio_multiplier": lr_multiplier,
                     "brittle_risk": brittle_risk,
+                    "investigation_passed": investigation_passed_early,
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
                     "best_training_program": best_tp.get("training_program") if best_tp else None,
@@ -253,15 +261,7 @@ class _ExecutionInvestigationMixin:
                             best_tp_json = json.dumps(tp.to_dict())
                             break
 
-                # Gate: pass investigation if loss quality is good enough.
-                # Robustness is tracked as a ranking signal (robustness_grade)
-                # but no longer a hard gate — models with 1/3 pass rate but
-                # strong real-token quality should still proceed.
-                investigation_passed = (
-                    (best_lr or 1.0) < 0.5
-                    and (not brittle_risk
-                         or (best_lr is not None and best_lr < 0.3))
-                )
+                investigation_passed = investigation_passed_early
 
                 # Submit benchmark evals to background thread so the
                 # investigation loop can proceed to the next candidate.

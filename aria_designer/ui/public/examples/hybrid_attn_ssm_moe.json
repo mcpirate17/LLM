@@ -3,70 +3,481 @@
   "workflow_id": "wf_example_hybrid_attn_ssm_moe",
   "name": "Hybrid Attention+SSM with MoE (2 layers)",
   "nodes": [
-    {"id": "input",     "component_type": "io/input",                      "params": {"dim": 256, "vocab_size": 32000, "seq_len": 64},  "ui_meta": {"position": {"x": 400, "y": 0}}},
-    {"id": "rope",      "component_type": "positional/rope",               "params": {},                                                 "ui_meta": {"position": {"x": 400, "y": 120}}},
-
-    {"id": "ln1",       "component_type": "normalization/rmsnorm_pre",     "params": {},   "ui_meta": {"position": {"x": 400, "y": 240}}},
-    {"id": "split1",    "component_type": "structural/split2",             "params": {},   "ui_meta": {"position": {"x": 400, "y": 360}}},
-    {"id": "attn1",     "component_type": "mixing/softmax_attention",      "params": {},   "ui_meta": {"position": {"x": 220, "y": 480}}},
-    {"id": "ssm1",      "component_type": "mixing/state_space",            "params": {},   "ui_meta": {"position": {"x": 580, "y": 480}}},
-    {"id": "merge1",    "component_type": "structural/concat",             "params": {},   "ui_meta": {"position": {"x": 400, "y": 600}}},
-    {"id": "proj1",     "component_type": "linear_algebra/linear_proj",    "params": {},   "ui_meta": {"position": {"x": 400, "y": 720}}},
-    {"id": "res1",      "component_type": "math/add",                      "params": {},   "ui_meta": {"position": {"x": 400, "y": 840}}},
-
-    {"id": "ln2",       "component_type": "normalization/rmsnorm_pre",     "params": {},   "ui_meta": {"position": {"x": 400, "y": 960}}},
-    {"id": "moe1",      "component_type": "channel_mixing/moe_topk",       "params": {},   "ui_meta": {"position": {"x": 220, "y": 1080}}},
-    {"id": "res2",      "component_type": "math/add",                      "params": {},   "ui_meta": {"position": {"x": 400, "y": 1200}}},
-
-    {"id": "ln3",       "component_type": "normalization/rmsnorm_pre",     "params": {},   "ui_meta": {"position": {"x": 400, "y": 1320}}},
-    {"id": "split2",    "component_type": "structural/split2",             "params": {},   "ui_meta": {"position": {"x": 400, "y": 1440}}},
-    {"id": "attn2",     "component_type": "mixing/linear_attention",       "params": {},   "ui_meta": {"position": {"x": 220, "y": 1560}}},
-    {"id": "ssm2",      "component_type": "mixing/state_space",            "params": {},   "ui_meta": {"position": {"x": 580, "y": 1560}}},
-    {"id": "merge2",    "component_type": "structural/concat",             "params": {},   "ui_meta": {"position": {"x": 400, "y": 1680}}},
-    {"id": "proj2",     "component_type": "linear_algebra/linear_proj",    "params": {},   "ui_meta": {"position": {"x": 400, "y": 1800}}},
-    {"id": "res3",      "component_type": "math/add",                      "params": {},   "ui_meta": {"position": {"x": 400, "y": 1920}}},
-
-    {"id": "ln4",       "component_type": "normalization/rmsnorm_pre",     "params": {},   "ui_meta": {"position": {"x": 400, "y": 2040}}},
-    {"id": "swiglu",    "component_type": "channel_mixing/swiglu_mlp",     "params": {},   "ui_meta": {"position": {"x": 220, "y": 2160}}},
-    {"id": "res4",      "component_type": "math/add",                      "params": {},   "ui_meta": {"position": {"x": 400, "y": 2280}}},
-
-    {"id": "ln_final",  "component_type": "normalization/layernorm_pre",   "params": {},   "ui_meta": {"position": {"x": 400, "y": 2400}}},
-    {"id": "output",    "component_type": "io/output_head",                "params": {"vocab_size": 32000, "tie_weights": true},          "ui_meta": {"position": {"x": 400, "y": 2520}}}
+    {
+      "id": "input",
+      "component_type": "io/input",
+      "params": {
+        "dim": 256,
+        "vocab_size": 32000,
+        "seq_len": 64
+      },
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "rope",
+      "component_type": "positional/rope",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 120
+        }
+      }
+    },
+    {
+      "id": "ln1",
+      "component_type": "normalization/rmsnorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 240
+        }
+      }
+    },
+    {
+      "id": "split1",
+      "component_type": "structural/split2",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 360
+        }
+      }
+    },
+    {
+      "id": "attn1",
+      "component_type": "mixing/softmax_attention",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 220,
+          "y": 480
+        }
+      }
+    },
+    {
+      "id": "ssm1",
+      "component_type": "linear_algebra/selective_scan",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 580,
+          "y": 480
+        }
+      }
+    },
+    {
+      "id": "merge1",
+      "component_type": "structural/concat",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 600
+        }
+      }
+    },
+    {
+      "id": "proj1",
+      "component_type": "linear_algebra/linear_proj",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 720
+        }
+      }
+    },
+    {
+      "id": "res1",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 840
+        }
+      }
+    },
+    {
+      "id": "ln2",
+      "component_type": "normalization/rmsnorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 960
+        }
+      }
+    },
+    {
+      "id": "moe1",
+      "component_type": "channel_mixing/moe_topk",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 220,
+          "y": 1080
+        }
+      }
+    },
+    {
+      "id": "res2",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 1200
+        }
+      }
+    },
+    {
+      "id": "ln3",
+      "component_type": "normalization/rmsnorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 1320
+        }
+      }
+    },
+    {
+      "id": "split2",
+      "component_type": "structural/split2",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 1440
+        }
+      }
+    },
+    {
+      "id": "attn2",
+      "component_type": "mixing/linear_attention",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 220,
+          "y": 1560
+        }
+      }
+    },
+    {
+      "id": "ssm2",
+      "component_type": "linear_algebra/selective_scan",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 580,
+          "y": 1560
+        }
+      }
+    },
+    {
+      "id": "merge2",
+      "component_type": "structural/concat",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 1680
+        }
+      }
+    },
+    {
+      "id": "proj2",
+      "component_type": "linear_algebra/linear_proj",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 1800
+        }
+      }
+    },
+    {
+      "id": "res3",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 1920
+        }
+      }
+    },
+    {
+      "id": "ln4",
+      "component_type": "normalization/rmsnorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 2040
+        }
+      }
+    },
+    {
+      "id": "swiglu",
+      "component_type": "channel_mixing/swiglu_mlp",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 220,
+          "y": 2160
+        }
+      }
+    },
+    {
+      "id": "res4",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 2280
+        }
+      }
+    },
+    {
+      "id": "ln_final",
+      "component_type": "normalization/layernorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 2400
+        }
+      }
+    },
+    {
+      "id": "output",
+      "component_type": "io/output_head",
+      "params": {
+        "vocab_size": 32000,
+        "tie_weights": true
+      },
+      "ui_meta": {
+        "position": {
+          "x": 400,
+          "y": 2520
+        }
+      }
+    }
   ],
   "edges": [
-    {"id": "e01", "source": "input",   "source_port": "y",  "target": "rope",    "target_port": "x"},
-    {"id": "e02", "source": "rope",    "source_port": "y",  "target": "ln1",     "target_port": "x"},
-
-    {"id": "e03", "source": "ln1",     "source_port": "y",  "target": "split1",  "target_port": "x"},
-    {"id": "e04", "source": "split1",  "source_port": "y0", "target": "attn1",   "target_port": "x"},
-    {"id": "e05", "source": "split1",  "source_port": "y1", "target": "ssm1",    "target_port": "x"},
-    {"id": "e06", "source": "attn1",   "source_port": "y",  "target": "merge1",  "target_port": "a"},
-    {"id": "e07", "source": "ssm1",    "source_port": "y",  "target": "merge1",  "target_port": "b"},
-    {"id": "e08", "source": "merge1",  "source_port": "y",  "target": "proj1",   "target_port": "x"},
-    {"id": "e09", "source": "proj1",   "source_port": "y",  "target": "res1",    "target_port": "b"},
-    {"id": "e10", "source": "rope",    "source_port": "y",  "target": "res1",    "target_port": "a"},
-
-    {"id": "e11", "source": "res1",    "source_port": "y",  "target": "ln2",     "target_port": "x"},
-    {"id": "e12", "source": "ln2",     "source_port": "y",  "target": "moe1",    "target_port": "x"},
-    {"id": "e13", "source": "moe1",    "source_port": "y",  "target": "res2",    "target_port": "b"},
-    {"id": "e14", "source": "res1",    "source_port": "y",  "target": "res2",    "target_port": "a"},
-
-    {"id": "e15", "source": "res2",    "source_port": "y",  "target": "ln3",     "target_port": "x"},
-    {"id": "e16", "source": "ln3",     "source_port": "y",  "target": "split2",  "target_port": "x"},
-    {"id": "e17", "source": "split2",  "source_port": "y0", "target": "attn2",   "target_port": "x"},
-    {"id": "e18", "source": "split2",  "source_port": "y1", "target": "ssm2",    "target_port": "x"},
-    {"id": "e19", "source": "attn2",   "source_port": "y",  "target": "merge2",  "target_port": "a"},
-    {"id": "e20", "source": "ssm2",    "source_port": "y",  "target": "merge2",  "target_port": "b"},
-    {"id": "e21", "source": "merge2",  "source_port": "y",  "target": "proj2",   "target_port": "x"},
-    {"id": "e22", "source": "proj2",   "source_port": "y",  "target": "res3",    "target_port": "b"},
-    {"id": "e23", "source": "res2",    "source_port": "y",  "target": "res3",    "target_port": "a"},
-
-    {"id": "e24", "source": "res3",    "source_port": "y",  "target": "ln4",     "target_port": "x"},
-    {"id": "e25", "source": "ln4",     "source_port": "y",  "target": "swiglu",  "target_port": "x"},
-    {"id": "e26", "source": "swiglu",  "source_port": "y",  "target": "res4",    "target_port": "b"},
-    {"id": "e27", "source": "res3",    "source_port": "y",  "target": "res4",    "target_port": "a"},
-
-    {"id": "e28", "source": "res4",    "source_port": "y",  "target": "ln_final","target_port": "x"},
-    {"id": "e29", "source": "ln_final","source_port": "y",  "target": "output",  "target_port": "x"}
+    {
+      "id": "e01",
+      "source": "input",
+      "source_port": "y",
+      "target": "rope",
+      "target_port": "x"
+    },
+    {
+      "id": "e02",
+      "source": "rope",
+      "source_port": "y",
+      "target": "ln1",
+      "target_port": "x"
+    },
+    {
+      "id": "e03",
+      "source": "ln1",
+      "source_port": "y",
+      "target": "split1",
+      "target_port": "x"
+    },
+    {
+      "id": "e04",
+      "source": "split1",
+      "source_port": "y0",
+      "target": "attn1",
+      "target_port": "x"
+    },
+    {
+      "id": "e05",
+      "source": "split1",
+      "source_port": "y1",
+      "target": "ssm1",
+      "target_port": "x"
+    },
+    {
+      "id": "e06",
+      "source": "attn1",
+      "source_port": "y",
+      "target": "merge1",
+      "target_port": "a"
+    },
+    {
+      "id": "e07",
+      "source": "ssm1",
+      "source_port": "y",
+      "target": "merge1",
+      "target_port": "b"
+    },
+    {
+      "id": "e08",
+      "source": "merge1",
+      "source_port": "y",
+      "target": "proj1",
+      "target_port": "x"
+    },
+    {
+      "id": "e09",
+      "source": "proj1",
+      "source_port": "y",
+      "target": "res1",
+      "target_port": "b"
+    },
+    {
+      "id": "e10",
+      "source": "rope",
+      "source_port": "y",
+      "target": "res1",
+      "target_port": "a"
+    },
+    {
+      "id": "e11",
+      "source": "res1",
+      "source_port": "y",
+      "target": "ln2",
+      "target_port": "x"
+    },
+    {
+      "id": "e12",
+      "source": "ln2",
+      "source_port": "y",
+      "target": "moe1",
+      "target_port": "x"
+    },
+    {
+      "id": "e13",
+      "source": "moe1",
+      "source_port": "y",
+      "target": "res2",
+      "target_port": "b"
+    },
+    {
+      "id": "e14",
+      "source": "res1",
+      "source_port": "y",
+      "target": "res2",
+      "target_port": "a"
+    },
+    {
+      "id": "e15",
+      "source": "res2",
+      "source_port": "y",
+      "target": "ln3",
+      "target_port": "x"
+    },
+    {
+      "id": "e16",
+      "source": "ln3",
+      "source_port": "y",
+      "target": "split2",
+      "target_port": "x"
+    },
+    {
+      "id": "e17",
+      "source": "split2",
+      "source_port": "y0",
+      "target": "attn2",
+      "target_port": "x"
+    },
+    {
+      "id": "e18",
+      "source": "split2",
+      "source_port": "y1",
+      "target": "ssm2",
+      "target_port": "x"
+    },
+    {
+      "id": "e19",
+      "source": "attn2",
+      "source_port": "y",
+      "target": "merge2",
+      "target_port": "a"
+    },
+    {
+      "id": "e20",
+      "source": "ssm2",
+      "source_port": "y",
+      "target": "merge2",
+      "target_port": "b"
+    },
+    {
+      "id": "e21",
+      "source": "merge2",
+      "source_port": "y",
+      "target": "proj2",
+      "target_port": "x"
+    },
+    {
+      "id": "e22",
+      "source": "proj2",
+      "source_port": "y",
+      "target": "res3",
+      "target_port": "b"
+    },
+    {
+      "id": "e23",
+      "source": "res2",
+      "source_port": "y",
+      "target": "res3",
+      "target_port": "a"
+    },
+    {
+      "id": "e24",
+      "source": "res3",
+      "source_port": "y",
+      "target": "ln4",
+      "target_port": "x"
+    },
+    {
+      "id": "e25",
+      "source": "ln4",
+      "source_port": "y",
+      "target": "swiglu",
+      "target_port": "x"
+    },
+    {
+      "id": "e26",
+      "source": "swiglu",
+      "source_port": "y",
+      "target": "res4",
+      "target_port": "b"
+    },
+    {
+      "id": "e27",
+      "source": "res3",
+      "source_port": "y",
+      "target": "res4",
+      "target_port": "a"
+    },
+    {
+      "id": "e28",
+      "source": "res4",
+      "source_port": "y",
+      "target": "ln_final",
+      "target_port": "x"
+    },
+    {
+      "id": "e29",
+      "source": "ln_final",
+      "source_port": "y",
+      "target": "output",
+      "target_port": "x"
+    }
   ]
 }

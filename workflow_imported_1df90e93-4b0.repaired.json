@@ -1,0 +1,266 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "imported_1df90e93-4b0-repaired",
+  "name": "Imported 1df90e93-4b0 Repaired",
+  "nodes": [
+    {
+      "id": "node_0",
+      "component_type": "input",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 750,
+          "y": -510
+        }
+      }
+    },
+    {
+      "id": "n_101",
+      "component_type": "difficulty_scorer",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 735,
+          "y": -360
+        }
+      }
+    },
+    {
+      "id": "n_102",
+      "component_type": "lane_router",
+      "params": {
+        "num_lanes": 2
+      },
+      "ui_meta": {
+        "position": {
+          "x": 735,
+          "y": -210
+        }
+      }
+    },
+    {
+      "id": "n_easy_dispatch",
+      "component_type": "conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 0
+      },
+      "ui_meta": {
+        "position": {
+          "x": 585,
+          "y": -60
+        }
+      }
+    },
+    {
+      "id": "n_hard_dispatch",
+      "component_type": "conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 1
+      },
+      "ui_meta": {
+        "position": {
+          "x": 885,
+          "y": -60
+        }
+      }
+    },
+    {
+      "id": "aria_ffn_up_d416",
+      "component_type": "linear_proj_up",
+      "params": {
+        "out_dim": 1024
+      },
+      "ui_meta": {
+        "position": {
+          "x": 480,
+          "y": 75
+        }
+      }
+    },
+    {
+      "id": "aria_act_d174",
+      "component_type": "gelu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 540,
+          "y": 225
+        }
+      }
+    },
+    {
+      "id": "node_1",
+      "component_type": "ultrametric_attention",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 885,
+          "y": 75
+        }
+      }
+    },
+    {
+      "id": "n_107",
+      "component_type": "gelu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 900,
+          "y": 225
+        }
+      }
+    },
+    {
+      "id": "n_106",
+      "component_type": "conditional_gather",
+      "params": {
+        "num_lanes": 2
+      },
+      "ui_meta": {
+        "position": {
+          "x": 765,
+          "y": 540
+        }
+      }
+    },
+    {
+      "id": "n_108",
+      "component_type": "layernorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 780,
+          "y": 690
+        }
+      }
+    },
+    {
+      "id": "n_109",
+      "component_type": "low_rank_proj",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 720,
+          "y": 885
+        }
+      }
+    },
+    {
+      "id": "node_out",
+      "component_type": "output_head",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 810,
+          "y": 1050
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_input_difficulty",
+      "source": "node_0",
+      "target": "n_101",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_difficulty_router",
+      "source": "n_101",
+      "target": "n_102",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_router_easy_dispatch",
+      "source": "n_102",
+      "target": "n_easy_dispatch",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_router_hard_dispatch",
+      "source": "n_102",
+      "target": "n_hard_dispatch",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_easy_dispatch_ffn",
+      "source": "n_easy_dispatch",
+      "target": "aria_ffn_up_d416",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_ffn_gelu",
+      "source": "aria_ffn_up_d416",
+      "target": "aria_act_d174",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_hard_dispatch_ultra",
+      "source": "n_hard_dispatch",
+      "target": "node_1",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_ultra_gelu",
+      "source": "node_1",
+      "target": "n_107",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_easy_gather",
+      "source": "aria_act_d174",
+      "target": "n_106",
+      "source_port": "y",
+      "target_port": "a"
+    },
+    {
+      "id": "e_hard_gather",
+      "source": "n_107",
+      "target": "n_106",
+      "source_port": "y",
+      "target_port": "b"
+    },
+    {
+      "id": "e_gather_norm",
+      "source": "n_106",
+      "target": "n_108",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_norm_lowrank",
+      "source": "n_108",
+      "target": "n_109",
+      "source_port": "y",
+      "target_port": "x"
+    },
+    {
+      "id": "e_lowrank_output",
+      "source": "n_109",
+      "target": "node_out",
+      "source_port": "y",
+      "target_port": "x"
+    }
+  ],
+  "metadata": {
+    "source": "research_import_repaired_from_saved_json",
+    "original_file": "workflow_imported_1df90e93-4b0.json",
+    "original_workflow_id": "imported_1df90e93-4b0",
+    "repair_notes": [
+      "Normalized mixed component IDs to actual catalog IDs",
+      "Removed invalid moe_2expert node",
+      "Split routing into explicit easy and hard conditional dispatch nodes",
+      "Kept one GELU per lane, then gather -> layernorm_pre -> low_rank_proj -> output_head"
+    ]
+  }
+}

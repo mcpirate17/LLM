@@ -45,8 +45,16 @@ class _SynthesisMixin:
 
         Returns a shallow copy of config with adjusted grammar settings.
         Uses modular arithmetic to cycle through configurations deterministically.
-        Every 4th experiment (cycle 3 mod 8) uses the exotic preset for complex
-        architecture exploration (~25% of search budget).
+
+        Cycle allocation (mod 8):
+          0: math-space exploration
+          1: deep routing-first (routing_mandatory, 2-3 templates)
+          2: wider, shallower
+          3: efficiency mode (sparse/routing/compression)
+          4: high-risk frequency focus
+          5: routing-first variant (routing_mandatory, high ops)
+          6: default with boosted math space
+          7: exotic preset
         """
         import copy
         cfg = copy.copy(config)
@@ -56,44 +64,56 @@ class _SynthesisMixin:
             # Boost frequency and reduction, suppress dominant categories
             cfg.math_space_weight = 1.0
             cfg.residual_prob = 0.5
+            cfg.max_ops = 16
+            cfg.composition_depth = 2
         elif cycle == 1:
-            # Deeper, narrower
+            # ROUTING-FIRST: deep routing with mandatory routing ops
             cfg.max_depth = 12
             cfg.max_ops = 20
-            cfg.residual_prob = 0.7
+            cfg.residual_prob = 0.8
+            cfg.composition_depth = 3
+            cfg._routing_first_mode = True
         elif cycle == 2:
-            # Wider, shallower
-            cfg.max_depth = 6
-            cfg.max_ops = 12
+            # Wider, shallower but still complex
+            cfg.max_depth = 8
+            cfg.max_ops = 16
             cfg.residual_prob = 0.6
+            cfg.composition_depth = 2
         elif cycle == 3:
             # EFFICIENCY: sparse/routing/compression exploration
-            cfg.max_depth = 8
-            cfg.max_ops = 12
+            cfg.max_depth = 10
+            cfg.max_ops = 16
             cfg.residual_prob = 0.7
+            cfg.composition_depth = 2
             cfg._efficiency_mode = True
         elif cycle == 4:
             # High risk, frequency focus
             cfg.math_space_weight = 3.0
             cfg.residual_prob = 0.4
+            cfg.max_ops = 16
+            cfg.composition_depth = 2
         elif cycle == 5:
-            # Minimal depth, low residual
-            cfg.max_depth = 8
-            cfg.max_ops = 10
-            cfg.math_space_weight = 1.5
-            cfg.residual_prob = 0.3
+            # ROUTING-FIRST variant: high-op routing exploration
+            cfg.max_depth = 10
+            cfg.max_ops = 18
+            cfg.residual_prob = 0.7
+            cfg.composition_depth = 2
+            cfg._routing_first_mode = True
         elif cycle == 6:
-            # Default with boosted math space
+            # Default with boosted math space, deeper composition
             cfg.math_space_weight = 2.5
             cfg.max_depth = 10
-            cfg.residual_prob = 0.7
-        else:
-            # EXOTIC: second exotic slot per 8-cycle (~25% total)
-            cfg.max_depth = 10
             cfg.max_ops = 16
+            cfg.residual_prob = 0.7
+            cfg.composition_depth = 2
+        else:
+            # EXOTIC: complex architecture exploration
+            cfg.max_depth = 12
+            cfg.max_ops = 20
             cfg.residual_prob = 0.4
             cfg.grammar_split_prob = 0.6
             cfg.math_space_weight = 1.5
+            cfg.composition_depth = 3
             cfg._exotic_mode = True
 
         return cfg

@@ -1,49 +1,28 @@
 from __future__ import annotations
 
-import logging
 import importlib.util
+import logging
 from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
-from ..loader import COMPONENTS_ROOT
+from ..component_identity import canonicalize_component_id
 from ..models import ComponentModel, ComponentConfigValidateRequest, utc_now_iso as _utc_now
-
-# Try to import runtime bridge from both import styles.
-try:
-    from runtime.bridge import get_component_execution_capability as bridge_component_capability, list_available_primitives as bridge_list_primitives
-    HAS_BRIDGE = True
-except ImportError:
-    try:
-        from aria_designer.runtime.bridge import get_component_execution_capability as bridge_component_capability, list_available_primitives as bridge_list_primitives
-        HAS_BRIDGE = True
-    except ImportError:
-        bridge_component_capability = None
-        bridge_list_primitives = None
-        HAS_BRIDGE = False
-
-from ..marketplace import search_marketplace, install_component
-from ..benchmark_targets import benchmark_target_catalog
+from ..loader import scan_and_load, COMPONENTS_ROOT
+from ..property_audit import audit_components
+from ..shared_api import (
+    HAS_BRIDGE,
+    _require_component,
+    bridge_component_capability,
+    bridge_list_primitives,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["components"])
 
-# ── Lookup helpers ────────────────────────────────────────────────────
-
-def _require_component(component_id: str):
-    comp = db.get_component(component_id)
-    if comp is None:
-        raise HTTPException(status_code=404, detail=f"Component {component_id} not found")
-    return comp
-
-# ── Health ────────────────────────────────────────────────────────────
-
-@router.get("/health")
-def health() -> Dict[str, Any]:
-    counts = db.count_components()
-    return {"status": "ok", "components": counts}
-
 # ── Components ────────────────────────────────────────────────────────
+
 
 @router.get("/components")
 def list_components(
@@ -55,29 +34,13 @@ def list_components(
         status = "approved"
     return db.list_components(category=category, status=status)
 
-@router.get("/primitives")
-def list_primitives() -> List[Dict[str, Any]]:
-    """List all available primitives from the research pipeline."""
-    if not HAS_BRIDGE or bridge_list_primitives is None:
-        raise HTTPException(status_code=501, detail="Research bridge not available")
-    return bridge_list_primitives()
-
-@router.get("/marketplace/search")
-def get_marketplace_search(q: str = Query(...)) -> List[Dict[str, Any]]:
-    return search_marketplace(q)
-
-@router.post("/marketplace/install")
-def post_marketplace_install(req: Dict[str, str]) -> Dict[str, Any]:
-    component_id = req.get("component_id")
-    if not component_id:
-        raise HTTPException(status_code=400, detail="Missing component_id")
-    return install_component(component_id)
 
 @router.get("/components/{component_id}")
 def get_component(component_id: str) -> Dict[str, Any]:
     """Get a single component by ID."""
     comp = _require_component(component_id)
     return comp
+
 
 @router.get("/components/{component_id}/properties")
 def get_component_properties(component_id: str) -> Dict[str, Any]:
@@ -108,6 +71,7 @@ def get_component_properties(component_id: str) -> Dict[str, Any]:
         "outputs": comp.get("outputs", []),
         "properties": properties,
     }
+
 
 @router.get("/components/{component_id}/execution-capability")
 def get_component_execution_capability(component_id: str) -> Dict[str, Any]:
@@ -159,6 +123,7 @@ def get_component_execution_capability(component_id: str) -> Dict[str, Any]:
         "has_semantic_warnings": bool(bridge_info.get("warnings")),
     }
 
+
 @router.get("/integration/bridge-gap-report")
 def get_bridge_gap_report() -> Dict[str, Any]:
     """Summarize components unsupported by the research primitive bridge."""
@@ -207,39 +172,37 @@ def get_bridge_gap_report() -> Dict[str, Any]:
     }
 
 
-@router.get("/benchmarks/targets")
-def get_benchmark_targets_alias() -> Dict[str, Any]:
-    """Alias route for benchmark target catalog at /api/v1/benchmarks/targets."""
-    return benchmark_target_catalog()
+def _type_ok(schema: Dict[str, Any], value: Any) -> bool:
+    """Check *value* matches the type declared in *schema*."""
+    expected = schema.get("type")
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "float":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "enum":
+        if schema.get("multi_select") or schema.get("multiple"):
+            if not isinstance(value, (list, tuple)):
+                return False
+            return all(isinstance(v, (str, int, float, bool)) for v in value)
+        return isinstance(value, (str, int, float, bool))
+    return True
 
-@router.post("/components/{component_id}/validate-config")
-def validate_component_config(component_id: str, req: ComponentConfigValidateRequest) -> Dict[str, Any]:
-    """Validate a component config payload against manifest param schema/defaults."""
-    comp = _require_component(component_id)
 
-    params = comp.get("params") or {}
-    raw_config = req.config or {}
-    normalized = {}
+def _validate_params_against_schema(
+    params: Dict[str, Any],
+    raw_config: Dict[str, Any],
+) -> tuple[Dict[str, Any], List[Dict[str, str]], List[Dict[str, str]]]:
+    """Validate *raw_config* against manifest *params* schema.
+
+    Returns (normalized_config, errors, warnings).
+    """
+    normalized: Dict[str, Any] = {}
     errors: List[Dict[str, str]] = []
     warnings: List[Dict[str, str]] = []
-
-    def _type_ok(schema: Dict[str, Any], value: Any) -> bool:
-        expected = schema.get("type")
-        if expected == "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
-        if expected == "float":
-            return (isinstance(value, (int, float)) and not isinstance(value, bool))
-        if expected == "boolean":
-            return isinstance(value, bool)
-        if expected == "string":
-            return isinstance(value, str)
-        if expected == "enum":
-            if schema.get("multi_select") or schema.get("multiple"):
-                if not isinstance(value, (list, tuple)):
-                    return False
-                return all(isinstance(v, (str, int, float, bool)) for v in value)
-            return isinstance(value, (str, int, float, bool))
-        return True
 
     for name, schema in params.items():
         schema = schema or {}
@@ -292,35 +255,70 @@ def validate_component_config(component_id: str, req: ComponentConfigValidateReq
         if not has_value and schema.get("default") is not None:
             warnings.append({"param": name, "message": "Using default value"})
 
-    for name in raw_config.keys():
+    # Flag unknown parameters not declared in the schema.
+    for name in raw_config:
         if name not in params:
             warnings.append({"param": name, "message": "Unknown parameter for this component"})
 
+    return normalized, errors, warnings
+
+
+def _run_custom_validation(
+    component_id: str,
+    category: str,
+    normalized: Dict[str, Any],
+) -> tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """Load kernel_fallback.py and run ComponentHandler.validate_config if present.
+
+    Returns (errors, warnings).
+    """
+    errors: List[Dict[str, str]] = []
+    warnings: List[Dict[str, str]] = []
+
+    fallback_path = COMPONENTS_ROOT / category / component_id / "kernel_fallback.py"
+    if not fallback_path.exists():
+        return errors, warnings
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"validate_handler_{category}_{component_id}",
+            str(fallback_path),
+        )
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            handler_cls = getattr(module, "ComponentHandler", None)
+            if handler_cls is not None:
+                handler = handler_cls()
+                validate_fn = getattr(handler, "validate_config", None)
+                if callable(validate_fn):
+                    custom_errors = validate_fn(normalized) or []
+                    for msg in custom_errors:
+                        errors.append({"param": "__component__", "message": str(msg)})
+    except Exception as exc:
+        warnings.append({
+            "param": "__component__",
+            "message": f"Custom validation unavailable: {exc}",
+        })
+
+    return errors, warnings
+
+
+@router.post("/components/{component_id}/validate-config")
+def validate_component_config(component_id: str, req: ComponentConfigValidateRequest) -> Dict[str, Any]:
+    """Validate a component config payload against manifest param schema/defaults."""
+    comp = _require_component(component_id)
+
+    params = comp.get("params") or {}
+    raw_config = req.config or {}
+
+    normalized, errors, warnings = _validate_params_against_schema(params, raw_config)
+
     category = str(comp.get("category") or "")
     manifest_id = str(comp.get("id") or component_id)
-    fallback_path = COMPONENTS_ROOT / category / manifest_id / "kernel_fallback.py"
-    if fallback_path.exists():
-        try:
-            spec = importlib.util.spec_from_file_location(
-                f"validate_handler_{category}_{manifest_id}",
-                str(fallback_path),
-            )
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                handler_cls = getattr(module, "ComponentHandler", None)
-                if handler_cls is not None:
-                    handler = handler_cls()
-                    validate_fn = getattr(handler, "validate_config", None)
-                    if callable(validate_fn):
-                        custom_errors = validate_fn(normalized) or []
-                        for msg in custom_errors:
-                            errors.append({"param": "__component__", "message": str(msg)})
-        except Exception as exc:
-            warnings.append({
-                "param": "__component__",
-                "message": f"Custom validation unavailable: {exc}",
-            })
+    custom_errors, custom_warnings = _run_custom_validation(manifest_id, category, normalized)
+    errors.extend(custom_errors)
+    warnings.extend(custom_warnings)
 
     return {
         "component_id": comp.get("id"),
@@ -330,11 +328,12 @@ def validate_component_config(component_id: str, req: ComponentConfigValidateReq
         "normalized_config": normalized,
     }
 
+
 @router.get("/components/property-audit/report")
 def get_component_property_audit() -> Dict[str, Any]:
     """Audit property coverage/defaults/help for all components."""
-    from ..property_audit import audit_components
     return audit_components(COMPONENTS_ROOT)
+
 
 @router.post("/components")
 def create_component(component: ComponentModel) -> Dict[str, Any]:
@@ -347,12 +346,14 @@ def create_component(component: ComponentModel) -> Dict[str, Any]:
     db.upsert_component(manifest, created_at=now, updated_at=now)
     return manifest
 
+
 @router.post("/components/{component_id}/approve")
 def approve_component(component_id: str) -> Dict[str, str]:
     """Approve a component for use in the palette."""
     if not db.update_component_status(component_id, "approved", _utc_now()):
         raise HTTPException(status_code=404, detail="Component not found")
     return {"status": "approved", "component_id": component_id}
+
 
 @router.post("/components/{component_id}/deprecate")
 def deprecate_component(component_id: str) -> Dict[str, str]:
@@ -361,9 +362,16 @@ def deprecate_component(component_id: str) -> Dict[str, str]:
         raise HTTPException(status_code=404, detail="Component not found")
     return {"status": "deprecated", "component_id": component_id}
 
+
+@router.get("/components/canonicalize")
+def resolve_canonical_id(raw_id: str = Query(...)) -> Dict[str, str]:
+    """Resolve an alias or legacy component ID to its canonical category/id form."""
+    canonical_id = canonicalize_component_id(raw_id)
+    return {"raw_id": raw_id, "canonical_id": canonical_id}
+
+
 @router.post("/components/reload")
 def reload_components() -> Dict[str, Any]:
     """Re-scan components/ directory and reload into DB."""
-    from ..loader import scan_and_load
     count = scan_and_load()
-    return {"status": "ok", "reloaded": count, "count": count}
+    return {"reloaded": count, "totals": db.count_components()}

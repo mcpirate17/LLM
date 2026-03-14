@@ -3,18 +3,114 @@
   "workflow_id": "wf_example_ssm_stack",
   "name": "SSM Stack",
   "nodes": [
-    {"id": "n_input", "component_type": "io/input",                  "params": {"dim": 128, "vocab_size": 32000},         "ui_meta": {"position": {"x": 300, "y": 40}}},
-    {"id": "n_ssm1",  "component_type": "mixing/state_space",        "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 170}}},
-    {"id": "n_norm1", "component_type": "normalization/rmsnorm_pre", "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 300}}},
-    {"id": "n_ssm2",  "component_type": "mixing/state_space",        "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 430}}},
-    {"id": "n_norm2", "component_type": "normalization/rmsnorm_pre", "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 560}}},
-    {"id": "n_out",   "component_type": "io/output_head",            "params": {"vocab_size": 32000, "tie_weights": true},  "ui_meta": {"position": {"x": 300, "y": 690}}}
+    {
+      "id": "n_input",
+      "component_type": "io/input",
+      "params": {
+        "dim": 128,
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 300,
+          "y": 40
+        }
+      }
+    },
+    {
+      "id": "n_ssm1",
+      "component_type": "linear_algebra/selective_scan",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 300,
+          "y": 170
+        }
+      }
+    },
+    {
+      "id": "n_norm1",
+      "component_type": "normalization/rmsnorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 300,
+          "y": 300
+        }
+      }
+    },
+    {
+      "id": "n_ssm2",
+      "component_type": "linear_algebra/selective_scan",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 300,
+          "y": 430
+        }
+      }
+    },
+    {
+      "id": "n_norm2",
+      "component_type": "normalization/rmsnorm_pre",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 300,
+          "y": 560
+        }
+      }
+    },
+    {
+      "id": "n_out",
+      "component_type": "io/output_head",
+      "params": {
+        "vocab_size": 32000,
+        "tie_weights": true
+      },
+      "ui_meta": {
+        "position": {
+          "x": 300,
+          "y": 690
+        }
+      }
+    }
   ],
   "edges": [
-    {"id": "e1", "source": "n_input", "source_port": "y", "target": "n_ssm1",  "target_port": "x"},
-    {"id": "e2", "source": "n_ssm1",  "source_port": "y", "target": "n_norm1", "target_port": "x"},
-    {"id": "e3", "source": "n_norm1", "source_port": "y", "target": "n_ssm2",  "target_port": "x"},
-    {"id": "e4", "source": "n_ssm2",  "source_port": "y", "target": "n_norm2", "target_port": "x"},
-    {"id": "e5", "source": "n_norm2", "source_port": "y", "target": "n_out",   "target_port": "x"}
+    {
+      "id": "e1",
+      "source": "n_input",
+      "source_port": "y",
+      "target": "n_ssm1",
+      "target_port": "x"
+    },
+    {
+      "id": "e2",
+      "source": "n_ssm1",
+      "source_port": "y",
+      "target": "n_norm1",
+      "target_port": "x"
+    },
+    {
+      "id": "e3",
+      "source": "n_norm1",
+      "source_port": "y",
+      "target": "n_ssm2",
+      "target_port": "x"
+    },
+    {
+      "id": "e4",
+      "source": "n_ssm2",
+      "source_port": "y",
+      "target": "n_norm2",
+      "target_port": "x"
+    },
+    {
+      "id": "e5",
+      "source": "n_norm2",
+      "source_port": "y",
+      "target": "n_out",
+      "target_port": "x"
+    }
   ]
 }

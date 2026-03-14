@@ -30,6 +30,13 @@ function formatNum(n) {
   return typeof n === 'number' ? n.toFixed(n % 1 ? 2 : 0) : String(n)
 }
 
+function scoreTone(score) {
+  if (score == null) return 'muted'
+  if (score >= 120) return 'strong'
+  if (score >= 70) return 'promising'
+  return 'weak'
+}
+
 function StageIcon({ status }) {
   if (status === 'done') return <CheckCircle2 size={14} color="#24d1a0" />
   if (status === 'running') return <Loader size={14} />
@@ -65,7 +72,7 @@ export default function RunResultsPanel({
   benchmarkObserved = {},
   onBenchmarkObservedChange = null,
 }) {
-  const { stages = [], totalTimeMs, error } = evalState || {}
+  const { stages = [], totalTimeMs, error, compositeScore, graphFingerprint, discoveryUrl } = evalState || {}
 
   const stageMap = useMemo(() => {
     const m = {}
@@ -125,6 +132,38 @@ export default function RunResultsPanel({
 
   return (
     <div className="eval-results">
+      {(compositeScore != null || graphFingerprint) && (
+        <div className="score-discovery-section">
+          <div>
+            <div className="score-discovery-label">Score & Discovery</div>
+            <div className={`composite-score-badge tone-${scoreTone(compositeScore)}`}>
+              {compositeScore != null ? Number(compositeScore).toFixed(1) : '-'}
+            </div>
+          </div>
+          <div className="score-discovery-actions">
+            {graphFingerprint && (
+              <a
+                className="run-fingerprint-link"
+                href={discoveryUrl || `http://localhost:5000/?search=${encodeURIComponent(graphFingerprint)}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {graphFingerprint}
+              </a>
+            )}
+            {graphFingerprint && (
+              <button
+                type="button"
+                className="compare-run-button"
+                onClick={() => window.open(discoveryUrl || `http://localhost:5000/?search=${encodeURIComponent(graphFingerprint)}`, '_blank', 'noopener,noreferrer')}
+              >
+                Compare
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Progress Stepper */}
       <div className="eval-stepper">
         {STAGE_ORDER.map((name) => {

@@ -53,10 +53,8 @@ class _ExecutionValidationPhase3Mixin:
         return results, dev, dev_str, val_config, source_map
 
     def _get_validation_best_training_json(self, nb: Any, source_result_id: str) -> Optional[str]:
-        for entry in nb.get_leaderboard():
-            if entry.get("result_id") == source_result_id:
-                return entry.get("investigation_best_training")
-        return None
+        entry = nb.get_leaderboard_entry(source_result_id)
+        return entry.get("investigation_best_training") if entry else None
 
     def _reconstruct_validation_model(
         self,

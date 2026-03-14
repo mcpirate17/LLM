@@ -1,0 +1,87 @@
+{
+  "artifact_path": "/home/tim/Projects/LLM/research/perf_artifacts/research/2026-03-14/research_perf_1773460726.json",
+  "budget_profile": "research_default",
+  "budget_verdict": {
+    "checks": [
+      {
+        "limit": 250.0,
+        "metric": "trace_avg_ms.compile",
+        "observed": null,
+        "passed": false,
+        "reason": "missing_metric"
+      },
+      {
+        "limit": 35.0,
+        "metric": "trace_avg_ms.forward_pass",
+        "observed": 828.3895,
+        "passed": false
+      },
+      {
+        "limit": 55.0,
+        "metric": "trace_avg_ms.backward_pass",
+        "observed": 1215.3419,
+        "passed": false
+      },
+      {
+        "limit": 40.0,
+        "metric": "queue_telemetry.scheduling_wait_avg_ms",
+        "observed": 887.2081438700358,
+        "passed": false
+      },
+      {
+        "limit": 30.0,
+        "metric": "gpu_starvation.max_stall_ms",
+        "observed": 2.0867,
+        "passed": true
+      },
+      {
+        "limit": 0.0,
+        "metric": "duplicate_work.detected_count",
+        "observed": 15.0,
+        "passed": false
+      }
+    ],
+    "n_failed": 5,
+    "passed": false,
+    "profile": "research_default"
+  },
+  "component": "research",
+  "duplicate_work": {
+    "avoided_count": 0,
+    "avoided_keys": {},
+    "detected_count": 15,
+    "estimated_wasted_ms": 0.0,
+    "hints": [
+      "Large dedup counts indicate search-space waste rather than runtime overhead."
+    ],
+    "repeated_keys": {
+      "graph_fingerprint_dedup": 15
+    }
+  },
+  "generated_at": "2026-03-14T03:58:46Z",
+  "identity": {
+    "experiment_id": null,
+    "stage1_passed": 0,
+    "total_programs": 5
+  },
+  "metrics": {
+    "avg_throughput_tok_s": 113863.85,
+    "backward_pass_ms": 1215.3419,
+    "compile_time_ms": 0.0,
+    "forward_pass_ms": 828.3895,
+    "gpu_starvation_max_ms": 2.0867,
+    "optimizer_step_ms": 38.2236,
+    "programs_profiled": 3,
+    "queue_scheduling_wait_ms": 887.2081438700358,
+    "queue_submit_wait_ms": 0.012780001270584762,
+    "total_time_ms": 6212.3611
+  },
+  "runtime": {
+    "pid": 232770,
+    "platform": "linux",
+    "python": "3.12.3"
+  },
+  "version": 1,
+  "warnings": [],
+  "workload": "experiment_screening"
+}

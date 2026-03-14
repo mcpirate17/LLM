@@ -1,17 +1,36 @@
-from typing import List, Dict, Any, Optional, Set
+from __future__ import annotations
+
+import json
+from collections import Counter
+from typing import Any, Dict, List, Optional, Set
+
+from .component_identity import canonicalize_component_id
 from .database import list_components
-
-_OP_ALIAS = {
-    "token_merging": "token_merge",
-    "token_merge": "token_merge",
-    "rmsnorm": "rmsnorm_pre",
-    "layernorm": "layernorm_pre",
-}
+from .intent_parser import compute_insertion_point
+from .research_signals import fetch_leaderboard_top_entries
 
 
-def _canon_op_name(name: str) -> str:
-    token = str(name or "").strip().lower()
-    return _OP_ALIAS.get(token, token)
+def _canon_leaf(name: str) -> str:
+    """Resolve aliases to canonical leaf name for matching."""
+    canonical = canonicalize_component_id(name)
+    return canonical.split("/")[-1] if canonical else str(name or "").strip().lower()
+
+
+def _build_component_indexes(
+    all_components: List[Dict[str, Any]],
+) -> tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    by_id: Dict[str, Dict[str, Any]] = {}
+    input_components: List[Dict[str, Any]] = []
+    for component in all_components:
+        category = str(component.get("category", ""))
+        component_id = str(component.get("id", "")).lower()
+        by_category.setdefault(category, []).append(component)
+        if component_id:
+            by_id[component_id] = component
+        if "input" in str(component.get("name", "")).lower():
+            input_components.append(component)
+    return by_category, by_id, input_components
 
 
 def suggest_components(
@@ -37,10 +56,7 @@ def suggest_components(
     
     # Get all approved components
     all_components = list_components(status="approved")
-    # Map by category for easy access
-    by_category = {}
-    for c in all_components:
-        by_category.setdefault(c["category"], []).append(c)
+    by_category, by_id, input_components = _build_component_indexes(all_components)
 
     node_types = [str(n.get("component_type", "")) for n in nodes]
     categories_present = {t.split("/", 1)[0] for t in node_types if "/" in t}
@@ -61,32 +77,37 @@ def suggest_components(
         "missing_norm": False,
         "missing_attn": False,
         "research_signals": research_signals if isinstance(research_signals, dict) else {},
+        "workflow_nodes": nodes,
+        "workflow_edges": edges,
+        "leaderboard_entries": None,
+        "leaderboard_component_sets": None,
+        "leaderboard_total_entries": 0,
+        "components_by_id": by_id,
+        "insertion_hints_by_type": {},
     }
         
     if not leaf_nodes:
         # Empty graph? Suggest Input
-        input_comps = by_category.get("io", [])
-        for c in input_comps:
-            if "input" in c["name"].lower():
-                suggestions.append(_make_suggestion(
-                    c,
-                    "Start with an input node.",
-                    score=0.98,
-                    evidence=["Canvas is empty", "No graph input nodes found"],
-                    context=ctx,
-                ))
-        prompt_boosted = _suggest_from_prompt(by_category, all_components, prompt, context=ctx)
+        for component in input_components:
+            suggestions.append(_make_suggestion(
+                component,
+                "Start with an input node.",
+                score=0.98,
+                evidence=["Canvas is empty", "No graph input nodes found"],
+                context=ctx,
+            ))
+        prompt_boosted = _suggest_from_prompt(by_category, by_id, prompt, context=ctx)
         if prompt_boosted:
             suggestions.extend(prompt_boosted)
         return _dedupe_suggestions(suggestions)[:5]
 
-    prompt_boosted = _suggest_from_prompt(by_category, all_components, prompt, context=ctx)
+    prompt_boosted = _suggest_from_prompt(by_category, by_id, prompt, context=ctx)
     if prompt_boosted:
         suggestions.extend(prompt_boosted)
 
     # Direct component name matching from prompt
     if prompt:
-        name_matched = _suggest_by_name(all_components, prompt, context=ctx)
+        name_matched = _suggest_by_name(by_id, prompt, context=ctx)
         if name_matched:
             suggestions.extend(name_matched)
 
@@ -153,7 +174,7 @@ def suggest_components(
     ctx["missing_attn"] = not has_attn
     if is_stability_prompt and not has_norm:
         suggestions.insert(0, _make_suggestion(
-            next((c for c in all_components if c.get("id") == "rmsnorm"), None) or
+            by_id.get("rmsnorm") or
             next((c for c in by_category.get("normalization", [])), {}),
             "Critical: add normalization to prevent exploding logits and zero gradients. "
             "Without normalization before the output head, magnitudes grow unchecked, "
@@ -166,7 +187,7 @@ def suggest_components(
         # Has norm but still brittle — suggest residual connections
         if "add" not in all_types:
             suggestions.insert(0, _make_suggestion(
-                next((c for c in all_components if c.get("id") == "add"), None) or {},
+                by_id.get("add") or {},
                 "Add residual (skip) connections to stabilize gradient flow. "
                 "Without skip connections, deep graphs suffer from vanishing gradients.",
                 score=0.94,
@@ -188,7 +209,7 @@ def suggest_components(
 
     if "io" not in categories_present and graph_size > 0:
         suggestions.extend(_suggest_component_ids(
-            all_components,
+            by_id,
             ["output_head"],
             "Consider adding an explicit output head for clearer endpoint semantics.",
             score=0.65,
@@ -211,7 +232,7 @@ def _dedupe_suggestions(suggestions: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 def _suggest_from_prompt(
     by_cat: Dict[str, List[Dict[str, Any]]],
-    all_components: List[Dict[str, Any]],
+    by_id: Dict[str, Dict[str, Any]],
     prompt: str | None,
     context: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
@@ -234,7 +255,7 @@ def _suggest_from_prompt(
 
     if has_dataflow_focus:
         out.extend(_suggest_component_ids(
-            all_components,
+            by_id,
             ["join", "dataset_filter", "select_columns"],
             "Optimize data/control flow by tightening joins, filters, and schema-column hygiene.",
             score=0.92,
@@ -260,7 +281,7 @@ def _suggest_from_prompt(
 
     if "join" in lower and not has_dataflow_focus:
         out.extend(_suggest_component_ids(
-            all_components,
+            by_id,
             ["join"],
             "Add/adjust join nodes for explicit key-based dataset merging.",
             score=0.84,
@@ -269,7 +290,7 @@ def _suggest_from_prompt(
         ))
     if "filter" in lower and not has_dataflow_focus:
         out.extend(_suggest_component_ids(
-            all_components,
+            by_id,
             ["dataset_filter"],
             "Add filter nodes to enforce row-level quality gates early.",
             score=0.83,
@@ -278,7 +299,7 @@ def _suggest_from_prompt(
         ))
     if "schema" in lower or "column" in lower:
         out.extend(_suggest_component_ids(
-            all_components,
+            by_id,
             ["select_columns"],
             "Use schema-aware column selection to avoid downstream mismatches.",
             score=0.87,
@@ -290,7 +311,7 @@ def _suggest_from_prompt(
 
 
 def _suggest_by_name(
-    all_components: List[Dict[str, Any]],
+    by_id: Dict[str, Dict[str, Any]],
     prompt: str,
     context: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
@@ -309,22 +330,27 @@ def _suggest_by_name(
         "quality", "stability", "benchmark", "target", "gaps", "novelty", "preserving",
         "propose", "patch", "closes", "downstream", "while",
     }
-    for c in all_components:
-        cid = str(c.get("id", "")).lower()
-        if cid in skip_words:
+    candidate_words = [word for word in words if len(word) >= 5 and word not in skip_words]
+    for word in candidate_words:
+        component = by_id.get(word)
+        if component is not None:
+            out.append(_make_suggestion(
+                component,
+                f"Matched '{word}' → {word}",
+                score=0.88,
+                evidence=[f"Prompt token '{word}' matched component id"],
+                context=context,
+            ))
             continue
-        # Only match against component ID, not full name (names contain English sentences)
-        for w in words:
-            if len(w) < 5:
+        for component_id, component in by_id.items():
+            if component_id in skip_words:
                 continue
-            if w in skip_words:
-                continue
-            if cid.startswith(w) or w == cid:
+            if component_id.startswith(word):
                 out.append(_make_suggestion(
-                    c,
-                    f"Matched '{w}' → {cid}",
+                    component,
+                    f"Matched '{word}' → {component_id}",
                     score=0.88,
-                    evidence=[f"Prompt token '{w}' matched component id"],
+                    evidence=[f"Prompt token '{word}' matched component id"],
                     context=context,
                 ))
                 break
@@ -332,7 +358,7 @@ def _suggest_by_name(
 
 
 def _suggest_component_ids(
-    all_components: List[Dict[str, Any]],
+    by_id: Dict[str, Dict[str, Any]],
     component_ids: List[str],
     reason: str,
     score: float = 0.65,
@@ -340,11 +366,10 @@ def _suggest_component_ids(
     context: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    targets = {cid.lower() for cid in component_ids}
-    for comp in all_components:
-        cid = str(comp.get("id", "")).lower()
-        if cid in targets:
-            out.append(_make_suggestion(comp, reason, score=score, evidence=evidence, context=context))
+    for component_id in component_ids:
+        component = by_id.get(component_id.lower())
+        if component is not None:
+            out.append(_make_suggestion(component, reason, score=score, evidence=evidence, context=context))
     return out
 
 def _suggest_category(
@@ -423,12 +448,12 @@ def _score_adjustment(
         delta -= 0.3
 
     # Research-driven priors (cross-system signals from research analytics).
-    canon_cid = _canon_op_name(cid)
+    canon_cid = _canon_leaf(cid)
     op_priors = research.get("op_priors") if isinstance(research, dict) else None
     if isinstance(op_priors, list):
         op_rate = None
         for row in op_priors:
-            op_name = _canon_op_name(str((row or {}).get("op_name") or ""))
+            op_name = _canon_leaf(str((row or {}).get("op_name") or ""))
             if op_name == canon_cid:
                 try:
                     op_rate = float((row or {}).get("s1_rate"))
@@ -441,7 +466,7 @@ def _score_adjustment(
 
     toxic_ops = research.get("toxic_ops") if isinstance(research, dict) else None
     if isinstance(toxic_ops, list):
-        toxic_set = {_canon_op_name(str(x)) for x in toxic_ops}
+        toxic_set = {_canon_leaf(str(x)) for x in toxic_ops}
         if canon_cid in toxic_set:
             delta -= 0.12
 
@@ -471,8 +496,8 @@ def _score_adjustment(
         for pair in op_pair_priors:
             if not isinstance(pair, dict):
                 continue
-            op_a = _canon_op_name(str(pair.get("op_a") or ""))
-            op_b = _canon_op_name(str(pair.get("op_b") or ""))
+            op_a = _canon_leaf(str(pair.get("op_a") or ""))
+            op_b = _canon_leaf(str(pair.get("op_b") or ""))
             rate = pair.get("success_rate")
             if rate is None:
                 continue
@@ -502,16 +527,82 @@ def _score_adjustment(
                 delta -= min(0.1, penalty * 0.1)
                 break
 
+    leaderboard_component_sets, leaderboard_total_entries = _get_leaderboard_component_sets(ctx)
+    if leaderboard_component_sets:
+        lb_delta, _ = _leaderboard_boost(component, leaderboard_component_sets, leaderboard_total_entries)
+        delta += lb_delta
+
     return delta
 
 
+def _leaderboard_boost(
+    component: Dict[str, Any],
+    component_sets: List[Set[str]],
+    total_entries: int,
+) -> tuple[float, str | None]:
+    cid = _canon_leaf(str((component or {}).get("id") or ""))
+    if not cid or not component_sets or total_entries <= 0:
+        return 0.0, None
+    count = sum(1 for component_ids in component_sets if cid in component_ids)
+    if count == 0:
+        return 0.0, None
+    delta = min(0.06, count * 0.01)
+    evidence_line = f"Used in {count} of top {total_entries} architectures"
+    return delta, evidence_line
+
+
+def _get_leaderboard_component_sets(context: Optional[Dict[str, Any]]) -> tuple[List[Set[str]], int]:
+    ctx = context if isinstance(context, dict) else {}
+    component_sets = ctx.get("leaderboard_component_sets")
+    total_entries = int(ctx.get("leaderboard_total_entries") or 0)
+    if isinstance(component_sets, list) and total_entries > 0:
+        return component_sets, total_entries
+
+    entries = ctx.get("leaderboard_entries")
+    if not isinstance(entries, list):
+        entries = fetch_leaderboard_top_entries() or []
+        ctx["leaderboard_entries"] = entries
+
+    parsed_sets = [_extract_component_ids_from_entry(entry) for entry in entries if isinstance(entry, dict)]
+    ctx["leaderboard_component_sets"] = parsed_sets
+    ctx["leaderboard_total_entries"] = len(entries)
+    return parsed_sets, len(entries)
+
+
+def _extract_component_ids_from_entry(entry: Dict[str, Any]) -> Set[str]:
+    precomputed = entry.get("_component_ids")
+    if isinstance(precomputed, list):
+        return {_canon_leaf(str(token)) for token in precomputed if str(token).strip()}
+
+    graph_json = entry.get("graph_json") or entry.get("_graph_json")
+    if isinstance(graph_json, str) and graph_json:
+        try:
+            graph = json.loads(graph_json)
+        except Exception:
+            graph = None
+        if isinstance(graph, dict):
+            nodes = graph.get("nodes")
+            if isinstance(nodes, list):
+                return {
+                    _canon_leaf(str(node.get("component_type", "")).split("/")[-1])
+                    for node in nodes
+                    if isinstance(node, dict) and str(node.get("component_type", "")).strip()
+                }
+
+    text = str(entry.get("program_text") or entry.get("architecture_desc") or "").lower()
+    if not text:
+        return set()
+    token_counts = Counter(_canon_leaf(token) for token in text.replace("/", " ").replace(",", " ").split())
+    return {token for token, count in token_counts.items() if token and count > 0}
+
+
 def _make_suggestion(
-    component,
-    reason,
+    component: Dict[str, Any],
+    reason: str,
     score: float = 0.6,
     evidence: List[str] | None = None,
     context: Optional[Dict[str, Any]] = None,
-):
+) -> Dict[str, Any]:
     evidence_list = list(evidence or [])
     adjusted_score = float(score) + _score_adjustment(component, reason, evidence_list, context=context)
     safe_score = max(0.0, min(1.0, adjusted_score))
@@ -519,20 +610,45 @@ def _make_suggestion(
     ctx = context or {}
     research = ctx.get("research_signals") if isinstance(ctx.get("research_signals"), dict) else {}
     if isinstance(research, dict) and research:
-        cid = _canon_op_name(str((component or {}).get("id") or ""))
+        cid = _canon_leaf(str((component or {}).get("id") or ""))
         op_priors = research.get("op_priors")
         if isinstance(op_priors, list):
             for row in op_priors:
-                if _canon_op_name(str((row or {}).get("op_name") or "")) == cid:
+                if _canon_leaf(str((row or {}).get("op_name") or "")) == cid:
                     rate = row.get("s1_rate")
                     n = row.get("n_used")
                     if rate is not None and n is not None:
                         evidence_list.append(f"Research: {rate:.0%} success rate over {n} trials")
                     break
-    return {
+
+    leaderboard_component_sets, leaderboard_total_entries = _get_leaderboard_component_sets(ctx)
+    if leaderboard_component_sets:
+        _, lb_evidence = _leaderboard_boost(component, leaderboard_component_sets, leaderboard_total_entries)
+        if lb_evidence:
+            evidence_list.append(lb_evidence)
+
+    # Compute insertion hint
+    insertion_hint: Dict[str, str | None] | None = None
+    nodes = ctx.get("workflow_nodes")
+    edges = ctx.get("workflow_edges")
+    comp_type = str((component or {}).get("category", "")) + "/" + str((component or {}).get("id", ""))
+    if isinstance(nodes, list) and isinstance(edges, list):
+        hint_cache = ctx.get("insertion_hints_by_type")
+        if not isinstance(hint_cache, dict):
+            hint_cache = {}
+            ctx["insertion_hints_by_type"] = hint_cache
+        insertion_hint = hint_cache.get(comp_type)
+        if insertion_hint is None:
+            insertion_hint = compute_insertion_point(nodes, edges, comp_type)
+            hint_cache[comp_type] = insertion_hint
+
+    result: Dict[str, Any] = {
         "component": component,
         "reason": reason,
         "action": "add_node",
         "score": safe_score,
         "evidence": evidence_list,
     }
+    if insertion_hint is not None:
+        result["insertion_hint"] = insertion_hint
+    return result

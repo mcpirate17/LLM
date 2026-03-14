@@ -114,7 +114,7 @@ class GrammarConfig:
         "sequence": 1.2,
         "frequency": 1.0,
         "math_space": 1.5,
-        "functional": 1.5,
+        "functional": 3.0,  # Routing/gating/branching ops
     })
     # Excluded op names
     excluded_ops: Set[str] = field(default_factory=lambda: {
@@ -144,7 +144,7 @@ class GrammarConfig:
     # If empty, uses motif's lift score as weight.
     motif_weights: Dict[str, float] = field(default_factory=dict)
     # Number of templates to compose per graph (1-3)
-    composition_depth: int = 0  # 0 = auto (random 1-2)
+    composition_depth: int = 2  # Minimum template blocks per graph
 
     # ── Routing-First Config (Phase 2) ────────────────────────────────
     routing_mandatory: bool = False   # Force routing structure in every graph

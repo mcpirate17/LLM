@@ -525,6 +525,9 @@ class _LeaderboardMixin:
                 compression_ratio=d.get("compression_ratio"),
                 n_routing_ops=structural_counts.get("routing"),
                 wikitext_score=d.get("wikitext_score"),
+                peak_ppl=d.get("peak_ppl"),
+                ppl_500=d.get("ppl_500"),
+                steps_to_divergence=d.get("steps_to_divergence"),
                 investigation_passed=d.get("investigation_passed"),
                 validation_passed=d.get("validation_passed"),
             )

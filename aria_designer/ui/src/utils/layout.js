@@ -1,15 +1,25 @@
 const DEFAULT_GRID = [15, 15]
 const DEFAULT_NODE_SIZE = { width: 170, height: 90 }
+const VIEWPORT_BOUNDS = { minX: -2000, minY: -2000, maxX: 5000, maxY: 5000 }
 
 function toFiniteNumber(value, fallback) {
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
 }
 
-export function getNodeSize(node) {
+export function getNodeSize(node, sizeHint) {
   return {
-    width: toFiniteNumber(node?.width ?? node?.measured?.width, DEFAULT_NODE_SIZE.width),
-    height: toFiniteNumber(node?.height ?? node?.measured?.height, DEFAULT_NODE_SIZE.height),
+    width: toFiniteNumber(sizeHint?.width ?? node?.width ?? node?.measured?.width, DEFAULT_NODE_SIZE.width),
+    height: toFiniteNumber(sizeHint?.height ?? node?.height ?? node?.measured?.height, DEFAULT_NODE_SIZE.height),
+  }
+}
+
+export function clampToViewport(position, nodeSize, bounds = VIEWPORT_BOUNDS) {
+  const w = nodeSize?.width || DEFAULT_NODE_SIZE.width
+  const h = nodeSize?.height || DEFAULT_NODE_SIZE.height
+  return {
+    x: Math.max(bounds.minX, Math.min(bounds.maxX - w, position.x)),
+    y: Math.max(bounds.minY, Math.min(bounds.maxY - h, position.y)),
   }
 }
 
@@ -78,20 +88,26 @@ export function findNearestFreePosition(nodeId, desiredPosition, nodes, options 
   const paddingY = toFiniteNumber(options.paddingY, 18)
   const maxRadius = toFiniteNumber(options.maxRadius, 28)
   const target = nodes.find((n) => n.id === nodeId)
-  if (!target) return snapPositionToGrid(desiredPosition, grid)
+  if (!target) {
+    const fallbackSize = options.sizeHint || DEFAULT_NODE_SIZE
+    return clampToViewport(snapPositionToGrid(desiredPosition, grid), fallbackSize)
+  }
 
   const occupied = nodes
     .filter((n) => n.id !== nodeId)
     .map((n) => ({ position: n.position, size: getNodeSize(n) }))
 
-  return findFreePosition(
-    { position: desiredPosition, size: getNodeSize(target) },
+  const sizeHint = options.sizeHint || undefined
+  const size = getNodeSize(target, sizeHint)
+  const result = findFreePosition(
+    { position: desiredPosition, size },
     occupied,
     grid,
     paddingX,
     paddingY,
     maxRadius
   )
+  return clampToViewport(result, size)
 }
 
 export function normalizeNodePlacement(nodes, options = {}) {

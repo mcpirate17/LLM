@@ -127,6 +127,7 @@ class _ExecutionCandidatesMixin:
                 graph,
                 max_ops=max(1, int(config.max_ops)),
                 max_depth=max(1, int(config.max_depth)),
+                max_params_ratio=getattr(config, "max_params_ratio", 18.0),
                 min_splits=config.min_splits,
             )
             if not validation.valid:
@@ -169,6 +170,21 @@ class _ExecutionCandidatesMixin:
                               op_weights: Optional[Dict[str, float]] = None) -> GrammarConfig:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
         from ...synthesis.grammar import GrammarConfig
+
+        # Routing-first mode: mandate routing structure in every graph
+        if getattr(config, "_routing_first_mode", False):
+            grammar = GrammarConfig.routing_first(model_dim=config.model_dim)
+            if getattr(config, "composition_depth", 0) > 0:
+                grammar.composition_depth = config.composition_depth
+            grammar.max_ops = min(getattr(config, "max_ops", 20), 20)
+            grammar.excluded_ops = grammar.excluded_ops | (excluded_ops or set())
+            if op_weights:
+                for op_name, w in op_weights.items():
+                    if w < 1.0:
+                        grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * w
+                    else:
+                        grammar.op_weights.setdefault(op_name, w)
+            return grammar
 
         # Exotic mode: use the exotic preset as base, then layer on
         # excluded_ops and learned op_weights
@@ -226,7 +242,17 @@ class _ExecutionCandidatesMixin:
             three_way_split_prob=config.three_way_split_prob,
             branch_depth=config.branch_depth,
             max_recursion_depth=config.max_recursion_depth,
+            composition_depth=getattr(config, "composition_depth", 0),
         )
+        # Baseline routing/difficulty op boosts (always applied unless overridden)
+        _routing_defaults = {
+            "entropy_router": 2.5, "route_topk": 2.0, "route_lanes": 2.0,
+            "moe_topk": 2.0, "moe_2expert": 2.0, "token_merging": 1.5,
+            "cascade": 1.5, "adaptive_recursion": 1.5,
+        }
+        for op_name, default_w in _routing_defaults.items():
+            grammar.op_weights.setdefault(op_name, default_w)
+
         # Merge learned excluded_ops with defaults (non-causal ops)
         if excluded_ops:
             grammar.excluded_ops = grammar.excluded_ops | excluded_ops

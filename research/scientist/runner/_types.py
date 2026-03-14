@@ -101,8 +101,13 @@ class RunConfig:
     min_depth: int = 3
     max_depth: int = 10
     max_ops: int = 16
+    max_params_ratio: float = 18.0
     math_space_weight: float = 2.0
     residual_prob: float = 0.7
+    composition_depth: int = 2  # Minimum template blocks per graph
+    _efficiency_mode: bool = False
+    _exotic_mode: bool = False
+    _routing_first_mode: bool = False
     # Continuous mode
     continuous: bool = False
     max_experiments: int = 100
