@@ -29,3 +29,6 @@ runtime/obj/
 # Test runner artifacts
 e2e/test-results/
 test-results/
+
+# Runtime PID/log files
+.run/

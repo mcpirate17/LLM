@@ -11,6 +11,9 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
+from ..component_identity import (
+    canonicalize_workflow_ids,
+)
 from ..config import settings
 from ..benchmark_targets import benchmark_target_catalog, build_benchmark_analysis
 from ..diff import diff_graphs
@@ -45,6 +48,30 @@ from research.perf_contract import emit_perf_artifact
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
+
+
+def _canonicalize_request_workflow(workflow: WorkflowGraphModel) -> tuple[WorkflowGraphModel, dict, set[str]]:
+    registry_ids = db.list_component_types(status="approved")
+    payload = workflow.model_dump()
+    canonicalize_workflow_ids(payload, registry_ids)
+    return WorkflowGraphModel.model_validate(payload), payload, registry_ids
+
+
+def _unresolved_component_issues(workflow_payload: dict, registry_ids: set[str]) -> List[ValidationIssue]:
+    unresolved: List[ValidationIssue] = []
+    for node in workflow_payload.get("nodes", []):
+        component_type = str(node.get("component_type") or "").strip().lower()
+        if component_type and component_type not in registry_ids:
+            unresolved.append(ValidationIssue(
+                severity="error",
+                code="unknown_component",
+                node_id=node.get("id"),
+                message=(
+                    f"Node {node.get('id')}: unresolved component type "
+                    f"'{node.get('component_type')}'."
+                ),
+            ))
+    return unresolved
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -168,7 +195,7 @@ def _check_dtype_compatibility(
 @router.post("/workflows/validate", response_model=ValidateWorkflowResponse)
 def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
     """Validate a workflow graph (structure, types, constraints)."""
-    workflow = req.workflow
+    workflow, workflow_payload, registry_ids = _canonicalize_request_workflow(req.workflow)
     issues: List[ValidationIssue] = []
 
     node_ids = {node.id for node in workflow.nodes}
@@ -185,20 +212,18 @@ def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
                 message=f"Edge {edge.id} references missing source/target node.",
             ))
 
+    issues.extend(_unresolved_component_issues(workflow_payload, registry_ids))
+
     # Validate component types exist in registry and cache them
     comp_cache = {}
     for node in workflow.nodes:
         comp = db.get_component(node.component_type)
         if comp is None:
-            issues.append(ValidationIssue(
-                severity="warning", code="unknown_component",
-                message=f"Node {node.id}: unknown component type '{node.component_type}'.",
-            ))
+            continue
         else:
             comp_cache[node.id] = comp
 
     # Validate manifest-port dtype compatibility for all edges.
-    workflow_payload = workflow.model_dump()
     _check_dtype_compatibility(workflow, workflow_payload, comp_cache, issues)
 
     # Dead-branch detection
@@ -325,7 +350,18 @@ def run_workflow(req: RunWorkflowRequest) -> Dict[str, Any]:
 def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, Any]:
     """Save or update a workflow."""
     now = _utc_now()
+    registry_ids = db.list_component_types(status="approved")
     wf_dict = workflow.model_dump()
+    canonicalize_workflow_ids(wf_dict, registry_ids, preserve_raw_ids=True)
+    unresolved = _unresolved_component_issues(wf_dict, registry_ids)
+    if unresolved:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Workflow contains unresolved component IDs.",
+                "issues": [issue.model_dump() for issue in unresolved],
+            },
+        )
     old_fingerprint = None
     try:
         existing = db.get_workflow(workflow_id)

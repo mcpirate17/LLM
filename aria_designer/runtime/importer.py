@@ -26,7 +26,13 @@ if _RESEARCH_ROOT not in sys.path:
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.synthesis.workflow_converter import graph_to_workflow as _g2w
-from ..api.app.component_identity import canonicalize_workflow
+try:
+    from aria_designer.api.app.component_identity import canonicalize_workflow
+except ImportError:
+    # Fallback for when running from within aria_designer/ as cwd
+    import importlib
+    _ci = importlib.import_module("api.app.component_identity")
+    canonicalize_workflow = _ci.canonicalize_workflow
 
 def graph_to_workflow(
     graph: ComputationGraph,

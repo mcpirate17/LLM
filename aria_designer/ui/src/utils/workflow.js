@@ -13,7 +13,13 @@ export function buildWorkflowJson(nodes, edges, meta = {}) {
     name: meta.name || 'Untitled Workflow',
     nodes: nodes.map((n) => ({
       id: n.id,
-      component_type: n.data?.componentId || (n.data?.category && n.data?.label ? `${n.data.category}/${n.data.label}` : 'unknown'),
+      component_type:
+        n.data?.componentId ||
+        (n.data?.manifest?.category && n.data?.manifest?.id
+          ? `${n.data.manifest.category}/${n.data.manifest.id}`
+          : (n.data?.category && n.data?.label
+            ? `${n.data.category}/${String(n.data.label).trim().toLowerCase().replace(/\s+/g, '_')}`
+            : 'unknown')),
       params: n.data?.paramValues || {},
       ui_meta: { position: n.position },
     })),

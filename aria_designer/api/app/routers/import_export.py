@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
+from ..component_identity import canonicalize_workflow_ids
 from ..models import utc_now_iso as _utc_now, CompileWorkflowRequest
 from ..marketplace import search_marketplace, install_component
 from ..loader import scan_and_load
@@ -37,6 +38,45 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["import_export"])
 
 
+def _canonicalize_imported_workflow(
+    workflow: Dict[str, Any],
+    *,
+    strict: bool = True,
+) -> Dict[str, Any]:
+    """Canonicalize component IDs in an imported workflow.
+
+    When *strict* is True (used by single-import), raises HTTPException 422
+    with per-node diagnostics for any unresolved IDs.  When False (used by
+    the list endpoint), returns the workflow with ``_unresolved_ids`` metadata
+    so the caller can filter silently.
+    """
+    registry_ids = db.list_component_types(status="approved")
+    canonicalize_workflow_ids(workflow, registry_ids, preserve_raw_ids=True)
+    unresolved = []
+    for node in workflow.get("nodes", []):
+        component_type = str(node.get("component_type") or "").strip().lower()
+        if component_type and component_type not in registry_ids:
+            unresolved.append({
+                "node_id": node.get("id"),
+                "component_type": node.get("component_type"),
+                "message": (
+                    f"Imported node {node.get('id')} uses unresolved component type "
+                    f"'{node.get('component_type')}'."
+                ),
+            })
+    if unresolved:
+        if strict:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Imported workflow could not be normalized to canonical component IDs.",
+                    "issues": unresolved,
+                },
+            )
+        workflow.setdefault("metadata", {})["_unresolved_ids"] = unresolved
+    return workflow
+
+
 @router.get("/import/survivors")
 def get_survivors(
     n: int = Query(10, ge=1, le=100),
@@ -48,6 +88,10 @@ def get_survivors(
         raise HTTPException(status_code=501, detail="Importer not available")
     try:
         survivors = import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
+        survivors = [
+            _canonicalize_imported_workflow(dict(s), strict=False)
+            for s in survivors
+        ]
         return {"survivors": survivors}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -62,6 +106,7 @@ def import_survivor(result_id: str) -> Dict[str, Any]:
         wf = import_single(result_id)
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
+    wf = _canonicalize_imported_workflow(wf)
 
     # Save the imported workflow
     now = _utc_now()

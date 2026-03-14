@@ -183,13 +183,10 @@ class ComponentRegistry:
         self.components_dir = components_dir
         self.handlers = {}
         self.manifests = {}
-        self.aliases = {
-            "normalization/layernorm": "normalization/layernorm_pre",
-            "normalization/rmsnorm": "normalization/rmsnorm_pre",
-        }
 
     def _resolve_component_dir(self, component_type):
-        component_type = self.aliases.get(component_type, component_type)
+        from aria_designer.api.app.component_identity import canonicalize_component_id
+        component_type = canonicalize_component_id(component_type)
         parts = component_type.split("/")
         if len(parts) == 2:
             cat, cid = parts

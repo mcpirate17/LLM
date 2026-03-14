@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,32 @@ _CANONICAL_MAP: Dict[str, str] = {
     "conditional_gather": "structural/conditional_gather",
     
     "input": "io/input",
+    "graph_input": "io/input",
     "output": "io/output_head",
     "output_head": "io/output_head",
+    "graph_output": "io/output_head",
+    # ── Additional on-disk components ─────────────────────────────
+    "dynamic_norm": "normalization/dynamic_norm",
+    "group_norm": "normalization/group_norm",
+    "fourier_mixing": "mixing/fourier_mixing",
+    "conv_only": "mixing/conv_only",
+    "swiglu_mlp": "channel_mixing/swiglu_mlp",
+    "mod_topk": "routing/mod_topk",
+    "early_exit": "routing/early_exit",
+    "entropy_router": "routing/entropy_router",
+    "matmul": "linear_algebra/matmul",
+    "topk_gate": "linear_algebra/topk_gate",
+    "rope": "positional/rope",
+    "alibi": "positional/alibi",
+    "learned_pos": "positional/learned_pos",
+}
+
+# Full-path redirects: wrong-category paths → correct on-disk paths.
+# Checked before leaf resolution so "normalization/rmsnorm" doesn't
+# fall through to the leaf lookup (which would give "linear_algebra/rmsnorm").
+_PATH_REDIRECTS: Dict[str, str] = {
+    "normalization/layernorm": "normalization/layernorm_pre",
+    "normalization/rmsnorm": "normalization/rmsnorm_pre",
 }
 
 # Conversation aliases (many-to-one)
@@ -141,11 +165,17 @@ def canonicalize_component_id(raw_id: str, registry_ids: Iterable[str] | None = 
     if not token:
         return token
 
+    # Full-path redirects (e.g. "normalization/rmsnorm" → "normalization/rmsnorm_pre")
+    if token in _PATH_REDIRECTS:
+        return _PATH_REDIRECTS[token]
+
     registry_set, registry_leaf_map = _build_registry_maps(registry_ids)
     if token in registry_set:
         return token
 
     alias_target = _ALIAS_MAP.get(token, token)
+    if alias_target in _PATH_REDIRECTS:
+        return _PATH_REDIRECTS[alias_target]
     if alias_target in registry_leaf_map:
         return registry_leaf_map[alias_target]
 
@@ -155,6 +185,8 @@ def canonicalize_component_id(raw_id: str, registry_ids: Iterable[str] | None = 
             return canonical
 
     if "/" in alias_target:
+        if alias_target in _PATH_REDIRECTS:
+            return _PATH_REDIRECTS[alias_target]
         _, _, leaf = alias_target.partition("/")
         if alias_target in registry_set:
             return alias_target

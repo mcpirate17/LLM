@@ -280,7 +280,13 @@ def test_difficulty_routed_chat_pattern_uses_valid_components_and_preserves_hard
         for op in patch["ops"]
         if op["op"] == "add_node"
     }
-    assert {"difficulty_scorer", "lane_router", "conditional_dispatch", "conditional_gather", "linear_proj"} <= added_types
+    assert {
+        "routing/difficulty_scorer",
+        "routing/lane_router",
+        "structural/conditional_dispatch",
+        "structural/conditional_gather",
+        "linear_algebra/linear_proj",
+    } <= added_types
 
     rewires = [op["payload"] for op in patch["ops"] if op["op"] == "rewire"]
     assert any(

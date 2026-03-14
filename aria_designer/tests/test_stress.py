@@ -87,21 +87,34 @@ def test_disconnected_islands(client):
     # but technically it has no graph_input. 
     # Let's check what the API returns.
 def test_import_and_validate_survivor(client):
-    """Test importing a survivor from research and re-validating it."""
+    """Test importing a survivor from research and re-validating it.
+
+    Survivors may contain research-only ops not in the designer registry.
+    The list endpoint annotates those (non-strict); the single-import
+    endpoint returns 422 with diagnostics for unresolved IDs.
+    """
     # 1. Get survivors
     r_list = client.get("/api/v1/import/survivors")
     assert r_list.status_code == 200
     survivors = r_list.json()["survivors"]
     if not survivors:
         pytest.skip("No survivors in notebook to test import")
-        
-    res_id = survivors[0]["result_id"]
-    
-    # 2. Import
+
+    # Find a survivor without unresolved IDs
+    res_id = None
+    for s in survivors:
+        has_unresolved = bool((s.get("metadata") or {}).get("_unresolved_ids"))
+        if not has_unresolved:
+            res_id = s.get("result_id")
+            break
+    if res_id is None:
+        pytest.skip("No fully compatible survivors available")
+
+    # 2. Import (strict mode — will 422 if unresolved)
     r_imp = client.post(f"/api/v1/import/survivors/{res_id}")
     assert r_imp.status_code == 200
     workflow = r_imp.json()
-    
+
     # 3. Validate
     r_val = client.post("/api/v1/workflows/validate", json={"workflow": workflow})
     assert r_val.status_code == 200

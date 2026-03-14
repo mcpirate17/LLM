@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Set
 
 import requests
 
+from .component_identity import canonicalize_component_id
 from .config import settings
 
 _RESEARCH_SIGNALS_CACHE_LOCK = threading.Lock()
@@ -31,9 +32,10 @@ def _extract_component_ids(entry: Dict[str, Any]) -> list[str]:
                 for node in nodes:
                     if not isinstance(node, dict):
                         continue
-                    token = str(node.get("component_type", "")).split("/")[-1].lower().strip()
-                    if token:
-                        component_ids.add(token)
+                    raw = str(node.get("component_type", "")).strip()
+                    if raw:
+                        canonical = canonicalize_component_id(raw)
+                        component_ids.add(canonical.split("/")[-1])
                 return sorted(component_ids)
     return []
 

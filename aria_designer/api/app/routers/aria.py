@@ -37,10 +37,40 @@ from ..shared_api import (
     bridge_validate,
     _PROJECT_ROOT,
 )
-from ..component_identity import canonicalize_component_id
+from ..component_identity import canonicalize_component_id, canonicalize_workflow_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/aria", tags=["aria"])
+
+
+def _approved_registry_ids() -> set[str]:
+    return db.list_component_types(status="approved")
+
+
+def _canonicalize_workflow_payload(workflow: Dict[str, Any], *, preserve_raw_ids: bool = False) -> Dict[str, Any]:
+    canonicalize_workflow_ids(
+        workflow,
+        _approved_registry_ids(),
+        preserve_raw_ids=preserve_raw_ids,
+    )
+    return workflow
+
+
+def _collect_unresolved_nodes(workflow: Dict[str, Any]) -> List[Dict[str, str]]:
+    registry_ids = _approved_registry_ids()
+    issues: List[Dict[str, str]] = []
+    for node in workflow.get("nodes", []):
+        component_type = str(node.get("component_type") or "").strip().lower()
+        if component_type and component_type not in registry_ids:
+            issues.append({
+                "node_id": str(node.get("id") or ""),
+                "component_type": str(node.get("component_type") or ""),
+                "message": (
+                    f"Node {node.get('id')} uses unresolved component type "
+                    f"'{node.get('component_type')}'."
+                ),
+            })
+    return issues
 
 # ---------------------------------------------------------------------------
 # Patch proposal CRUD
@@ -94,6 +124,16 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
             patched_workflow,
             added_node_ids,
             insertion_hints=insertion_hints,
+        )
+    _canonicalize_workflow_payload(patched_workflow, preserve_raw_ids=True)
+    unresolved = _collect_unresolved_nodes(patched_workflow)
+    if unresolved:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Patch produced unresolved component IDs.",
+                "issues": unresolved,
+            },
         )
     validation_info = None
     new_fingerprint = None
@@ -163,12 +203,12 @@ def record_outcome(req: RecordOutcomeRequest) -> Dict[str, Any]:
 def _infer_component_from_prompt(prompt: str, fallback_suggestions: List[Dict[str, Any]]) -> Optional[str]:
     lower = prompt.lower()
     components_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "components"))
-    aliases = {"normalization/layernorm": "normalization/layernorm_pre",
-               "normalization/rmsnorm": "normalization/rmsnorm_pre"}
+    registry_ids = _approved_registry_ids()
+
     def _is_installed(comp_type: str) -> bool:
-        token = aliases.get(comp_type, comp_type)
-        if "/" not in token: return False
-        cat, cid = token.split("/", 1)
+        resolved = canonicalize_component_id(comp_type, registry_ids)
+        if "/" not in resolved: return False
+        cat, cid = resolved.split("/", 1)
         return os.path.isdir(os.path.join(components_root, cat, cid))
     approved = db.list_components(status="approved")
     comp_lookup: Dict[str, str] = {}
@@ -176,7 +216,7 @@ def _infer_component_from_prompt(prompt: str, fallback_suggestions: List[Dict[st
         cid = str(c.get("id", "")).lower()
         cat = str(c.get("category", "")).lower()
         comp_type = f"{cat}/{c['id']}" if cat else c["id"]
-        comp_type = aliases.get(comp_type, comp_type)
+        comp_type = canonicalize_component_id(comp_type, registry_ids)
         if not _is_installed(comp_type): continue
         comp_lookup[cid] = comp_type
         name = str(c.get("name", "")).lower().replace(" ", "_")
@@ -187,34 +227,41 @@ def _infer_component_from_prompt(prompt: str, fallback_suggestions: List[Dict[st
     for key in sorted(comp_lookup.keys(), key=len, reverse=True):
         if key in _skip_keys: continue
         if key in lower and len(key) > 2: return comp_lookup[key]
-    if "split pipeline" in lower or "parallel branch" in lower or "split branch" in lower: return "structural/split2"
+    if "split pipeline" in lower or "parallel branch" in lower or "split branch" in lower: return canonicalize_component_id("split2", registry_ids)
     if "routing" in lower or "top-k" in lower or "topk" in lower or "early-exit" in lower: return "routing/mod_topk"
-    if "compression" in lower or "low-rank" in lower or "low rank" in lower or "bottleneck" in lower: return "math_space/low_rank_proj"
-    if "output" in lower: return "io/output_head"
-    if "attention" in lower: return "mixing/softmax_attention"
+    if "compression" in lower or "low-rank" in lower or "low rank" in lower or "bottleneck" in lower: return canonicalize_component_id("low_rank_proj", registry_ids)
+    if "output" in lower: return canonicalize_component_id("output_head", registry_ids)
+    if "attention" in lower: return canonicalize_component_id("softmax_attention", registry_ids)
     if "ffn" in lower or "feed forward" in lower or "mlp" in lower: return "channel_mixing/swiglu_mlp"
     if fallback_suggestions:
         comp = fallback_suggestions[0].get("component", {})
         cid_val, cat_val = comp.get("id"), comp.get("category")
         if cid_val and "/" in cid_val:
-            normalized = aliases.get(cid_val, cid_val)
+            normalized = canonicalize_component_id(cid_val, registry_ids)
             return normalized if _is_installed(normalized) else None
         if cid_val and cat_val:
-            normalized = aliases.get(f"{cat_val}/{cid_val}", f"{cat_val}/{cid_val}")
+            normalized = canonicalize_component_id(f"{cat_val}/{cid_val}", registry_ids)
             return normalized if _is_installed(normalized) else None
     return None
 
 def _normalize_component_type(raw: str, approved: List[Dict[str, Any]]) -> Optional[str]:
     token = (raw or "").strip().lower().replace(" ", "_")
     if not token: return None
-    if "/" in token: return token
+    canonical = canonicalize_component_id(token, _approved_registry_ids())
+    if "/" in canonical and db.get_component(canonical):
+        return canonical
+    # Fallback: scan approved list for substring matches on unknown leaves
     for c in approved:
-        cid = str(c.get("id", "")).lower(); cat = str(c.get("category", "")).lower()
+        cid = str(c.get("id", "")).lower()
+        cat = str(c.get("category", "")).lower()
         name = str(c.get("name", "")).lower().replace(" ", "_")
-        if token == cid or token == name: return f"{cat}/{cid}" if cat and cid else None
+        if token == cid or token == name:
+            return f"{cat}/{cid}" if cat and cid else None
     for c in approved:
-        cid = str(c.get("id", "")).lower(); cat = str(c.get("category", "")).lower()
-        if token in cid: return f"{cat}/{cid}" if cat and cid else None
+        cid = str(c.get("id", "")).lower()
+        cat = str(c.get("category", "")).lower()
+        if token in cid:
+            return f"{cat}/{cid}" if cat and cid else None
     return None
 
 def _resolve_node_token(token: str, nodes: List[Dict[str, Any]]) -> Optional[str]:
@@ -242,6 +289,9 @@ def _resolve_component_type(
     token = (raw or "").strip()
     if not token:
         return None
+    canonical = canonicalize_component_id(token)
+    if "/" in canonical:
+        return canonical
     return _normalize_component_type(token, approved) or _infer_component_from_prompt(token, suggestions)
 
 
@@ -492,9 +542,9 @@ def _select_fallback_component_type(
     has_residual = "add" in existing_types
     if is_benchmark_prompt or "novelty" in lower:
         if not has_norm:
-            return "normalization/layernorm"
+            return canonicalize_component_id("layernorm")
         if not has_attention and len(nodes) > 3:
-            return "mixing/softmax_attention"
+            return canonicalize_component_id("softmax_attention")
         if not has_residual and len(nodes) > 3:
             non_io_nodes = [
                 n for n in nodes
@@ -507,8 +557,8 @@ def _select_fallback_component_type(
             if novelty_op not in existing_types:
                 return _normalize_component_type(novelty_op, approved) or novelty_op
     if not has_output:
-        return "io/output_head"
-    return _normalize_component_type("relu", approved) or "math/relu"
+        return canonicalize_component_id("output_head")
+    return _normalize_component_type("relu", approved) or canonicalize_component_id("relu")
 
 
 def _append_fallback_ops(
@@ -617,7 +667,7 @@ def _save_patch_proposal(
 
 def _generate_patch_impl(req: AskAriaPromptRequest) -> Dict[str, Any]:
     """Generate a deterministic patch proposal from prompt + workflow."""
-    workflow = req.workflow.model_dump()
+    workflow = _canonicalize_workflow_payload(req.workflow.model_dump(), preserve_raw_ids=True)
     prompt = req.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="Prompt is required")

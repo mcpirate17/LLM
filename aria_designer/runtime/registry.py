@@ -24,10 +24,12 @@ class ComponentRegistry:
         # Mapping config (from component_mapping.yaml)
         self.mapping_config = {}
         self.aliases = {}
+        self.approximate_alias_notes = {}
         self.passthrough_components = set()
         self.source_components = set()
+        self.template_lowered_components = set()
         self.category_execution_class = {}
-        
+
         self.load_mappings()
 
     def load_mappings(self):
@@ -42,8 +44,10 @@ class ComponentRegistry:
             return
 
         self.aliases = self.mapping_config.get("aliases", {})
+        self.approximate_alias_notes = self.mapping_config.get("approximate_alias_notes", {})
         self.passthrough_components = set(self.mapping_config.get("passthrough_components", []))
         self.source_components = set(self.mapping_config.get("source_components", []))
+        self.template_lowered_components = set(self.mapping_config.get("template_lowered_components", []))
         self.category_execution_class = self.mapping_config.get("category_execution_class", {})
 
     def _resolve_component_dir(self, component_type: str) -> Optional[Path]:

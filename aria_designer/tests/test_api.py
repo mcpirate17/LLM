@@ -377,6 +377,51 @@ def test_validate_workflow_valid(client):
     assert data["valid"] is True
 
 
+def test_validate_workflow_normalizes_legacy_component_ids(client):
+    workflow = {
+        "workflow": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": "wf_legacy_aliases",
+            "name": "Legacy Alias Workflow",
+            "nodes": [
+                {"id": "n_in", "component_type": "input", "params": {}, "ui_meta": {}},
+                {"id": "n_mid", "component_type": "relu", "params": {}, "ui_meta": {}},
+                {"id": "n_out", "component_type": "output_head", "params": {}, "ui_meta": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n_in", "source_port": "y", "target": "n_mid", "target_port": "x"},
+                {"id": "e2", "source": "n_mid", "source_port": "y", "target": "n_out", "target_port": "x"},
+            ],
+        }
+    }
+    r = client.post("/api/v1/workflows/validate", json=workflow)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["valid"] is True
+    assert not [issue for issue in data["issues"] if issue["code"] == "unknown_component"]
+
+
+def test_validate_workflow_rejects_unresolved_component_ids(client):
+    workflow = {
+        "workflow": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": "wf_unknown_component",
+            "name": "Unknown Component Workflow",
+            "nodes": [
+                {"id": "n1", "component_type": "math_space/not_real_component", "params": {}, "ui_meta": {}},
+            ],
+            "edges": [],
+        }
+    }
+    r = client.post("/api/v1/workflows/validate", json=workflow)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["valid"] is False
+    issues = [issue for issue in data["issues"] if issue["code"] == "unknown_component"]
+    assert issues
+    assert issues[0]["node_id"] == "n1"
+
+
 def test_validate_workflow_cycle(client):
     workflow = {
         "workflow": {
@@ -551,10 +596,27 @@ def test_save_and_get_workflow(client):
     r = client.get("/api/v1/workflows/wf_save_test")
     assert r.status_code == 200
     assert r.json()["name"] == "Save Test"
+    assert r.json()["graph"]["nodes"][0]["component_type"] == "math/relu"
 
     # Update should increment version
     r = client.put("/api/v1/workflows/wf_save_test", json={**workflow, "name": "Updated"})
     assert r.json()["version"] == 2
+
+
+def test_save_workflow_rejects_unresolved_component_ids(client):
+    workflow = {
+        "schema_version": "workflow_graph.v1",
+        "workflow_id": "wf_save_invalid_component",
+        "name": "Invalid Save",
+        "nodes": [
+            {"id": "n1", "component_type": "math/not_a_real_kernel", "params": {}, "ui_meta": {}},
+        ],
+        "edges": [],
+    }
+    r = client.put("/api/v1/workflows/wf_save_invalid_component", json=workflow)
+    assert r.status_code == 422
+    data = r.json()
+    assert "issues" in data["detail"]
 
 
 def test_propose_and_apply_patch(client):

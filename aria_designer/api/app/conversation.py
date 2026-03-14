@@ -495,7 +495,7 @@ def _build_difficulty_routed_patch(
         )
     else:
         hard_lane_id = f"aria_hard_lane_{uuid4().hex[:4]}"
-        _append_add_node(ops, hard_lane_id, "softmax_attention", {}, base_x + 540, base_y + 90)
+        _append_add_node(ops, hard_lane_id, "mixing/softmax_attention", {}, base_x + 540, base_y + 90)
         _append_rewire(ops, hard_dispatch_id, hard_lane_id)
         _append_rewire(ops, hard_lane_id, gather_id, target_port="b")
 
