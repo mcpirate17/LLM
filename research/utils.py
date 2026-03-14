@@ -6,6 +6,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from research.defaults import ROPE_THETA_BASE
+
 def straight_through_estimator(original: torch.Tensor, modified: torch.Tensor) -> torch.Tensor:
     """
     Bypasses non-differentiable operations entirely in the backward pass.
@@ -64,7 +66,7 @@ class SigmoidNorm(nn.Module):
 
 class RoPE(nn.Module):
     """Rotary Position Embeddings."""
-    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
+    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = ROPE_THETA_BASE):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)

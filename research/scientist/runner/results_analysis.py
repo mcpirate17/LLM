@@ -120,7 +120,15 @@ class _ResultsAnalysisMixin:
 
     def _analyze_results(self, results: Dict, exp_id: str,
                          nb: LabNotebook, context: str = "") -> List[str]:
-        """Analyze experiment results and generate insights."""
+        """Analyze experiment results and record insights for dashboard display.
+
+        Insights are recorded to the DB for dashboard visibility but are NOT
+        fed into Aria's persona state or decision-making.  The current insight
+        confidence model is not grounded in real predictive accuracy and was
+        causing Aria to make counterproductive decisions (excluding good ops,
+        shrinking architecture limits).  A future overhaul will replace this
+        with Bayesian confidence that improves with data.
+        """
         # Try data-driven analytics first
         try:
             from ..analytics import ExperimentAnalytics
@@ -145,7 +153,7 @@ class _ResultsAnalysisMixin:
                     subject_key=subject_key,
                     semantic_key=semantic_key,
                 )
-                self.aria.add_insight(content)
+                # Insights are display-only — not fed to Aria's decision state
                 recorded.append(content)
             return recorded
         except Exception:

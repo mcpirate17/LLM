@@ -16,6 +16,7 @@ from typing import Optional
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+from research.defaults import LAB_NOTEBOOK_DB
 from .api_routes import _designer as _designer_mod
 from .designer_utils import (
     validate_designer_graph,
@@ -50,7 +51,7 @@ def _proxy_or_error(resp):
 
 
 def create_app(
-    notebook_path: str = "research/lab_notebook.db",
+    notebook_path: str = LAB_NOTEBOOK_DB,
     static_folder: Optional[str] = None,
 ) -> Flask:
     """Create the Flask API app."""

@@ -39,6 +39,7 @@ from .morphological_box import (
 from .arch_builder import BuildConfig, build_model
 from .evaluator import stage0_smoke_test, stage1_micro_train, Stage0Result, Stage1Result
 from .database import ExperimentDB
+from .defaults import VOCAB_SIZE
 
 
 DEFAULT_DB = Path("research/experiments.db")
@@ -49,7 +50,7 @@ EXPLORE_CONFIG = BuildConfig(
     n_heads=8,
     n_kv_heads=4,
     n_layers=6,
-    vocab_size=32000,
+    vocab_size=VOCAB_SIZE,
     max_seq_len=256,
     mlp_ratio=3.0,
 )

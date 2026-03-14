@@ -18,6 +18,8 @@ import time
 import torch
 import torch.nn as nn
 
+from ..defaults import VOCAB_SIZE
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ def register_reference(
     device: str = "cpu",
     d_model: int = 256,
     n_layers: int = 6,
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
     seq_len: int = 128,
     n_train_steps: int = 200,
 ) -> dict:

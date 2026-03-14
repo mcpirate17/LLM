@@ -6,9 +6,11 @@ import os
 import sqlite3
 from pathlib import Path
 
+from research.defaults import LAB_NOTEBOOK_DB, SQLITE_BUSY_TIMEOUT_MS
+
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_DB = _PROJECT_ROOT / "research" / "lab_notebook.db"
+_DEFAULT_DB = _PROJECT_ROOT / LAB_NOTEBOOK_DB
 
 
 def project_root() -> Path:
@@ -45,7 +47,7 @@ def ensure_db_exists(db_path: str) -> str:
     return str(path)
 
 
-def open_sqlite(db_path: str, *, busy_timeout_ms: int = 30000) -> sqlite3.Connection:
+def open_sqlite(db_path: str, *, busy_timeout_ms: int = SQLITE_BUSY_TIMEOUT_MS) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     if busy_timeout_ms > 0:

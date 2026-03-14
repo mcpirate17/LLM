@@ -489,7 +489,8 @@ class _DashboardMixin:
     def _gather_designer_telemetry(self) -> Dict:
         """Fetch telemetry from aria_designer if available."""
         import requests
-        base = os.environ.get("ARIA_DESIGNER_PROXY_BASE", "http://127.0.0.1:8091")
+        from research.defaults import DESIGNER_API_BASE
+        base = os.environ.get("ARIA_DESIGNER_PROXY_BASE", DESIGNER_API_BASE)
         result: Dict = {}
         try:
             r = requests.get(f"{base}/api/v1/integration/bridge-gap-report", timeout=3)

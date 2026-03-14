@@ -22,6 +22,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
+from research.defaults import MODEL_DIM
 from .graph import ComputationGraph, OpNode, ShapeInfo
 from .primitives import (
     PRIMITIVE_REGISTRY, PrimitiveOp, algebraic_types_compatible,
@@ -86,7 +87,7 @@ Node = OpNode
 @dataclass
 class GrammarConfig:
     """Configuration for the graph generator."""
-    model_dim: int = 256
+    model_dim: int = MODEL_DIM
     min_depth: int = 3
     max_depth: int = 10
     max_width: int = 4          # max parallel paths (2 or 3 way splits)
@@ -630,6 +631,11 @@ def _check_shape_compat(
         "block_sparse_linear": 16, "nm_sparse_linear": 8,
         "low_rank_proj": 8, "bottleneck_proj": 8,
         "grouped_linear": 8, "shared_basis_proj": 8,
+        # Parameterized ops that fail with degenerate dims from reduce_last
+        "gated_linear": 8, "ternary_projection": 8,
+        "linear_proj": 4, "linear_proj_down": 4, "linear_proj_up": 4,
+        "fused_linear_gelu": 4, "adaptive_lane_mixer": 8,
+        "relu_gate_routing": 8,
     }
     min_dim = _MIN_DIM_OPS.get(op.name)
     if min_dim and s0.dim < min_dim:

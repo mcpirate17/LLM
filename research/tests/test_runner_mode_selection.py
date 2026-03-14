@@ -83,7 +83,9 @@ class TestRunnerModeSelection(unittest.TestCase):
 
         nb.close()
         self.assertEqual(captured.get("n_programs"), 77)
-        self.assertEqual(captured.get("max_depth"), 5)
+        # max_depth is a floor field — mode overrides can raise but not lower.
+        # User set max_depth=10, mode suggested 5, so 10 is preserved.
+        self.assertEqual(captured.get("max_depth"), 10)
 
     def test_select_next_mode_forces_compression_examination_when_undercovered(self):
         runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "compression_override.db"))

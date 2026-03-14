@@ -359,25 +359,23 @@ class _SelectionMixin:
             insight = "Low Stage 0 pass rate — grammar produces too many invalid programs. Consider tightening shape constraints."
             insights.append(insight)
             nb.record_insight("failure_mode", insight, exp_id, confidence=0.7)
-            aria.add_insight(insight)
+            # failure_mode insights are display-only — not fed to Aria's decision state
 
         if s0_rate > 0.5 and s1_rate < 0.01:
             insight = "Programs compile but don't learn. The operations may not compose into learnable functions. Need more parameterized ops."
             insights.append(insight)
             nb.record_insight("failure_mode", insight, exp_id, confidence=0.6)
-            aria.add_insight(insight)
+            # failure_mode insights are display-only — not fed to Aria's decision state
 
         if results["novel_count"] > 0:
             insight = f"Found {results['novel_count']} genuinely novel survivors! Behaviorally distinct from known architectures."
             insights.append(insight)
             nb.record_insight("success_factor", insight, exp_id, confidence=0.8)
-            aria.add_insight(insight)
 
         if s1_rate > 0.05:
             insight = f"Strong Stage 1 pass rate ({s1_rate:.0%}). Current grammar configuration is productive."
             insights.append(insight)
             nb.record_insight("pattern", insight, exp_id, confidence=0.7)
-            aria.add_insight(insight)
 
         return insights
 

@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from typing import Optional
 
+from research.defaults import ROPE_THETA_BASE
+
 # Try aria_core first (unified pybind11 backend)
 try:
     import aria_core
@@ -279,7 +281,7 @@ class KernelDispatcher:
             res += torch.from_numpy(pe)
         return res.numpy()
 
-    def rope_rotate(self, x: np.ndarray, theta_base: float = 10000.0) -> np.ndarray:
+    def rope_rotate(self, x: np.ndarray, theta_base: float = ROPE_THETA_BASE) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
             return _torch_to_np(aria_core.rope_rotate_f32(_np_to_torch(x), float(theta_base)))
         # Simplified Python fallback (not a full RoPE, just for interface parity)

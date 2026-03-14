@@ -39,12 +39,13 @@ from .telemetry import (
     native_runner_capability_report,
 )
 from ..native_runner_adapter import try_designer_runtime_probe
+from ...defaults import VOCAB_SIZE
 
 logger = logging.getLogger(__name__)
 
 def _legacy_compile_model(
     layer_graphs: List[Any],
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
     max_seq_len: Optional[int] = None,
     **kwargs: Any,
 ):
@@ -60,7 +61,7 @@ def _legacy_compile_model(
 
 def compile_model_native_first(
     layer_graphs: List[Any],
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
     max_seq_len: Optional[int] = None,
     **kwargs: Any,
 ):

@@ -1,9 +1,19 @@
 import os
+import sys
+from pathlib import Path
+
+# Ensure research/ is importable
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from research.defaults import RESEARCH_API_BASE, LINEAGE_SYNC_TIMEOUT
+
 
 class Settings:
     LINEAGE_SYNC_ENABLED: bool = os.environ.get("ARIA_LINEAGE_SYNC_ENABLED", "0") != "0"
-    LINEAGE_SYNC_BASE: str = os.environ.get("ARIA_RESEARCH_API_BASE", "http://127.0.0.1:5000")
-    LINEAGE_SYNC_TIMEOUT: float = float(os.environ.get("ARIA_LINEAGE_SYNC_TIMEOUT", "3"))
+    LINEAGE_SYNC_BASE: str = os.environ.get("ARIA_RESEARCH_API_BASE", RESEARCH_API_BASE)
+    LINEAGE_SYNC_TIMEOUT: float = float(os.environ.get("ARIA_LINEAGE_SYNC_TIMEOUT", str(LINEAGE_SYNC_TIMEOUT)))
     RECOMMENDER_USE_RESEARCH_SIGNALS: bool = os.environ.get("ARIA_RECOMMENDER_USE_RESEARCH_SIGNALS", "1") != "0"
     RECOMMENDER_SIGNALS_TIMEOUT: float = float(os.environ.get("ARIA_RECOMMENDER_SIGNALS_TIMEOUT", "0.8"))
     RECOMMENDER_SIGNALS_TTL_S: float = float(os.environ.get("ARIA_RECOMMENDER_SIGNALS_TTL_S", "45"))

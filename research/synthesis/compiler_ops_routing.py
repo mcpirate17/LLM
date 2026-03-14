@@ -32,12 +32,12 @@ def _op_topk_gate(module, inputs, _):
                 return native_out
         except Exception:
             pass
-    logits = F.linear(x, module.gate_proj)
+    logits = F.linear(x, module.gate_proj.to(x.dtype))
     gate_weights = F.softmax(logits, dim=-1)
-    
+
     # Record routing telemetry
     _record_routing_telemetry(module, 2, gate_weights.argmax(dim=-1), logits=logits)
-    
+
     half = D // 2
     out = torch.cat([x[..., :half] * gate_weights[..., 0:1], 
                      x[..., half:2*half] * gate_weights[..., 1:2]], dim=-1)
@@ -56,7 +56,7 @@ def _op_moe_topk(module, inputs, config):
     if not hasattr(module, 'gate_weight'):
         return x
         
-    logits = F.linear(x, module.gate_weight)
+    logits = F.linear(x, module.gate_weight.to(x.dtype))
     weights, indices = logits.topk(top_k, dim=-1)
     weights = F.softmax(weights, dim=-1)
     
@@ -64,6 +64,7 @@ def _op_moe_topk(module, inputs, config):
     _record_routing_telemetry(module, n_experts, indices, logits=logits)
     
     # Recorded weights for expert contribution
+    output = torch.zeros_like(x)
     if hasattr(module, 'experts'):
         for i, expert in enumerate(module.experts):
             # Find tokens that selected this expert
@@ -77,7 +78,7 @@ def _op_moe_topk(module, inputs, config):
                 # where indices (B, S, top_k) == i
                 exp_mask = (indices == i)
                 expert_weight = weights[exp_mask].reshape(-1, 1)
-                output[mask] = output[mask] + expert(expert_input) * expert_weight
+                output[mask] = output[mask] + expert(expert_input).to(output.dtype) * expert_weight.to(output.dtype)
     else:
         # Fallback to a learned projection if experts sub-modules aren't ready
         output = F.linear(x, module.weight) if hasattr(module, 'weight') else x
@@ -93,15 +94,16 @@ def _op_moe_2expert(module, inputs, config):
         return x
 
     # Compute gate scores
-    logits = F.linear(x, module.gate_proj)  # (B, S, 2)
-    weights = F.softmax(logits, dim=-1)     # (B, S, 2)
+    dt = x.dtype
+    logits = F.linear(x, module.gate_proj.to(dt))  # (B, S, 2)
+    weights = F.softmax(logits, dim=-1)              # (B, S, 2)
 
     # Record routing telemetry
     _record_routing_telemetry(module, 2, weights.argmax(dim=-1), logits=logits)
 
     # Each expert is a simple linear projection
-    e0 = F.linear(x, module.expert_0_weight)  # (B, S, D)
-    e1 = F.linear(x, module.expert_1_weight)  # (B, S, D)
+    e0 = F.linear(x, module.expert_0_weight.to(dt))  # (B, S, D)
+    e1 = F.linear(x, module.expert_1_weight.to(dt))  # (B, S, D)
 
     # Weighted combination
     output = weights[..., 0:1] * e0 + weights[..., 1:2] * e1
@@ -280,17 +282,18 @@ def _op_adaptive_lane_mixer(module, inputs, config):
     if not hasattr(module, 'gate_proj'): return x
     
     # Compute 3-way gate: [Fast, Medium, Hard]
-    logits = F.linear(x, module.gate_proj)
+    dt = x.dtype
+    logits = F.linear(x, module.gate_proj.to(dt))
     weights = F.softmax(logits, dim=-1)
-    
+
     _record_routing_telemetry(module, 3, weights.argmax(dim=-1), logits=logits)
-    
+
     # Experts: 0=Identity(Fast), 1=LowRank(Medium), 2=MLP(Hard)
     out = x * weights[..., 0:1] # Fast lane: direct skip
-    
+
     # Medium lane: Low-rank
     if hasattr(module, 'U_mid'):
-        mid = F.linear(F.linear(x, module.U_mid), module.V_mid)
+        mid = F.linear(F.linear(x, module.U_mid.to(dt)), module.V_mid.to(dt))
         out = out + mid * weights[..., 1:2]
         
     # Hard lane: MLP
@@ -319,7 +322,7 @@ def _op_mixed_recursion_gate(module, inputs, config):
         mask = (depths >= i).float().unsqueeze(-1)
         # Apply transformation for this step
         # proj: (D, D) or similar
-        step_out = F.linear(out, module.step_projs[i])
+        step_out = F.linear(out, module.step_projs[i].to(out.dtype))
         out = (1 - mask) * out + mask * step_out
         
     _record_routing_telemetry(module, max_depth, depths, logits=scores)
@@ -340,7 +343,7 @@ def _op_relu_gate_routing(module, inputs, config):
     if not hasattr(module, 'gate_proj'): return x
     
     # [B, S, n_experts]
-    gate_scores = F.relu(F.linear(x, module.gate_proj))
+    gate_scores = F.relu(F.linear(x, module.gate_proj.to(x.dtype)))
     
     # Record telemetry on 'effective expert count' (sparsity)
     active_count = (gate_scores > 0).float().sum(dim=-1).mean().item()

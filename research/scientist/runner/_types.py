@@ -9,6 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from research.defaults import (
+    MODEL_DIM, VOCAB_SIZE, MAX_SEQ_LEN, VALIDATION_SEQ_LEN,
+    STAGE1_STEPS, STAGE1_LR, STAGE1_BATCH_SIZE,
+    INVESTIGATION_STEPS, INVESTIGATION_BATCH_SIZE,
+    VALIDATION_STEPS, VALIDATION_BATCH_SIZE,
+    SCALE_UP_STEPS, SCALE_UP_BATCH_SIZE, SCALE_UP_SEQ_LEN,
+)
+
 
 class ModelCandidate:
     """Unified representation of a candidate model from any source."""
@@ -40,15 +48,15 @@ class RunConfig:
     """Configuration for an experiment run."""
     mode: str = "single"
     n_programs: int = 100
-    model_dim: int = 256
+    model_dim: int = MODEL_DIM
     n_layers: int = 4
-    vocab_size: int = 32000
-    max_seq_len: int = 256
+    vocab_size: int = VOCAB_SIZE
+    max_seq_len: int = MAX_SEQ_LEN
     device: str = "cuda"
     # Stage 1 training
-    stage1_steps: int = 500
-    stage1_lr: float = 3e-4
-    stage1_batch_size: int = 4
+    stage1_steps: int = STAGE1_STEPS
+    stage1_lr: float = STAGE1_LR
+    stage1_batch_size: int = STAGE1_BATCH_SIZE
     enable_perf_tracing: bool = False
     collect_training_curve: bool = True
     gradient_clip_norm: float = 1.0
@@ -155,9 +163,9 @@ class RunConfig:
     # Scale-up mode
     scale_up: bool = False
     scale_up_result_ids: str = ""   # comma-separated result IDs
-    scale_up_steps: int = 5000      # 10x default 500
-    scale_up_batch_size: int = 8    # 2x default 4
-    scale_up_seq_len: int = 512     # 2x default 256
+    scale_up_steps: int = SCALE_UP_STEPS
+    scale_up_batch_size: int = SCALE_UP_BATCH_SIZE
+    scale_up_seq_len: int = SCALE_UP_SEQ_LEN
     # One-shot pruning baseline
     one_shot_pruning_baseline: bool = False
     one_shot_pruning_method: str = "wanda"  # wanda | sparsegpt
@@ -189,13 +197,13 @@ class RunConfig:
     loss_type: str = "cross_entropy"       # "cross_entropy" | "synthesized"
     optimizer_type: str = "adamw"          # "adamw" | "synthesized"
     # Investigation phase
-    investigation_steps: int = 2500
-    investigation_batch_size: int = 4
+    investigation_steps: int = INVESTIGATION_STEPS
+    investigation_batch_size: int = INVESTIGATION_BATCH_SIZE
     investigation_max_loss_ratio_multiplier: float = 8.0
     # Validation phase
-    validation_steps: int = 10000
-    validation_batch_size: int = 8
-    validation_seq_len: int = 512
+    validation_steps: int = VALIDATION_STEPS
+    validation_batch_size: int = VALIDATION_BATCH_SIZE
+    validation_seq_len: int = VALIDATION_SEQ_LEN
     validation_n_seeds: int = 5
     # Auto-escalation pipeline
     auto_investigate: bool = True

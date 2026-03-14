@@ -7,7 +7,7 @@ then drives compilation, sandbox evaluation, fingerprinting, and novelty scoring
 Usage:
     from runtime.bridge import evaluate_workflow, workflow_to_graph
 
-    result = evaluate_workflow(workflow_json, model_dim=256, device="cuda")
+    result = evaluate_workflow(workflow_json, device="cuda")
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ _RESEARCH_ROOT = _PROJECT_ROOT / "research"
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.mathspaces.registry import register_all_mathspaces
@@ -140,7 +141,7 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
 
 # ── Workflow → ComputationGraph conversion ───────────────────────────
 
-def workflow_to_graph(workflow_json: Dict[str, Any], model_dim: int = 256, return_id_map: bool = False) -> Any:
+def workflow_to_graph(workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM, return_id_map: bool = False) -> Any:
     """Convert an aria_designer workflow JSON to a research ComputationGraph."""
     return _w2cg(workflow_json, model_dim, return_id_map)
 
@@ -165,7 +166,7 @@ class CompressionResult:
 def analyze_compression(
     model,
     graph,
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
     device: str = "cpu",
     batch_size: int = 2,
     seq_len: int = 64,
@@ -200,8 +201,8 @@ def bridge_analyze_routing(model, graph) -> List[Dict[str, Any]]:
 
 def evaluate_workflow(
     workflow_json: Dict[str, Any],
-    model_dim: int = 256,
-    vocab_size: int = 32000,
+    model_dim: int = MODEL_DIM,
+    vocab_size: int = VOCAB_SIZE,
     device: str = "cpu",
     run_fingerprint: bool = True,
     run_novelty: bool = True,
@@ -291,7 +292,7 @@ def list_available_primitives() -> List[Dict[str, Any]]:
     return [{"name": op.name, "category": str(op.category), "n_inputs": op.n_inputs, 
              "config_keys": list(op.config_keys)} for name, op in sorted(PRIMITIVE_REGISTRY.items())]
 
-def validate_workflow_graph(workflow_json: Dict[str, Any], model_dim: int = 256) -> Dict[str, Any]:
+def validate_workflow_graph(workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM) -> Dict[str, Any]:
     """Validate that a workflow can be converted to a valid ComputationGraph."""
     try:
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)
@@ -306,7 +307,7 @@ def validate_workflow_graph(workflow_json: Dict[str, Any], model_dim: int = 256)
     except Exception as e:
         return {"valid": False, "error": str(e)}
 
-def estimate_performance(workflow_json: Dict[str, Any], model_dim: int = 256) -> Dict[str, Any]:
+def estimate_performance(workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM) -> Dict[str, Any]:
     """Quick performance estimate without running the model."""
     try:
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)

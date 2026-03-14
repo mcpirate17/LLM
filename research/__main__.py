@@ -17,6 +17,10 @@ import sys
 import time
 import gc
 
+from research.defaults import (
+    MODEL_DIM, N_LAYERS, DASHBOARD_PORT, LAB_NOTEBOOK_DB,
+)
+
 
 def main():
     parser = argparse.ArgumentParser(description="HYDRA Architecture Explorer")
@@ -24,11 +28,11 @@ def main():
                         choices=["explore", "synthesize", "continuous", "dashboard", "evolve", "routing-benchmark", "register-references"],
                         help="Operation mode")
     parser.add_argument("--n", type=int, default=10, help="Number of programs/architectures")
-    parser.add_argument("--dim", type=int, default=256, help="Model dimension")
-    parser.add_argument("--n_layers", type=int, default=4, help="Number of layers")
+    parser.add_argument("--dim", type=int, default=MODEL_DIM, help="Model dimension")
+    parser.add_argument("--n_layers", type=int, default=N_LAYERS, help="Number of layers")
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda"])
-    parser.add_argument("--port", type=int, default=5000, help="Dashboard port")
-    parser.add_argument("--db", type=str, default="research/lab_notebook.db")
+    parser.add_argument("--port", type=int, default=DASHBOARD_PORT, help="Dashboard port")
+    parser.add_argument("--db", type=str, default=LAB_NOTEBOOK_DB)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--math-spaces", action="store_true", default=True,
                         help="Enable math space primitives")

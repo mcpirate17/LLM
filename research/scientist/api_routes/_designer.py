@@ -16,12 +16,17 @@ from typing import Any, Dict, Optional
 import requests as _requests
 from flask import jsonify, Response
 
+from research.defaults import (
+    DESIGNER_API_BASE, DESIGNER_UI_BASE, DESIGNER_API_HEALTH,
+    DESIGNER_PROXY_TIMEOUT, DESIGNER_BOOT_TIMEOUT, DESIGNER_IDLE_TIMEOUT,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── Designer proxy configuration ────────────────────────────────────────
-_DESIGNER_PROXY_BASE = os.environ.get("ARIA_DESIGNER_PROXY_BASE", "http://127.0.0.1:8091")
+_DESIGNER_PROXY_BASE = os.environ.get("ARIA_DESIGNER_PROXY_BASE", DESIGNER_API_BASE)
 _DESIGNER_PROXY_ENABLED = os.environ.get("ARIA_DESIGNER_PROXY_ENABLED", "1") != "0"
-_DESIGNER_PROXY_TIMEOUT = float(os.environ.get("ARIA_DESIGNER_PROXY_TIMEOUT", "10"))
+_DESIGNER_PROXY_TIMEOUT = float(os.environ.get("ARIA_DESIGNER_PROXY_TIMEOUT", str(DESIGNER_PROXY_TIMEOUT)))
 
 # ── Designer lifecycle orchestration ────────────────────────────────────
 _ARIA_DESIGNER_ROOT = Path(
@@ -30,10 +35,10 @@ _ARIA_DESIGNER_ROOT = Path(
         str(Path(__file__).resolve().parents[3] / "aria_designer"),
     )
 )
-_ARIA_DESIGNER_API_HEALTH = os.environ.get("ARIA_DESIGNER_API_HEALTH", "http://127.0.0.1:8091/health")
-_ARIA_DESIGNER_UI_HEALTH = os.environ.get("ARIA_DESIGNER_UI_HEALTH", "http://127.0.0.1:5174")
-_ARIA_DESIGNER_BOOT_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_BOOT_TIMEOUT_S", "30"))
-_ARIA_DESIGNER_IDLE_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_IDLE_TIMEOUT_S", "900"))
+_ARIA_DESIGNER_API_HEALTH = os.environ.get("ARIA_DESIGNER_API_HEALTH", DESIGNER_API_HEALTH)
+_ARIA_DESIGNER_UI_HEALTH = os.environ.get("ARIA_DESIGNER_UI_HEALTH", DESIGNER_UI_BASE)
+_ARIA_DESIGNER_BOOT_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_BOOT_TIMEOUT_S", str(DESIGNER_BOOT_TIMEOUT)))
+_ARIA_DESIGNER_IDLE_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_IDLE_TIMEOUT_S", str(DESIGNER_IDLE_TIMEOUT)))
 _DESIGNER_LIFECYCLE_LOCK = threading.Lock()
 _DESIGNER_ACTIVITY_LOCK = threading.Lock()
 _DESIGNER_LAST_ACTIVITY_TS = time.time()

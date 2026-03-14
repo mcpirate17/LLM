@@ -585,8 +585,9 @@ class _ExecutionScreeningMixin:
         except Exception:
             template_weights, motif_weights = {}, {}
 
-        # Merge Aria's overrides into excluded_ops and op_weights
-        excluded_ops = excluded_ops | self._excluded_ops_overrides
+        # Note: _excluded_ops_overrides is no longer populated (auto-exclusion
+        # disabled). Failure modes are display-only, never acted on.
+        # excluded_ops only contains non-causal ops from grammar defaults.
         op_weights = {**op_weights, **self._op_weights_overrides}
         grammar = self._build_grammar_config(config, excluded_ops=excluded_ops, op_weights=op_weights)
         # Merge learned template/motif weights, but don't overwrite routing_first preset

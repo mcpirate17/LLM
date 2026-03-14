@@ -6,6 +6,7 @@ from typing import Callable, Dict
 import torch
 import torch.nn.functional as F
 
+from research.defaults import ROPE_THETA_BASE
 from .compiler_op_utils import (
     HAS_ARIA_CORE,
     HAS_KERNELS,
@@ -94,8 +95,9 @@ def _op_gated_linear(module, inputs, _):
         return aria_core.gated_linear_f32(
             x, module.linear_weight, module.linear_bias,
             module.gate_weight, module.gate_bias)
-    linear = F.linear(x, module.linear_weight, module.linear_bias)
-    gate = torch.sigmoid(F.linear(x, module.gate_weight, module.gate_bias))
+    dt = x.dtype
+    linear = F.linear(x, module.linear_weight.to(dt), module.linear_bias.to(dt))
+    gate = torch.sigmoid(F.linear(x, module.gate_weight.to(dt), module.gate_bias.to(dt)))
     return linear * gate
 
 def _op_embedding_lookup(module, inputs, _):
@@ -121,11 +123,11 @@ def _op_embedding_lookup(module, inputs, _):
 def _op_rope_rotate(_, inputs, __):
     x = inputs[0]
     if _c(x) and hasattr(aria_core, "rope_rotate_f32"):
-        return aria_core.rope_rotate_f32(x, 10000.0)
+        return aria_core.rope_rotate_f32(x, ROPE_THETA_BASE)
     B, S, D = x.shape
     pos = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
     dim_pairs = D // 2
-    freqs = 1.0 / (10000.0 ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D))
+    freqs = 1.0 / (ROPE_THETA_BASE ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D))
     angles = pos * freqs.unsqueeze(0)
     cos_a = torch.cos(angles).unsqueeze(0)
     sin_a = torch.sin(angles).unsqueeze(0)

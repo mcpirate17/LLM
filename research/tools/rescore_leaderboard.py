@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..defaults import VOCAB_SIZE
+
 SCORING_VERSION = "wikitext_rescore_v2"
 
 # Screening-only rows get this confidence factor on their performance term.
@@ -53,14 +55,14 @@ def _snapshot(conn: sqlite3.Connection, version: str) -> str:
     return table_name, count
 
 
-def _fixed_wikitext_score(ppl: Optional[float], vocab_size: int = 32000) -> Optional[float]:
+def _fixed_wikitext_score(ppl: Optional[float], vocab_size: int = VOCAB_SIZE) -> Optional[float]:
     """log(vocab/ppl) / log(vocab) — 1.0 for perfect, 0.0 for random."""
     if ppl is None or ppl <= 0:
         return None
     return max(0.0, min(1.0, math.log(vocab_size / ppl) / math.log(vocab_size)))
 
 
-def _fixed_tinystories_score(ppl: Optional[float], vocab_size: int = 32000) -> Optional[float]:
+def _fixed_tinystories_score(ppl: Optional[float], vocab_size: int = VOCAB_SIZE) -> Optional[float]:
     """Same formula as wikitext_score."""
     return _fixed_wikitext_score(ppl, vocab_size)
 

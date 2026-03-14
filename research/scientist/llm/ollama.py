@@ -19,7 +19,8 @@ class OllamaBackend(LLMBackend):
     name = "ollama"
 
     def __init__(self):
-        self.host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        from research.defaults import OLLAMA_BASE
+        self.host = os.environ.get("OLLAMA_HOST", OLLAMA_BASE)
         self.model = os.environ.get("OLLAMA_MODEL", "llama3")
         self.keep_alive = int(os.environ.get("OLLAMA_KEEP_ALIVE", "300"))
 

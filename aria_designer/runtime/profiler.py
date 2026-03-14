@@ -27,6 +27,7 @@ _RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "
 if _RESEARCH_ROOT not in sys.path:
     sys.path.insert(0, os.path.dirname(_RESEARCH_ROOT))
 
+from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.eval.perf_budget import evaluate_perf_budget_gate
 from research.perf_contract import build_duplicate_work_report, build_perf_contract
 from research.synthesis.primitives import PRIMITIVE_REGISTRY, get_primitive, safe_eval_formula
@@ -228,7 +229,7 @@ def _has_native_kernel(op_name: str) -> bool:
 
 def profile_static(
     workflow_json: Dict[str, Any],
-    model_dim: int = 256,
+    model_dim: int = MODEL_DIM,
     batch_size: int = 2,
     seq_len: int = 128,
 ) -> ProfileReport:
@@ -243,7 +244,7 @@ def profile_static(
 
 def profile_static_graph(
     graph: Any,
-    model_dim: int = 256,
+    model_dim: int = MODEL_DIM,
     batch_size: int = 2,
     seq_len: int = 128,
 ) -> ProfileReport:
@@ -301,8 +302,8 @@ def profile_static_graph(
 
 def profile_runtime(
     workflow_json: Dict[str, Any],
-    model_dim: int = 256,
-    vocab_size: int = 32000,
+    model_dim: int = MODEL_DIM,
+    vocab_size: int = VOCAB_SIZE,
     device: str = "cpu",
     batch_size: int = 2,
     seq_len: int = 128,
@@ -388,7 +389,7 @@ def profile_runtime(
 
 def profile_workflow(
     workflow_json: Dict[str, Any],
-    model_dim: int = 256,
+    model_dim: int = MODEL_DIM,
     device: str = "cpu",
     runtime: bool = True,
     **kwargs,

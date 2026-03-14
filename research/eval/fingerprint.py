@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from research.env import aria_core
+from research.defaults import VOCAB_SIZE
 
 logger = logging.getLogger(__name__)
 NOVELTY_REFERENCE_SCHEME_VERSION = "nv1"
@@ -141,7 +142,7 @@ def compute_fingerprint(
     model: nn.Module,
     seq_len: int = 64,
     model_dim: int = 256,
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
     device: str = "cuda",
     n_probes: int = 32,
 ) -> BehavioralFingerprint:
@@ -317,7 +318,7 @@ def compute_gated_fingerprint(
     *,
     seq_len: int = 64,
     model_dim: int = 256,
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
     device: str = "cpu",
     full_gate_enabled: bool = True,
     lightning_novelty_threshold: float = 0.15,
@@ -428,7 +429,7 @@ def _get_representations(model: nn.Module, input_ids: torch.Tensor,
 def _analyze_interactions(
     model: nn.Module, input_ids: torch.Tensor,
     dev: torch.device, seq_len: int,
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
 ) -> Dict[str, float]:
     """Analyze token-to-token interaction patterns."""
     result = {"locality": 0.5, "sparsity": 0.5, "symmetry": 0.5, "hierarchy": 0.5,

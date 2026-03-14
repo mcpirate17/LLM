@@ -52,16 +52,13 @@ class ComponentRegistry:
         self.template_lowered_components = set(self.config.get("template_lowered_components", []))
 
     def _set_defaults(self):
-        """Set hardcoded defaults if YAML is missing."""
-        self.aliases = {
-            "relu_op": "relu",
-            "gelu_op": "gelu",
-            "silu_op": "silu",
-            "linear": "linear_proj",
-            "state_space": "selective_scan",
-            "rmsnorm_pre": "rmsnorm",
-            "layernorm_pre": "layernorm",
-        }
+        """Minimal fallback — YAML should always be present at runtime."""
+        import warnings
+        warnings.warn(
+            f"component_mapping.yaml not found at {self.mapping_file}; "
+            "component aliases will be unavailable",
+            stacklevel=2,
+        )
 
     def get_primitive_name(self, component_type: str) -> str:
         """Map component type to primitive name."""

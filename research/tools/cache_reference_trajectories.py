@@ -24,6 +24,8 @@ import torch
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
 )
+from ..defaults import VOCAB_SIZE
+
 log = logging.getLogger(__name__)
 
 DEFAULT_CHECKPOINTS = (200, 500, 1000, 2000, 4000)
@@ -35,7 +37,7 @@ def run_reference_trajectory(
     device: str = "cpu",
     d_model: int = 256,
     n_layers: int = 6,
-    vocab_size: int = 32000,
+    vocab_size: int = VOCAB_SIZE,
     seq_len: int = 128,
     checkpoints: tuple[int, ...] = DEFAULT_CHECKPOINTS,
 ) -> Dict[str, Any]:

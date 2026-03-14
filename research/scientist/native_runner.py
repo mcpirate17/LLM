@@ -9,6 +9,7 @@ import ctypes
 import os
 from pathlib import Path
 
+from research.defaults import VOCAB_SIZE
 from .native import abi as _abi_mod
 from .native import autograd as _autograd_mod
 from .native import compiler as _compiler_mod
@@ -79,7 +80,7 @@ def _maybe_prepare_runner_abi_session(*, layer_graphs, native_lib, state, vocab_
     )
 
 
-def compile_model_native_first(layer_graphs, vocab_size=32000, max_seq_len=None, **kwargs):
+def compile_model_native_first(layer_graphs, vocab_size=VOCAB_SIZE, max_seq_len=None, **kwargs):
     _compiler_mod.os.environ = os.environ
     _compiler_mod._legacy_compile_model = _legacy_compile_model
     _compiler_mod._try_load_native_lib = _try_load_native_lib

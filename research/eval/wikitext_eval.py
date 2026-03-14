@@ -26,6 +26,7 @@ from .utils import (
     micro_train_loop,
     compute_perplexity,
 )
+from research.defaults import VOCAB_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ def _prepare_batches(
 
 # ── Score helper ─────────────────────────────────────────────────────────
 
-def wikitext_score_from_ppl(ppl: Optional[float], vocab_size: int = 32000) -> Optional[float]:
+def wikitext_score_from_ppl(ppl: Optional[float], vocab_size: int = VOCAB_SIZE) -> Optional[float]:
     """log(vocab/ppl) / log(vocab) — 1.0 for perfect, 0.0 for random."""
     if ppl is None or ppl <= 0:
         return None

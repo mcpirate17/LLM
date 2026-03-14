@@ -19,6 +19,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from research.defaults import VOCAB_SIZE
+
 
 class _SimpleTransformerLayer(nn.Module):
     """Minimal transformer layer for baseline comparison."""
@@ -136,7 +138,7 @@ class TransformerBaseline:
         d_model: int = 256,
         seq_len: int = 128,
         n_steps: int = 500,
-        vocab_size: int = 32000,
+        vocab_size: int = VOCAB_SIZE,
         batch_size: int = 4,
         lr: float = 3e-4,
         device: str = "cuda",
@@ -280,7 +282,7 @@ class TransformerBaseline:
         d_model: int = 256,
         seq_len: int = 128,
         n_steps: int = 500,
-        vocab_size: int = 32000,
+        vocab_size: int = VOCAB_SIZE,
         batch_size: int = 4,
         lr: float = 3e-4,
         device: str = "cuda",
@@ -317,7 +319,7 @@ class TransformerBaseline:
         d_model: int = 256,
         seq_len: int = 128,
         n_steps: int = 500,
-        vocab_size: int = 32000,
+        vocab_size: int = VOCAB_SIZE,
         batch_size: int = 4,
         lr: float = 3e-4,
         device: str = "cuda",

@@ -30,6 +30,7 @@ try:
 except ImportError:
     HAS_CPU_OPS = False
 
+from research.defaults import VOCAB_SIZE, MODEL_DIM, VALIDATION_SEQ_LEN, ROPE_THETA_BASE
 from research.env import aria_core, HAS_ARIA_CORE
 
 
@@ -75,6 +76,7 @@ def _parallel_associative_scan(log_a: torch.Tensor, b: torch.Tensor) -> torch.Te
             a[..., :stride],
             a[..., stride:] * a[..., :-stride],
         ], dim=-1)
+        a = a.clamp(max=1.0)
         stride *= 2
 
     return h
@@ -1144,10 +1146,10 @@ class _RopeRotateC(torch.autograd.Function):
 def _op_rope_rotate(_, inputs, __):
     x = inputs[0]
     if HAS_ARIA_CORE and hasattr(aria_core, "rope_rotate_f32") and x.device.type == "cpu" and x.dtype == torch.float32:
-        return _RopeRotateC.apply(x, 10000.0)
+        return _RopeRotateC.apply(x, ROPE_THETA_BASE)
     B, S, D = x.shape
     pos = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
-    freqs = 1.0 / (10000.0 ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D))
+    freqs = 1.0 / (ROPE_THETA_BASE ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D))
     angles = pos * freqs.unsqueeze(0)
     cos_a = torch.cos(angles).unsqueeze(0)
     sin_a = torch.sin(angles).unsqueeze(0)
@@ -1634,7 +1636,8 @@ def _op_ternary_projection(module, inputs, config):
     # STE (Straight-Through Estimator) for training gradients
     w_sim = w + (w_quant * gamma - w).detach()
     
-    return F.linear(x, w_sim, getattr(module, 'bias', None))
+    bias = getattr(module, 'bias', None)
+    return F.linear(x, w_sim.to(x.dtype), bias.to(x.dtype) if bias is not None else None)
 
 @register_op("basis_expansion")
 def _op_basis_expansion(module, inputs, _):
@@ -1915,6 +1918,11 @@ class CompiledOp(nn.Module):
     def _init_params(self, op: PrimitiveOp, config: Dict, input_shape: ShapeInfo):
         """Initialize learnable parameters for this op."""
         D_in = max(1, input_shape.dim)
+        # Guard against degenerate input dims (e.g. from entropy_router's
+        # reduce_last → dim=1).  Fall back to model_dim so weight shapes
+        # are sensible and bf16 autocast doesn't hit shape/dtype mismatches.
+        if D_in < 4:
+            D_in = self.model_dim
         D_out = max(1, config.get("out_dim", D_in))
         # Avoid division by zero for symbolic or unset shapes
         std = 1.0 / math.sqrt(D_in) if D_in > 0 else 0.02
@@ -2194,8 +2202,21 @@ class CompiledOp(nn.Module):
         self.U_comp = self._make_param((rank, d_in), std=0.02)
         self.V_comp = self._make_param((d_in, rank), std=0.02)
 
+    def _cast_params_to(self, dtype: torch.dtype) -> None:
+        """Cast all parameter tensors to match input dtype (bf16 autocast safety)."""
+        if dtype == torch.float32:
+            return
+        for name, param in self.named_parameters(recurse=False):
+            if param.dtype != dtype:
+                param.data = param.data.to(dtype)
+
     def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
         """Execute this primitive operation."""
+        # Ensure raw parameters match input dtype under bf16 autocast.
+        # nn.Linear handles this internally, but F.linear with raw
+        # nn.Parameter tensors does not get autocast coverage.
+        if inputs and inputs[0].is_floating_point():
+            self._cast_params_to(inputs[0].dtype)
         wrapper = getattr(self, '_native_wrapper', None)
         if wrapper is not None:
             result = wrapper.dispatch(self.op_name, *inputs)
@@ -2337,8 +2358,8 @@ class CompiledLayer(nn.Module):
 class SynthesizedModel(nn.Module):
     """A complete language model built from synthesized layers."""
 
-    def __init__(self, layer_graphs: List[ComputationGraph], vocab_size: int = 32000,
-                 model_dim: int = 256, max_seq_len: int = 512):
+    def __init__(self, layer_graphs: List[ComputationGraph], vocab_size: int = VOCAB_SIZE,
+                 model_dim: int = MODEL_DIM, max_seq_len: int = VALIDATION_SEQ_LEN):
         super().__init__()
         self.model_dim = model_dim
         self.vocab_size = vocab_size
@@ -2416,8 +2437,8 @@ def compile_graph(graph: ComputationGraph, use_ir: bool = True) -> nn.Module:
     return CompiledLayer(graph)
 
 
-def compile_model(layer_graphs: List[ComputationGraph], vocab_size: int = 32000,
-                  max_seq_len: int = 512, use_ir: bool = True) -> SynthesizedModel:
+def compile_model(layer_graphs: List[ComputationGraph], vocab_size: int = VOCAB_SIZE,
+                  max_seq_len: int = VALIDATION_SEQ_LEN, use_ir: bool = True) -> SynthesizedModel:
     if not layer_graphs: raise ValueError("Empty layer_graphs list")
     model = SynthesizedModel(layer_graphs, vocab_size, layer_graphs[0].model_dim, max_seq_len)
     if use_ir:

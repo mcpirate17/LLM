@@ -34,6 +34,7 @@ from ..shared_api import (
     bridge_analyze_routing,
     bridge_evaluate,
 )
+from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.perf_contract import build_duplicate_work_report, emit_perf_artifact
 
 logger = logging.getLogger(__name__)
@@ -484,8 +485,8 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
     budget = req.budget
     result = bridge_evaluate(
         wf,
-        model_dim=budget.get("model_dim", 256),
-        vocab_size=budget.get("vocab_size", 32000),
+        model_dim=budget.get("model_dim", MODEL_DIM),
+        vocab_size=budget.get("vocab_size", VOCAB_SIZE),
         device=budget.get("device", "cpu"),
         run_fingerprint=budget.get("run_fingerprint", False),
         run_novelty=budget.get("run_novelty", False),
@@ -549,8 +550,8 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
 def _parse_eval_budget(budget: Dict[str, Any]) -> Dict[str, Any]:
     """Extract eval budget params with defaults."""
     return {
-        "model_dim": budget.get("model_dim", 256),
-        "vocab_size": budget.get("vocab_size", 32000),
+        "model_dim": budget.get("model_dim", MODEL_DIM),
+        "vocab_size": budget.get("vocab_size", VOCAB_SIZE),
         "device": budget.get("device", "cpu"),
         "batch_size": budget.get("batch_size", 2),
         "seq_len": budget.get("seq_len", 128),

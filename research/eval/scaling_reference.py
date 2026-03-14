@@ -23,6 +23,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 
+from research.defaults import VOCAB_SIZE
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -569,7 +571,7 @@ class ScalingReferenceManager:
         d_model: int,
         n_steps: int,
         seq_len: int,
-        vocab_size: int = 32000,
+        vocab_size: int = VOCAB_SIZE,
         batch_size: int = 4,
         lr: float = 3e-4,
         device: str = "cuda",

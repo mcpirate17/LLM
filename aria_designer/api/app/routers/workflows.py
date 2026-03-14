@@ -43,6 +43,7 @@ from ..shared_api import (
     find_unsupported_edge_dtype_pairings,
     runtime_compile,
 )
+from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.perf_contract import emit_perf_artifact
 
 logger = logging.getLogger(__name__)
@@ -497,10 +498,10 @@ def profile_workflow_endpoint(req: RunWorkflowRequest) -> Dict[str, Any]:
     budget = req.budget
     report = bridge_profile(
         wf,
-        model_dim=budget.get("model_dim", 256),
+        model_dim=budget.get("model_dim", MODEL_DIM),
         device=budget.get("device", "cpu"),
         runtime=budget.get("runtime", False),
-        vocab_size=budget.get("vocab_size", 32000),
+        vocab_size=budget.get("vocab_size", VOCAB_SIZE),
         batch_size=budget.get("batch_size", 2),
         seq_len=budget.get("seq_len", 128),
     )

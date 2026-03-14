@@ -14,6 +14,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from research.defaults import VOCAB_SIZE
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,7 +53,7 @@ def evaluate_noise_sensitivity(
                 vocab_size = m.out_features
                 break
         if vocab_size <= 0:
-            vocab_size = 32000
+            vocab_size = VOCAB_SIZE
 
     # Measure baseline loss (no noise)
     baseline_loss = _measure_loss(model, input_batches, device, vocab_size)
