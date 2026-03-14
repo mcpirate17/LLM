@@ -1,5 +1,5 @@
 {
-  "generated_at": 1773457045.4897404,
+  "generated_at": 1773457868.7806807,
   "protocol": "trajectory_probe_v1",
   "trajectories": {
     "gpt2": {
@@ -13,36 +13,32 @@
       "seq_len": 128,
       "checkpoints": {
         "200": {
-          "ppl": 19.68,
-          "score": 0.7127,
-          "loss": 2.3732
+          "ppl": 29.43,
+          "score": 0.674,
+          "loss": 2.6598
         },
         "500": {
-          "ppl": 18.64,
-          "score": 0.718,
-          "loss": 2.3953
+          "ppl": 25.34,
+          "score": 0.6884,
+          "loss": 2.3049
         },
         "1000": {
-          "ppl": 19.4,
-          "score": 0.7142,
-          "loss": 2.2188
+          "ppl": 44.86,
+          "score": 0.6333,
+          "loss": 2.2406
         },
         "2000": {
-          "ppl": 24.89,
-          "score": 0.6901,
-          "loss": 1.911
+          "ppl": 100.32,
+          "score": 0.5558,
+          "loss": 1.4463
         },
         "4000": {
-          "ppl": 256.93,
-          "score": 0.4651,
-          "loss": 0.9595
+          "ppl": 838.99,
+          "score": 0.351,
+          "loss": 0.8149
         }
       },
-      "improvement_ratio": 1.056,
-      "peak_ppl": 18.64,
-      "peak_step": 500,
-      "steps_to_divergence": 4000,
-      "n_train_batches": 4000,
+      "improvement_ratio": 1.161,
       "checkpoint_steps": [
         200,
         500,
@@ -52,8 +48,8 @@
       ],
       "total_steps": 4000,
       "variant": "wikitext-2-raw-v1",
-      "protocol": "trajectory_probe_v2",
-      "elapsed_ms": 31538.6
+      "protocol": "trajectory_probe_v1",
+      "elapsed_ms": 545001.0
     },
     "mamba": {
       "arch_key": "mamba",
@@ -66,37 +62,32 @@
       "seq_len": 128,
       "checkpoints": {
         "200": {
-          "ppl": 22.07,
-          "score": 0.7017,
-          "loss": 2.1793
+          "ppl": 285507.54,
+          "score": 0.0,
+          "loss": 3.5448
         },
         "500": {
-          "ppl": 17.42,
-          "score": 0.7245,
-          "loss": 1.7711
+          "ppl": 3022112.04,
+          "score": 0.0,
+          "loss": 2.0332
         },
         "1000": {
-          "ppl": 33.96,
-          "score": 0.6602,
-          "loss": 1.0629
+          "ppl": 485165195.41,
+          "score": 0.0,
+          "loss": 1.4659
         },
         "2000": {
-          "ppl": 556.55,
-          "score": 0.3906,
-          "loss": 0.457
+          "ppl": 485165195.41,
+          "score": 0.0,
+          "loss": 0.4783
         },
         "4000": {
-          "ppl": null,
-          "score": null,
-          "loss": null,
-          "early_stopped": true
+          "ppl": 485165195.41,
+          "score": 0.0,
+          "loss": 0.1237
         }
       },
-      "improvement_ratio": 1.267,
-      "peak_ppl": 17.42,
-      "peak_step": 500,
-      "steps_to_divergence": 2000,
-      "n_train_batches": 4000,
+      "improvement_ratio": 0.094,
       "checkpoint_steps": [
         200,
         500,
@@ -104,10 +95,10 @@
         2000,
         4000
       ],
-      "total_steps": 2000,
+      "total_steps": 4000,
       "variant": "wikitext-2-raw-v1",
-      "protocol": "trajectory_probe_v2",
-      "elapsed_ms": 16707.0
+      "protocol": "trajectory_probe_v1",
+      "elapsed_ms": 699598.3
     },
     "rwkv": {
       "arch_key": "rwkv",
@@ -120,38 +111,32 @@
       "seq_len": 128,
       "checkpoints": {
         "200": {
-          "ppl": 21.29,
-          "score": 0.7052,
-          "loss": 2.119
+          "ppl": 174.9,
+          "score": 0.5022,
+          "loss": 2.7644
         },
         "500": {
-          "ppl": 24.29,
-          "score": 0.6925,
-          "loss": 1.4251
+          "ppl": 112.16,
+          "score": 0.545,
+          "loss": 1.3886
         },
         "1000": {
-          "ppl": 528.86,
-          "score": 0.3955,
-          "loss": 0.6466
+          "ppl": 1016.18,
+          "score": 0.3325,
+          "loss": 0.776
         },
         "2000": {
-          "ppl": null,
-          "score": null,
-          "loss": null,
-          "early_stopped": true
+          "ppl": 1242337.73,
+          "score": 0.0,
+          "loss": 0.1766
         },
         "4000": {
           "ppl": null,
           "score": null,
-          "loss": null,
-          "early_stopped": true
+          "loss": 0.0486
         }
       },
-      "improvement_ratio": 0.876,
-      "peak_ppl": 21.29,
-      "peak_step": 200,
-      "steps_to_divergence": 1000,
-      "n_train_batches": 4000,
+      "improvement_ratio": 1.559,
       "checkpoint_steps": [
         200,
         500,
@@ -159,10 +144,10 @@
         2000,
         4000
       ],
-      "total_steps": 1000,
+      "total_steps": 4000,
       "variant": "wikitext-2-raw-v1",
-      "protocol": "trajectory_probe_v2",
-      "elapsed_ms": 12874.8
+      "protocol": "trajectory_probe_v1",
+      "elapsed_ms": 1227871.2
     },
     "retrieval_augmented": {
       "arch_key": "retrieval_augmented",
@@ -175,36 +160,32 @@
       "seq_len": 128,
       "checkpoints": {
         "200": {
-          "ppl": 24.37,
-          "score": 0.6922,
-          "loss": 2.595
+          "ppl": 35.51,
+          "score": 0.6559,
+          "loss": 2.7449
         },
         "500": {
-          "ppl": 19.22,
-          "score": 0.7151,
-          "loss": 2.4861
+          "ppl": 27.08,
+          "score": 0.682,
+          "loss": 2.4608
         },
         "1000": {
-          "ppl": 18.35,
-          "score": 0.7195,
-          "loss": 2.2697
+          "ppl": 29.29,
+          "score": 0.6744,
+          "loss": 2.3133
         },
         "2000": {
-          "ppl": 21.51,
-          "score": 0.7042,
-          "loss": 1.9267
+          "ppl": 65.38,
+          "score": 0.597,
+          "loss": 1.6484
         },
         "4000": {
-          "ppl": 1366.81,
-          "score": 0.304,
-          "loss": 0.4812
+          "ppl": 1127.51,
+          "score": 0.3225,
+          "loss": 0.5101
         }
       },
-      "improvement_ratio": 1.268,
-      "peak_ppl": 18.35,
-      "peak_step": 1000,
-      "steps_to_divergence": 4000,
-      "n_train_batches": 4000,
+      "improvement_ratio": 1.311,
       "checkpoint_steps": [
         200,
         500,
@@ -214,8 +195,8 @@
       ],
       "total_steps": 4000,
       "variant": "wikitext-2-raw-v1",
-      "protocol": "trajectory_probe_v2",
-      "elapsed_ms": 63150.5
+      "protocol": "trajectory_probe_v1",
+      "elapsed_ms": 2702415.1
     }
   }
 }

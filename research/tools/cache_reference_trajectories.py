@@ -117,20 +117,31 @@ def update_leaderboard(results: list[Dict[str, Any]]) -> None:
             continue
 
         ckpts = r.get("checkpoints", {})
-        ppl_200 = ckpts.get(200, {}).get("ppl") if 200 in ckpts else None
         best_ckpt = max(ckpts.keys()) if ckpts else None
-        best_ppl = ckpts[best_ckpt]["ppl"] if best_ckpt and ckpts[best_ckpt].get("ppl") else None
-        best_score = ckpts[best_ckpt]["score"] if best_ckpt and ckpts[best_ckpt].get("score") else None
 
         update_kwargs: Dict[str, Any] = {
             "evaluation_stage": "VALIDATED",
             "eval_budget_steps": best_ckpt,
             "robustness_grade": "A",
         }
-        if best_ppl is not None:
-            update_kwargs["wikitext_perplexity"] = best_ppl
-        if best_score is not None:
-            update_kwargs["wikitext_score"] = best_score
+        # Use peak_ppl (best at any checkpoint) as the canonical PPL
+        if r.get("peak_ppl") is not None:
+            update_kwargs["peak_ppl"] = r["peak_ppl"]
+            update_kwargs["wikitext_perplexity"] = r["peak_ppl"]
+        if r.get("peak_step") is not None:
+            update_kwargs["peak_step"] = r["peak_step"]
+        if r.get("steps_to_divergence") is not None:
+            update_kwargs["steps_to_divergence"] = r["steps_to_divergence"]
+        # ppl_500 for equal-budget comparison
+        ppl_500 = ckpts.get(500, {}).get("ppl") if 500 in ckpts else None
+        if ppl_500 is not None:
+            update_kwargs["ppl_500"] = ppl_500
+        # Compute wikitext_score from peak_ppl
+        if r.get("peak_ppl") and r["peak_ppl"] > 0:
+            import math
+            vocab = r.get("vocab_size", 32000)
+            ws = max(0.0, math.log(vocab / r["peak_ppl"]) / math.log(vocab))
+            update_kwargs["wikitext_score"] = round(ws, 4)
         if r.get("improvement_ratio") is not None:
             update_kwargs["wikitext_ppl_improvement_ratio"] = r["improvement_ratio"]
 
