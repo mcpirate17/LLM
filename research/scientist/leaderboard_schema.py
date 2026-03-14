@@ -41,6 +41,9 @@ SCORE_COLUMN_MAP: dict[str, str] = {
     "routing_drop_rate": "routing_drop_rate",
     "wikitext_perplexity": "wikitext_perplexity",
     "wikitext_score": "wikitext_score",
+    "peak_ppl": "peak_ppl",
+    "ppl_500": "ppl_500",
+    "steps_to_divergence": "steps_to_divergence",
     "investigation_passed": "investigation_passed",
     "validation_passed": "validation_passed",
 }

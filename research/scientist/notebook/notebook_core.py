@@ -456,6 +456,11 @@ class _NotebookCore:
             "eval_budget_steps INTEGER",
             "capability_tier TEXT",
             "wikitext_ppl_improvement_ratio REAL",
+            # Trajectory probe v2 metrics
+            "peak_ppl REAL",
+            "peak_step INTEGER",
+            "steps_to_divergence INTEGER",
+            "ppl_500 REAL",
             # Recipe re-roll tracking (Phase 5)
             "reinvestigation_count INTEGER DEFAULT 0",
         ):

@@ -105,3 +105,16 @@ Purpose: convert the brainstorm in `REAL_TOKEN_EVAL_BRAINSTORM.md` into an execu
 - Do not rewrite another agent's claimed tasks without adding a note explaining why.
 - If a dependency blocks execution, note it directly under the relevant claimed task.
 - Keep implementation debate in `REAL_TOKEN_EVAL_BRAINSTORM.md`; keep this file execution-oriented.
+
+## Status
+
+**ALL TASKS COMPLETE (2026-03-13).** All acceptance criteria met:
+
+- [x] Named, versioned eval protocols: `screening_wikitext_v1`, `trajectory_probe_v2`, `validated_wikitext103_v1`
+- [x] Equal-budget reference trajectories: `research/eval/reference_trajectories.json` (GPT-2, Mamba, RWKV, RAG at 200/500/1000/2000/4000 steps)
+- [x] Escalation logic uses real-token PPL checkpoints (`improvement_ratio > 2.0`, `ppl_500 < best_ref * 1.5`)
+- [x] Recipe re-roll path: `_get_reinvestigation_candidates()` with `reinvestigation_count` cap at 2
+- [x] Robustness separated from capability: gate relaxed, positive signal (+10 * robustness), `robustness_grade` column
+- [x] Dashboard: sparklines, badges (`STABLE_GENERALIZER`, `DIVERGED`, `FRONTIER_SIGNAL`), quadrant view
+- [x] WikiText-103 VALIDATED-stage confirmation eval
+- [x] Compact API fix: PPL fields now included in dashboard payload

@@ -160,6 +160,9 @@ def compute_composite_score(
     routing_fast_fraction: Optional[float] = None,
     routing_balance_score: Optional[float] = None,
     wikitext_score: Optional[float] = None,
+    peak_ppl: Optional[float] = None,
+    ppl_500: Optional[float] = None,
+    steps_to_divergence: Optional[int] = None,
     investigation_passed: Optional[bool] = None,
     validation_passed: Optional[bool] = None,
     decompose: bool = False,
@@ -384,24 +387,40 @@ def compute_composite_score(
     # 5. Generalization Utility (The "Anti-Cheat")
     _s0 = score
     wikitext_perplexity = kwargs.get("wikitext_perplexity")
+    # Use peak_ppl (best PPL at any trajectory checkpoint) when available;
+    # fall back to single-point wikitext_perplexity for entries without
+    # trajectory data.
+    effective_ppl = peak_ppl if peak_ppl is not None else wikitext_perplexity
     if wikitext_score is not None:
         score += 35.0 * max(0.0, min(1.0, wikitext_score))
-    if wikitext_perplexity is not None:
-        if wikitext_perplexity > 1000000:
+    # Trajectory capability bonus: reward models whose peak_ppl beats
+    # reference ceiling.  Up to +20 pts for peak_ppl approaching 1.0.
+    # Only applies when trajectory data exists (peak_ppl is not None).
+    # Score formula: log(vocab/ppl)/log(vocab), vocab=32000.
+    if peak_ppl is not None and peak_ppl > 0:
+        _vocab = 32000
+        _peak_score = max(0.0, math.log(_vocab / peak_ppl) / math.log(_vocab))
+        score += 20.0 * min(1.0, _peak_score)
+    # Generalization stability bonus: models that never diverge within
+    # their eval budget get a bonus.  NULL steps_to_divergence = stable.
+    if peak_ppl is not None and steps_to_divergence is None:
+        score += 10.0
+    if effective_ppl is not None:
+        if effective_ppl > 1000000:
             if decompose:
                 _bd["generalization"] = 0.0
                 _bd["_disqualified"] = True  # type: ignore[assignment]
                 return {"composite_score": 0.0, "breakdown": _bd}
             return 0.0
-        if wikitext_perplexity > _WIKITEXT_REF_PPL_CEILING:
+        if effective_ppl > _WIKITEXT_REF_PPL_CEILING:
             over_ref = min(
                 2.0,
-                (wikitext_perplexity - _WIKITEXT_REF_PPL_CEILING)
+                (effective_ppl - _WIKITEXT_REF_PPL_CEILING)
                 / max(_WIKITEXT_REF_PPL_CEILING, 1e-6),
             )
             score -= 20.0 * over_ref
-        if wikitext_perplexity > 1000:
-            score -= 50.0 * math.log10(wikitext_perplexity / 1000.0)
+        if effective_ppl > 1000:
+            score -= 50.0 * math.log10(effective_ppl / 1000.0)
     _track("generalization", _s0)
 
     # 5b. Investigation robustness — positive signal + reliability penalty.

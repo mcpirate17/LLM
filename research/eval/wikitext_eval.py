@@ -44,6 +44,12 @@ _SCREENING_N_EVAL_BATCHES = 4
 _SCREENING_BATCH_SIZE = 4
 _SCREENING_METRIC_VERSION = "screening_wikitext_v1"
 
+# WikiText-103 for VALIDATED-stage "final boss" evaluation.
+# ~103M tokens train, ~250K tokens val — 50x larger than WikiText-2.
+WIKITEXT_103_VARIANT = "wikitext-103-raw-v1"
+_WIKITEXT_103_MAX_CHARS_TRAIN = 20_000_000  # 20MB — enough for 4000 unique batches
+_WIKITEXT_103_MAX_CHARS_VAL = 200_000       # 200KB val for reliable PPL
+
 
 def screening_wikitext_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return a normalized screening benchmark payload for persistence."""
