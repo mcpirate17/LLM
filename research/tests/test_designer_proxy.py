@@ -214,7 +214,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
 
     # --- Proxy success tests ---
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_validate_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/validate forwards to designer API."""
         mock_proxy.return_value = self._proxy_validate_response()
@@ -230,7 +230,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         self.assertEqual(call_args[0][0], "POST")
         self.assertEqual(call_args[0][1], "/api/v1/workflows/validate")
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_compile_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/compile forwards to designer API."""
         mock_proxy.return_value = self._proxy_compile_response()
@@ -244,7 +244,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         call_args = mock_proxy.call_args
         self.assertEqual(call_args[0][1], "/api/v1/workflows/compile")
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_run_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/run forwards to designer API."""
         mock_proxy.return_value = self._proxy_run_response()
@@ -258,7 +258,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         call_args = mock_proxy.call_args
         self.assertEqual(call_args[0][1], "/api/v1/workflows/run")
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_components_proxies_to_designer(self, mock_proxy):
         """GET /api/designer/components forwards to designer API."""
         mock_proxy.return_value = self._proxy_components_response()
@@ -270,7 +270,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         call_args = mock_proxy.call_args
         self.assertEqual(call_args[0][1], "/api/v1/components")
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_save_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/save forwards to designer API."""
         mock_proxy.return_value = self._proxy_save_response()
@@ -284,7 +284,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         self.assertEqual(call_args[0][0], "PUT")
         self.assertIn("/api/v1/workflows/test_wf", call_args[0][1])
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_load_proxies_to_designer(self, mock_proxy):
         """GET /api/designer/load/<id> forwards to designer API."""
         mock_proxy.return_value = self._proxy_load_response()
@@ -294,7 +294,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         call_args = mock_proxy.call_args
         self.assertEqual(call_args[0][1], "/api/v1/workflows/test_wf")
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_list_proxies_to_designer(self, mock_proxy):
         """GET /api/designer/list forwards to designer API."""
         mock_proxy.return_value = self._proxy_list_response()
@@ -304,7 +304,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         call_args = mock_proxy.call_args
         self.assertEqual(call_args[0][1], "/api/v1/workflows")
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_survivors_proxies_to_designer(self, mock_proxy):
         """GET /api/designer/import/survivors forwards to designer API."""
         mock_proxy.return_value = self._proxy_survivors_response()
@@ -314,7 +314,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         call_args = mock_proxy.call_args
         self.assertEqual(call_args[0][1], "/api/v1/import/survivors")
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_import_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/import forwards to designer API."""
         mock_proxy.return_value = self._proxy_import_response()
@@ -328,8 +328,8 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
 
     # --- Fallback tests (proxy unavailable) ---
 
-    @patch("research.scientist.api._designer_proxy", return_value=None)
-    @patch("research.scientist.api.validate_designer_graph")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy", return_value=None)
+    @patch("research.scientist.api_routes.misc_bp.validate_designer_graph")
     def test_validate_falls_back_when_proxy_unavailable(self, mock_validate, mock_proxy):
         """When proxy returns None, validate falls back to local."""
         mock_validate.return_value = {"valid": True, "issues": []}
@@ -339,8 +339,8 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         mock_validate.assert_called_once()
 
-    @patch("research.scientist.api._designer_proxy", return_value=None)
-    @patch("research.scientist.api.compile_designer_graph")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy", return_value=None)
+    @patch("research.scientist.api_routes.misc_bp.compile_designer_graph")
     def test_compile_falls_back_when_proxy_unavailable(self, mock_compile, mock_proxy):
         """When proxy returns None, compile falls back to local."""
         mock_compile.return_value = {"compiled": True, "workflow_id": "test_wf"}
@@ -350,8 +350,8 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         mock_compile.assert_called_once()
 
-    @patch("research.scientist.api._designer_proxy", return_value=None)
-    @patch("research.scientist.api.run_designer_graph")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy", return_value=None)
+    @patch("research.scientist.api_routes.misc_bp.run_designer_graph")
     def test_run_falls_back_when_proxy_unavailable(self, mock_run, mock_proxy):
         """When proxy returns None, run falls back to local."""
         mock_run.return_value = {"success": True}
@@ -361,8 +361,8 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         mock_run.assert_called_once()
 
-    @patch("research.scientist.api._designer_proxy", return_value=None)
-    @patch("research.scientist.api.get_designer_components")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy", return_value=None)
+    @patch("research.scientist.api_routes.misc_bp.get_designer_components")
     def test_components_falls_back_when_proxy_unavailable(self, mock_comps, mock_proxy):
         """When proxy returns None, components falls back to local."""
         mock_comps.return_value = [{"id": "relu"}]
@@ -380,7 +380,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         self.assertIsInstance(data, list)
         self.assertTrue(len(data) >= 2)
 
-    @patch("research.scientist.api.generate_python_module")
+    @patch("research.scientist.designer_utils.generate_python_module")
     def test_export_python_always_local(self, mock_gen):
         """POST /api/designer/export/python always uses local generation."""
         mock_gen.return_value = "import torch\n"
@@ -394,7 +394,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
 
     # --- Error semantics ---
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_proxy_4xx_forwarded(self, mock_proxy):
         """4xx from proxy is forwarded to client."""
         mock_proxy.return_value = _make_mock_response(
@@ -407,7 +407,7 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         data = resp.get_json()
         self.assertIn("detail", data)
 
-    @patch("research.scientist.api._designer_proxy")
+    @patch("research.scientist.api_routes.misc_bp.designer_proxy")
     def test_proxy_5xx_forwarded(self, mock_proxy):
         """5xx from proxy is forwarded to client."""
         mock_proxy.return_value = _make_mock_response(

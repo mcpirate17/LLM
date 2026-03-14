@@ -19,7 +19,13 @@ from ..persona import get_aria
 from ..native_runner import native_runner_capability_report
 from ..code_agent import _spawn_code_agent_task
 from ..evidence import build_evidence_pack
-from ..designer_utils import get_designer_components
+from ..designer_utils import (
+    get_designer_components,
+    validate_designer_graph,
+    compile_designer_graph,
+    run_designer_graph,
+    generate_python_module,
+)
 from ...perf_contract import list_recent_perf_artifacts, summarize_perf_artifacts
 from ._helpers import (
     get_runner, with_native_runner_progress, get_run_trigger_snapshot,
@@ -3050,8 +3056,10 @@ def register_misc_routes(app, context: ApiRouteContext):
         )
         if proxied is not None:
             return proxied
-        
-        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
+
+        # Fallback: local compilation
+        result = compile_designer_graph(workflow_json)
+        return jsonify(result)
 
 
     @app.route("/api/designer/validate", methods=["POST"])
@@ -3069,7 +3077,9 @@ def register_misc_routes(app, context: ApiRouteContext):
         if proxied is not None:
             return proxied
 
-        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
+        # Fallback: local validation
+        result = validate_designer_graph(workflow_json)
+        return jsonify(result)
 
 
     @app.route("/api/designer/run", methods=["POST"])
@@ -3089,7 +3099,9 @@ def register_misc_routes(app, context: ApiRouteContext):
         if proxied is not None:
             return proxied
 
-        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
+        # Fallback: local execution
+        result = run_designer_graph(workflow_json, device=device)
+        return jsonify(result)
 
 
     @app.route("/api/designer/components", methods=["GET"])
@@ -3102,7 +3114,8 @@ def register_misc_routes(app, context: ApiRouteContext):
         if proxied is not None:
             return proxied
 
-        return jsonify({"success": False, "error": "Designer service unavailable"}), 503
+        # Fallback: local component list
+        return jsonify(get_designer_components())
 
 
     @app.route("/api/designer/save", methods=["POST"])

@@ -17,11 +17,20 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from .api_routes import _designer as _designer_mod
+from .designer_utils import (
+    validate_designer_graph,
+    compile_designer_graph,
+    run_designer_graph,
+    get_designer_components,
+    generate_python_module,
+)
 
 logger = logging.getLogger(__name__)
 
 _requests = _designer_mod._requests
 _DESIGNER_PROXY_ENABLED = _designer_mod._DESIGNER_PROXY_ENABLED
+_DESIGNER_PROXY_BASE = _designer_mod._DESIGNER_PROXY_BASE
+_DESIGNER_PROXY_TIMEOUT = _designer_mod._DESIGNER_PROXY_TIMEOUT
 
 
 def _designer_proxy(method: str, path: str, *, json_body=None, params=None, timeout=None):

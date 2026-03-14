@@ -362,7 +362,7 @@ class TestAutoEscalation(unittest.TestCase):
 
     def test_start_validation_persists_candidate_metadata_in_config(self):
         """Validation experiment config should include selected candidate IDs."""
-        with patch("research.scientist.runner.control.threading.Thread") as thread_cls:
+        with patch("research.scientist.runner.control_start.threading.Thread") as thread_cls:
             thread_inst = MagicMock()
             thread_cls.return_value = thread_inst
 
@@ -391,7 +391,7 @@ class TestAutoEscalation(unittest.TestCase):
         nb = LabNotebook(self.db_path)
 
         exp_id = nb.start_experiment("synthesis", {}, "test")
-        nb.record_program_result(
+        result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_lb",
             graph_json="{}",
@@ -402,6 +402,13 @@ class TestAutoEscalation(unittest.TestCase):
             model_source="graph_synthesis",
         )
         nb.flush_writes()  # record_program_result uses async write queue
+        # Leaderboard entries are now created at S1-pass time, not during
+        # auto-escalation.  Pre-populate so escalation can find it.
+        nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source="graph_synthesis",
+            tier="screening",
+        )
         nb.complete_experiment(exp_id, {"total": 5, "stage1_passed": 1},
                                "done", "excited")
 
@@ -460,16 +467,18 @@ class TestInlinePhaseMethods(unittest.TestCase):
         import inspect
         from research.scientist.runner import ExperimentRunner
 
-        src = inspect.getsource(ExperimentRunner._run_inline_validation)
+        # total_programs is set in the bootstrap helper after refactoring
+        src = inspect.getsource(ExperimentRunner._inline_validation_bootstrap)
         self.assertIn("total_programs=len(result_ids)", src,
-                      "_run_inline_validation LiveProgress must set total_programs")
+                      "_inline_validation_bootstrap LiveProgress must set total_programs")
 
     def test_inline_validation_persists_candidate_metadata(self):
         """Inline validation should persist candidate IDs into experiment config metadata."""
         import inspect
         from research.scientist.runner import ExperimentRunner
 
-        src = inspect.getsource(ExperimentRunner._run_inline_validation)
+        # Config metadata is set in the bootstrap helper after refactoring
+        src = inspect.getsource(ExperimentRunner._inline_validation_bootstrap)
         self.assertIn("_validation_config_with_result_ids", src)
         self.assertIn('"continuous_auto"', src)
 
@@ -1056,12 +1065,15 @@ class TestInlinePhaseMethods(unittest.TestCase):
         class Program:
             init_scheme = "default"
             init_scale = 0.02
-            n_steps = 2
+            n_steps = 8  # Enough steps so inflight quarter-check doesn't fire at step 0
             batch_size = 1
             max_grad_norm = 1.0
             curriculum = _Curriculum()
             loss = _Loss()
             optimizer = _Optimizer()
+
+            def to_dict(self):
+                return {"init_scheme": self.init_scheme, "n_steps": self.n_steps}
 
         runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "corpus_fallback.db"))
         model = TinyModel()
@@ -1093,7 +1105,8 @@ class TestInlinePhaseMethods(unittest.TestCase):
         self.assertIn('s1_result.get("n_train_steps")', src_record)
         self.assertIn("self._resolve_baseline_recipe", src_record)
 
-        src_validation = inspect.getsource(ExperimentRunner._run_inline_validation)
+        # After refactoring, baseline recipe logic lives in _validation_compute_metrics
+        src_validation = inspect.getsource(ExperimentRunner._validation_compute_metrics)
         self.assertIn('best_seed.get("n_train_steps")', src_validation)
         self.assertIn("self._resolve_baseline_recipe", src_validation)
         self.assertIn('momentum=baseline_recipe["momentum"]', src_validation)

@@ -244,6 +244,21 @@ function DesignerApp() {
   handlePreviewRef.current = handlePreview
   handleSaveRef.current = handleSave
 
+  const formatImportError = useCallback((payload, fallback = 'Unknown error') => {
+    if (!payload) return fallback
+    if (typeof payload === 'string') return payload
+    if (typeof payload.error === 'string' && payload.error) return payload.error
+    if (typeof payload.detail === 'string' && payload.detail) return payload.detail
+    if (payload.detail && typeof payload.detail === 'object') {
+      const detail = payload.detail
+      const issue = Array.isArray(detail.issues) && detail.issues.length > 0 ? detail.issues[0] : null
+      if (issue?.message) return `${detail.message || 'Import failed'} (${issue.message})`
+      if (detail.message) return detail.message
+    }
+    if (payload.message) return String(payload.message)
+    return fallback
+  }, [])
+
   // --- Import result into canvas ---
   const importingRef = useRef(null)
   const importResultIntoCanvas = useCallback(async (resultId, options = {}) => {
@@ -262,6 +277,9 @@ function DesignerApp() {
       })
       clearTimeout(timeout)
       const data = await resp.json()
+      if (!resp.ok) {
+        throw new Error(formatImportError(data))
+      }
       const wf = data.workflow || data
       if (!wf || (wf.schema_version !== 'workflow_graph.v1' && !Array.isArray(wf.nodes))) {
         throw new Error('Import returned unexpected format')
@@ -286,7 +304,7 @@ function DesignerApp() {
         }, '*')
       }
     }
-  }, [setStatusMsg, loadWorkflowJsonRef])
+  }, [setStatusMsg, loadWorkflowJsonRef, formatImportError])
 
   // --- Effects ---
 

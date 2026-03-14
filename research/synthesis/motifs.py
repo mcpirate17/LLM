@@ -516,6 +516,8 @@ MOTIFS_BY_CLASS: Dict[str, List[Motif]] = {}
 for _m in _MOTIF_LIST:
     MOTIFS_BY_CLASS.setdefault(_m.motif_class, []).append(_m)
 
+ALL_MOTIFS: Tuple[Motif, ...] = tuple(_MOTIF_LIST)
+
 
 # ── Activation substitution pool ────────────────────────────────────
 # When a motif step is marked substitutable=True and has role ACTIVATE,

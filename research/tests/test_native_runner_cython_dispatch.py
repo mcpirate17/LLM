@@ -93,7 +93,7 @@ class TestOpSupportUsesCython:
         graphs = [make_fake_graph(["relu", "matmul", "custom_op"])]
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             result = _check_native_op_support(graphs, native_lib=None)
@@ -102,8 +102,9 @@ class TestOpSupportUsesCython:
         assert "matmul" in result["supported"]
         assert "custom_op" in result["unsupported"]
         assert result["native_coverage"] == pytest.approx(2.0 / 3.0)
-        # Verify Cython is_native was actually called.
-        assert fake_bridge.is_native.call_count == 3
+        # relu and matmul are in _all_known_native quick-check set, so only
+        # custom_op falls through to bridge.is_native().
+        assert fake_bridge.is_native.call_count == 1
 
     def test_op_support_resolves_aliases_and_composites(self):
         """Alias/composite ops should count as supported when backing kernels exist."""
@@ -113,7 +114,7 @@ class TestOpSupportUsesCython:
         graphs = [make_fake_graph(["linear_proj", "softmax_last", "square", "custom_op"])]
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             result = _check_native_op_support(graphs, native_lib=None)
@@ -129,15 +130,16 @@ class TestOpSupportUsesCython:
         fake_lib.nk_is_registered = MagicMock(return_value=1)
         _reset_cython_bridge_cache()
 
-        graphs = [make_fake_graph(["relu"])]
+        # Use an op NOT in _all_known_native to force ctypes query.
+        graphs = [make_fake_graph(["exotic_custom_op"])]
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=None,
         ):
             result = _check_native_op_support(graphs, native_lib=fake_lib)
 
-        assert result["supported"] == ["relu"]
+        assert "exotic_custom_op" in result["supported"]
         assert fake_lib.nk_is_registered.called
 
 
@@ -151,7 +153,7 @@ class TestDispatchOpNative:
         x = np.array([-1.0, 0.0, 2.0, 3.5], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             result = dispatch_op_native("relu", x)
@@ -165,7 +167,7 @@ class TestDispatchOpNative:
         x = np.array([0.0, np.pi / 2], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             dispatch_op_native("sin", x)
@@ -178,7 +180,7 @@ class TestDispatchOpNative:
         x = np.array([1.0, 2.0], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             dispatch_op_native("log", x)
@@ -191,7 +193,7 @@ class TestDispatchOpNative:
         x = np.array([0.0, 4.0], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             dispatch_op_native("sqrt", x)
@@ -204,7 +206,7 @@ class TestDispatchOpNative:
         x = np.array([-2.0, 3.0], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             dispatch_op_native("abs", x)
@@ -217,7 +219,7 @@ class TestDispatchOpNative:
         x = np.array([-2.0, 3.0], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             dispatch_op_native("neg", x)
@@ -230,7 +232,7 @@ class TestDispatchOpNative:
         x = np.array([1.0, 2.0], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             dispatch_op_native("reciprocal", x)
@@ -244,7 +246,7 @@ class TestDispatchOpNative:
         b = np.array([10.0, 20.0], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             result = dispatch_op_native("add", a, b)
@@ -259,7 +261,7 @@ class TestDispatchOpNative:
         B = np.ones((3, 2), dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             result = dispatch_op_native("matmul", A, B)
@@ -274,7 +276,7 @@ class TestDispatchOpNative:
         w = np.ones((3, 4), dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             dispatch_op_native("linear_proj", x, w)
@@ -287,7 +289,7 @@ class TestDispatchOpNative:
         x = np.array([2.0, -3.0], dtype=np.float32)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             result = dispatch_op_native("square", x)
@@ -310,7 +312,7 @@ class TestDispatchOpNative:
         fake_bridge.dispatch_unary = MagicMock(side_effect=_dispatch_unary)
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             result = dispatch_op_native("square", x)
@@ -323,7 +325,7 @@ class TestDispatchOpNative:
         fake_bridge = _make_fake_bridge()
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ):
             with pytest.raises(ValueError, match="Unsupported op.*fancy_attention"):
@@ -333,7 +335,7 @@ class TestDispatchOpNative:
         """dispatch_op_native raises RuntimeError when Cython bridge is unavailable."""
         _reset_cython_bridge_cache()
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=None,
         ):
             with pytest.raises(RuntimeError, match="Cython bridge.*not available"):
@@ -350,10 +352,10 @@ class TestSelectiveActivationUsesCython:
         _reset_cython_bridge_cache()
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=fake_bridge,
         ), patch(
-            "research.scientist.native_runner._try_import_rust_scheduler",
+            "research.scientist.native.dispatch._try_import_rust_scheduler",
             return_value=None,
         ):
             result = _activate_selective_native_dispatch(native_lib=None)
@@ -381,7 +383,7 @@ class TestSelectiveActivationUsesCython:
                     y[i] = a[i] + b[i]
 
         with patch(
-            "research.scientist.native_runner._try_import_cython_bridge",
+            "research.scientist.native.dispatch._try_import_cython_bridge",
             return_value=None,
         ):
             result = _activate_selective_native_dispatch(FakeNativeLib())

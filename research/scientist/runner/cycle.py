@@ -738,17 +738,33 @@ class _CycleMixin:
         base_config: RunConfig,
         overrides: Dict[str, Any],
     ) -> Tuple[RunConfig, Dict[str, Dict[str, Any]]]:
-        """Apply allowed per-cycle mode overrides to a cloned RunConfig."""
+        """Apply allowed per-cycle mode overrides to a cloned RunConfig.
+
+        User-supplied maximizing fields (max_depth, max_ops, grammar_split_prob,
+        three_way_split_prob, residual_prob) are treated as floors — Aria and
+        mode selectors can raise them but never lower them.
+        """
         effective = RunConfig.from_dict(base_config.to_dict())
         applied: Dict[str, Any] = {}
         ignored: Dict[str, Any] = {}
 
+        # Fields where the user's value is a floor (override can only raise)
+        _FLOOR_FIELDS = frozenset({
+            "max_depth", "max_ops", "min_depth",
+            "grammar_split_prob", "three_way_split_prob",
+            "residual_prob", "max_params_ratio", "min_splits",
+        })
+
         for key, value in (overrides or {}).items():
-            if hasattr(effective, key):
-                setattr(effective, key, value)
-                applied[key] = value
-            else:
+            if not hasattr(effective, key):
                 ignored[key] = value
+                continue
+            if key in _FLOOR_FIELDS and isinstance(value, (int, float)):
+                user_val = getattr(base_config, key)
+                if isinstance(user_val, (int, float)):
+                    value = type(user_val)(max(user_val, value))
+            setattr(effective, key, value)
+            applied[key] = value
 
         return effective, {"applied": applied, "ignored": ignored}
 

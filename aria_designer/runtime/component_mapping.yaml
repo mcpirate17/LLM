@@ -15,6 +15,7 @@ aliases:
   swiglu_mlp: swiglu_mlp
   block_sparse: block_sparse_linear
   semi_structured_2_4: semi_structured_2_4_linear
+  lane_router: adaptive_lane_mixer
   structured_sparse: nm_sparse_linear
   dense_matrix: linear_proj
   low_rank: low_rank_proj
@@ -142,6 +143,8 @@ passthrough_components:
   - loop
   - token_merging
   - cascade
+  - difficulty_scorer
+  - conditional_dispatch
   - adaptive_recursion
   - speculative
   - dense_float

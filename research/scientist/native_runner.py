@@ -45,6 +45,11 @@ from .native.telemetry import (
     native_runner_capability_report,
     reset_native_runner_telemetry,
 )
+from .native_runner_adapter import (
+    try_designer_runtime_probe,
+    build_designer_layer_modules,
+)
+from .native.designer import _validate_designer_layer_adapter_contract
 
 _legacy_compile_model = _legacy_compile_model_impl
 

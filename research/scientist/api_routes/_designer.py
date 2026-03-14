@@ -271,8 +271,7 @@ def proxy_or_error(resp: Optional[_requests.Response]):
     except Exception:
         body = {"error": resp.text or "Proxy returned non-JSON response"}
 
-    from flask import make_response
-    return make_response(jsonify(body), resp.status_code)
+    return jsonify(body), resp.status_code
 
 
 def proxy_stream(method: str, path: str, *, json_body=None, params=None):

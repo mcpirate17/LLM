@@ -475,9 +475,8 @@ class _ContinuousModesMixin:
             "mode": "novelty",
         })
 
-        # Cap depth/ops for novelty search to prevent recursion overflow
-        config.max_depth = min(config.max_depth, 12)
-        config.max_ops = min(config.max_ops, 20)
+        # Note: depth/ops caps removed — user config is authoritative.
+        # The grammar and validator enforce structural limits.
 
         grammar = self._build_grammar_config(config)
         ns_config = NoveltySearchConfig(

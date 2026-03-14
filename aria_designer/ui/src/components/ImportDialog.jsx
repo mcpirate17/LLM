@@ -1,6 +1,21 @@
 import { apiCall } from "../services/apiService";
 import React, { useState, useEffect } from 'react';
 
+function formatImportError(payload, fallback = 'Unknown error') {
+  if (!payload) return fallback;
+  if (typeof payload === 'string') return payload;
+  if (typeof payload.error === 'string' && payload.error) return payload.error;
+  if (typeof payload.detail === 'string' && payload.detail) return payload.detail;
+  if (payload.detail && typeof payload.detail === 'object') {
+    const detail = payload.detail;
+    const issue = Array.isArray(detail.issues) && detail.issues.length > 0 ? detail.issues[0] : null;
+    if (issue?.message) return `${detail.message || 'Import failed'} (${issue.message})`;
+    if (detail.message) return detail.message;
+  }
+  if (payload.message) return String(payload.message);
+  return fallback;
+}
+
 const ImportDialog = ({ onImport, onClose }) => {
   const [survivors, setSurvivors] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -55,13 +70,17 @@ const ImportDialog = ({ onImport, onClose }) => {
         body: JSON.stringify({ result_id: resultId }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        setError(`Import failed: ${formatImportError(data)}`);
+        return;
+      }
       // Support both legacy envelope and direct workflow response.
       const importedWorkflow = data?.workflow || (data?.nodes && data?.edges ? data : null);
       if (importedWorkflow) {
         onImport(importedWorkflow);
         onClose();
       } else {
-        setError('Import failed: ' + (data?.error || data?.detail || 'Unknown error'));
+        setError(`Import failed: ${formatImportError(data)}`);
       }
     } catch (e) {
       setError('Import failed: ' + e.message);

@@ -28,14 +28,19 @@ class _ResultsAutoEscalatePhase7Mixin:
         best_loss_ratio = float(candidate.get("best_loss_ratio") or 1.0)
         baseline_loss_ratio = candidate.get("baseline_loss_ratio")
         baseline_value = float(baseline_loss_ratio) if baseline_loss_ratio is not None else None
+        novelty_confidence = candidate.get("novelty_confidence")
         # Allow near-known-family architectures through when investigation-time
         # evidence is dominant enough that novelty-confidence and missing/noisy
         # baseline comparisons should affect ranking, not veto progression.
+        # Still require novelty_confidence to exist — completely missing evidence
+        # should not be overridden.
+        if novelty_confidence is None:
+            return False
         if robustness < 0.5:
             return False
         if best_loss_ratio >= 0.18:
             return False
-        if baseline_value is not None and baseline_value >= 2.0:
+        if baseline_value is not None and baseline_value >= 0.80:
             return False
         if min_score > 0 and candidate_score < (min_score * 1.15):
             return False

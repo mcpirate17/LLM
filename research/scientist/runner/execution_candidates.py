@@ -176,7 +176,7 @@ class _ExecutionCandidatesMixin:
             grammar = GrammarConfig.routing_first(model_dim=config.model_dim)
             if getattr(config, "composition_depth", 0) > 0:
                 grammar.composition_depth = config.composition_depth
-            grammar.max_ops = min(getattr(config, "max_ops", 20), 20)
+            grammar.max_ops = getattr(config, "max_ops", 20)
             grammar.excluded_ops = grammar.excluded_ops | (excluded_ops or set())
             if op_weights:
                 for op_name, w in op_weights.items():
@@ -229,8 +229,8 @@ class _ExecutionCandidatesMixin:
         grammar = GrammarConfig(
             model_dim=config.model_dim,
             min_depth=config.min_depth,
-            max_depth=min(config.max_depth, 12),
-            max_ops=min(config.max_ops, 20),
+            max_depth=config.max_depth,
+            max_ops=config.max_ops,
             residual_prob=config.residual_prob,
             split_prob=config.grammar_split_prob,
             merge_prob=config.grammar_merge_prob,

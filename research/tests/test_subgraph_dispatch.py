@@ -125,7 +125,7 @@ def test_try_dispatch_returns_none_when_not_all_native():
 # Test 3: try_dispatch calls dispatch_graph_native_cached when all-native
 # ---------------------------------------------------------------------------
 
-@patch("research.scientist.native_runner.dispatch_graph_native_cached")
+@patch("research.scientist.native.autograd.dispatch_graph_native_cached")
 def test_try_dispatch_calls_graph_dispatch(mock_cached_dispatch):
     """When all ops are native, try_dispatch should call dispatch_graph_native_cached."""
     g = _make_simple_graph(ops=["relu"])
@@ -169,7 +169,7 @@ def test_try_dispatch_falls_back_on_error(mock_cached_dispatch):
 # Test 5: try_dispatch converts torch tensors
 # ---------------------------------------------------------------------------
 
-@patch("research.scientist.native_runner.dispatch_graph_native_cached")
+@patch("research.scientist.native.autograd.dispatch_graph_native_cached")
 def test_try_dispatch_torch_conversion(mock_cached_dispatch):
     """When input is a torch tensor, result should also be a torch tensor."""
     torch = pytest.importorskip("torch")
@@ -210,7 +210,7 @@ def test_subgraph_dispatcher_empty_graph():
 # Test 7: stats tracking
 # ---------------------------------------------------------------------------
 
-@patch("research.scientist.native_runner.dispatch_graph_native_cached")
+@patch("research.scientist.native.autograd.dispatch_graph_native_cached")
 def test_stats_tracking(mock_cached_dispatch):
     """Verify dispatch/fallback counts are tracked correctly."""
     g = _make_simple_graph(ops=["relu"])
@@ -373,7 +373,7 @@ def test_subgraph_dispatcher_no_cache_when_not_all_native():
     assert dispatcher._ir_json is None
 
 
-@patch("research.scientist.native_runner.dispatch_graph_native_cached")
+@patch("research.scientist.native.autograd.dispatch_graph_native_cached")
 def test_subgraph_dispatcher_reuses_cached_ir_across_calls(mock_cached_dispatch):
     """The same cached IR JSON should be passed on every try_dispatch call."""
     g = _make_simple_graph(ops=["relu"])
@@ -396,7 +396,7 @@ def test_subgraph_dispatcher_reuses_cached_ir_across_calls(mock_cached_dispatch)
         assert call[0][0] is cached_ir
 
 
-@patch("research.scientist.native_runner.dispatch_graph_native")
+@patch("research.scientist.native.autograd.dispatch_graph_native")
 def test_subgraph_dispatcher_fallback_when_ir_cache_none(mock_dispatch):
     """If IR caching fails, try_dispatch falls back to dispatch_graph_native."""
     g = _make_simple_graph(ops=["relu"])

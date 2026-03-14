@@ -117,4 +117,11 @@ class ExperimentRunner(
 def __getattr__(name: str):
     if name == "results":
         return importlib.import_module(".results_automation", __name__)
+    # Allow accessing submodules by name for patching in tests.
+    _allowed = {"control", "control_start", "control_cycle", "control_actions",
+                "core", "screening", "cycle", "continuous",
+                "execution", "synthesis", "selection", "dashboard",
+                "results_auto_escalate_phase7"}
+    if name in _allowed:
+        return importlib.import_module(f".{name}", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

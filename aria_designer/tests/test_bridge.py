@@ -3,6 +3,7 @@
 import sys
 import os
 import pytest
+from types import SimpleNamespace
 
 # Ensure imports work
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -174,6 +175,15 @@ def test_passthrough_lowering_component_is_supported():
     speculative_info = get_component_execution_capability("routing/speculative")
     assert speculative_info["bridge_supported"] is True
     assert speculative_info["primitive_name"] is None
+    difficulty_info = get_component_execution_capability("routing/difficulty_scorer")
+    assert difficulty_info["bridge_supported"] is True
+    assert difficulty_info["primitive_name"] is None
+    router_info = get_component_execution_capability("routing/lane_router")
+    assert router_info["bridge_supported"] is True
+    assert router_info["primitive_name"] == "adaptive_lane_mixer"
+    dispatch_info = get_component_execution_capability("structural/conditional_dispatch")
+    assert dispatch_info["bridge_supported"] is True
+    assert dispatch_info["primitive_name"] is None
     loop_info = get_component_execution_capability("control_flow/loop")
     assert loop_info["bridge_supported"] is True
     assert loop_info["primitive_name"] is None
@@ -375,6 +385,31 @@ def test_workflow_with_adaptive_and_speculative_passthrough():
     assert graph.n_ops() == 1
 
 
+def test_workflow_with_difficulty_lane_dispatch_passthrough():
+    wf = {
+        "nodes": [
+            {"id": "n0", "component_type": "graph_input", "params": {}},
+            {"id": "n1", "component_type": "routing/difficulty_scorer", "params": {}},
+            {"id": "n2", "component_type": "routing/lane_router", "params": {"num_lanes": 2}},
+            {"id": "n3", "component_type": "structural/conditional_dispatch", "params": {"num_lanes": 2, "lane": 0}},
+            {"id": "n4", "component_type": "gelu", "params": {}},
+            {"id": "n5", "component_type": "graph_output", "params": {}},
+        ],
+        "edges": [
+            {"id": "e0", "source": "n0", "target": "n1"},
+            {"id": "e1", "source": "n1", "target": "n2"},
+            {"id": "e2", "source": "n2", "target": "n3"},
+            {"id": "e3", "source": "n3", "target": "n4"},
+            {"id": "e4", "source": "n4", "target": "n5"},
+        ],
+    }
+    graph = workflow_to_graph(wf, model_dim=256)
+    # lane_router now maps to adaptive_lane_mixer (real op),
+    # difficulty_scorer and conditional_dispatch are still passthroughs,
+    # so we get: adaptive_lane_mixer + gelu = 2 ops
+    assert graph.n_ops() == 2
+
+
 def test_workflow_with_data_source_lowering():
     wf = {
         "nodes": [
@@ -538,3 +573,80 @@ def test_bridge_result_to_dict():
     import json
     json_str = json.dumps(d)
     assert '"status": "success"' in json_str
+
+
+def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
+    import runtime.bridge as bridge_mod
+
+    class _FakeGraph:
+        def fingerprint(self): return "fp_test"
+        def n_ops(self): return 3
+        def depth(self): return 2
+        def n_params_estimate(self): return 123
+        def has_gradient_path(self): return True
+
+    class _FakeModel:
+        def to(self, _device): return self
+
+    fake_sandbox = SimpleNamespace(
+        passed=True,
+        error=None,
+        compile_time_ms=1.0,
+        forward_time_ms=2.0,
+        backward_time_ms=3.0,
+        param_count=123,
+        peak_memory_mb=4.0,
+        grad_norm=5.0,
+        stability_score=0.9,
+        to_dict=lambda: {
+            "passed": True,
+            "compile_time_ms": 1.0,
+            "forward_time_ms": 2.0,
+            "backward_time_ms": 3.0,
+            "param_count": 123,
+            "peak_memory_mb": 4.0,
+            "grad_norm": 5.0,
+            "stability_score": 0.9,
+        },
+    )
+
+    fp = SimpleNamespace(
+        cka_vs_transformer=0.2,
+        cka_vs_ssm=0.6,
+        cka_vs_conv=0.1,
+        interaction_locality=0.3,
+        interaction_sparsity=0.4,
+        intrinsic_dim=7.0,
+        isotropy=0.8,
+        novelty_score=0.75,
+    )
+
+    novelty_metrics = SimpleNamespace(
+        structural_novelty=0.25,
+        behavioral_novelty=0.75,
+        overall_novelty=0.6,
+        most_similar_to="ssm",
+    )
+
+    monkeypatch.setattr(bridge_mod, "workflow_to_graph", lambda *args, **kwargs: _FakeGraph())
+    monkeypatch.setitem(sys.modules, "research.synthesis.compiler", SimpleNamespace(compile_model=lambda *args, **kwargs: _FakeModel()))
+    monkeypatch.setitem(sys.modules, "research.eval.sandbox", SimpleNamespace(safe_eval=lambda *args, **kwargs: fake_sandbox))
+    monkeypatch.setitem(sys.modules, "research.eval.fingerprint", SimpleNamespace(compute_fingerprint=lambda *args, **kwargs: fp))
+    monkeypatch.setitem(sys.modules, "research.eval.metrics", SimpleNamespace(novelty_score=lambda graph, fingerprint=None, **kwargs: novelty_metrics))
+
+    result = bridge_mod.evaluate_workflow(
+        _simple_mlp(),
+        model_dim=256,
+        device="cpu",
+        run_fingerprint=True,
+        run_novelty=True,
+        batch_size=1,
+        seq_len=16,
+    )
+
+    assert result.status == "success"
+    assert result.fingerprint.behavioral_novelty == 0.75
+    assert result.fingerprint.structural_novelty == 0.25
+    assert result.fingerprint.overall_novelty == 0.6
+    assert result.fingerprint.most_similar_to == "ssm"
+    assert result.fingerprint.cka_vs_ssm == 0.6

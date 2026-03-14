@@ -49,6 +49,7 @@ _CANONICAL_MAP: Dict[str, str] = {
     "conv1d_seq": "linear_algebra/conv1d_seq",
     
     "moe_topk": "channel_mixing/moe_topk",
+    "moe_2expert": "channel_mixing/moe_topk",
     "difficulty_scorer": "routing/difficulty_scorer",
     "lane_router": "routing/lane_router",
     
@@ -99,6 +100,9 @@ _ALIAS_MAP: Dict[str, str] = {
     "dispatch": "conditional_dispatch",
     "gather": "conditional_gather",
     "moe": "moe_topk",
+    "moe 2expert": "moe_2expert",
+    "moe 2 expert": "moe_2expert",
+    "2expert": "moe_2expert",
     "mixture of experts": "moe_topk",
     "expert": "moe_topk",
     "split": "split2",

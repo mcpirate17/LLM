@@ -68,8 +68,19 @@ def _instantiate_motif(
         op_name, config = resolve_step(step, rng)
         if not _step_is_compatible(graph, current, op_name):
             return node_id
-        # Use actual current dimension for config (not always model_dim)
+        # Auto-fix dim=1 outputs (from reduce_last ops like entropy_router):
+        # if the current node reduced to dim=1 and the next op is parameterized,
+        # insert a linear_proj to restore model_dim before the next op.
         cur_dim = graph.nodes[current].output_shape.dim
+        if cur_dim == 1 and cur_dim != D:
+            prim = PRIMITIVE_REGISTRY.get(op_name)
+            if prim and prim.n_params > 0:
+                try:
+                    current = graph.add_op("linear_proj", [current],
+                                           config={"out_dim": D})
+                except ValueError:
+                    return node_id
+                cur_dim = D
         if op_name in ("linear_proj", "fused_linear_gelu", "gated_linear"):
             config.setdefault("out_dim", D)
         elif op_name == "linear_proj_down":
@@ -867,6 +878,130 @@ def tpl_recursive_depth_router(
         return processed
 
 
+# ── Latent Compression Templates ──────────────────────────────────
+#
+# Dedicated template for latent_attention_compressor — the single best-
+# performing op in the leaderboard (lr=0.0061) but severely underexplored
+# because it has no template forcing its selection.
+
+
+def tpl_latent_compress_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → linear_proj → latent_attention_compressor → add →
+    sparse_linear → act → residual_add.
+
+    Based on the best-ever architecture pattern (5bc26a03, lr=0.0061):
+    linear_proj → latent_attention_compressor → add → nm_sparse_linear →
+    progressive_compression_gate → rmsnorm → rwkv_channel → add
+    """
+    D = graph.model_dim
+    # Pre-norm
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Projection → latent attention compressor
+    try:
+        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        compressed = graph.add_op("latent_attention_compressor", [proj])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    # Inner residual (normed + compressed)
+    try:
+        inner_res = graph.add_op("add", [normed, compressed])
+    except ValueError:
+        inner_res = compressed
+
+    # Sparse linear (nm_sparse or semi_structured)
+    sparse_op = rng.choice(["nm_sparse_linear", "semi_structured_2_4_linear"])
+    sparse_config: dict = {"out_dim": D}
+    if sparse_op == "nm_sparse_linear":
+        sparse_config.update({"n": 2, "m": 4})
+    try:
+        sparse = graph.add_op(sparse_op, [inner_res], config=sparse_config)
+    except (ValueError, KeyError):
+        sparse = inner_res
+
+    # Activation
+    act_op = rng.choice(["silu", "gelu", "relu"])
+    try:
+        activated = graph.add_op(act_op, [sparse])
+    except ValueError:
+        activated = sparse
+
+    activated = _fix_dim(graph, activated)
+
+    # Outer residual
+    try:
+        return graph.add_op("add", [input_id, activated])
+    except ValueError:
+        return activated
+
+
+def tpl_latent_compress_rwkv(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → latent_attention_compressor → add → sparse_linear →
+    progressive_compression_gate → norm → rwkv_channel → residual.
+
+    Exact replica of the best-ever graph pattern with randomized
+    sparse op choice.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        compressed = graph.add_op("latent_attention_compressor", [proj])
+        inner_res = graph.add_op("add", [normed, compressed])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    sparse_op = rng.choice(["nm_sparse_linear", "semi_structured_2_4_linear",
+                             "block_sparse_linear"])
+    sparse_cfg: dict = {"out_dim": D}
+    if sparse_op == "nm_sparse_linear":
+        sparse_cfg.update({"n": 2, "m": 4})
+    elif sparse_op == "block_sparse_linear":
+        sparse_cfg.update({"block_size": rng.choice([8, 16, 32]),
+                           "block_density": rng.uniform(0.1, 0.4)})
+    try:
+        sparse = graph.add_op(sparse_op, [inner_res], config=sparse_cfg)
+    except (ValueError, KeyError):
+        sparse = inner_res
+
+    # Progressive compression gate (if available)
+    try:
+        gated = graph.add_op("progressive_compression_gate", [sparse])
+    except (ValueError, KeyError):
+        gated = sparse
+
+    # Post-norm + RWKV channel mixing
+    norm2 = _pick_compatible_motif(graph, gated, rng, MOTIF_CLASS_NORM, weights)
+    post_normed = _instantiate_motif(graph, gated, norm2, rng) if norm2 else gated
+
+    try:
+        mixed = graph.add_op("rwkv_channel", [post_normed],
+                             config={"mlp_ratio": rng.choice([2.0, 3.0, 4.0])})
+    except (ValueError, KeyError):
+        mixed = post_normed
+
+    mixed = _fix_dim(graph, mixed)
+
+    try:
+        return graph.add_op("add", [input_id, mixed])
+    except ValueError:
+        return mixed
+
+
 # ── Template Registry ───────────────────────────────────────────────
 
 TemplateFn = Callable[
@@ -894,6 +1029,9 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "three_lane_adaptive": tpl_three_lane_adaptive,
     "cascaded_early_exit": tpl_cascaded_early_exit,
     "recursive_depth_router": tpl_recursive_depth_router,
+    # Latent compression templates (based on best-ever pattern, lr=0.0061)
+    "latent_compress_block": tpl_latent_compress_block,
+    "latent_compress_rwkv": tpl_latent_compress_rwkv,
 }
 
 # Default weights — uniform, can be overridden by judgment engine priors
@@ -917,6 +1055,9 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "three_lane_adaptive": 5.0,        # 3-lane adaptive mixer
     "cascaded_early_exit": 4.5,        # Progressive depth with exit gates
     "recursive_depth_router": 4.5,     # Depth-adaptive recursion
+    # Latent compression (best-ever pattern, high priority)
+    "latent_compress_block": 6.0,       # Latent attn compressor + sparse
+    "latent_compress_rwkv": 6.0,        # Full best-ever pattern with RWKV
 }
 
 

@@ -46,6 +46,10 @@ class _SynthesisMixin:
         Returns a shallow copy of config with adjusted grammar settings.
         Uses modular arithmetic to cycle through configurations deterministically.
 
+        User-supplied max_depth, max_ops, grammar_split_prob, and
+        three_way_split_prob are treated as floors — cycle presets can
+        raise them but never lower them below what the user requested.
+
         Cycle allocation (mod 8):
           0: math-space exploration
           1: deep routing-first (routing_mandatory, 2-3 templates)
@@ -60,61 +64,67 @@ class _SynthesisMixin:
         cfg = copy.copy(config)
         cycle = n_experiments % 8
 
+        # Preserve user-supplied floors
+        user_max_depth = config.max_depth
+        user_max_ops = config.max_ops
+        user_split_prob = config.grammar_split_prob
+        user_three_way = config.three_way_split_prob
+        user_residual = config.residual_prob
+
         if cycle == 0:
-            # Boost frequency and reduction, suppress dominant categories
-            cfg.math_space_weight = 1.0
+            cfg.math_space_weight = max(config.math_space_weight, 1.0)
             cfg.residual_prob = 0.5
             cfg.max_ops = 16
             cfg.composition_depth = 2
         elif cycle == 1:
-            # ROUTING-FIRST: deep routing with mandatory routing ops
             cfg.max_depth = 12
             cfg.max_ops = 20
             cfg.residual_prob = 0.8
             cfg.composition_depth = 3
             cfg._routing_first_mode = True
         elif cycle == 2:
-            # Wider, shallower but still complex
             cfg.max_depth = 8
             cfg.max_ops = 16
             cfg.residual_prob = 0.6
             cfg.composition_depth = 2
         elif cycle == 3:
-            # EFFICIENCY: sparse/routing/compression exploration
             cfg.max_depth = 10
             cfg.max_ops = 16
             cfg.residual_prob = 0.7
             cfg.composition_depth = 2
             cfg._efficiency_mode = True
         elif cycle == 4:
-            # High risk, frequency focus
-            cfg.math_space_weight = 3.0
+            cfg.math_space_weight = max(config.math_space_weight, 3.0)
             cfg.residual_prob = 0.4
             cfg.max_ops = 16
             cfg.composition_depth = 2
         elif cycle == 5:
-            # ROUTING-FIRST variant: high-op routing exploration
             cfg.max_depth = 10
             cfg.max_ops = 18
             cfg.residual_prob = 0.7
             cfg.composition_depth = 2
             cfg._routing_first_mode = True
         elif cycle == 6:
-            # Default with boosted math space, deeper composition
-            cfg.math_space_weight = 2.5
+            cfg.math_space_weight = max(config.math_space_weight, 2.5)
             cfg.max_depth = 10
             cfg.max_ops = 16
             cfg.residual_prob = 0.7
             cfg.composition_depth = 2
         else:
-            # EXOTIC: complex architecture exploration
             cfg.max_depth = 12
             cfg.max_ops = 20
             cfg.residual_prob = 0.4
             cfg.grammar_split_prob = 0.6
-            cfg.math_space_weight = 1.5
+            cfg.math_space_weight = max(config.math_space_weight, 1.5)
             cfg.composition_depth = 3
             cfg._exotic_mode = True
+
+        # Enforce user floors — never shrink below what was requested
+        cfg.max_depth = max(cfg.max_depth, user_max_depth)
+        cfg.max_ops = max(cfg.max_ops, user_max_ops)
+        cfg.grammar_split_prob = max(cfg.grammar_split_prob, user_split_prob)
+        cfg.three_way_split_prob = max(cfg.three_way_split_prob, user_three_way)
+        cfg.residual_prob = max(cfg.residual_prob, user_residual)
 
         return cfg
 

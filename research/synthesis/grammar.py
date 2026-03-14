@@ -391,7 +391,24 @@ def generate_layer_graph(
     # Template and motif weights flow directly into template/motif pickers.
     # Non-empty dicts carry research-signal priors from execution_screening.
     tpl_weights = dict(config.template_weights) if config.template_weights else None
-    motif_weights = config.motif_weights or None
+    motif_weights = dict(config.motif_weights) if config.motif_weights else {}
+
+    # Bridge op_weights → motif_weights: boost motifs that contain high-weight ops.
+    # This fixes the dead-code path where API-supplied op_weights were ignored
+    # because the motif-based grammar only looked at motif_weights.
+    if config.op_weights:
+        from .motifs import MOTIFS_BY_CLASS, ALL_MOTIFS
+        for motif in ALL_MOTIFS:
+            motif_ops = {step.op_name for step in motif.steps}
+            boost = max(
+                (config.op_weights.get(op, 1.0) for op in motif_ops),
+                default=1.0,
+            )
+            if boost > 1.0:
+                current = motif_weights.get(motif.name, motif.lift)
+                motif_weights[motif.name] = current * (boost / 1.0)
+
+    motif_weights = motif_weights or None
 
     # High sparsity bias → force first template from efficiency pool
     _EFFICIENCY_TEMPLATES = {

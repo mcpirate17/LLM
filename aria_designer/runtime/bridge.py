@@ -211,6 +211,7 @@ def evaluate_workflow(
     """Full pipeline: workflow → graph → compile → eval → fingerprint → novelty."""
     result = BridgeResult(status="error")
     t0 = time.monotonic()
+    fp = None
 
     try:
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)
@@ -248,13 +249,33 @@ def evaluate_workflow(
                 device=device,
             )
             result.fingerprint.cka_vs_transformer = getattr(fp, "cka_vs_transformer", 0.0)
+            result.fingerprint.cka_vs_ssm = getattr(fp, "cka_vs_ssm", 0.0)
+            result.fingerprint.cka_vs_conv = getattr(fp, "cka_vs_conv", 0.0)
             result.fingerprint.interaction_locality = getattr(fp, "interaction_locality", 0.0)
+            result.fingerprint.interaction_sparsity = getattr(fp, "interaction_sparsity", 0.0)
+            result.fingerprint.intrinsic_dim = getattr(fp, "intrinsic_dim", 0.0)
+            result.fingerprint.isotropy = getattr(fp, "isotropy", 0.0)
+            result.fingerprint.behavioral_novelty = getattr(fp, "novelty_score", 0.0)
+            result.fingerprint.most_similar_to = max(
+                {
+                    "transformer": result.fingerprint.cka_vs_transformer,
+                    "ssm": result.fingerprint.cka_vs_ssm,
+                    "conv": result.fingerprint.cka_vs_conv,
+                },
+                key=lambda k: {
+                    "transformer": result.fingerprint.cka_vs_transformer,
+                    "ssm": result.fingerprint.cka_vs_ssm,
+                    "conv": result.fingerprint.cka_vs_conv,
+                }[k],
+            )
 
         if run_novelty:
             from research.eval.metrics import novelty_score
-            metrics = novelty_score(graph)
+            metrics = novelty_score(graph, fingerprint=fp)
             result.fingerprint.structural_novelty = metrics.structural_novelty
+            result.fingerprint.behavioral_novelty = metrics.behavioral_novelty
             result.fingerprint.overall_novelty = metrics.overall_novelty
+            result.fingerprint.most_similar_to = metrics.most_similar_to
 
         result.status = "success"
     except Exception as e:
