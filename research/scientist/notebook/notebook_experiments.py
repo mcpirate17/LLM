@@ -411,18 +411,59 @@ class _ExperimentsMixin:
         )
         self._maybe_commit()
 
-        # Delete if it's total junk (no programs AND no LLM insights)
+        # Delete if it's total junk (no programs AND no LLM insights AND no results)
         row = self.conn.execute(
             "SELECT llm_analysis FROM experiments WHERE experiment_id = ?",
             (experiment_id,)
         ).fetchone()
-        
-        if n_prog == 0 and (not row or not row["llm_analysis"]):
-            self.conn.execute("DELETE FROM experiments WHERE experiment_id = ?", (experiment_id,))
-            self.conn.execute("DELETE FROM entries WHERE experiment_id = ?", (experiment_id,))
-            self._maybe_commit()
+        has_results = self.conn.execute(
+            "SELECT 1 FROM program_results WHERE experiment_id = ? LIMIT 1",
+            (experiment_id,)
+        ).fetchone()
+
+        if n_prog == 0 and (not row or not row["llm_analysis"]) and not has_results:
+            self._delete_experiment_cascade(experiment_id)
             LOGGER.info("Deleted zero-value failed experiment %s", experiment_id)
 
+
+    def _delete_experiment_cascade(self, experiment_id: str) -> None:
+        """Delete an experiment and all FK-dependent child rows.
+
+        Deletion order respects FK chains:
+        healer_task_events → healer_tasks → experiments, etc.
+        """
+        # healer_task_events → healer_tasks (grandchild)
+        task_rows = self.conn.execute(
+            "SELECT task_id FROM healer_tasks WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchall()
+        if task_rows:
+            task_ids = [r[0] for r in task_rows]
+            ph = ",".join("?" for _ in task_ids)
+            self.conn.execute(
+                f"DELETE FROM healer_task_events WHERE task_id IN ({ph})",
+                task_ids,
+            )
+
+        # Direct children of experiments
+        for table in (
+            "entries", "insights", "hypotheses",
+            "preregistration_deviations", "hypothesis_preregistrations",
+            "healer_tasks",
+        ):
+            try:
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE experiment_id = ?",
+                    (experiment_id,),
+                )
+            except Exception:
+                pass  # table may not exist or lack column
+
+        self.conn.execute(
+            "DELETE FROM experiments WHERE experiment_id = ?",
+            (experiment_id,),
+        )
+        self._maybe_commit()
 
     def purge_empty_experiments(self) -> int:
         """Delete failed experiments that produced no program_results.
@@ -441,18 +482,10 @@ class _ExperimentsMixin:
         """).fetchall()
         if not rows:
             return 0
-        ids = [r[0] for r in rows]
-        placeholders = ",".join("?" for _ in ids)
-        self.conn.execute(
-            f"DELETE FROM experiments WHERE experiment_id IN ({placeholders})", ids
-        )
-        for table in ("entries", "insights", "hypotheses"):
-            self.conn.execute(
-                f"DELETE FROM {table} WHERE experiment_id IN ({placeholders})", ids
-            )
-        self._maybe_commit()
-        LOGGER.debug("Purged %d empty failed experiments", len(ids))
-        return len(ids)
+        for r in rows:
+            self._delete_experiment_cascade(r[0])
+        LOGGER.debug("Purged %d empty failed experiments", len(rows))
+        return len(rows)
 
 
     def cancel_experiment(self, experiment_id: str) -> bool:

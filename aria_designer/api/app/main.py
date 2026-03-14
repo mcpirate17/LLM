@@ -37,6 +37,7 @@ from .models import (
     ComponentModel,
     RunWorkflowRequest,
     SuggestComponentsRequest,
+    RecordOutcomeRequest,
     ValidateWorkflowRequest,
     ValidateWorkflowResponse,
     ValidationIssue,
@@ -1580,6 +1581,25 @@ def get_suggestions(req: SuggestComponentsRequest) -> List[Dict[str, Any]]:
     )
 
 
+@app.post("/api/v1/aria/record-outcome")
+def record_outcome(req: RecordOutcomeRequest) -> Dict[str, Any]:
+    """Record user feedback on a suggestion (Task 3I)."""
+    try:
+        db.record_suggestion_outcome(
+            suggestion_id=req.suggestion_id,
+            outcome=req.outcome,
+            timestamp=_utc_now(),
+            fingerprint=req.fingerprint,
+            intent=req.intent,
+            details=req.details,
+            session_id=req.session_id,
+        )
+        return {"success": True}
+    except Exception as e:
+        logger.error("Failed to record suggestion outcome: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 def _infer_component_from_prompt(prompt: str, fallback_suggestions: List[Dict[str, Any]]) -> Optional[str]:
     lower = prompt.lower()
     components_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "components"))
@@ -2269,10 +2289,14 @@ def _validate_proposal_quality(
         return False, "Smoke test reported unstable outputs"
     if parent_snapshot.get("has_gradient_path") and not child_snapshot.get("has_gradient_path"):
         return False, "Refinement removed the parent gradient path"
+    # Use intent-derived retention floor (defaults to 0.7 if no constraints)
+    from .intent_parser import parse_intent_constraints
+    _constraints = parse_intent_constraints(None, parent_scores)
+    min_retention = getattr(_constraints, "min_retention_ratio", 0.7) or 0.7
     if parent_snapshot.get("n_ops", 0) > 0:
         retention = float(child_snapshot.get("n_ops", 0)) / float(parent_snapshot["n_ops"])
-        if retention < 0.7:
-            return False, f"Refinement retained only {retention:.2%} of parent ops"
+        if retention < min_retention:
+            return False, f"Refinement retained only {retention:.2%} of parent ops (floor {min_retention:.0%})"
 
     # --- Step 3: regression check against parent ---
     if parent_scores:
@@ -2293,7 +2317,7 @@ def _validate_proposal_quality(
                     f"Rejected: removes {len(remove_ops)}/{original_op_count} ops "
                     f"from {parent_tier}-tier parent (composite {parent_composite:.1f})"
                 )
-            predicted_child = parent_composite * _estimate_patch_quality_multiplier(ops)
+            predicted_child = parent_composite * _estimate_patch_quality_multiplier(ops, parent_scores)
             if predicted_child < (parent_composite * 0.95):
                 return False, (
                     f"Rejected: predicted composite {predicted_child:.1f} "
@@ -2340,16 +2364,26 @@ def _run_native_refinement_smoke_test(workflow_json: Dict[str, Any]) -> Optional
     return {key: getattr(result, key) for key in ("ok", "has_params", "grad_flows", "no_nan") if hasattr(result, key)}
 
 
-def _estimate_patch_quality_multiplier(ops: List[Dict[str, Any]]) -> float:
-    penalties = {
-        "mutate_param": 0.015,
-        "replace_node": 0.03,
-        "add_node": 0.035,
-        "remove_node": 0.08,
-        "rewire": 0.02,
-    }
-    total_penalty = sum(penalties.get(str(op.get("op") or ""), 0.04) for op in ops)
-    return max(0.75, 1.0 - total_penalty)
+def _estimate_patch_quality_multiplier(
+    ops: List[Dict[str, Any]],
+    parent_scores: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Estimate quality retention multiplier for a patch.
+
+    Delegates to mutation._predicted_multiplier when constraints are
+    available to ensure generation and validation use the same logic.
+    """
+    from .mutation import _MUTATION_PENALTIES
+    from .intent_parser import parse_intent_constraints
+
+    constraints = parse_intent_constraints(None, parent_scores)
+    penalty = sum(_MUTATION_PENALTIES.get(str(op.get("op") or ""), 0.04) for op in ops)
+    if constraints.preserve_novelty:
+        penalty *= 0.85
+    tier = str((parent_scores or {}).get("tier") or "").lower()
+    if tier in {"investigation", "validation", "breakthrough"}:
+        penalty *= 1.15
+    return max(0.75, 1.0 - penalty)
 
 
 @app.get("/api/v1/aria/proposals")

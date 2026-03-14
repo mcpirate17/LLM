@@ -40,6 +40,13 @@ class NoveltySearchConfig:
     population_size: int = 50
     n_generations: int = 20
     grammar_config: Optional[GrammarConfig] = None
+    fresh_injection_rate: float = 0.1
+    archive_stall_window: int = 3
+    archive_stall_patience: int = 2
+    archive_threshold_floor: float = 0.18
+    adaptation_step: float = 0.05
+    max_fresh_injection_rate: float = 0.35
+    max_novelty_weight: float = 0.92
 
 
 class BehaviorArchive:
@@ -166,6 +173,7 @@ class NoveltySearchResult:
     total_evaluated: int = 0
     most_novel_fingerprint: Optional[str] = None
     novelty_scores: List[float] = field(default_factory=list)
+    adaptation_events: List[Dict[str, float]] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return {
@@ -178,6 +186,7 @@ class NoveltySearchResult:
                 min(self.novelty_scores) if self.novelty_scores else 0,
                 max(self.novelty_scores) if self.novelty_scores else 0,
             ),
+            "adaptation_events": list(self.adaptation_events),
         }
 
 
@@ -200,6 +209,12 @@ def novelty_search(
 
     archive = BehaviorArchive(max_size=config.archive_size)
     result = NoveltySearchResult()
+    adaptation_state = {
+        "last_archive_size": 0,
+        "recent_growth": [],
+        "stall_count": 0,
+        "last_best_fitness": 0.0,
+    }
 
     def novelty_fn(graph: ComputationGraph,
                    population: List[ComputationGraph]) -> float:
@@ -233,6 +248,15 @@ def novelty_search(
     def gen_callback(gen: int, population: List[Individual]):
         result.generations_run = gen + 1
         result.total_evaluated += len(population)
+        _update_adaptive_novelty_policy(
+            generation=gen + 1,
+            archive=archive,
+            population=population,
+            ns_config=config,
+            evo_config=evo_config,
+            state=adaptation_state,
+            result=result,
+        )
         if callback:
             callback(gen, population, archive)
 
@@ -242,6 +266,7 @@ def novelty_search(
         n_generations=config.n_generations,
         fitness_weight=config.fitness_weight,
         novelty_weight=config.novelty_weight,
+        fresh_injection_rate=config.fresh_injection_rate,
         grammar_config=config.grammar_config,
     )
 
@@ -262,3 +287,75 @@ def novelty_search(
         ).fingerprint
 
     return result
+
+
+def _update_adaptive_novelty_policy(
+    *,
+    generation: int,
+    archive: BehaviorArchive,
+    population: List[Individual],
+    ns_config: NoveltySearchConfig,
+    evo_config: EvolutionConfig,
+    state: Dict[str, object],
+    result: NoveltySearchResult,
+) -> None:
+    """Increase exploration pressure when archive growth stalls."""
+    archive_size = archive.size()
+    best_fitness = max((ind.fitness for ind in population), default=0.0)
+    best_novelty = max((ind.novelty for ind in population), default=0.0)
+    growth = archive_size - int(state["last_archive_size"])
+    recent_growth = list(state["recent_growth"])
+    recent_growth.append(growth)
+    window = max(1, int(ns_config.archive_stall_window))
+    if len(recent_growth) > window:
+        recent_growth = recent_growth[-window:]
+    state["recent_growth"] = recent_growth
+    state["last_archive_size"] = archive_size
+
+    improved = best_fitness > float(state["last_best_fitness"]) + 1e-6
+    state["last_best_fitness"] = max(float(state["last_best_fitness"]), best_fitness)
+    archive_stalled = len(recent_growth) >= window and sum(recent_growth) <= 0
+    state["stall_count"] = int(state["stall_count"]) + 1 if archive_stalled and not improved else 0
+    if int(state["stall_count"]) < max(1, int(ns_config.archive_stall_patience)):
+        return
+
+    step = max(0.01, float(ns_config.adaptation_step))
+    evo_config.fresh_injection_rate = min(
+        float(ns_config.max_fresh_injection_rate),
+        evo_config.fresh_injection_rate + step,
+    )
+    evo_config.mutation_rate = min(0.95, evo_config.mutation_rate + step)
+    evo_config.crossover_rate = max(0.05, evo_config.crossover_rate - step)
+    evo_config.novelty_weight = min(
+        float(ns_config.max_novelty_weight),
+        evo_config.novelty_weight + step,
+    )
+    evo_config.fitness_weight = max(0.05, 1.0 - evo_config.novelty_weight)
+    ns_config.archive_threshold = max(
+        float(ns_config.archive_threshold_floor),
+        ns_config.archive_threshold - step,
+    )
+    adaptation = {
+        "generation": float(generation),
+        "archive_size": float(archive_size),
+        "best_fitness": float(best_fitness),
+        "best_novelty": float(best_novelty),
+        "fresh_injection_rate": float(evo_config.fresh_injection_rate),
+        "mutation_rate": float(evo_config.mutation_rate),
+        "crossover_rate": float(evo_config.crossover_rate),
+        "novelty_weight": float(evo_config.novelty_weight),
+        "fitness_weight": float(evo_config.fitness_weight),
+        "archive_threshold": float(ns_config.archive_threshold),
+    }
+    result.adaptation_events.append(adaptation)
+    state["stall_count"] = 0
+    logger.info(
+        "Novelty adaptation at gen %d: archive=%d best_fit=%.3f best_novelty=%.3f fresh=%.2f novelty_w=%.2f threshold=%.2f",
+        generation,
+        archive_size,
+        best_fitness,
+        best_novelty,
+        evo_config.fresh_injection_rate,
+        evo_config.novelty_weight,
+        ns_config.archive_threshold,
+    )

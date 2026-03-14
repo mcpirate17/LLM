@@ -97,11 +97,13 @@ def evaluate_tinystories(
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     # Score: 0-1 normalized, higher = better
+    # ppl=1 → 1.0 (perfect), ppl=vocab_size → 0.0 (random)
     tinystories_score = None
     if post_ppl is not None and post_ppl > 0:
-        ratio = post_ppl / vocab_size
-        tinystories_score = round(1.0 / (1.0 + math.log(max(ratio, 1e-6))), 4)
-        tinystories_score = max(0.0, min(1.0, tinystories_score))
+        tinystories_score = round(
+            max(0.0, min(1.0, math.log(vocab_size / post_ppl) / math.log(vocab_size))),
+            4,
+        )
 
     return {
         "tinystories_perplexity": round(post_ppl, 2) if post_ppl is not None else None,

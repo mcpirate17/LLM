@@ -1013,6 +1013,8 @@ pub fn execute_with_arena(
     dispatcher: &dyn KernelDispatch,
     input: &[f32],
 ) -> Result<ExecutionResult, AriaError> {
+    let optimized_graph = graph.fuse_supported_patterns();
+    let graph = &optimized_graph;
     let order = graph.topological_order()?;
 
     let arena_capacity = estimate_arena_capacity(graph, input.len());

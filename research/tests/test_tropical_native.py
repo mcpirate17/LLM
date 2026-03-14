@@ -52,6 +52,19 @@ def test_tropical_matmul_parity():
         
         assert torch.allclose(expected, actual, atol=1e-5), f"Parity failed for shapes {shape_a}, {shape_b}"
 
+
+def test_tropical_matmul_self_attention_layout_parity():
+    x = torch.randn(2, 8, 16)
+    expected = torch.zeros((2, 8, 8))
+    for b in range(2):
+        for i in range(8):
+            for j in range(8):
+                expected[b, i, j] = torch.min(x[b, i, :] + x[b, j, :])
+
+    actual = tropical_matmul(x.contiguous(), x.contiguous())
+
+    assert torch.allclose(expected, actual, atol=1e-5)
+
 def test_tropical_center_parity():
     shapes = [(1, 4, 32), (2, 16, 64), (4, 32, 128)]
     for shape in shapes:

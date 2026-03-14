@@ -25,6 +25,24 @@ from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 # Curvature parameter (negative curvature)
 DEFAULT_C = 1.0
 EPS = 1e-5
+MAX_CURVATURE = 10.0
+
+
+def _curvature_raw_init(c: float) -> float:
+    clamped = min(max(float(c), EPS), MAX_CURVATURE)
+    return math.log(math.expm1(clamped))
+
+
+def _positive_curvature(raw: torch.Tensor) -> torch.Tensor:
+    return F.softplus(raw).clamp(min=EPS, max=MAX_CURVATURE)
+
+
+def _module_curvature(module: nn.Module | None, default: float = DEFAULT_C) -> float:
+    raw = getattr(module, "_c_raw", None)
+    if isinstance(raw, torch.Tensor):
+        return float(_positive_curvature(raw).item())
+    value = getattr(module, "c", default)
+    return float(min(max(value, EPS), MAX_CURVATURE))
 
 
 def _clamp_norm(x: torch.Tensor, max_norm: float = 1.0 - 1e-3) -> torch.Tensor:
@@ -111,12 +129,11 @@ class HyperbolicLinear(nn.Module):
     def __init__(self, dim: int, c: float = DEFAULT_C):
         super().__init__()
         self.weight = nn.Parameter(torch.randn(dim, dim) * (1.0 / math.sqrt(dim)))
-        # Learnable curvature: c = softplus(c_raw) + eps, constrained to (0, 10]
-        self._c_raw = nn.Parameter(torch.tensor(math.log(math.exp(c) - 1.0)))
+        self._c_raw = nn.Parameter(torch.tensor(_curvature_raw_init(c), dtype=torch.float32))
 
     @property
     def c(self) -> float:
-        return float(F.softplus(self._c_raw).clamp(max=10.0).item())
+        return float(_positive_curvature(self._c_raw).item())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Map to tangent space, transform, map back
@@ -132,36 +149,38 @@ def execute_poincare_add(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Apply Mobius addition with a learnable bias in hyperbolic space."""
     if not hasattr(module, 'hyp_bias'):
         return x
-    return mobius_add(x, module.hyp_bias.unsqueeze(0).unsqueeze(0))
+    return mobius_add(x, module.hyp_bias.unsqueeze(0).unsqueeze(0), c=_module_curvature(module))
 
 
 def execute_exp_map(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Map from Euclidean to Poincare ball."""
-    return exp_map(x)
+    return exp_map(x, c=_module_curvature(module))
 
 
 def execute_log_map(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Map from Poincare ball to Euclidean."""
-    return log_map(x)
+    return log_map(x, c=_module_curvature(module))
 
 
 def execute_hyp_distance(module: nn.Module, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Hyperbolic distance between two tensors."""
-    return hyperbolic_distance(x, y)
+    return hyperbolic_distance(x, y, c=_module_curvature(module))
 
 
 def execute_hyp_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Hyperbolic linear transformation."""
-    euclidean = log_map(x)
+    c = _module_curvature(module)
+    euclidean = log_map(x, c=c)
     transformed = F.linear(euclidean, module.weight)
-    return exp_map(transformed)
+    return exp_map(transformed, c=c)
 
 
 def execute_hyp_tangent_nonlinear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Stable tangent-space nonlinearity in hyperbolic coordinates."""
-    euclidean = log_map(x)
+    c = _module_curvature(module)
+    euclidean = log_map(x, c=c)
     bounded = torch.tanh(euclidean)
-    return exp_map(bounded)
+    return exp_map(bounded, c=c)
 
 
 class PoincareDistanceRouting(nn.Module):
@@ -182,7 +201,7 @@ class PoincareDistanceRouting(nn.Module):
 
     def __init__(self, dim: int, n_heads: int = 8, c: float = DEFAULT_C):
         super().__init__()
-        self.c = c
+        self._c_raw = nn.Parameter(torch.tensor(_curvature_raw_init(c), dtype=torch.float32))
         self.n_heads = n_heads
         self.dim = dim
         # Initialize centroids near origin for stability
@@ -192,6 +211,7 @@ class PoincareDistanceRouting(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
+        c = float(_positive_curvature(self._c_raw).item())
         # Clamp input and centroids inside the ball
         x_clamped = _clamp_norm(x)
         centroids = _clamp_norm(self.centroids)
@@ -206,13 +226,12 @@ class PoincareDistanceRouting(nn.Module):
         x_sq = (x_exp * x_exp).sum(dim=-1, keepdim=True)
         c_sq = (c_exp * c_exp).sum(dim=-1, keepdim=True)
         xc = (x_exp * c_exp).sum(dim=-1, keepdim=True)
-        c = self.c
         num = (1 + 2 * c * xc + c * c_sq) * x_exp + (1 - c * x_sq) * c_exp
         denom = (1 + 2 * c * xc + c * c * x_sq * c_sq).clamp(min=EPS)
         diff = _clamp_norm(num / denom)
 
         diff_norm = diff.norm(dim=-1).clamp(min=EPS)  # (B, S, H)
-        sqrt_c = math.sqrt(self.c)
+        sqrt_c = math.sqrt(c)
         dist = (2.0 / sqrt_c) * torch.atanh(
             (sqrt_c * diff_norm).clamp(max=1.0 - EPS)
         ).clamp(-10, 10)  # (B, S, H)
@@ -230,7 +249,7 @@ def execute_poincare_routing(module: nn.Module, x: torch.Tensor) -> torch.Tensor
     """Apply Poincare distance routing with learned centroids."""
     B, S, D = x.shape
     n_heads = getattr(module, '_routing_heads', 8)
-    router = PoincareDistanceRouting(dim=D, n_heads=n_heads).to(x.device)
+    router = PoincareDistanceRouting(dim=D, n_heads=n_heads, c=_module_curvature(module)).to(x.device)
     if hasattr(module, 'weight') and module.weight.numel() >= router.centroids.numel():
         n = router.centroids.numel()
         router.centroids.data = module.weight[:n].reshape(router.centroids.shape)
@@ -243,7 +262,8 @@ def execute_hyperbolic_norm(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     Standard LayerNorm distorts hyperbolic geometry. This compound op
     maps to tangent space first, normalizes there, then maps back.
     """
-    euclidean = log_map(x)
+    c = _module_curvature(module)
+    euclidean = log_map(x, c=c)
     if hasattr(module, 'weight') and hasattr(module, 'bias'):
         D = euclidean.shape[-1]
         weight = module.weight[:D]
@@ -251,4 +271,4 @@ def execute_hyperbolic_norm(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
         normed = F.layer_norm(euclidean, [D], weight, bias)
     else:
         normed = F.layer_norm(euclidean, [euclidean.shape[-1]])
-    return exp_map(normed)
+    return exp_map(normed, c=c)

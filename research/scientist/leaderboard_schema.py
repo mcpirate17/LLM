@@ -1,51 +1,9 @@
 """Leaderboard column constants — single source of truth.
 
-All leaderboard column whitelists live here. Both ``LeaderboardManager``
-and ``notebook_leaderboard._LeaderboardMixin`` import from this module
-instead of maintaining their own copies.
+Scoring and fingerprint-aggregation column maps used by
+``leaderboard_scoring`` and ``notebook_leaderboard._LeaderboardMixin``.
 """
 from __future__ import annotations
-
-# Columns accepted in upsert_leaderboard kwargs (UPDATE + INSERT branches).
-LEADERBOARD_UPSERT_COLUMNS: tuple[str, ...] = (
-    "screening_loss_ratio", "screening_novelty", "screening_passed",
-    "investigation_loss_ratio", "investigation_robustness",
-    "investigation_best_training", "investigation_passed",
-    "validation_loss_ratio", "validation_baseline_ratio",
-    "validation_multi_seed_std", "validation_passed",
-    "normalized_baseline_ratio", "param_efficiency",
-    "quant_int8_retention", "quant_quality_per_byte",
-    "robustness_long_ctx_score", "robustness_noise_score",
-    "init_sensitivity_std", "fp_jacobian_spectral_norm",
-    "scaling_param_efficiency", "scaling_flop_efficiency",
-    "scaling_gate_passed", "scaling_best_family",
-    "scaling_d512_param_efficiency", "scaling_confidence",
-    "routing_savings_ratio", "compression_ratio",
-    "discovery_loss_ratio", "ncd_score",
-    "robustness_long_ctx_scaling_score",
-    "robustness_long_ctx_assoc_score",
-    "robustness_long_ctx_multi_hop_score",
-    "robustness_long_ctx_passkey_score",
-    "robustness_long_ctx_retrieval_aggregate",
-    "robustness_long_ctx_combined_score",
-    "depth_savings_ratio", "recursion_savings_ratio",
-    "activation_sparsity_score", "routing_expert_count",
-    "routing_confidence_mean", "routing_drop_rate",
-    "efficiency_multiple",
-    "wikitext_perplexity", "wikitext_score",
-    "tinystories_perplexity", "tinystories_score",
-    "cross_task_score", "efficiency_wall_score",
-    "max_viable_seq_len",
-)
-
-# Extra columns accepted only in promote_to_tier kwargs.
-PROMOTE_EXTRA_COLUMNS: tuple[str, ...] = (
-    "dead_neuron_ratio", "routing_collapse_score",
-    "scaling_regime", "notes",
-)
-
-# Union of both — used by promote_to_tier.
-PROMOTE_ALL_COLUMNS: tuple[str, ...] = LEADERBOARD_UPSERT_COLUMNS + PROMOTE_EXTRA_COLUMNS
 
 # Column→parameter mapping for ``compute_composite_score``.
 # Keys are leaderboard/program_results column names; values are the kwarg
@@ -58,6 +16,8 @@ SCORE_COLUMN_MAP: dict[str, str] = {
     "validation_loss_ratio": "val_lr",
     "validation_baseline_ratio": "val_baseline",
     "validation_multi_seed_std": "val_std",
+    "validation_robustness_score": "robustness_score",
+    "validation_is_unstable": "is_unstable",
     "routing_savings_ratio": "routing_savings",
     "compression_ratio": "compression_ratio",
     "discovery_loss_ratio": "discovery_lr",
@@ -80,6 +40,9 @@ SCORE_COLUMN_MAP: dict[str, str] = {
     "routing_confidence_mean": "routing_confidence_mean",
     "routing_drop_rate": "routing_drop_rate",
     "wikitext_perplexity": "wikitext_perplexity",
+    "wikitext_score": "wikitext_score",
+    "investigation_passed": "investigation_passed",
+    "validation_passed": "validation_passed",
 }
 
 # Columns used in _sync_fingerprint_leaderboard for best-of-run aggregation.

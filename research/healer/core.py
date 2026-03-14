@@ -24,6 +24,7 @@ class HealerTaskSpec:
     acceptance_tests: List[str]
     trigger_payload: Dict[str, Any]
     preferred_endpoint: Optional[str] = None
+    command_timeout_seconds: int = 180
 
 
 class CodeHealer:
@@ -55,7 +56,7 @@ class CodeHealer:
         allowed = self.config.get("allowed_commands") or []
         return any(command.strip().startswith(prefix) for prefix in allowed)
 
-    def _run_allowed_command(self, command: str, cwd: Path) -> Dict[str, Any]:
+    def _run_allowed_command(self, command: str, cwd: Path, timeout_seconds: int) -> Dict[str, Any]:
         if not self._command_allowed(command):
             raise HealerError(f"Command blocked by healer sandbox policy: {command}")
         
@@ -70,7 +71,7 @@ class CodeHealer:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=max(1, int(timeout_seconds)),
             env=env,
         )
         return {
@@ -95,7 +96,10 @@ class CodeHealer:
                     "allowed_commands": self.config.get("allowed_commands", []),
                     "allowed_paths": self.config.get("allowed_paths", []),
                 },
-                trigger_payload=spec.trigger_payload,
+                trigger_payload={
+                    **spec.trigger_payload,
+                    "command_timeout_seconds": max(1, int(spec.command_timeout_seconds)),
+                },
             )
             nb.add_healer_event(task_id, "Healing task opened.", state="open", payload={"endpoint": endpoint})
             return task_id
@@ -118,8 +122,9 @@ class CodeHealer:
 
             nb.update_healer_task(task_id, state="reproducing")
             nb.add_healer_event(task_id, "Running reproduction steps.", state="reproducing")
+            command_timeout_seconds = max(1, int(task.get("trigger_payload_json", {}).get("command_timeout_seconds", 180) or 180))
             for cmd in task.get("reproduction_steps_json") or []:
-                repro = self._run_allowed_command(cmd, root)
+                repro = self._run_allowed_command(cmd, root, command_timeout_seconds)
                 repro_results.append(repro)
 
             nb.update_healer_task(task_id, state="patch_proposed")
@@ -171,7 +176,7 @@ class CodeHealer:
             nb.update_healer_task(task_id, state="verifying")
             nb.add_healer_event(task_id, "Running acceptance tests.", state="verifying")
             for cmd in task.get("acceptance_tests_json") or []:
-                res = self._run_allowed_command(cmd, root)
+                res = self._run_allowed_command(cmd, root, command_timeout_seconds)
                 verify_results.append(res)
 
             all_ok = all(r.get("returncode") == 0 for r in verify_results) if verify_results else True

@@ -25,6 +25,7 @@ from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 
 DEFAULT_P = 2
+PADIC_EPS = 1e-6
 
 
 def padic_valuation(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
@@ -36,10 +37,9 @@ def padic_valuation(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
 
     Returns: (B, S, D) tensor of valuations.
     """
-    abs_x = x.abs() + 1e-8
-    # v_p(x) = -log_p(|x|) for the "most significant" p-adic digit
     log_p = math.log(p)
-    return -(torch.log(abs_x) / log_p)
+    smooth_abs = torch.sqrt(x * x + PADIC_EPS * PADIC_EPS)
+    return -(torch.log(smooth_abs.clamp_min(PADIC_EPS)) / log_p)
 
 
 def padic_distance(x: torch.Tensor, y: torch.Tensor,
@@ -51,7 +51,7 @@ def padic_distance(x: torch.Tensor, y: torch.Tensor,
     """
     diff = x - y
     val = padic_valuation(diff, p)
-    return p ** (-val)
+    return torch.exp((-val) * math.log(p))
 
 
 def padic_expansion(x: torch.Tensor, p: int = DEFAULT_P,

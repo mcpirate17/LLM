@@ -1,0 +1,221 @@
+{
+  "generated_at": 1773457045.4897404,
+  "protocol": "trajectory_probe_v1",
+  "trajectories": {
+    "gpt2": {
+      "arch_key": "gpt2",
+      "reference_name": "GPT-2",
+      "paradigm": "dense_attention_transformer",
+      "param_count": 12917248,
+      "d_model": 256,
+      "n_layers": 6,
+      "vocab_size": 32000,
+      "seq_len": 128,
+      "checkpoints": {
+        "200": {
+          "ppl": 19.68,
+          "score": 0.7127,
+          "loss": 2.3732
+        },
+        "500": {
+          "ppl": 18.64,
+          "score": 0.718,
+          "loss": 2.3953
+        },
+        "1000": {
+          "ppl": 19.4,
+          "score": 0.7142,
+          "loss": 2.2188
+        },
+        "2000": {
+          "ppl": 24.89,
+          "score": 0.6901,
+          "loss": 1.911
+        },
+        "4000": {
+          "ppl": 256.93,
+          "score": 0.4651,
+          "loss": 0.9595
+        }
+      },
+      "improvement_ratio": 1.056,
+      "peak_ppl": 18.64,
+      "peak_step": 500,
+      "steps_to_divergence": 4000,
+      "n_train_batches": 4000,
+      "checkpoint_steps": [
+        200,
+        500,
+        1000,
+        2000,
+        4000
+      ],
+      "total_steps": 4000,
+      "variant": "wikitext-2-raw-v1",
+      "protocol": "trajectory_probe_v2",
+      "elapsed_ms": 31538.6
+    },
+    "mamba": {
+      "arch_key": "mamba",
+      "reference_name": "Mamba",
+      "paradigm": "selective_state_space",
+      "param_count": 9779200,
+      "d_model": 256,
+      "n_layers": 6,
+      "vocab_size": 32000,
+      "seq_len": 128,
+      "checkpoints": {
+        "200": {
+          "ppl": 22.07,
+          "score": 0.7017,
+          "loss": 2.1793
+        },
+        "500": {
+          "ppl": 17.42,
+          "score": 0.7245,
+          "loss": 1.7711
+        },
+        "1000": {
+          "ppl": 33.96,
+          "score": 0.6602,
+          "loss": 1.0629
+        },
+        "2000": {
+          "ppl": 556.55,
+          "score": 0.3906,
+          "loss": 0.457
+        },
+        "4000": {
+          "ppl": null,
+          "score": null,
+          "loss": null,
+          "early_stopped": true
+        }
+      },
+      "improvement_ratio": 1.267,
+      "peak_ppl": 17.42,
+      "peak_step": 500,
+      "steps_to_divergence": 2000,
+      "n_train_batches": 4000,
+      "checkpoint_steps": [
+        200,
+        500,
+        1000,
+        2000,
+        4000
+      ],
+      "total_steps": 2000,
+      "variant": "wikitext-2-raw-v1",
+      "protocol": "trajectory_probe_v2",
+      "elapsed_ms": 16707.0
+    },
+    "rwkv": {
+      "arch_key": "rwkv",
+      "reference_name": "RWKV",
+      "paradigm": "linear_attention_rnn",
+      "param_count": 12530176,
+      "d_model": 256,
+      "n_layers": 6,
+      "vocab_size": 32000,
+      "seq_len": 128,
+      "checkpoints": {
+        "200": {
+          "ppl": 21.29,
+          "score": 0.7052,
+          "loss": 2.119
+        },
+        "500": {
+          "ppl": 24.29,
+          "score": 0.6925,
+          "loss": 1.4251
+        },
+        "1000": {
+          "ppl": 528.86,
+          "score": 0.3955,
+          "loss": 0.6466
+        },
+        "2000": {
+          "ppl": null,
+          "score": null,
+          "loss": null,
+          "early_stopped": true
+        },
+        "4000": {
+          "ppl": null,
+          "score": null,
+          "loss": null,
+          "early_stopped": true
+        }
+      },
+      "improvement_ratio": 0.876,
+      "peak_ppl": 21.29,
+      "peak_step": 200,
+      "steps_to_divergence": 1000,
+      "n_train_batches": 4000,
+      "checkpoint_steps": [
+        200,
+        500,
+        1000,
+        2000,
+        4000
+      ],
+      "total_steps": 1000,
+      "variant": "wikitext-2-raw-v1",
+      "protocol": "trajectory_probe_v2",
+      "elapsed_ms": 12874.8
+    },
+    "retrieval_augmented": {
+      "arch_key": "retrieval_augmented",
+      "reference_name": "Retrieval-Augmented",
+      "paradigm": "retrieval_augmented",
+      "param_count": 14493184,
+      "d_model": 256,
+      "n_layers": 6,
+      "vocab_size": 32000,
+      "seq_len": 128,
+      "checkpoints": {
+        "200": {
+          "ppl": 24.37,
+          "score": 0.6922,
+          "loss": 2.595
+        },
+        "500": {
+          "ppl": 19.22,
+          "score": 0.7151,
+          "loss": 2.4861
+        },
+        "1000": {
+          "ppl": 18.35,
+          "score": 0.7195,
+          "loss": 2.2697
+        },
+        "2000": {
+          "ppl": 21.51,
+          "score": 0.7042,
+          "loss": 1.9267
+        },
+        "4000": {
+          "ppl": 1366.81,
+          "score": 0.304,
+          "loss": 0.4812
+        }
+      },
+      "improvement_ratio": 1.268,
+      "peak_ppl": 18.35,
+      "peak_step": 1000,
+      "steps_to_divergence": 4000,
+      "n_train_batches": 4000,
+      "checkpoint_steps": [
+        200,
+        500,
+        1000,
+        2000,
+        4000
+      ],
+      "total_steps": 4000,
+      "variant": "wikitext-2-raw-v1",
+      "protocol": "trajectory_probe_v2",
+      "elapsed_ms": 63150.5
+    }
+  }
+}

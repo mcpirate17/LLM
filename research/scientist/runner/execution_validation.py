@@ -124,12 +124,19 @@ class _ExecutionValidationMixin:
                 val_loss_ratio = (sum(loss_ratios) / len(loss_ratios)
                                   if loss_ratios else None)
                 multi_seed_std = 0.0
+                robustness_score = 1.0
+                is_unstable = False
+
                 if len(loss_ratios) > 1:
                     mean_lr = sum(loss_ratios) / len(loss_ratios)
-                    multi_seed_std = (
-                        sum((lr - mean_lr) ** 2 for lr in loss_ratios)
-                        / len(loss_ratios)
-                    ) ** 0.5
+                    variance = sum((lr - mean_lr) ** 2 for lr in loss_ratios) / len(loss_ratios)
+                    multi_seed_std = variance ** 0.5
+                    
+                    # Task 3G: Check for instability and compute robustness_score
+                    if variance > 0.15:
+                        is_unstable = True
+                    if mean_lr > 1e-6:
+                        robustness_score = max(0.0, 1.0 - (multi_seed_std / mean_lr))
 
                 # Init sensitivity: std between default and xavier seeds
                 init_sensitivity_std = None
@@ -290,6 +297,7 @@ class _ExecutionValidationMixin:
                 scaling_gate_passed_val = ev_res["scaling_gate_passed_val"]
                 scaling_best_family = ev_res["scaling_best_family"]
                 scaling_confidence = ev_res["scaling_confidence"]
+                scaling_d512_param_efficiency = ev_res.get("scaling_d512_param_efficiency")
                 scaling_result = ev_res.get("scaling_result")
                 nov_conf = source.get("novelty_confidence", 0) if source else 0
 
@@ -302,6 +310,8 @@ class _ExecutionValidationMixin:
                     "val_normalized_ratio": val_normalized_ratio,
                     "param_efficiency": val_param_efficiency,
                     "multi_seed_std": multi_seed_std,
+                    "robustness_score": robustness_score,
+                    "is_unstable": is_unstable,
                     "seeds_passed": len(passed_seeds),
                     "total_seeds": config.validation_n_seeds,
                     "is_breakthrough": is_breakthrough,
@@ -347,6 +357,8 @@ class _ExecutionValidationMixin:
                             validation_loss_ratio=val_loss_ratio,
                             validation_baseline_ratio=val_baseline_ratio,
                             validation_multi_seed_std=multi_seed_std,
+                            validation_robustness_score=robustness_score,
+                            validation_is_unstable=int(is_unstable),
                             validation_passed=len(passed_seeds) > 0,
                             normalized_baseline_ratio=val_normalized_ratio,
                             param_efficiency=val_param_efficiency,
@@ -357,6 +369,7 @@ class _ExecutionValidationMixin:
                             init_sensitivity_std=init_sensitivity_std,
                             fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
                             scaling_param_efficiency=scaling_param_efficiency,
+                            scaling_d512_param_efficiency=scaling_d512_param_efficiency,
                             scaling_flop_efficiency=scaling_flop_efficiency,
                             scaling_gate_passed=scaling_gate_passed_val,
                             scaling_best_family=scaling_best_family,

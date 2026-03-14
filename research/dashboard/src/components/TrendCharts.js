@@ -3,7 +3,7 @@ import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
 import { trendScore, trendScoreBreakdown } from '../utils/scoringEngine';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
-import apiService from '../services/apiService';
+import apiService, { apiCall } from '../services/apiService';
 import { filterRowsByQuery } from '../utils/tableFiltering';
 import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 import ChartActions from './ChartActions';
@@ -11,6 +11,7 @@ import ChartActions from './ChartActions';
 import MiniChart, { TREND_CHART_WINDOW } from './charts/MiniChart';
 import RegressionBaselineChart from './charts/RegressionBaselineChart';
 import ParetoEfficiencyChart from './charts/ParetoEfficiencyChart';
+import SimilarityHeatmap from './charts/SimilarityHeatmap';
 import ExperimentDataTab from './charts/ExperimentDataTab';
 export { ExperimentDataTab };
 
@@ -23,6 +24,7 @@ function TrendCharts({ onSelectExperiment }) {
   const [weightEvents, setWeightEvents] = useState([]);
   const [frontier, setFrontier] = useState([]);
   const [topPrograms, setTopPrograms] = useState([]);
+  const [leaderboardEntries, setLeaderboardEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTier] = useState('trends'); // 'trends' or 'data' or 'efficiency'
@@ -33,15 +35,17 @@ function TrendCharts({ onSelectExperiment }) {
       setError(null);
     }
     try {
-      const [tData, frData, tpData] = await Promise.all([
+      const [tData, frData, tpData, lbData] = await Promise.all([
         apiService.getTrends(),
         apiService.getEfficiencyFrontier(),
         apiService.getPrograms(50),
+        apiCall('/api/leaderboard?include_references=1&limit=100').then(r => r.json()).catch(() => ({ entries: [] })),
       ]);
       setTrends(Array.isArray(tData?.trends) ? tData.trends : []);
       setWeightEvents(Array.isArray(tData?.adaptation_events) ? tData.adaptation_events : []);
       setFrontier(Array.isArray(frData) ? frData : []);
       setTopPrograms(Array.isArray(tpData) ? tpData : []);
+      setLeaderboardEntries(Array.isArray(lbData?.entries) ? lbData.entries : []);
       setError(null);
     } catch (e) {
       if (!isBackground) setError('Failed to load trends: ' + e.message);
@@ -172,12 +176,20 @@ function TrendCharts({ onSelectExperiment }) {
             <RegressionBaselineChart points={topPrograms} frontier={frontier} />
           </div>
           <div className="card">
+            <div className="card-title">Similarity Heatmap (CKA)</div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Top 10 candidates vs 10 recent references.
+              Purple intensity = high behavioral similarity.
+            </p>
+            <SimilarityHeatmap leaderboardEntries={leaderboardEntries} />
+          </div>
+          <div className="card">
             <div className="card-title">Pareto Efficiency (Acc vs Eff)</div>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
               Global efficiency view. X-axis is normalized throughput, Y-axis is accuracy (1 - LR).
               Bubble size represents parameter compression ratio.
             </p>
-            <ParetoEfficiencyChart points={topPrograms} />
+            <ParetoEfficiencyChart points={topPrograms} frontier={frontier} />
           </div>
         </div>
       )}

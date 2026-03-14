@@ -30,6 +30,55 @@ class _ContinuousValidationMixin:
 
     __slots__ = ()
 
+    def _scaling_reference_families(self, config: RunConfig) -> tuple[str, ...]:
+        raw = str(getattr(config, "scaling_reference_families", "gpt2") or "gpt2")
+        families = tuple(part.strip() for part in raw.split(",") if part.strip())
+        return families or ("gpt2",)
+
+    def _run_scaling_reference_compare(
+        self,
+        *,
+        config: RunConfig,
+        dev_str: str,
+        best_seed: dict | None,
+        val_loss_ratio: float | None,
+        source_params: float | int,
+        source: dict | None,
+        d_model: int,
+    ) -> dict | None:
+        if val_loss_ratio is None or source_params is None or int(source_params) <= 0:
+            return None
+        candidate_loss = best_seed.get("final_loss") if best_seed else None
+        if candidate_loss is None:
+            return None
+        candidate_flops = int((source or {}).get("flops_forward") or 0)
+        if candidate_flops <= 0:
+            candidate_flops = max(1, int(source_params) * 2)
+        baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps) if best_seed else int(config.validation_steps)
+        baseline_recipe = self._resolve_baseline_recipe(best_seed, default_lr=config.stage1_lr)
+        data_fn, data_tag, _cache = self._make_baseline_data_fn(config)
+        comparison = self._get_scaling_reference_manager().compare_candidate(
+            candidate_loss=float(candidate_loss),
+            candidate_params=int(source_params),
+            candidate_flops=candidate_flops,
+            d_model=int(d_model),
+            n_steps=max(1, baseline_steps),
+            seq_len=min(128, int(getattr(config, "validation_seq_len", 128) or 128)),
+            vocab_size=int(config.vocab_size),
+            batch_size=max(1, min(4, int(getattr(config, "validation_batch_size", 4) or 4))),
+            lr=float(baseline_recipe["lr"]),
+            device=dev_str,
+            data_fn=data_fn,
+            data_tag=data_tag,
+            families=self._scaling_reference_families(config),
+            param_efficiency_target=float(config.scaling_param_efficiency_target),
+            flop_ceiling=float(config.scaling_flop_ceiling),
+        )
+        payload = comparison.to_dict()
+        payload["d_model"] = int(d_model)
+        payload["proxy_only"] = int(d_model) != int(config.model_dim)
+        return payload
+
     def _make_validation_model_factory(
         self,
         model_source: str,
@@ -118,7 +167,9 @@ class _ContinuousValidationMixin:
             "scaling_best_family": None,
             "scaling_confidence": None,
             "scaling_result": None,
+            "scaling_d512_param_efficiency": None,
         }
+        scaling_enabled = bool(getattr(config, "enable_scaling_comparison", True))
         model_factory = self._make_validation_model_factory(
             model_source,
             arch_spec_json_str,
@@ -204,17 +255,18 @@ class _ContinuousValidationMixin:
                     result["quant_quality_per_byte"] = quant_result.get("quality_per_byte")
             except Exception as exc:
                 logger.debug("Sparse+quant eval skipped for %s: %s", source_result_id[:8], exc)
-            try:
-                wall_result = evaluate_efficiency_wall(model, int(config.vocab_size), dev)
-                result["efficiency_wall_score"] = wall_result.get("efficiency_wall_score")
-                result["scaling_regime"] = wall_result.get("scaling_regime")
-                result["max_viable_seq_len"] = max(
-                    result["max_viable_seq_len"] or 0,
-                    int(wall_result.get("max_viable_seq_len") or 0),
-                ) or None
-                result["scaling_flop_efficiency"] = wall_result.get("time_scaling_factor")
-            except Exception as exc:
-                logger.debug("Efficiency-wall eval skipped for %s: %s", source_result_id[:8], exc)
+            if scaling_enabled:
+                try:
+                    wall_result = evaluate_efficiency_wall(model, int(config.vocab_size), dev)
+                    result["efficiency_wall_score"] = wall_result.get("efficiency_wall_score")
+                    result["scaling_regime"] = wall_result.get("scaling_regime")
+                    result["max_viable_seq_len"] = max(
+                        result["max_viable_seq_len"] or 0,
+                        int(wall_result.get("max_viable_seq_len") or 0),
+                    ) or None
+                    result["scaling_flop_efficiency"] = wall_result.get("time_scaling_factor")
+                except Exception as exc:
+                    logger.debug("Efficiency-wall eval skipped for %s: %s", source_result_id[:8], exc)
         finally:
             if model is not None:
                 del model
@@ -234,25 +286,82 @@ class _ContinuousValidationMixin:
         except Exception as exc:
             logger.debug("Cross-task eval skipped for %s: %s", source_result_id[:8], exc)
         scaling_gate_passed = (
-            result["scaling_param_efficiency"] is not None
-            and float(result["scaling_param_efficiency"]) >= float(config.scaling_param_efficiency_target)
-            and (
-                result["scaling_flop_efficiency"] is None
-                or float(result["scaling_flop_efficiency"]) <= float(config.scaling_flop_ceiling)
+            not scaling_enabled
+            or (
+                result["scaling_param_efficiency"] is not None
+                and float(result["scaling_param_efficiency"]) >= float(config.scaling_param_efficiency_target)
+                and (
+                    result["scaling_flop_efficiency"] is None
+                    or float(result["scaling_flop_efficiency"]) <= float(config.scaling_flop_ceiling)
+                )
+            )
+        )
+        if scaling_enabled:
+            try:
+                scaling_payload = self._run_scaling_reference_compare(
+                    config=config,
+                    dev_str=dev_str,
+                    best_seed=best_seed,
+                    val_loss_ratio=val_loss_ratio,
+                    source_params=source_params,
+                    source=source,
+                    d_model=int(config.model_dim),
+                )
+                if scaling_payload is not None:
+                    result["scaling_result"] = scaling_payload
+                    result["scaling_param_efficiency"] = scaling_payload.get("best_param_efficiency")
+                    result["scaling_flop_efficiency"] = scaling_payload.get("flop_efficiency")
+                    result["scaling_best_family"] = scaling_payload.get("best_param_efficiency_family")
+                    scaling_gate_passed = bool(scaling_payload.get("scaling_gate_passed"))
+                    result["scaling_confidence"] = str(scaling_payload.get("confidence") or "local_reference")
+            except Exception as exc:
+                logger.debug("Scaling reference comparison skipped for %s: %s", source_result_id[:8], exc)
+            if bool(getattr(config, "scaling_d512_enabled", True)):
+                try:
+                    d512_payload = self._run_scaling_reference_compare(
+                        config=config,
+                        dev_str=dev_str,
+                        best_seed=best_seed,
+                        val_loss_ratio=val_loss_ratio,
+                        source_params=source_params,
+                        source=source,
+                        d_model=512,
+                    )
+                    if d512_payload is not None:
+                        result["scaling_d512_param_efficiency"] = d512_payload.get("best_param_efficiency")
+                        if isinstance(result.get("scaling_result"), dict):
+                            result["scaling_result"]["d512_result"] = d512_payload
+                except Exception as exc:
+                    logger.debug("d512 scaling comparison skipped for %s: %s", source_result_id[:8], exc)
+        raw_breakthrough_passed = (
+            val_loss_ratio is not None
+            and float(val_loss_ratio) <= float(getattr(config, "breakthrough_raw_threshold", 0.70) or 0.70)
+        )
+        normalized_breakthrough_passed = (
+            val_normalized_ratio is not None
+            and float(val_normalized_ratio) >= float(
+                getattr(config, "breakthrough_normalized_threshold", 0.85) or 0.85
             )
         )
         result["scaling_gate_passed_val"] = scaling_gate_passed
-        result["scaling_confidence"] = "high" if scaling_gate_passed else "low"
-        result["scaling_best_family"] = str((source or {}).get("most_similar_to") or "reference")
-        result["scaling_result"] = {
-            "param_efficiency": result["scaling_param_efficiency"],
-            "flop_efficiency": result["scaling_flop_efficiency"],
-            "gate_passed": scaling_gate_passed,
-            "confidence": result["scaling_confidence"],
-        }
+        if result["scaling_confidence"] is None:
+            result["scaling_confidence"] = "disabled" if not scaling_enabled else "high" if scaling_gate_passed else "low"
+        if result["scaling_best_family"] is None:
+            result["scaling_best_family"] = str((source or {}).get("most_similar_to") or "reference")
+        if result["scaling_result"] is None:
+            result["scaling_result"] = {
+                "param_efficiency": result["scaling_param_efficiency"],
+                "flop_efficiency": result["scaling_flop_efficiency"],
+                "gate_passed": scaling_gate_passed,
+                "confidence": result["scaling_confidence"],
+                "enabled": scaling_enabled,
+            }
+        else:
+            result["scaling_result"]["enabled"] = scaling_enabled
+            result["scaling_result"]["gate_passed"] = scaling_gate_passed
         result["is_breakthrough"] = bool(
-            val_loss_ratio is not None
-            and float(val_loss_ratio) <= float(getattr(config, "investigation_loss_ratio_threshold", 0.15))
+            raw_breakthrough_passed
+            and normalized_breakthrough_passed
             and scaling_gate_passed
             and (val_baseline_ratio is None or float(val_baseline_ratio) < 1.0)
         )
@@ -659,6 +768,7 @@ class _ContinuousValidationMixin:
                 scaling_gate_passed_val = ev_res["scaling_gate_passed_val"]
                 scaling_best_family = ev_res["scaling_best_family"]
                 scaling_confidence = ev_res["scaling_confidence"]
+                scaling_d512_param_efficiency = ev_res.get("scaling_d512_param_efficiency")
                 scaling_result = ev_res.get("scaling_result")
                 long_context_details = ev_res.get("long_context_details")
                 nov_conf = source.get("novelty_confidence", 0) if source else 0
@@ -727,6 +837,7 @@ class _ContinuousValidationMixin:
                             init_sensitivity_std=init_sensitivity_std,
                             fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
                             scaling_param_efficiency=scaling_param_efficiency,
+                            scaling_d512_param_efficiency=scaling_d512_param_efficiency,
                             scaling_flop_efficiency=scaling_flop_efficiency,
                             scaling_gate_passed=scaling_gate_passed_val,
                             scaling_best_family=scaling_best_family,

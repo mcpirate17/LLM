@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 
 from ..notebook import LabNotebook
-from ..shared_utils import safe_float as _to_safe_float
 from ...synthesis.serializer import graph_to_json
 
 logger = logging.getLogger(__name__)
@@ -22,7 +21,8 @@ class _ResultsAnalysisMixin:
     __slots__ = ()
 
     def _on_program_evaluated(self, graph, fitness, sandbox_result, s1_result,
-                              eval_counters, nb, exp_id, model_source="evolution"):
+                              eval_counters, nb, exp_id, model_source="evolution",
+                              behavioral_fingerprint=None):
         """Unified callback for recording results and updating counters during search."""
         eval_counters["total"] += 1
         if fitness > 0:
@@ -47,6 +47,47 @@ class _ResultsAnalysisMixin:
                     if k in s1_result: graph_metrics[k] = s1_result[k]
                 self._merge_s1_telemetry(graph_metrics, s1_result)
 
+            # Extract behavioral fingerprint metrics if available
+            fp_novelty = None
+            fp_confidence = 0.2
+            if behavioral_fingerprint is not None:
+                fp = behavioral_fingerprint
+                # Compute proper novelty score relative to existing DB entries,
+                # not just fp.novelty_score which is distance-from-references
+                try:
+                    from ...eval.metrics import novelty_score as compute_novelty
+                    nov = compute_novelty(graph, fingerprint=fp)
+                    fp_novelty = float(nov.overall_novelty)
+                    fp_confidence = float(nov.novelty_confidence)
+                except Exception:
+                    fp_novelty = fp.novelty_score if fp.novelty_score > 0 else None
+                fp_fields = {
+                    "fingerprint_json": json.dumps(fp.to_dict()),
+                    "fp_interaction_locality": fp.interaction_locality,
+                    "fp_interaction_sparsity": fp.interaction_sparsity,
+                    "fp_interaction_symmetry": fp.interaction_symmetry,
+                    "fp_interaction_hierarchy": fp.interaction_hierarchy,
+                    "fp_intrinsic_dim": fp.intrinsic_dim,
+                    "fp_isotropy": fp.isotropy,
+                    "fp_rank_ratio": fp.rank_ratio,
+                    "fp_jacobian_spectral_norm": fp.jacobian_spectral_norm,
+                    "fp_jacobian_effective_rank": fp.jacobian_effective_rank,
+                    "fp_sensitivity_uniformity": fp.sensitivity_uniformity,
+                    "fp_cka_vs_transformer": fp.cka_vs_transformer,
+                    "fp_cka_vs_ssm": fp.cka_vs_ssm,
+                    "fp_cka_vs_conv": fp.cka_vs_conv,
+                    "fp_hierarchy_fitness": fp.hierarchy_fitness,
+                    "fp_gromov_delta": fp.gromov_delta,
+                    "cka_source": fp.cka_source,
+                    "cka_artifact_version": fp.cka_artifact_version,
+                    "cka_probe_protocol_hash": fp.cka_probe_protocol_hash,
+                    "cka_reference_quality": fp.cka_reference_quality,
+                    "novelty_valid_for_promotion": fp.novelty_valid_for_promotion,
+                    "novelty_validity_reason": fp.novelty_validity_reason,
+                    "novelty_reference_version": fp.novelty_reference_version,
+                }
+                graph_metrics.update(fp_fields)
+
             rid = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=graph.fingerprint(),
@@ -55,8 +96,8 @@ class _ResultsAnalysisMixin:
                 stage0_passed=fitness > 0,
                 stage05_passed=fitness > 0,
                 loss_ratio=1.0 - fitness if fitness > 0 else None,
-                novelty_score=None,
-                novelty_confidence=0.2,
+                novelty_score=fp_novelty,
+                novelty_confidence=fp_confidence,
                 stage_at_death="survived" if fitness > 0.2 else "stage1",
                 model_source=model_source,
                 **graph_metrics,

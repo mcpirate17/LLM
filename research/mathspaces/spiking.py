@@ -56,6 +56,21 @@ class _BernoulliSTE(torch.autograd.Function):
 
 # ── Spiking primitives ──
 
+def _gradient_scale(module: nn.Module | None) -> float:
+    for attr in ("n_layers", "num_layers", "layer_count", "depth", "max_depth"):
+        value = getattr(module, attr, None)
+        if value is not None:
+            depth = max(1, int(value))
+            return float(depth ** -0.5)
+    return 1.0
+
+
+def _apply_grad_scale(tensor: torch.Tensor, module: nn.Module | None) -> torch.Tensor:
+    scale = _gradient_scale(module)
+    if tensor.requires_grad and scale < 0.999:
+        tensor.register_hook(lambda grad: grad * scale)
+    return tensor
+
 def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
     """Leaky Integrate-and-Fire neuron.
 
@@ -95,9 +110,7 @@ def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
         membrane = membrane * (1.0 - spike_hard)  # reset on fire
 
     output = torch.stack(spike_list, dim=1)
-    if output.requires_grad:
-        output.register_hook(lambda grad: grad * 0.7)  # Dampen gradient amplification
-    return output
+    return _apply_grad_scale(output, module)
 
 
 def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
@@ -123,7 +136,7 @@ def execute_spike_rate_code(module: nn.Module, *inputs: torch.Tensor) -> torch.T
     spikes = (probs >= 0.5).float().detach() + probs - probs.detach()
     # Scale by original magnitude to preserve information
     magnitude = x.abs()
-    return spikes * magnitude
+    return _apply_grad_scale(spikes * magnitude, module)
 
 
 def execute_stdp_attention(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
@@ -166,7 +179,7 @@ def execute_stdp_attention(module: nn.Module, *inputs: torch.Tensor) -> torch.Te
         weights = torch.exp(-dt.float() / tau) * causal_mask
     weights = weights / weights.sum(dim=-1, keepdim=True).clamp(min=1e-8)
 
-    return torch.matmul(weights.unsqueeze(0), x)
+    return _apply_grad_scale(torch.matmul(weights.unsqueeze(0), x), module)
 
 
 def execute_sparse_threshold(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
@@ -199,4 +212,4 @@ def execute_sparse_threshold(module: nn.Module, *inputs: torch.Tensor) -> torch.
     gate_input = scale * (abs_x - median_val)
     gate = _SigmoidSTE.apply(gate_input)
 
-    return x * gate
+    return _apply_grad_scale(x * gate, module)

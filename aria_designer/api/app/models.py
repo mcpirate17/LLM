@@ -93,6 +93,14 @@ class ApplyPatchRequest(BaseModel):
     proposal_id: str
     approved_by: str
 
+class RecordOutcomeRequest(BaseModel):
+    suggestion_id: str
+    outcome: Literal["applied", "rejected"]
+    fingerprint: Optional[str] = None
+    intent: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    session_id: Optional[str] = None
+
 class AskAriaPromptRequest(BaseModel):
     workflow: WorkflowGraphModel
     prompt: str

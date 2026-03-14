@@ -645,6 +645,7 @@ class _CycleMixin:
             return None
         repro = reproduction_steps or []
         tests = acceptance_tests or ["python -m pytest tests -k integration -x --tb=short"]
+        command_timeout_seconds = self._resolve_healer_timeout_seconds(nb, experiment_id)
         try:
             result = self._healer.open_and_run(
                 HealerTaskSpec(
@@ -653,7 +654,11 @@ class _CycleMixin:
                     scope=scope,
                     reproduction_steps=repro,
                     acceptance_tests=tests,
-                    trigger_payload=trigger_payload or {},
+                    trigger_payload={
+                        **(trigger_payload or {}),
+                        "command_timeout_seconds": command_timeout_seconds,
+                    },
+                    command_timeout_seconds=command_timeout_seconds,
                 )
             )
             nb.log_learning_event(
@@ -678,6 +683,28 @@ class _CycleMixin:
                 error=str(e),
             )
             return None
+
+    def _resolve_healer_timeout_seconds(
+        self,
+        nb: LabNotebook,
+        experiment_id: Optional[str],
+    ) -> int:
+        """Resolve healer command timeout from the experiment config when available."""
+        default_timeout = 180
+        if not experiment_id:
+            return default_timeout
+        try:
+            row = nb.conn.execute(
+                "SELECT config_json FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            if row is None or not row["config_json"]:
+                return default_timeout
+            config_dict = json.loads(row["config_json"])
+            config = RunConfig.from_dict(config_dict if isinstance(config_dict, dict) else {})
+            return max(1, int(getattr(config, "max_agent_seconds", default_timeout) or default_timeout))
+        except Exception:
+            return default_timeout
 
     def _maybe_trigger_integrity_healer(self, nb: LabNotebook, experiment_id: Optional[str]) -> None:
         """Run integrity checks periodically and invoke healer on failures."""
@@ -829,4 +856,3 @@ class _CycleMixin:
             nb.close()
         except Exception as e:
             logger.debug("Startup stale-experiment recovery failed: %s", e)
-

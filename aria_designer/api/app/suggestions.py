@@ -463,6 +463,45 @@ def _score_adjustment(
                         delta += 0.02
                     break
 
+    # Op-pair priors: boost components that pair well with existing graph ops
+    op_pair_priors = research.get("op_pair_priors") if isinstance(research, dict) else None
+    if isinstance(op_pair_priors, list) and all_types:
+        pair_boost = 0.0
+        pair_count = 0
+        for pair in op_pair_priors:
+            if not isinstance(pair, dict):
+                continue
+            op_a = _canon_op_name(str(pair.get("op_a") or ""))
+            op_b = _canon_op_name(str(pair.get("op_b") or ""))
+            rate = pair.get("success_rate")
+            if rate is None:
+                continue
+            try:
+                rate = float(rate)
+            except (TypeError, ValueError):
+                continue
+            # Check if this candidate pairs with any existing op
+            if (op_a == canon_cid and op_b in all_types) or (op_b == canon_cid and op_a in all_types):
+                pair_boost += (rate - 0.5) * 0.15
+                pair_count += 1
+        if pair_count > 0:
+            delta += min(0.08, pair_boost / pair_count)
+
+    # Failure risk signatures: penalize components involved in toxic patterns
+    failure_sigs = research.get("failure_risk_signatures") if isinstance(research, dict) else None
+    if isinstance(failure_sigs, list):
+        for sig in failure_sigs:
+            if not isinstance(sig, dict):
+                continue
+            pattern = str(sig.get("pattern") or "")
+            if canon_cid in pattern.lower():
+                try:
+                    penalty = float(sig.get("penalty") or 0.0)
+                except (TypeError, ValueError):
+                    penalty = 0.0
+                delta -= min(0.1, penalty * 0.1)
+                break
+
     return delta
 
 
@@ -476,6 +515,20 @@ def _make_suggestion(
     evidence_list = list(evidence or [])
     adjusted_score = float(score) + _score_adjustment(component, reason, evidence_list, context=context)
     safe_score = max(0.0, min(1.0, adjusted_score))
+    # Enrich evidence with research signal summaries
+    ctx = context or {}
+    research = ctx.get("research_signals") if isinstance(ctx.get("research_signals"), dict) else {}
+    if isinstance(research, dict) and research:
+        cid = _canon_op_name(str((component or {}).get("id") or ""))
+        op_priors = research.get("op_priors")
+        if isinstance(op_priors, list):
+            for row in op_priors:
+                if _canon_op_name(str((row or {}).get("op_name") or "")) == cid:
+                    rate = row.get("s1_rate")
+                    n = row.get("n_used")
+                    if rate is not None and n is not None:
+                        evidence_list.append(f"Research: {rate:.0%} success rate over {n} trials")
+                    break
     return {
         "component": component,
         "reason": reason,

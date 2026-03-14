@@ -17,13 +17,15 @@ gradient flows, bounded depth/params) but not necessarily USEFUL.
 
 from __future__ import annotations
 
+import copy
 import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
 from .graph import ComputationGraph, OpNode, ShapeInfo
 from .primitives import (
-    PRIMITIVE_REGISTRY, PrimitiveOp,
+    PRIMITIVE_REGISTRY, PrimitiveOp, algebraic_types_compatible,
+    default_algebraic_type_for_space,
 )
 from .templates import (
     apply_template,
@@ -40,11 +42,10 @@ def _compatible_space(current_space: str, op_space: str) -> bool:
     matching space (e.g., tropical ops can only follow other tropical ops
     or euclidean ops).
     """
-    if op_space == "euclidean" or op_space == "any":
-        return True
-    if current_space == "euclidean" or current_space == "any":
-        return True
-    return current_space == op_space
+    return algebraic_types_compatible(
+        default_algebraic_type_for_space(current_space),
+        default_algebraic_type_for_space(op_space),
+    )
 
 
 def _check_graph_space_consistency(graph: ComputationGraph) -> Optional[str]:
@@ -60,7 +61,7 @@ def _check_graph_space_consistency(graph: ComputationGraph) -> Optional[str]:
         op = PRIMITIVE_REGISTRY.get(node.op_name)
         if op is None:
             continue
-        op_space = op.algebraic_space
+        op_type = op.algebraic_type
 
         for in_id in node.input_ids:
             in_node = graph.nodes.get(in_id)
@@ -69,11 +70,11 @@ def _check_graph_space_consistency(graph: ComputationGraph) -> Optional[str]:
             in_op = PRIMITIVE_REGISTRY.get(in_node.op_name)
             if in_op is None:
                 continue
-            in_space = in_op.algebraic_space
-            if not _compatible_space(in_space, op_space):
+            in_type = in_op.algebraic_type
+            if not algebraic_types_compatible(in_type, op_type):
                 return (
-                    f"Space conflict: {in_node.op_name} ({in_space}) → "
-                    f"{node.op_name} ({op_space})"
+                    f"Space conflict: {in_node.op_name} ({in_type.space}/{in_type.output_guarantee}) → "
+                    f"{node.op_name} ({op_type.space}/{op_type.input_constraint})"
                 )
     return None
 
@@ -99,7 +100,7 @@ class GrammarConfig:
     max_recursion_depth: int = 4  # iteration cap for recursive ops
     stability_check: bool = True  # validate architectures before compilation
     merge_prob: float = 0.4     # probability of merging paths
-    risky_op_prob: float = 0.6  # probability of using numerically risky ops
+    risky_op_prob: float = 0.5  # probability of using numerically risky ops
     freq_domain_prob: float = 0.15  # probability of FFT detour
     # Category weights (higher = more likely to be chosen)
     category_weights: Dict[str, float] = field(default_factory=lambda: {
@@ -145,6 +146,11 @@ class GrammarConfig:
     # Number of templates to compose per graph (1-3)
     composition_depth: int = 0  # 0 = auto (random 1-2)
 
+    # ── Routing-First Config (Phase 2) ────────────────────────────────
+    routing_mandatory: bool = False   # Force routing structure in every graph
+    routing_min_lanes: int = 2        # Minimum routing lanes (2 or 3)
+    difficulty_scorer_type: str = "entropy"  # "entropy" or "learned"
+
     def update_bias(self, delta: float):
         """Adjust structured sparsity bias."""
         self.structured_sparsity_bias = max(0.0, min(1.0,
@@ -182,6 +188,10 @@ class GrammarConfig:
                 "routed_bottleneck": 4.0,
                 "token_merge_block": 4.0,
                 "conditional_compute": 3.5,
+                "difficulty_routed_block": 5.0,
+                "three_lane_adaptive": 5.0,
+                "cascaded_early_exit": 4.5,
+                "recursive_depth_router": 4.5,
                 "sparse_ffn": 3.0,
                 "moe": 3.0,
                 "bottleneck": 2.5,
@@ -238,6 +248,10 @@ class GrammarConfig:
                 "parallel_split": 3.0,
                 "gated_residual": 2.5,
                 "sparse_ffn": 2.5,
+                "difficulty_routed_block": 4.0,
+                "three_lane_adaptive": 4.0,
+                "cascaded_early_exit": 3.5,
+                "recursive_depth_router": 3.5,
                 "transformer_block": 2.0,
                 "residual_block": 1.5,
                 "bottleneck": 2.0,
@@ -259,6 +273,68 @@ class GrammarConfig:
                 "compression_mixture_experts": 2.5,
                 "token_type_classifier": 2.5,
                 "entropy_router": 2.5,
+            },
+        )
+
+    @classmethod
+    def routing_first(cls, model_dim: int = 256) -> "GrammarConfig":
+        """Config that mandates routing structure in every generated graph.
+
+        Template selection draws ONLY from routing templates. Every graph
+        will have a difficulty scorer and differential compute paths.
+        """
+        from .templates import ROUTING_TEMPLATES
+        # Zero-out non-routing templates, boost routing ones
+        tpl_weights = {
+            name: (5.0 if name in ROUTING_TEMPLATES else 0.0)
+            for name in (
+                "residual_block", "sequential", "transformer_block",
+                "parallel_split", "bottleneck", "moe", "hybrid_parallel",
+                "gated_residual", "dense_cascade", "sparse_ffn",
+                "sparse_moe_block", "routed_bottleneck", "token_merge_block",
+                "conditional_compute", "difficulty_routed_block",
+                "three_lane_adaptive", "cascaded_early_exit",
+                "recursive_depth_router",
+            )
+        }
+        return cls(
+            model_dim=model_dim,
+            min_depth=3,
+            max_depth=10,
+            max_ops=16,
+            max_params_ratio=10.0,
+            residual_prob=0.8,
+            split_prob=0.3,
+            risky_op_prob=0.5,
+            routing_mandatory=True,
+            routing_min_lanes=2,
+            difficulty_scorer_type="entropy",
+            category_weights={
+                "elementwise_unary": 1.0,
+                "elementwise_binary": 1.5,
+                "reduction": 0.5,
+                "linear_algebra": 1.0,
+                "structural": 1.0,
+                "parameterized": 3.0,
+                "mixing": 2.0,
+                "sequence": 1.0,
+                "frequency": 0.3,
+                "math_space": 1.0,
+                "functional": 4.0,
+            },
+            template_weights=tpl_weights,
+            op_weights={
+                "entropy_router": 5.0,
+                "adaptive_lane_mixer": 4.0,
+                "early_exit": 3.5,
+                "cascade": 3.5,
+                "adaptive_recursion": 3.5,
+                "moe_topk": 3.0,
+                "moe_2expert": 3.0,
+                "token_merging": 3.0,
+                "relu_gate_routing": 2.5,
+                "swiglu_mlp": 2.0,
+                "gated_linear": 2.0,
             },
         )
 
@@ -340,15 +416,17 @@ def generate_layer_graph(
     current = input_id
     for t_idx in range(n_templates):
         _iter_weights = _first_tpl_weights if (t_idx == 0 and _use_efficiency_first) else tpl_weights
-        current = apply_template(
-            graph, current, rng,
+        trial_graph = copy.deepcopy(graph)
+        trial_current = apply_template(
+            trial_graph, current, rng,
             template_weights=_iter_weights,
             motif_weights=motif_weights,
         )
 
-        # Budget check: stop if we've used too many ops
-        if len(graph.nodes) >= config.max_ops:
+        if _graph_exceeds_final_budget(trial_graph, config):
             break
+        graph = trial_graph
+        current = trial_current
 
     # Ensure output shape is (B, S, D)
     result_shape = graph.nodes[current].output_shape
@@ -366,7 +444,11 @@ def generate_layer_graph(
         last_node.op_name == "add"
         and input_id in last_node.input_ids
     )
-    if not has_outer_residual and rng.random() < config.residual_prob:
+    if (
+        not has_outer_residual
+        and graph.n_ops() < config.max_ops
+        and rng.random() < config.residual_prob
+    ):
         try:
             current = graph.add_op("add", [input_id, current])
         except ValueError:
@@ -383,14 +465,23 @@ def generate_layer_graph(
     return graph
 
 
+_ROUTING_OPS: frozenset = frozenset({
+    "entropy_router", "token_type_classifier", "route_topk", "route_lanes",
+    "route_recursion", "adaptive_lane_mixer", "mixed_recursion_gate",
+    "early_exit", "cascade", "speculative", "adaptive_recursion",
+    "mod_topk", "token_merging", "token_merge", "relu_gate_routing",
+    "moe_topk", "moe_2expert", "routing_conditioned_compression",
+})
+
+
 def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
     result = validate_graph(
         graph,
-        max_ops=config.max_ops * 3,  # Templates compose multiple sub-blocks
-        max_depth=config.max_depth * 3,  # Composed templates are deeper
-        max_params_ratio=config.max_params_ratio * 3,  # Motif templates are param-rich
-        min_splits=0,  # Templates handle splits internally
+        max_ops=config.max_ops,
+        max_depth=config.max_depth,
+        max_params_ratio=config.max_params_ratio * 3,
+        min_splits=config.min_splits,
     )
     if not result.valid:
         raise ValueError(result.errors[0] if result.errors else
@@ -401,6 +492,23 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     space_err = _check_graph_space_consistency(graph)
     if space_err is not None:
         raise ValueError(space_err)
+
+    # Routing-mandatory check: reject graphs without routing ops
+    if config.routing_mandatory:
+        op_names = {n.op_name for n in graph.nodes.values() if not n.is_input}
+        if not op_names & _ROUTING_OPS:
+            raise ValueError(
+                "routing_mandatory=True but graph has no routing ops"
+            )
+
+
+def _graph_exceeds_final_budget(
+    graph: ComputationGraph,
+    config: GrammarConfig,
+) -> bool:
+    """Mirror the final screening depth/op budget during generation."""
+    depth_limit = config.max_depth + max(0, int(config.min_splits)) * 3
+    return graph.n_ops() >= config.max_ops or graph.depth() >= depth_limit
 
 
 def batch_generate(
@@ -464,7 +572,10 @@ def _check_shape_compat(
 ) -> bool:
     """Quick check if an op is compatible with given input shapes and space."""
     # Algebraic space filter: reject ops from incompatible spaces
-    if not _compatible_space(current_space, op.algebraic_space):
+    if not algebraic_types_compatible(
+        default_algebraic_type_for_space(current_space),
+        op.algebraic_type,
+    ):
         return False
 
     if not input_shapes:

@@ -111,6 +111,57 @@ from ._types import RunConfig
 from ._helpers import InflightState, check_inflight_health
 
 
+def _training_phase(owner: Any) -> str:
+    """Return the current training phase name, if one was set by the runner."""
+    context = getattr(owner, "_live_training_context", None)
+    if not isinstance(context, dict):
+        return ""
+    phase = context.get("phase")
+    return str(phase).strip().lower() if phase is not None else ""
+
+
+def _allow_synthesized_training(owner: Any, config: RunConfig) -> bool:
+    """Restrict synthesized loss/optimizer exploration to screening runs."""
+    if not (
+        getattr(config, "loss_type", "cross_entropy") != "cross_entropy"
+        or getattr(config, "optimizer_type", "adamw") != "adamw"
+    ):
+        return False
+    return _training_phase(owner) in {"screening", "candidate_screening", "synthesis"}
+
+
+def _collect_routing_aux_loss(
+    model: nn.Module, weight: float = 0.01,
+) -> "torch.Tensor | None":
+    """Collect load-balance auxiliary loss from routing telemetry on model layers.
+
+    After a forward pass, routing ops attach ``routing_telemetry`` dicts to
+    their modules with ``expert_counts`` tensors.  This function computes a
+    squared-deviation load-balance loss encouraging uniform expert utilisation
+    and returns it (or ``None`` if no routing telemetry was found).
+    """
+    aux = torch.tensor(0.0)
+    found = False
+
+    for module in model.modules():
+        rt = getattr(module, "routing_telemetry", None)
+        if rt is None:
+            continue
+        ec = rt.get("expert_counts")
+        if not isinstance(ec, torch.Tensor) or ec.numel() < 2:
+            continue
+        found = True
+        # Compute load-balance loss: (actual_frac - uniform)^2 summed over experts
+        total = ec.sum().clamp(min=1.0)
+        fracs = ec.float() / total
+        uniform = 1.0 / ec.numel()
+        aux = aux + ((fracs - uniform) ** 2).sum()
+
+    if not found:
+        return None
+    return aux * weight
+
+
 class _ExecutionTrainingMixin:
     """Micro-training, train-with-program, data sampling, baseline data."""
 
@@ -136,10 +187,14 @@ class _ExecutionTrainingMixin:
         )
 
         result: Dict[str, Any] = {"passed": False}
+        use_synthesized_training = _allow_synthesized_training(self, config)
         collect_curve = bool(getattr(config, "collect_training_curve", False))
         grad_clip_norm = float(getattr(config, "gradient_clip_norm", 1.0) or 0.0)
         if grad_clip_norm < 0.0:
             grad_clip_norm = 0.0
+        # Adaptive clip for math-space architectures
+        from ._helpers import apply_adaptive_grad_clip
+        grad_clip_norm = apply_adaptive_grad_clip(model, grad_clip_norm)
 
         trace_totals_ms: Dict[str, float] = {
             "model_setup": 0.0,
@@ -172,7 +227,7 @@ class _ExecutionTrainingMixin:
                     opt_kwargs.pop("foreach", None)
                     optimizer = torch.optim.AdamW(model.parameters(), **opt_kwargs)
                 # Synthesized optimizer support (screening exploration only)
-                if getattr(config, 'optimizer_type', 'adamw') != 'adamw':
+                if use_synthesized_training and getattr(config, 'optimizer_type', 'adamw') != 'adamw':
                     try:
                         from ...training.optimizer_synthesis import synthesize_optimizer
                         synth_opt = synthesize_optimizer(seed=seed)
@@ -256,9 +311,35 @@ class _ExecutionTrainingMixin:
                 # Note: discovery_loss_ratio needs a baseline; we'll compute it in _execute_experiment
             # --- Part 2: Main Training (Validation Channel) ---
 
+            # Adaptive Budget for Novel Architectures (Task 2G)
+            total_steps = int(config.stage1_steps)
+            if graph_json:
+                try:
+                    from ...synthesis.primitives import OpCategory
+                    _gj = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+                    _nodes = _gj.get("nodes", [])
+                    exotic_categories = {OpCategory.MATH_SPACE, OpCategory.SPIKING, OpCategory.FUNCTIONAL}
+                    exotic_count = 0
+                    for n in _nodes:
+                        op_name = n.get("op_name", n.get("op"))
+                        if op_name:
+                            try:
+                                from ...synthesis.primitives import get_primitive
+                                if get_primitive(op_name).category in exotic_categories:
+                                    exotic_count += 1
+                            except Exception:
+                                pass
+                    if exotic_count >= 2:
+                        total_steps *= 2
+                        result["adaptive_budget_novelty_bonus"] = True
+                        result["exotic_op_count"] = exotic_count
+                        logger.debug("    Novelty bonus: granting 2x budget (%d steps) for %d exotic ops", total_steps, exotic_count)
+                except Exception as e_novel:
+                    logger.debug("Adaptive budget novel check failed: %s", e_novel)
+
             # Implementation of train/val split for Stage 1
-            train_steps = int(config.stage1_steps * 0.8)
-            config.stage1_steps - train_steps
+            train_steps = int(total_steps * 0.8)
+            total_steps - train_steps
 
             starvation_interval = max(1, int(getattr(config, "starvation_check_interval", 8) or 8))
 
@@ -269,7 +350,7 @@ class _ExecutionTrainingMixin:
                 and not op_profiler.enabled
                 and not trace_enabled
                 and not collect_curve
-                and int(config.stage1_steps) >= 8
+                and int(total_steps) >= 8
             )
 
             ran_cuda_graph = False
@@ -300,7 +381,7 @@ class _ExecutionTrainingMixin:
                         optimizer.step()
                         return loss_t, grad_norm_t
 
-                    for wi in range(min(warmup_steps, int(config.stage1_steps))):
+                    for wi in range(min(warmup_steps, int(total_steps))):
                         static_input_ids.copy_(
                             self._micro_train_make_random_batch(
                                 seed_int=_seed_int,
@@ -324,7 +405,13 @@ class _ExecutionTrainingMixin:
                         captured_grad_norm.copy_(torch.as_tensor(grad_norm_t, device=dev).detach())
 
                     check_interval = max(1, int(getattr(config, "loss_check_interval", 8) or 8))
-                    for step in range(config.stage1_steps):
+                    
+                    # Budget extension tracking
+                    extension_check_step = 500
+                    has_extended = False
+
+                    step = 0
+                    while step < total_steps:
                         if self._stop_event.is_set():
                             break
                         t_step = time.perf_counter()
@@ -346,12 +433,27 @@ class _ExecutionTrainingMixin:
                         step_time_sum_ms += step_time_ms
                         total_tokens += static_input_ids.numel()
 
-                        should_check = (step == 0) or (step == config.stage1_steps - 1) or (step % check_interval == 0)
-                        if not should_check:
-                            continue
-
+                        should_check = (step == 0) or (step == total_steps - 1) or (step % check_interval == 0)
+                        
                         loss_val = float(captured_loss.item())
                         grad_norm = float(captured_grad_norm.item())
+
+                        if step == 250:
+                            loss_at_250 = loss_val
+                        if step == 500:
+                            loss_at_500 = loss_val
+                            # Task 2G: If still improving at step 500, extend to 1000
+                            improvement_rate = (loss_at_250 - loss_at_500) / max(loss_at_250, 1e-6)
+                            if improvement_rate > 0 and total_steps < 1000:
+                                total_steps = 1000
+                                has_extended = True
+                                result["adaptive_budget_extension"] = True
+                                logger.debug("    Step 500: improvement_rate=%.4f > 0. Extending budget to 1000 steps.", improvement_rate)
+
+                        if not should_check:
+                            step += 1
+                            continue
+
                         if not math.isfinite(loss_val):
                             result["error"] = f"NaN/Inf loss at step {step}"
                             result["n_train_steps"] = step
@@ -386,12 +488,21 @@ class _ExecutionTrainingMixin:
                             result["early_stop_step"] = step
                             step_count = step + 1
                             break
+                        
+                        step += 1
                     ran_cuda_graph = True
                 except Exception as e:
                     result["cuda_graph_fallback_reason"] = str(e)
 
             if not ran_cuda_graph:
-                for step in range(config.stage1_steps):
+                # Budget extension tracking
+                loss_at_250 = None
+                loss_at_500 = None
+                routing_aux_loss_sum = 0.0
+                routing_aux_loss_count = 0
+
+                step = 0
+                while step < total_steps:
                     if self._stop_event.is_set():
                         break
 
@@ -431,7 +542,7 @@ class _ExecutionTrainingMixin:
                             with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
                                                     enabled=(dev.type == "cuda")):
                                 logits = model(input_ids)
-                                if getattr(config, 'loss_type', 'cross_entropy') != 'cross_entropy':
+                                if use_synthesized_training and getattr(config, 'loss_type', 'cross_entropy') != 'cross_entropy':
                                     try:
                                         if not hasattr(self, '_synth_loss'):
                                             from ...training.loss_synthesis import synthesize_loss
@@ -451,6 +562,13 @@ class _ExecutionTrainingMixin:
                                     )
                         trace_totals_ms["forward_pass"] += (time.perf_counter() - fwd_t0) * 1000.0
                         step_state["loss"] = loss
+
+                        # Collect routing load-balance auxiliary loss from
+                        # routing telemetry attached during forward pass.
+                        aux_loss = _collect_routing_aux_loss(model)
+                        if aux_loss is not None:
+                            loss = loss + aux_loss
+                            step_state["routing_aux_loss"] = aux_loss.item()
 
                         bwd_t0 = time.perf_counter()
                         with _trace_ctx("backward_pass"):
@@ -493,6 +611,25 @@ class _ExecutionTrainingMixin:
                         result["n_train_steps"] = step
                         return result
 
+                    loss_val = loss.item()
+
+                    _raux = step_state.get("routing_aux_loss")
+                    if _raux is not None:
+                        routing_aux_loss_sum += _raux
+                        routing_aux_loss_count += 1
+
+                    if step == 250:
+                        loss_at_250 = loss_val
+                    if step == 500:
+                        loss_at_500 = loss_val
+                        # Task 2G: If still improving at step 500, extend to 1000
+                        if loss_at_250 is not None:
+                            improvement_rate = (loss_at_250 - loss_at_500) / max(loss_at_250, 1e-6)
+                            if improvement_rate > 0 and total_steps < 1000:
+                                total_steps = 1000
+                                result["adaptive_budget_extension"] = True
+                                logger.debug("    Step 500: improvement_rate=%.4f > 0. Extending budget to 1000 steps.", improvement_rate)
+
                     if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
                         result["error"] = "zero_grad_precheck_failed"
                         result["n_train_steps"] = 0
@@ -507,7 +644,6 @@ class _ExecutionTrainingMixin:
                     t_step_end = time.perf_counter()
                     step_time_ms = (t_step_end - t_step) * 1000
 
-                    loss_val = loss.item()
                     if step == 0:
                         initial_loss = loss_val
                         _es_best_loss = loss_val
@@ -521,7 +657,7 @@ class _ExecutionTrainingMixin:
                     _inflight_fail = check_inflight_health(
                         step=step, loss_val=loss_val, grad_norm=grad_norm,
                         min_loss=min_loss, initial_loss=initial_loss,
-                        total_steps=config.stage1_steps, state=_inflight_state,
+                        total_steps=total_steps, state=_inflight_state,
                         spike_ratio=getattr(config, "inflight_spike_ratio", 2.0),
                         spike_window=getattr(config, "inflight_spike_window", 10),
                         grad_norm_limit=getattr(config, "inflight_grad_norm_limit", 100.0),
@@ -545,7 +681,7 @@ class _ExecutionTrainingMixin:
                         result["early_stop_step"] = step
                         logger.debug(
                             "    early stop at step %d/%d: loss=%.4f plateau for %d steps",
-                            step, config.stage1_steps, loss_val, config.early_stop_patience,
+                            step, total_steps, loss_val, config.early_stop_patience,
                         )
                         step_count += 1
                         break
@@ -573,18 +709,19 @@ class _ExecutionTrainingMixin:
                             "experiment_id": ctx.get("exp_id", ""),
                             "step": step,
                             "loss": round(loss_val, 6),
-                            "total_steps": config.stage1_steps,
+                            "total_steps": total_steps,
                             "phase": ctx.get("phase", ""),
                         })
 
                     # Log training progress at start, midpoint, and end
-                    total_steps = config.stage1_steps
                     if step == 0 or step == total_steps // 2 or step == total_steps - 1:
                         logger.debug(
                             "    train step %d/%d: loss=%.4f, grad_norm=%.3f, "
                             "step_time=%.1fms",
                             step + 1, total_steps, loss_val, grad_norm, step_time_ms,
                         )
+                    
+                    step += 1
 
             if dev.type == "cuda":
                 torch.cuda.synchronize(dev)
@@ -690,9 +827,45 @@ class _ExecutionTrainingMixin:
                 arch_telemetry = self._extract_architecture_telemetry(model)
                 result.update(arch_telemetry)
 
+                # Routing training metrics: load-balance aux loss + derived stats
+                if routing_aux_loss_count > 0:
+                    result["routing_aux_loss_mean"] = (
+                        routing_aux_loss_sum / routing_aux_loss_count
+                    )
+                rt_total = result.get("routing_tokens_total", 0)
+                rt_processed = result.get("routing_tokens_processed", 0)
+                if rt_total > 0:
+                    result["routing_fast_fraction"] = max(
+                        0.0, 1.0 - (rt_processed / rt_total),
+                    )
+                    eu_json = result.get("routing_expert_utilization_json")
+                    if eu_json:
+                        try:
+                            counts = json.loads(eu_json)
+                            if counts:
+                                total_c = sum(counts)
+                                if total_c > 0:
+                                    fracs = [c / total_c for c in counts]
+                                    uniform = 1.0 / len(fracs)
+                                    # Balance = 1 - normalized MSE (1=uniform, 0=collapsed)
+                                    mse = sum((f - uniform) ** 2 for f in fracs) / len(fracs)
+                                    result["routing_balance_score"] = max(
+                                        0.0, 1.0 - mse * len(fracs),
+                                    )
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                 # Behavioral fingerprint for S1 survivors (novelty scoring)
                 if result.get("passed") and model is not None:
                     try:
+                        # Task 4I: skip full fingerprint for poor performers (Investigation Gating)
+                        _lr = result.get("loss_ratio", 1.0)
+                        _perf_gate = float(getattr(config, "fingerprint_perf_gate", 0.85) or 0.85)
+                        _force_lightning = _lr > _perf_gate
+                        
+                        if _force_lightning:
+                            logger.debug("    Investigation gating: skipping full fingerprint for poor performer (LR=%.4f > %.2f)", _lr, _perf_gate)
+
                         _fp, full_ran = compute_gated_fingerprint(
                             model,
                             seq_len=min(64, config.max_seq_len),
@@ -700,11 +873,37 @@ class _ExecutionTrainingMixin:
                             vocab_size=config.vocab_size,
                             device=str(dev),
                             full_gate_enabled=True,
+                            force_lightning_only=_force_lightning,
                         )
                         result["_behavioral_fingerprint"] = _fp.to_dict()
                         result["fingerprint_full_ran"] = full_ran
                     except Exception as e_fp:
                         logger.debug("Fingerprint failed in S1 worker: %s", e_fp)
+
+                # Fast WikiText perplexity at screening time
+                if not getattr(config, "skip_screening_wikitext", False):
+                    try:
+                        from ...eval.wikitext_eval import screening_wikitext_eval
+
+                        wt = screening_wikitext_eval(
+                            model, config.vocab_size, str(dev),
+                            seq_len=min(128, config.max_seq_len),
+                        )
+                        result["screening_wikitext_status"] = wt.get("screening_wikitext_status")
+                        result["screening_wikitext_metric_version"] = wt.get("screening_wikitext_metric_version")
+                        if wt.get("wikitext_perplexity") is not None:
+                            result["wikitext_perplexity"] = wt["wikitext_perplexity"]
+                            result["wikitext_score"] = wt.get("wikitext_score")
+                            result["wikitext_pre_perplexity"] = wt.get("wikitext_pre_perplexity")
+                            result["wikitext_ppl_improvement"] = wt.get("wikitext_ppl_improvement")
+                            logger.info(
+                                "    Screening WikiText ppl=%.1f score=%.3f (%.0fms)",
+                                wt["wikitext_perplexity"],
+                                wt.get("wikitext_score") or 0,
+                                wt.get("elapsed_ms") or 0,
+                            )
+                    except Exception as e_wt:
+                        logger.debug("Screening WikiText eval skipped: %s", e_wt)
 
         except Exception as e:
             result["error"] = str(e)
@@ -846,6 +1045,9 @@ class _ExecutionTrainingMixin:
             n_steps = program.n_steps
             batch_size = program.batch_size
             max_grad_norm_val = program.max_grad_norm
+            # Adaptive clip for math-space architectures
+            from ._helpers import apply_adaptive_grad_clip
+            max_grad_norm_val = apply_adaptive_grad_clip(model, max_grad_norm_val)
 
             initial_loss = None
             final_loss = None

@@ -8,6 +8,7 @@
  * Preserves gemini-cli's clifford.h / hyperbolic.h kernel bindings.
  */
 #include <torch/extension.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <unordered_set>
 #include "kernels.h"
@@ -22,14 +23,30 @@
 #define CHECK_DEVICE(x)
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_F32(x) TORCH_CHECK(x.dtype() == torch::kFloat32, #x " must be float32")
+#define CHECK_F16(x) TORCH_CHECK(x.dtype() == torch::kFloat16, #x " must be float16")
 #define CHECK_INPUT(x) do { CHECK_CPU(x); CHECK_CONTIGUOUS(x); CHECK_F32(x); } while(0)
 #define CHECK_INPUT_ANY(x) do { CHECK_CONTIGUOUS(x); CHECK_F32(x); } while(0)
+#define CHECK_INPUT_F16(x) do { CHECK_CPU(x); CHECK_CONTIGUOUS(x); CHECK_F16(x); } while(0)
 
 void launch_cuda_tropical_matmul_f32(const float* A, const float* B, float* C, int64_t M, int64_t K, int64_t N);
 void launch_cuda_tropical_matmul_batched_f32(const float* A, const float* B, float* C, int64_t batch, int64_t M, int64_t K, int64_t N);
 void launch_cuda_tropical_add_f32(const float* a, const float* b, float* y, int64_t n);
+void launch_cuda_tropical_center_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim);
+void launch_cuda_tropical_attention_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim, float temperature);
+void launch_cuda_tropical_gate_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim, float temperature);
 void launch_cuda_clifford_geometric_product_cl30_f32(const float* a, const float* b, float* y, int64_t n);
+void launch_cuda_clifford_attention_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim);
 #define CHECK_I64(x) TORCH_CHECK(x.dtype() == torch::kInt64, #x " must be int64")
+
+namespace py = pybind11;
+
+static const uint16_t *half_ptr_const(torch::Tensor x) {
+    return reinterpret_cast<const uint16_t *>(x.data_ptr<at::Half>());
+}
+
+static uint16_t *half_ptr(torch::Tensor x) {
+    return reinterpret_cast<uint16_t *>(x.data_ptr<at::Half>());
+}
 
 // ═══ Elementwise unary ═══
 
@@ -237,6 +254,59 @@ torch::Tensor fused_linear_gelu_f32(torch::Tensor x, torch::Tensor W, torch::Ten
     return y;
 }
 
+// ═══ FP16 kernels ═══
+
+#define DEFINE_UNARY_F16(name, c_func) \
+torch::Tensor name(torch::Tensor x) { \
+    CHECK_INPUT_F16(x); \
+    auto y = torch::empty_like(x); \
+    c_func(half_ptr_const(x), half_ptr(y), x.numel()); \
+    return y; \
+}
+
+#define DEFINE_BINARY_F16(name, c_func) \
+torch::Tensor name(torch::Tensor a, torch::Tensor b) { \
+    CHECK_INPUT_F16(a); CHECK_INPUT_F16(b); \
+    TORCH_CHECK(a.sizes() == b.sizes(), "a and b must have the same shape"); \
+    auto y = torch::empty_like(a); \
+    c_func(half_ptr_const(a), half_ptr_const(b), half_ptr(y), a.numel()); \
+    return y; \
+}
+
+DEFINE_UNARY_F16(relu_f16, aria_relu_f16)
+DEFINE_UNARY_F16(gelu_f16, aria_gelu_f16)
+DEFINE_UNARY_F16(silu_f16, aria_silu_f16)
+DEFINE_UNARY_F16(sigmoid_f16, aria_sigmoid_f16)
+DEFINE_BINARY_F16(add_f16, aria_add_f16)
+DEFINE_BINARY_F16(mul_f16, aria_mul_f16)
+
+torch::Tensor matmul_f16(torch::Tensor A, torch::Tensor B) {
+    CHECK_INPUT_F16(A); CHECK_INPUT_F16(B);
+    TORCH_CHECK(A.dim() == 2 && B.dim() == 2, "matmul_f16 expects 2D tensors");
+    TORCH_CHECK(A.size(1) == B.size(0), "inner dimensions must match");
+    auto C = torch::empty({A.size(0), B.size(1)}, A.options());
+    aria_matmul_f16(half_ptr_const(A), half_ptr_const(B), half_ptr(C), A.size(0), A.size(1), B.size(1));
+    return C;
+}
+
+torch::Tensor softmax_f16(torch::Tensor x) {
+    CHECK_INPUT_F16(x);
+    auto y = torch::empty_like(x);
+    int64_t dim = x.size(-1);
+    int64_t batch = x.numel() / dim;
+    aria_softmax_f16(half_ptr_const(x), half_ptr(y), batch, dim);
+    return y;
+}
+
+torch::Tensor rmsnorm_f16(torch::Tensor x, torch::Tensor weight, float eps) {
+    CHECK_INPUT_F16(x); CHECK_INPUT_F16(weight);
+    auto y = torch::empty_like(x);
+    int64_t dim = x.size(-1);
+    int64_t batch = x.numel() / dim;
+    aria_rmsnorm_f16(half_ptr_const(x), half_ptr_const(weight), half_ptr(y), batch, dim, eps);
+    return y;
+}
+
 // ═══ Backward kernels ═══
 
 torch::Tensor relu_backward_f32(torch::Tensor go, torch::Tensor inp) { CHECK_INPUT(go); CHECK_INPUT(inp); auto g = torch::empty_like(go); aria_relu_backward_f32(go.data_ptr<float>(), inp.data_ptr<float>(), g.data_ptr<float>(), go.numel()); return g; }
@@ -283,6 +353,7 @@ std::tuple<torch::Tensor, torch::Tensor> div_safe_backward_f32(torch::Tensor go,
 
 torch::Tensor sliding_window_mask_f32(torch::Tensor x, int64_t ws) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_sliding_window_mask_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), ws); return y; }
 std::tuple<torch::Tensor, torch::Tensor> sort_seq_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); auto idx = torch::empty({x.size(0), x.size(1), x.size(2)}, torch::dtype(torch::kInt64)); aria_sort_seq_f32(x.data_ptr<float>(), y.data_ptr<float>(), idx.data_ptr<int64_t>(), x.size(0), x.size(1), x.size(2)); return {y, idx}; }
+torch::Tensor argsort_seq_f32(torch::Tensor x) { CHECK_INPUT(x); auto idx = torch::empty({x.size(0), x.size(1), x.size(2)}, torch::dtype(torch::kInt64)); aria_argsort_seq_f32(x.data_ptr<float>(), idx.data_ptr<int64_t>(), x.size(0), x.size(1), x.size(2)); return idx; }
 torch::Tensor conv1d_seq_f32(torch::Tensor x, torch::Tensor w, torch::Tensor b) { CHECK_INPUT(x); CHECK_INPUT(w); CHECK_INPUT(b); auto y = torch::empty_like(x); aria_conv1d_seq_f32(x.data_ptr<float>(), w.data_ptr<float>(), b.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
 torch::Tensor selective_scan_f32(torch::Tensor x, torch::Tensor A, torch::Tensor B, torch::Tensor C, torch::Tensor D) { CHECK_INPUT(x); CHECK_INPUT(A); CHECK_INPUT(B); CHECK_INPUT(C); CHECK_INPUT(D); auto y = torch::empty_like(x); aria_selective_scan_f32(x.data_ptr<float>(), A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), D.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
 torch::Tensor topk_gate_f32(torch::Tensor x, torch::Tensor Wg, int64_t k) { CHECK_INPUT(x); CHECK_INPUT(Wg); auto y = torch::empty_like(x); aria_topk_gate_f32(x.data_ptr<float>(), Wg.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), k); return y; }
@@ -508,6 +579,42 @@ std::tuple<torch::Tensor, torch::Tensor> token_merge_simple_f32(torch::Tensor x,
     return {y, restore};
 }
 
+torch::Tensor grouped_linear_f32(torch::Tensor x, torch::Tensor W, int64_t groups, int64_t group_dim) {
+    CHECK_INPUT(x); CHECK_INPUT(W);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    auto y = torch::empty_like(x);
+    aria_grouped_linear_f32(x.data_ptr<float>(), W.data_ptr<float>(), y.data_ptr<float>(),
+                            x.size(0), x.size(1), x.size(2), groups, group_dim);
+    return y;
+}
+
+torch::Tensor bottleneck_proj_f32(torch::Tensor x, torch::Tensor down, torch::Tensor up) {
+    CHECK_INPUT(x); CHECK_INPUT(down); CHECK_INPUT(up);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    auto y = torch::empty_like(x);
+    aria_bottleneck_proj_f32(x.data_ptr<float>(), down.data_ptr<float>(), up.data_ptr<float>(), y.data_ptr<float>(),
+                             x.size(0), x.size(1), x.size(2), down.size(0));
+    return y;
+}
+
+torch::Tensor shared_basis_proj_f32(torch::Tensor x, torch::Tensor mixing, torch::Tensor basis) {
+    CHECK_INPUT(x); CHECK_INPUT(mixing); CHECK_INPUT(basis);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    auto y = torch::empty_like(x);
+    aria_shared_basis_proj_f32(x.data_ptr<float>(), mixing.data_ptr<float>(), basis.data_ptr<float>(), y.data_ptr<float>(),
+                               x.size(0), x.size(1), x.size(2), mixing.size(0));
+    return y;
+}
+
+torch::Tensor tied_proj_f32(torch::Tensor x, torch::Tensor W) {
+    CHECK_INPUT(x); CHECK_INPUT(W);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    auto y = torch::empty_like(x);
+    aria_tied_proj_f32(x.data_ptr<float>(), W.data_ptr<float>(), y.data_ptr<float>(),
+                       x.size(0), x.size(1), x.size(2), W.size(0));
+    return y;
+}
+
 torch::Tensor linear_low_rank_f32(torch::Tensor x, torch::Tensor U, torch::Tensor V, c10::optional<torch::Tensor> bias) {
     CHECK_INPUT(x); CHECK_INPUT(U); CHECK_INPUT(V);
     int64_t batch = x.size(0), dim_in = x.size(1), dim_out = V.size(0), rank = U.size(0);
@@ -652,9 +759,36 @@ torch::Tensor log_map_backward_f32(torch::Tensor x, torch::Tensor grad_out, floa
 
 // ═══ Tropical ═══
 
-torch::Tensor tropical_center_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_tropical_center_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
-torch::Tensor tropical_attention_f32(torch::Tensor x, float t) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_tropical_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t); return y; }
-torch::Tensor tropical_gate_f32(torch::Tensor x, float t) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_tropical_gate_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t); return y; }
+torch::Tensor tropical_center_f32(torch::Tensor x) {
+    CHECK_INPUT_ANY(x);
+    auto y = torch::empty_like(x);
+    if (x.is_cuda()) {
+        launch_cuda_tropical_center_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2));
+    } else {
+        aria_tropical_center_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2));
+    }
+    return y;
+}
+torch::Tensor tropical_attention_f32(torch::Tensor x, float t) {
+    CHECK_INPUT_ANY(x);
+    auto y = torch::empty_like(x);
+    if (x.is_cuda()) {
+        launch_cuda_tropical_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t);
+    } else {
+        aria_tropical_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t);
+    }
+    return y;
+}
+torch::Tensor tropical_gate_f32(torch::Tensor x, float t) {
+    CHECK_INPUT_ANY(x);
+    auto y = torch::empty_like(x);
+    if (x.is_cuda()) {
+        launch_cuda_tropical_gate_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t);
+    } else {
+        aria_tropical_gate_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2), t);
+    }
+    return y;
+}
 
 torch::Tensor tropical_router_f32(torch::Tensor x, torch::Tensor centroids) {
     CHECK_INPUT(x); CHECK_INPUT(centroids);
@@ -676,7 +810,16 @@ torch::Tensor ultrametric_attention_f32(torch::Tensor x, float p) { CHECK_INPUT(
 torch::Tensor rotor_transform_f32(torch::Tensor x, torch::Tensor r) { CHECK_INPUT(x); CHECK_INPUT(r); auto y = torch::empty_like(x); aria_rotor_transform_f32(x.data_ptr<float>(), r.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1)); return y; }
 torch::Tensor grade_select_f32(torch::Tensor x, int32_t g) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_grade_select_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), g); return y; }
 torch::Tensor grade_mix_f32(torch::Tensor x, torch::Tensor a) { CHECK_INPUT(x); CHECK_INPUT(a); auto y = torch::empty_like(x); aria_grade_mix_f32(x.data_ptr<float>(), a.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1)); return y; }
-torch::Tensor clifford_attention_f32(torch::Tensor x) { CHECK_INPUT(x); auto y = torch::empty_like(x); aria_clifford_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2)); return y; }
+torch::Tensor clifford_attention_f32(torch::Tensor x) {
+    CHECK_INPUT_ANY(x);
+    auto y = torch::empty_like(x);
+    if (x.is_cuda()) {
+        launch_cuda_clifford_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2));
+    } else {
+        aria_clifford_attention_f32(x.data_ptr<float>(), y.data_ptr<float>(), x.size(0), x.size(1), x.size(2));
+    }
+    return y;
+}
 torch::Tensor clifford_geometric_product_cl30_f32(torch::Tensor a, torch::Tensor b) {
     CHECK_INPUT_ANY(a); CHECK_INPUT_ANY(b);
     auto y = torch::empty_like(a);
@@ -750,6 +893,44 @@ std::tuple<torch::Tensor, torch::Tensor> gather_topk_f32(torch::Tensor scores, t
     return {out, out_indices};
 }
 
+// ═══ IO kernels ═══
+
+torch::Tensor read_csv_f32(const std::string &filename, int64_t max_rows, int64_t max_cols, char delimiter) {
+    auto out = torch::zeros({max_rows, max_cols}, torch::dtype(torch::kFloat32));
+    int rows = aria_read_csv_f32(filename.c_str(), out.data_ptr<float>(), max_rows, max_cols, delimiter);
+    TORCH_CHECK(rows >= 0, "failed to read csv: ", filename);
+    return out.narrow(0, 0, rows).clone();
+}
+
+torch::Tensor filter_f32(torch::Tensor data, int64_t col_idx, float val, int op) {
+    CHECK_INPUT(data);
+    TORCH_CHECK(data.dim() == 2, "data must be 2D");
+    auto out = torch::empty_like(data);
+    int rows = aria_filter_f32(data.data_ptr<float>(), out.data_ptr<float>(), data.size(0), data.size(1), col_idx, val, op);
+    TORCH_CHECK(rows >= 0, "filter_f32 failed");
+    return out.narrow(0, 0, rows).clone();
+}
+
+torch::Tensor file_loader_csv_f32(const std::string &filename, int64_t max_rows, int64_t max_cols, char delimiter, bool has_header) {
+    auto out = torch::zeros({max_rows, max_cols}, torch::dtype(torch::kFloat32));
+    int rows = aria_file_loader_csv_f32(filename.c_str(), out.data_ptr<float>(), max_rows, max_cols, delimiter, has_header ? 1 : 0);
+    TORCH_CHECK(rows >= 0, "failed to load csv: ", filename);
+    return out.narrow(0, 0, rows).clone();
+}
+
+torch::Tensor binary_file_reader_f32(const std::string &filename, int64_t max_elems, int64_t offset_bytes) {
+    auto out = torch::zeros({max_elems}, torch::dtype(torch::kFloat32));
+    int n = aria_binary_file_reader_f32(filename.c_str(), out.data_ptr<float>(), max_elems, offset_bytes);
+    TORCH_CHECK(n >= 0, "failed to read binary file: ", filename);
+    return out.narrow(0, 0, n).clone();
+}
+
+int file_writer_txt_f32(const std::string &filename, torch::Tensor data, bool overwrite) {
+    CHECK_INPUT(data);
+    auto flat = data.reshape({-1}).contiguous();
+    return aria_file_writer_txt_f32(filename.c_str(), flat.data_ptr<float>(), flat.numel(), overwrite ? 1 : 0);
+}
+
 // ═══ Reference Architecture ═══
 
 torch::Tensor embedding_lookup_f32(torch::Tensor table, torch::Tensor idx, c10::optional<torch::Tensor> pe) {
@@ -786,6 +967,40 @@ torch::Tensor rwkv_wkv_scan_f32(torch::Tensor k, torch::Tensor v, torch::Tensor 
                             w_decay.data_ptr<float>(), u_bonus.data_ptr<float>(),
                             out.data_ptr<float>(), k.size(0), k.size(1), k.size(2));
     return out;
+}
+
+std::tuple<torch::Tensor, torch::Tensor> embedding_lookup_backward_f32(
+    torch::Tensor grad_out, torch::Tensor indices, int64_t vocab_size, bool with_pos_embed) {
+    CHECK_INPUT(grad_out);
+    TORCH_CHECK(indices.dtype() == torch::kInt32, "indices must be int32");
+    CHECK_CPU(indices); CHECK_CONTIGUOUS(indices);
+    TORCH_CHECK(grad_out.dim() == 2, "grad_out must be [batch, dim]");
+    auto grad_table = torch::zeros({vocab_size, grad_out.size(1)}, grad_out.options());
+    auto grad_pos_embed = with_pos_embed ? torch::zeros_like(grad_out) : torch::Tensor();
+    aria_embedding_lookup_backward_f32(
+        grad_out.data_ptr<float>(), indices.data_ptr<int32_t>(), grad_table.data_ptr<float>(),
+        with_pos_embed ? grad_pos_embed.data_ptr<float>() : nullptr,
+        grad_out.size(0), grad_out.size(1), vocab_size
+    );
+    return {grad_table, grad_pos_embed};
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> gated_linear_backward_f32(
+    torch::Tensor grad_out, torch::Tensor x, torch::Tensor W, torch::Tensor W_gate, torch::Tensor gate_sigmoid) {
+    CHECK_INPUT(grad_out); CHECK_INPUT(x); CHECK_INPUT(W); CHECK_INPUT(W_gate); CHECK_INPUT(gate_sigmoid);
+    TORCH_CHECK(grad_out.dim() == 2 && x.dim() == 2, "grad_out and x must be 2D");
+    auto grad_x = torch::zeros_like(x);
+    auto grad_W = torch::zeros_like(W);
+    auto grad_W_gate = torch::zeros_like(W_gate);
+    auto grad_b = torch::zeros({W.size(0)}, x.options());
+    auto grad_b_gate = torch::zeros({W_gate.size(0)}, x.options());
+    aria_gated_linear_backward_f32(
+        grad_out.data_ptr<float>(), x.data_ptr<float>(), W.data_ptr<float>(), W_gate.data_ptr<float>(),
+        gate_sigmoid.data_ptr<float>(), grad_x.data_ptr<float>(), grad_W.data_ptr<float>(),
+        grad_W_gate.data_ptr<float>(), grad_b.data_ptr<float>(), grad_b_gate.data_ptr<float>(),
+        x.size(0), x.size(1), grad_out.size(1)
+    );
+    return {grad_x, grad_W, grad_W_gate, grad_b, grad_b_gate};
 }
 
 // ── Gromov Delta ──────────────────────────────────────────────────
@@ -1232,6 +1447,97 @@ torch::Tensor sensitivity_metrics_f32_py(torch::Tensor sens) {
     return out;
 }
 
+py::object graph_ir_field(const py::object &graph_ir, const char *name) {
+    if (py::hasattr(graph_ir, name)) {
+        return graph_ir.attr(name);
+    }
+    if (py::isinstance<py::dict>(graph_ir)) {
+        py::dict d = graph_ir.cast<py::dict>();
+        if (d.contains(name)) {
+            return d[name];
+        }
+    }
+    throw std::runtime_error(std::string("graph_ir missing field: ") + name);
+}
+
+int32_t smoke_role_code(const py::object &role) {
+    static const std::unordered_map<std::string, int32_t> kRoleCodes = {
+        {"PROJECT", 0},
+        {"NORMALIZE", 1},
+        {"ACTIVATE", 2},
+        {"MIX", 3},
+        {"ROUTE", 4},
+        {"GATE", 5},
+        {"POSITION", 6},
+        {"REDUCE", 7},
+        {"RESIDUAL", 8},
+    };
+    auto it = kRoleCodes.find(py::str(role.attr("name")).cast<std::string>());
+    return it == kRoleCodes.end() ? 9 : it->second;
+}
+
+py::dict smoke_test_graph_ir_py(py::object graph_ir, int32_t d_model, int32_t seq_len) {
+    (void)d_model;
+    (void)seq_len;
+    auto op_codes_obj = graph_ir_field(graph_ir, "op_codes");
+    auto input_indices_obj = graph_ir_field(graph_ir, "input_indices");
+    int32_t output_node = graph_ir_field(graph_ir, "output_node_idx").cast<int32_t>();
+
+    py::array_t<int32_t, py::array::c_style | py::array::forcecast> op_codes_arr(op_codes_obj);
+    py::array_t<int32_t, py::array::c_style | py::array::forcecast> input_indices_arr(input_indices_obj);
+    TORCH_CHECK(op_codes_arr.ndim() == 1, "graph_ir.op_codes must be 1D");
+    TORCH_CHECK(input_indices_arr.ndim() == 2 && input_indices_arr.shape(1) >= 2,
+                "graph_ir.input_indices must be [N, >=2]");
+
+    int32_t n_nodes = static_cast<int32_t>(op_codes_arr.shape(0));
+    auto op_codes = op_codes_arr.unchecked<1>();
+    auto input_indices = input_indices_arr.unchecked<2>();
+
+    py::module primitives = py::module_::import("research.synthesis.primitives");
+    py::module op_roles_mod = py::module_::import("research.synthesis.op_roles");
+    py::object reverse_opcode_map = primitives.attr("REVERSE_OPCODE_MAP");
+    py::object primitive_registry = primitives.attr("PRIMITIVE_REGISTRY");
+    py::object get_role = op_roles_mod.attr("get_role");
+
+    std::vector<int32_t> edges(static_cast<size_t>(n_nodes) * 2, -1);
+    std::vector<int32_t> op_roles(static_cast<size_t>(n_nodes), 9);
+    std::vector<int32_t> has_params_flag(static_cast<size_t>(n_nodes), 0);
+    std::vector<int32_t> preserves_grad(static_cast<size_t>(n_nodes), 1);
+
+    for (int32_t i = 0; i < n_nodes; ++i) {
+        edges[static_cast<size_t>(i) * 2] = input_indices(i, 0);
+        edges[static_cast<size_t>(i) * 2 + 1] = input_indices(i, 1);
+        int32_t opcode = op_codes(i);
+        if (opcode == 0) {
+            op_roles[i] = 10;
+            continue;
+        }
+        py::object op_name_obj = reverse_opcode_map.attr("get")(opcode);
+        if (op_name_obj.is_none()) {
+            continue;
+        }
+        py::object prim = primitive_registry.attr("get")(op_name_obj);
+        py::object role = get_role(op_name_obj);
+        op_roles[i] = smoke_role_code(role);
+        if (!prim.is_none()) {
+            has_params_flag[i] = prim.attr("has_params").cast<bool>() ? 1 : 0;
+            preserves_grad[i] = prim.attr("preserves_gradient").cast<bool>() ? 1 : 0;
+        }
+    }
+
+    SmokeTestResult r = smoke_test_graph(
+        n_nodes, edges.data(), op_roles.data(),
+        has_params_flag.data(), preserves_grad.data(), output_node
+    );
+    py::dict result;
+    result["ok"] = static_cast<bool>(r.ok);
+    result["has_params"] = static_cast<bool>(r.has_params);
+    result["grad_flows"] = static_cast<bool>(r.grad_flows);
+    result["no_unsafe"] = static_cast<bool>(r.no_unsafe);
+    result["no_nan"] = static_cast<bool>(r.no_unsafe);
+    return result;
+}
+
 // ═══ Smoke Test Wrapper ═══
 
 py::dict smoke_test_graph_py(
@@ -1280,6 +1586,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("matmul_relu_f32", &matmul_relu_f32); m.def("matmul_gelu_f32", &matmul_gelu_f32);
     m.def("matmul_bias_relu_f32", &matmul_bias_relu_f32); m.def("layernorm_residual_f32", &layernorm_residual_f32);
     m.def("fused_linear_gelu_f32", &fused_linear_gelu_f32);
+    m.def("relu_f16", &relu_f16); m.def("gelu_f16", &gelu_f16); m.def("silu_f16", &silu_f16);
+    m.def("sigmoid_f16", &sigmoid_f16); m.def("add_f16", &add_f16); m.def("mul_f16", &mul_f16);
+    m.def("matmul_f16", &matmul_f16); m.def("softmax_f16", &softmax_f16);
+    m.def("rmsnorm_f16", &rmsnorm_f16);
     m.def("relu_backward_f32", &relu_backward_f32); m.def("sigmoid_backward_f32", &sigmoid_backward_f32);
     m.def("tanh_backward_f32", &tanh_backward_f32); m.def("gelu_backward_f32", &gelu_backward_f32);
     m.def("silu_backward_f32", &silu_backward_f32); m.def("add_backward_f32", &add_backward_f32);
@@ -1288,7 +1598,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("layernorm_backward_f32", &layernorm_backward_f32); m.def("rmsnorm_backward_f32", &rmsnorm_backward_f32);
     m.def("maximum_backward_f32", &maximum_backward_f32); m.def("minimum_backward_f32", &minimum_backward_f32);
     m.def("div_safe_backward_f32", &div_safe_backward_f32);
+    m.def("embedding_lookup_backward_f32", &embedding_lookup_backward_f32);
+    m.def("gated_linear_backward_f32", &gated_linear_backward_f32);
     m.def("sliding_window_mask_f32", &sliding_window_mask_f32); m.def("sort_seq_f32", &sort_seq_f32);
+    m.def("argsort_seq_f32", &argsort_seq_f32);
     m.def("conv1d_seq_f32", &conv1d_seq_f32); m.def("selective_scan_f32", &selective_scan_f32);
     m.def("topk_gate_f32", &topk_gate_f32); m.def("basis_expansion_f32", &basis_expansion_f32);
     m.def("sparse_threshold_f32", &sparse_threshold_f32); m.def("token_pool_restore_f32", &token_pool_restore_f32);
@@ -1304,6 +1617,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("route_lane_argmax_f32", &route_lane_argmax_f32);
     m.def("route_recursion_depth_f32", &route_recursion_depth_f32);
     m.def("token_merge_simple_f32", &token_merge_simple_f32);
+    m.def("grouped_linear_f32", &grouped_linear_f32);
+    m.def("bottleneck_proj_f32", &bottleneck_proj_f32);
+    m.def("shared_basis_proj_f32", &shared_basis_proj_f32);
+    m.def("tied_proj_f32", &tied_proj_f32);
     
     // Phase 3 Compression (Standardized 2D Linear API)
     m.def("linear_low_rank_f32", &linear_low_rank_f32);
@@ -1343,6 +1660,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("swiglu_f32", &swiglu_f32);
     m.def("rwkv_channel_f32", &rwkv_channel_f32);
     m.def("gather_topk_f32", &gather_topk_f32);
+    m.def("read_csv_f32", &read_csv_f32, py::arg("filename"), py::arg("max_rows"), py::arg("max_cols"), py::arg("delimiter") = ',');
+    m.def("filter_f32", &filter_f32, py::arg("data"), py::arg("col_idx"), py::arg("val"), py::arg("op"));
+    m.def("file_loader_csv_f32", &file_loader_csv_f32,
+          py::arg("filename"), py::arg("max_rows"), py::arg("max_cols"),
+          py::arg("delimiter") = ',', py::arg("has_header") = false);
+    m.def("binary_file_reader_f32", &binary_file_reader_f32,
+          py::arg("filename"), py::arg("max_elems"), py::arg("offset_bytes") = 0);
+    m.def("file_writer_txt_f32", &file_writer_txt_f32,
+          py::arg("filename"), py::arg("data"), py::arg("overwrite") = false);
     // Cumulative ops (AVX2+OpenMP)
     m.def("cumsum_f32", [](torch::Tensor x) -> torch::Tensor {
         CHECK_INPUT(x);
@@ -1365,6 +1691,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("smoke_test_graph", &smoke_test_graph_py, "Fast structural smoke test for computation graphs",
           py::arg("n_nodes"), py::arg("edges"), py::arg("op_roles"),
           py::arg("has_params_flag"), py::arg("preserves_grad"), py::arg("output_node"));
+    m.def("smoke_test_graph", &smoke_test_graph_ir_py, "Fast structural smoke test for graph IR",
+          py::arg("graph_ir"), py::arg("d_model"), py::arg("seq_len"));
     // Graph validation & shape inference
     m.def("validate_graph", &validate_graph, "Validate a DAG: cycle detection, topological sort",
           py::arg("n_nodes"), py::arg("edges"), py::arg("op_codes") = std::vector<int32_t>());

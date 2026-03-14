@@ -2,6 +2,8 @@ import React from 'react';
 import { reliabilityColor } from '../../utils/colors';
 import { candidateScore, TIER_COLORS, TIER_ORDER } from '../../utils/scoringEngine';
 import TierBadge, { decisionGate } from '../shared/TierBadge';
+import StatusBadge from '../shared/StatusBadge';
+import Sparkline from '../shared/Sparkline';
 import { compressionSummary } from '../report/reportUtils';
 import ScoreBreakdown from './ScoreBreakdown';
 import { metricChips, qualityFlags, reproducibilityPacketStatus, candidateEligibility } from './leaderboardUtils';
@@ -102,6 +104,9 @@ export const LeaderboardRow = React.memo(({
             {entry.is_pinned ? '\u2605' : '\u2606'}
           </button>
           <span style={{ tabularNums: true }}>{index + 1}</span>
+          {(entry.model_source === 'reference' || entry.is_reference) && (
+            <span style={{ color: 'var(--accent-purple)', fontSize: 12, marginLeft: 2 }} title="Reference Architecture">★</span>
+          )}
         </div>
       </td>
       {visibleColumns.map(colKey => {
@@ -162,6 +167,42 @@ export const LeaderboardRow = React.memo(({
           case 'investigation_loss_ratio': return <td key={colKey} style={tdStyle}>{fmt(entry.investigation_loss_ratio)}</td>;
           case 'investigation_robustness':
             return <td key={colKey} style={tdStyle}><span style={{ color: entry.investigation_robustness >= 0.5 ? 'var(--accent-green)' : 'var(--accent-red)' }}>{fmt(entry.investigation_robustness, 2)}</span></td>;
+          case 'wikitext_ppl':
+            return <td key={colKey} style={tdStyle}><span style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{fmt(entry.wikitext_ppl ?? entry.wikitext_perplexity, 2)}</span></td>;
+          case 'peak_ppl':
+            return <td key={colKey} style={tdStyle}><span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>{fmt(entry.peak_ppl, 2)}</span></td>;
+          case 'divergence_step':
+            return <td key={colKey} style={tdStyle}>{entry.divergence_step || '--'}</td>;
+          case 'wikitext_ppl_trajectory': {
+            const data = Array.isArray(entry.wikitext_ppl_trajectory) ? entry.wikitext_ppl_trajectory : 
+                         (typeof entry.wikitext_ppl_trajectory === 'string' ? entry.wikitext_ppl_trajectory.split(',').map(v => parseFloat(v.trim())) : null);
+            return (
+              <td key={colKey} style={tdStyle}>
+                <Sparkline data={data} />
+              </td>
+            );
+          }
+          case 'evaluation_stage':
+            return (
+              <td key={colKey} style={tdStyle}>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)' }}>{entry.evaluation_stage || '--'}</span>
+                  {entry.is_frontier_signal && <StatusBadge type="FRONTIER_SIGNAL" label="FRONTIER" title="Model beats reference PPL at equal budget" />}
+                  {(entry.improvement_ratio > 2.0 || entry.is_slow_burn) && <StatusBadge type="SLOW_BURN" label="SLOW-BURN" title="Sharp trajectory: PPL improved >2x" />}
+                  {entry.divergence_step && <StatusBadge type="DIVERGED" label={`DIVERGED @ ${entry.divergence_step}`} title="PPL diverged >2x peak" />}
+                  {!entry.divergence_step && entry.wikitext_ppl_trajectory?.length >= 4 && <StatusBadge type="STABLE_GENERALIZER" label="STABLE" title="No divergence seen in 4000 steps" />}
+                </div>
+              </td>
+            );
+          case 'robustness_grade': {
+            const grade = entry.robustness_grade || (entry.investigation_robustness >= 0.8 ? 'A' : entry.investigation_robustness >= 0.5 ? 'B' : entry.investigation_robustness != null ? 'C' : null);
+            const statusType = grade === 'A' ? 'ROBUST' : grade === 'B' ? 'STABLE' : grade === 'C' ? 'FRAGILE' : null;
+            return (
+              <td key={colKey} style={tdStyle}>
+                {statusType && <StatusBadge type={statusType} label={grade} title={`Robustness Grade ${grade}`} />}
+              </td>
+            );
+          }
           case 'validation_baseline_ratio':
             return <td key={colKey} style={tdStyle}><span style={{ color: entry.validation_baseline_ratio < 1 ? 'var(--accent-green)' : 'var(--accent-red)' }}>{fmt(entry.validation_baseline_ratio)}</span></td>;
           case 'robustness_noise_score': return <td key={colKey} style={tdStyle}>{fmt(entry.robustness_noise_score, 3)}</td>;

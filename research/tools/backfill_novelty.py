@@ -70,6 +70,8 @@ def backfill_novelty(
     dry_run: bool = False,
     verbose: bool = True,
     include_all: bool = False,
+    recalculate_top: bool = False,
+    limit: Optional[int] = None,
 ):
     """Compute and store novelty scores for S1 survivors that lack them."""
     import torch
@@ -87,7 +89,9 @@ def backfill_novelty(
 
     nb = LabNotebook(db_path)
 
-    candidates = _fetch_candidates(nb, include_all=include_all)
+    candidates = _fetch_candidates(
+        nb, include_all=include_all, recalculate_top=recalculate_top, limit=limit,
+    )
 
     if verbose:
         print(f"Novelty backfill")
@@ -186,9 +190,30 @@ def backfill_novelty(
             }
             if behavioral_fp is not None:
                 try:
-                    update_fields["fp_jacobian_spectral_norm"] = float(
-                        getattr(behavioral_fp, "jacobian_spectral_norm", 0.0) or 0.0
-                    )
+                    update_fields["fingerprint_json"] = json.dumps(behavioral_fp.to_dict())
+                    for attr, col in (
+                        ("interaction_locality", "fp_interaction_locality"),
+                        ("interaction_sparsity", "fp_interaction_sparsity"),
+                        ("interaction_symmetry", "fp_interaction_symmetry"),
+                        ("interaction_hierarchy", "fp_interaction_hierarchy"),
+                        ("intrinsic_dim", "fp_intrinsic_dim"),
+                        ("isotropy", "fp_isotropy"),
+                        ("rank_ratio", "fp_rank_ratio"),
+                        ("jacobian_spectral_norm", "fp_jacobian_spectral_norm"),
+                        ("jacobian_effective_rank", "fp_jacobian_effective_rank"),
+                        ("sensitivity_uniformity", "fp_sensitivity_uniformity"),
+                        ("cka_vs_transformer", "fp_cka_vs_transformer"),
+                        ("cka_vs_ssm", "fp_cka_vs_ssm"),
+                        ("cka_vs_conv", "fp_cka_vs_conv"),
+                        ("hierarchy_fitness", "fp_hierarchy_fitness"),
+                        ("gromov_delta", "fp_gromov_delta"),
+                    ):
+                        val = getattr(behavioral_fp, attr, None)
+                        if val is not None:
+                            update_fields[col] = float(val)
+                    update_fields["cka_artifact_version"] = behavioral_fp.cka_artifact_version
+                    update_fields["cka_probe_protocol_hash"] = behavioral_fp.cka_probe_protocol_hash
+                    update_fields["cka_reference_quality"] = behavioral_fp.cka_reference_quality
                 except Exception:
                     pass
 
@@ -301,6 +326,14 @@ def main():
         "--all", action="store_true",
         help="Backfill novelty for all fingerprints (not just S1 survivors)",
     )
+    parser.add_argument(
+        "--recalculate-top", action="store_true",
+        help="Recalculate novelty for entries that already have scores (e.g. fix stale 0.990)",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Max entries to process",
+    )
     args = parser.parse_args()
 
     if not Path(args.db).exists():
@@ -313,6 +346,8 @@ def main():
         batch_size=args.batch_size,
         dry_run=args.dry_run,
         include_all=args.all,
+        recalculate_top=args.recalculate_top,
+        limit=args.limit,
     )
 
 

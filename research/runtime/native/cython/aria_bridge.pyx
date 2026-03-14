@@ -3,10 +3,17 @@
 import numpy as np
 cimport numpy as cnp
 from libc.stdint cimport int32_t, int64_t
+from libc.stdint cimport uint16_t
 from libc.stdlib cimport malloc, free
 from libc.string cimport memcpy
 
 cnp.import_array()
+
+cdef inline cnp.ndarray _as_float16_array(object x):
+    return np.ascontiguousarray(x, dtype=np.float16)
+
+
+cdef tuple _FP16_NATIVE_OPS = ('add', 'gelu', 'matmul', 'mul', 'relu', 'rmsnorm', 'sigmoid', 'silu', 'softmax')
 
 # ── Kernel imports (all from Designer kernels.h, resolved via include_dirs) ──
 
@@ -28,6 +35,12 @@ cdef extern from "kernels.h":
     void aria_exp_f32(const float* x, float* y, int64_t n)
     void aria_sign_ste_f32(const float* x, float* y, int64_t n)
 
+    # FP16
+    void aria_relu_f16(const uint16_t* x, uint16_t* y, int64_t n)
+    void aria_gelu_f16(const uint16_t* x, uint16_t* y, int64_t n)
+    void aria_silu_f16(const uint16_t* x, uint16_t* y, int64_t n)
+    void aria_sigmoid_f16(const uint16_t* x, uint16_t* y, int64_t n)
+
     # Elementwise binary
     void aria_add_f32(const float* a, const float* b, float* y, int64_t n)
     void aria_mul_f32(const float* a, const float* b, float* y, int64_t n)
@@ -37,6 +50,10 @@ cdef extern from "kernels.h":
     void aria_div_safe_f32(const float* a, const float* b, float* y, int64_t n)
     void aria_outer_product_f32(const float* a, const float* b, float* y, int64_t n)
 
+    # FP16
+    void aria_add_f16(const uint16_t* a, const uint16_t* b, uint16_t* y, int64_t n)
+    void aria_mul_f16(const uint16_t* a, const uint16_t* b, uint16_t* y, int64_t n)
+
     # Reductions
     float aria_sum_f32(const float* x, int64_t n)
     float aria_mean_f32(const float* x, int64_t n)
@@ -44,13 +61,16 @@ cdef extern from "kernels.h":
     # Linear algebra
     void aria_matmul_f32(const float* A, const float* B, float* C, int64_t M, int64_t K, int64_t N)
     void aria_linear_f32(const float* x, const float* W, const float* bias, float* y, int64_t batch, int64_t dim_in, int64_t dim_out)
+    void aria_matmul_f16(const uint16_t* A, const uint16_t* B, uint16_t* C, int64_t M, int64_t K, int64_t N)
 
     # Normalization
     void aria_rmsnorm_f32(const float* x, const float* weight, float* y, int64_t batch, int64_t dim, float eps)
     void aria_layernorm_f32(const float* x, const float* weight, const float* bias, float* y, int64_t batch, int64_t dim, float eps)
+    void aria_rmsnorm_f16(const uint16_t* x, const uint16_t* weight, uint16_t* y, int64_t batch, int64_t dim, float eps)
 
     # Softmax
     void aria_softmax_f32(const float* x, float* y, int64_t batch, int64_t dim)
+    void aria_softmax_f16(const uint16_t* x, uint16_t* y, int64_t batch, int64_t dim)
 
     # Structural ops
     void aria_transpose2d_f32(const float* input, float* output, int64_t rows, int64_t cols)
@@ -363,6 +383,91 @@ def native_sum(cnp.ndarray[float, ndim=1] x):
 def native_mean(cnp.ndarray[float, ndim=1] x):
     """Mean reduction."""
     return aria_mean_f32(<float*>x.data, x.shape[0])
+
+
+def dispatch_unary_fp16(str op_name, x):
+    """Dispatch a unary op through native fp16 kernels."""
+    cdef cnp.ndarray x_arr = _as_float16_array(x)
+    cdef int64_t n = x_arr.size
+    cdef cnp.ndarray y = np.empty_like(x_arr)
+
+    if op_name == 'relu':
+        aria_relu_f16(<uint16_t*>x_arr.data, <uint16_t*>y.data, n)
+    elif op_name == 'gelu':
+        aria_gelu_f16(<uint16_t*>x_arr.data, <uint16_t*>y.data, n)
+    elif op_name == 'silu':
+        aria_silu_f16(<uint16_t*>x_arr.data, <uint16_t*>y.data, n)
+    elif op_name == 'sigmoid':
+        aria_sigmoid_f16(<uint16_t*>x_arr.data, <uint16_t*>y.data, n)
+    else:
+        raise ValueError(f"Unsupported fp16 unary op: {op_name}")
+    return y
+
+
+def dispatch_binary_fp16(str op_name, a, b):
+    """Dispatch a binary op through native fp16 kernels."""
+    cdef cnp.ndarray a_arr = _as_float16_array(a)
+    cdef cnp.ndarray b_arr = _as_float16_array(b)
+    cdef int64_t n = a_arr.size
+    if a_arr.shape != b_arr.shape:
+        raise ValueError(f"Shape mismatch: {np.shape(a_arr)} vs {np.shape(b_arr)}")
+    cdef cnp.ndarray y = np.empty_like(a_arr)
+
+    if op_name == 'add':
+        aria_add_f16(<uint16_t*>a_arr.data, <uint16_t*>b_arr.data, <uint16_t*>y.data, n)
+    elif op_name == 'mul':
+        aria_mul_f16(<uint16_t*>a_arr.data, <uint16_t*>b_arr.data, <uint16_t*>y.data, n)
+    else:
+        raise ValueError(f"Unsupported fp16 binary op: {op_name}")
+    return y
+
+
+def dispatch_matmul_fp16(A, B):
+    """Matrix multiply via native fp16 kernel."""
+    cdef cnp.ndarray A_arr = _as_float16_array(A)
+    cdef cnp.ndarray B_arr = _as_float16_array(B)
+    if A_arr.ndim != 2 or B_arr.ndim != 2:
+        raise ValueError("dispatch_matmul_fp16 expects 2D arrays")
+    cdef int64_t M = A_arr.shape[0]
+    cdef int64_t K = A_arr.shape[1]
+    cdef int64_t N = B_arr.shape[1]
+    if B_arr.shape[0] != K:
+        raise ValueError(f"Shape mismatch: A cols {K} != B rows {B_arr.shape[0]}")
+    cdef cnp.ndarray C = np.empty((M, N), dtype=np.float16)
+    aria_matmul_f16(<uint16_t*>A_arr.data, <uint16_t*>B_arr.data, <uint16_t*>C.data, M, K, N)
+    return C
+
+
+def dispatch_softmax_fp16(x):
+    """Softmax along last dimension via native fp16 kernel."""
+    cdef cnp.ndarray x_arr = _as_float16_array(x)
+    if x_arr.ndim != 2:
+        raise ValueError("dispatch_softmax_fp16 expects a 2D array")
+    cdef int64_t batch = x_arr.shape[0]
+    cdef int64_t dim = x_arr.shape[1]
+    cdef cnp.ndarray y = np.empty((batch, dim), dtype=np.float16)
+    aria_softmax_f16(<uint16_t*>x_arr.data, <uint16_t*>y.data, batch, dim)
+    return y
+
+
+def dispatch_rmsnorm_fp16(x, weight, float eps=1e-5):
+    """RMSNorm via native fp16 kernel."""
+    cdef cnp.ndarray x_arr = _as_float16_array(x)
+    cdef cnp.ndarray w_arr = _as_float16_array(weight)
+    if x_arr.ndim != 2 or w_arr.ndim != 1:
+        raise ValueError("dispatch_rmsnorm_fp16 expects x as 2D and weight as 1D")
+    cdef int64_t batch = x_arr.shape[0]
+    cdef int64_t dim = x_arr.shape[1]
+    if w_arr.shape[0] != dim:
+        raise ValueError(f"Weight dim mismatch: {w_arr.shape[0]} vs {dim}")
+    cdef cnp.ndarray y = np.empty((batch, dim), dtype=np.float16)
+    aria_rmsnorm_f16(<uint16_t*>x_arr.data, <uint16_t*>w_arr.data, <uint16_t*>y.data, batch, dim, eps)
+    return y
+
+
+def list_native_fp16_ops():
+    """Return the fp16 kernel surface supported by the Cython bridge."""
+    return list(_FP16_NATIVE_OPS)
 
 
 def list_native_ops():

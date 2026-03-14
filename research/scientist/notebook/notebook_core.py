@@ -421,6 +421,13 @@ class _NotebookCore:
             "routing_collapse_score REAL",
             "wikitext_perplexity REAL",
             "wikitext_score REAL",
+            "wikitext_pre_perplexity REAL",
+            "wikitext_ppl_improvement REAL",
+            "screening_wikitext_status TEXT",
+            "screening_wikitext_metric_version TEXT",
+            "screening_wikitext_variant TEXT",
+            "screening_wikitext_elapsed_ms REAL",
+            "screening_wikitext_budget_json TEXT",
             "tinystories_perplexity REAL",
             "tinystories_score REAL",
             "cross_task_score REAL",
@@ -443,6 +450,14 @@ class _NotebookCore:
             "routing_confidence_mean REAL",
             "routing_drop_rate REAL",
             "efficiency_multiple REAL",
+            # Real-token eval trajectory (action plan Phase 0)
+            "robustness_grade TEXT",
+            "evaluation_stage TEXT",
+            "eval_budget_steps INTEGER",
+            "capability_tier TEXT",
+            "wikitext_ppl_improvement_ratio REAL",
+            # Recipe re-roll tracking (Phase 5)
+            "reinvestigation_count INTEGER DEFAULT 0",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:

@@ -151,6 +151,10 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "cosine_similarity": OpRole.UNSAFE,
     "transpose_sd": OpRole.UNSAFE,
     "identity": OpRole.UNSAFE,
+
+    # ── Virtual graph nodes (not real ops, neutral role) ──────────
+    "input": OpRole.RESIDUAL,
+    "output": OpRole.RESIDUAL,
 }
 
 

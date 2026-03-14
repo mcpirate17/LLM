@@ -17,7 +17,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, fields
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -26,6 +26,8 @@ from research.env import aria_core
 
 logger = logging.getLogger(__name__)
 NOVELTY_REFERENCE_SCHEME_VERSION = "nv1"
+CKA_NOVELTY_WEIGHT = 0.75
+BEHAVIOR_SIGNATURE_WEIGHT = 0.25
 
 _SENSITIVITY_SKIP_COUNTS: Dict[str, int] = {}
 _SENSITIVITY_SKIP_LAST_LOG_TS: float = 0.0
@@ -84,6 +86,11 @@ class BehavioralFingerprint:
     jacobian_effective_rank: float = 0.0
     sensitivity_uniformity: float = 0.0  # how uniformly sensitive to each input token
 
+    # Routing-specific dimensions (Task 2H)
+    routing_selectivity: float = 0.0     # std of difficulty scores
+    routing_compute_ratio: float = 0.0   # slow/fast FLOP ratio
+    routing_lane_correlation: float = 0.0 # position/content correlation
+
     # Similarity to known architectures (CKA)
     cka_vs_transformer: float = 0.0
     cka_vs_ssm: float = 0.0
@@ -95,6 +102,7 @@ class BehavioralFingerprint:
 
     # Overall novelty estimate
     novelty_score: float = 0.0
+    behavior_signature_score: float = 0.0
 
     # CKA provenance
     cka_source: str = "none"  # "artifact", "heuristic_fallback", "none"
@@ -186,6 +194,15 @@ def compute_fingerprint(
         if sensitivity.get("_succeeded"):
             n_succeeded += 1
 
+        # Routing-aware analysis (Task 2H)
+        try:
+            routing_data = _analyze_routing(model, probe_ids, dev)
+            fp.routing_selectivity = routing_data["selectivity"]
+            fp.routing_compute_ratio = routing_data["compute_ratio"]
+            fp.routing_lane_correlation = routing_data["lane_correlation"]
+        except Exception as e_route:
+            logger.debug("Routing analysis skipped: %s", e_route)
+
         # CKA similarity to reference architectures
         # Try artifact-backed CKA first, fall back to heuristic
         from .cka_references import get_default_store
@@ -211,19 +228,16 @@ def compute_fingerprint(
             fp.novelty_valid_for_promotion = True
             fp.novelty_validity_reason = "artifact_reference"
         elif fp.cka_source == "heuristic_fallback":
-            fp.novelty_valid_for_promotion = True
+            fp.novelty_valid_for_promotion = False
             fp.novelty_validity_reason = "heuristic_fallback_reference"
         else:
-            # CKA references unavailable — still allow promotion; novelty
-            # is informational, not a gate.
-            fp.novelty_valid_for_promotion = True
+            fp.novelty_valid_for_promotion = False
             fp.novelty_validity_reason = "no_reference_available"
         if cka.get("_succeeded"):
             n_succeeded += 1
 
-        # Overall novelty: low similarity to all known architectures
-        max_cka = max(fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv, 0.01)
-        fp.novelty_score = 1.0 - max_cka
+        fp.behavior_signature_score = _behavior_signature_score(fp)
+        fp.novelty_score = _blend_behavioral_novelty(fp)
 
     # Record analysis quality
     fp.analyses_succeeded = n_succeeded
@@ -275,8 +289,8 @@ def compute_lightning_fingerprint(
             fp.cka_vs_ssm = cka.get("ssm", 0.0)
             fp.cka_vs_conv = cka.get("conv", 0.0)
             
-            max_cka = max(fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv, 0.01)
-            fp.novelty_score = 1.0 - max_cka
+            fp.behavior_signature_score = _behavior_signature_score(fp)
+            fp.novelty_score = _blend_behavioral_novelty(fp)
             fp.cka_source = "lightning_dry_run"
             fp.quality = "partial"
             fp.analyses_succeeded = 1
@@ -289,12 +303,10 @@ def compute_lightning_fingerprint(
                 fp.novelty_valid_for_promotion = True
                 fp.novelty_validity_reason = "artifact_reference"
             elif src == "heuristic_fallback":
-                fp.novelty_valid_for_promotion = True
+                fp.novelty_valid_for_promotion = False
                 fp.novelty_validity_reason = "heuristic_lightning"
             else:
-                # Even with no references, CKA was computed against
-                # synthetic patterns — still valid for promotion.
-                fp.novelty_valid_for_promotion = True
+                fp.novelty_valid_for_promotion = False
                 fp.novelty_validity_reason = "lightning_computed"
 
     return fp
@@ -309,6 +321,7 @@ def compute_gated_fingerprint(
     device: str = "cpu",
     full_gate_enabled: bool = True,
     lightning_novelty_threshold: float = 0.15,
+    force_lightning_only: bool = False,
 ) -> Tuple[BehavioralFingerprint, bool]:
     """Run lightning novelty gating before the full fingerprint when enabled."""
     if not full_gate_enabled:
@@ -329,8 +342,12 @@ def compute_gated_fingerprint(
         model_dim=model_dim,
         device=device,
     )
-    if float(lightning_fp.novelty_score or 0.0) < float(lightning_novelty_threshold):
+    
+    # Task 4I: If force_lightning_only is set (e.g. for poor performers), 
+    # skip the full fingerprint regardless of novelty score.
+    if force_lightning_only or float(lightning_fp.novelty_score or 0.0) < float(lightning_novelty_threshold):
         return lightning_fp, False
+        
     return (
         compute_fingerprint(
             model,
@@ -353,6 +370,48 @@ def build_novelty_reference_version(
     art = str(cka_artifact_version or "none")
     probe = str(cka_probe_protocol_hash or "none")
     return f"{NOVELTY_REFERENCE_SCHEME_VERSION}:{source}:{art}:{probe}"
+
+
+def _sanitize_unit_feature(value: float) -> float:
+    try:
+        val = float(value)
+    except Exception:
+        return 0.5
+    if not math.isfinite(val):
+        return 0.5
+    return min(1.0, max(0.0, val))
+
+
+def _behavior_signature_score(fp: BehavioralFingerprint) -> float:
+    """Bounded non-CKA distinctiveness signal from behavioral probes."""
+    features = [
+        fp.interaction_locality,
+        fp.interaction_sparsity,
+        fp.interaction_symmetry,
+        fp.interaction_hierarchy,
+        fp.isotropy,
+        fp.rank_ratio,
+        fp.sensitivity_uniformity,
+        fp.routing_selectivity,
+        fp.routing_lane_correlation,
+        fp.hierarchy_fitness,
+    ]
+    if not features:
+        return 0.0
+    sanitized = [_sanitize_unit_feature(v) for v in features]
+    return float(sum(abs(v - 0.5) * 2.0 for v in sanitized) / len(sanitized))
+
+
+def _cka_distance_novelty(fp: BehavioralFingerprint) -> float:
+    max_cka = max(fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv, 0.01)
+    return 1.0 - max_cka
+
+
+def _blend_behavioral_novelty(fp: BehavioralFingerprint) -> float:
+    return (
+        CKA_NOVELTY_WEIGHT * _cka_distance_novelty(fp)
+        + BEHAVIOR_SIGNATURE_WEIGHT * _behavior_signature_score(fp)
+    )
 
 
 def _get_representations(model: nn.Module, input_ids: torch.Tensor,
@@ -426,6 +485,74 @@ def _interaction_metrics(
     }
 
 
+def _analyze_routing(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    dev: torch.device,
+) -> Dict[str, float]:
+    """Analyze routing-specific behavior (Task 2H)."""
+    result = {"selectivity": 0.0, "compute_ratio": 0.0, "lane_correlation": 0.0}
+    
+    # Identify if model has routing ops via its graph (if accessible)
+    has_routing = False
+    if hasattr(model, "graph") and model.graph is not None:
+        from ..synthesis.grammar import _ROUTING_OPS
+        for node in model.graph.nodes.values():
+            if not node.is_input and node.op_name in _ROUTING_OPS:
+                has_routing = True
+                break
+    
+    if not has_routing:
+        return result
+
+    try:
+        # Extract routing telemetry from the model
+        # Most routing models in Aria expose 'routing_stats' or similar after a forward pass
+        with torch.no_grad():
+            model(input_ids)
+            
+        # 1. Routing Selectivity (Std of difficulty/gate scores)
+        # Higher selectivity = model is making sharp decisions about token paths
+        if hasattr(model, "last_routing_scores"):
+            scores = model.last_routing_scores # Expected shape (B, S, n_lanes) or similar
+            if isinstance(scores, torch.Tensor) and scores.numel() > 0:
+                result["selectivity"] = float(scores.std().item())
+        
+        # 2. Routing Compute Ratio (slow/fast FLOP ratio)
+        # Measures how much of the compute is dynamic vs static
+        if hasattr(model, "get_routing_compute_stats"):
+            stats = model.get_routing_compute_stats()
+            # Expecting {'slow_flops': ..., 'fast_flops': ...} or similar
+            slow = stats.get("slow_flops", 0)
+            fast = stats.get("fast_flops", 1) # avoid div by zero
+            result["compute_ratio"] = float(slow / max(fast, 1e-6))
+        elif hasattr(model, "routing_compute_ratio"):
+             result["compute_ratio"] = float(model.routing_compute_ratio)
+
+        # 3. Routing Lane Correlation (Position vs Content correlation)
+        # Do tokens at same positions always take same lanes? (Structural)
+        # Or does it depend on content? (Content-aware)
+        if hasattr(model, "last_routing_decisions"):
+            # Shape (B, S) - lane indices
+            decisions = model.last_routing_decisions
+            if isinstance(decisions, torch.Tensor) and decisions.dim() >= 2:
+                # Correlation of lane choice with position S
+                B, S = decisions.shape[:2]
+                positions = torch.arange(S, device=dev).float().expand(B, S)
+                
+                def pearson_corr(x, y):
+                    mx, my = x.mean(), y.mean()
+                    vx, vy = x - mx, y - my
+                    return (vx * vy).sum() / (torch.norm(vx) * torch.norm(vy) + 1e-8)
+                
+                result["lane_correlation"] = float(pearson_corr(decisions.float(), positions).item())
+
+    except Exception as e:
+        logger.debug("Routing analysis failed: %s", e)
+
+    return result
+
+
 def _analyze_geometry(reps: torch.Tensor) -> Dict[str, float]:
     """Analyze the geometry of representation space."""
     result = {"intrinsic_dim": 0.0, "isotropy": 0.0, "rank_ratio": 0.0,
@@ -476,6 +603,20 @@ def _analyze_geometry(reps: torch.Tensor) -> Dict[str, float]:
     return result
 
 
+def _forward_model_from_embed(model: nn.Module, embed_in: torch.Tensor) -> torch.Tensor:
+    """Run the model body starting from precomputed embeddings."""
+    x_local = embed_in
+    if hasattr(model, "pos_enc") and model.pos_enc is not None:
+        x_local = model.pos_enc(x_local)
+    if hasattr(model, "layers"):
+        for layer in model.layers:
+            x_local = layer(x_local)
+        return x_local
+    if hasattr(model, "topology"):
+        return model.topology(x_local)
+    return x_local
+
+
 def _analyze_sensitivity(
     model: nn.Module, dev: torch.device,
     seq_len: int, vocab_size: int,
@@ -494,15 +635,8 @@ def _analyze_sensitivity(
             # Get embedding and make it require grad
             embed = model.embed(ids).detach().requires_grad_(True)
 
-            # Forward through layers only (skip embed/head)
-            x = embed
-            if hasattr(model, 'pos_enc') and model.pos_enc is not None:
-                x = model.pos_enc(x)
-            if hasattr(model, 'layers'):
-                for layer in model.layers:
-                    x = layer(x)
-            elif hasattr(model, 'topology'):
-                x = model.topology(x)
+            forward_from_embed = lambda embed_in: _forward_model_from_embed(model, embed_in)
+            x = forward_from_embed(embed)
 
             if not x.requires_grad:
                 _record_sensitivity_skip("output_no_grad")
@@ -511,7 +645,7 @@ def _analyze_sensitivity(
             n_positions = max(1, min(4, seq_len))
             step = max(1, seq_len // n_positions)
             positions = torch.arange(0, seq_len, step, device=dev, dtype=torch.int64)[:n_positions]
-            sens_matrix = _collect_position_sensitivities(x, embed, positions)
+            sens_matrix = _collect_position_sensitivities(forward_from_embed, embed, positions)
             if sens_matrix is None:
                 _record_sensitivity_skip("no_sensitivity_grads")
             if sens_matrix is not None:
@@ -526,57 +660,57 @@ def _analyze_sensitivity(
 
 
 def _collect_position_sensitivities(
-    x: torch.Tensor,
+    x_or_forward: torch.Tensor | Callable[[torch.Tensor], torch.Tensor],
     embed: torch.Tensor,
     positions: torch.Tensor,
 ) -> Optional[torch.Tensor]:
-    """Collect Jacobian sensitivity rows via vectorized torch.func.jacrev.
-
-    Uses a single vectorized backward pass instead of N sequential backprops.
-    Falls back to sequential loop if torch.func is unavailable.
-    """
+    """Collect sensitivity rows from either a forward fn or a precomputed tensor."""
     n_pos = positions.numel()
-    if n_pos == 0 or not x.requires_grad:
+    if n_pos == 0 or not embed.requires_grad:
         return None
 
-    # Try vectorized Jacobian via torch.func (PyTorch 2.0+)
+    if callable(x_or_forward):
+        forward_from_embed = x_or_forward
+    else:
+        x = x_or_forward
+        try:
+            grad_outputs = torch.zeros(n_pos, *x.shape, device=x.device, dtype=x.dtype)
+            for i, pos in enumerate(positions.tolist()):
+                grad_outputs[i, :, pos, :] = 1.0
+            batched_grads = torch.autograd.grad(
+                x, embed, grad_outputs=grad_outputs, retain_graph=False,
+                create_graph=False, is_grads_batched=True
+            )[0]
+            return batched_grads.norm(dim=-1).squeeze(1)
+        except RuntimeError:
+            forward_from_embed = lambda _: x
+
     try:
-        import torch.func  # noqa: F401 — availability gate for batched autograd
+        from torch.func import grad, vmap
 
-        # Build a function from embed -> stacked position outputs
-        # We need a function that takes embed and returns the relevant outputs
-        # Since x is already computed, use autograd.grad directly in batched form
-        # Create grad_outputs for all positions at once
-        grad_outputs = torch.zeros(n_pos, *x.shape, device=x.device, dtype=x.dtype)
-        for i, pos in enumerate(positions.tolist()):
-            grad_outputs[i, :, pos, :] = 1.0
+        def probe_loss(embed_in: torch.Tensor, pos_idx: torch.Tensor) -> torch.Tensor:
+            out = forward_from_embed(embed_in)
+            return torch.index_select(out, 1, pos_idx.reshape(1)).sum()
 
-        # Reshape for single batched backward
-        # Use torch.autograd.grad with batched grad_outputs
-        batched_g = torch.autograd.grad(
-            x, embed, grad_outputs=grad_outputs,
-            retain_graph=True, create_graph=False,
-            is_grads_batched=True
-        )[0]
-        
-        # batched_g is (n_pos, B, S, D)
-        # norm over D -> (n_pos, B, S), squeeze B=1 -> (n_pos, S)
-        return batched_g.norm(dim=-1).squeeze(1)
+        batched_grads = vmap(lambda pos_idx: grad(probe_loss, argnums=0)(embed, pos_idx))(positions)
+        return batched_grads.norm(dim=-1).squeeze(1)
 
     except (ImportError, RuntimeError):
         pass
 
-    # Sequential fallback for older PyTorch
     rows: List[torch.Tensor] = []
-    for pos in positions.tolist():
-        if embed.grad is not None:
-            embed.grad.zero_()
-        target = x[:, pos, :].sum()
-        if not target.requires_grad:
-            continue
-        target.backward(retain_graph=True)
-        if embed.grad is not None:
-            rows.append(embed.grad.clone().norm(dim=-1).squeeze(0))
+    pos_values = positions.tolist()
+    last_idx = len(pos_values) - 1
+    for idx, pos in enumerate(pos_values):
+        grad_out = torch.autograd.grad(
+            forward_from_embed(embed)[:, pos, :].sum(),
+            embed,
+            retain_graph=idx < last_idx,
+            create_graph=False,
+            allow_unused=True,
+        )[0]
+        if grad_out is not None:
+            rows.append(grad_out.norm(dim=-1).squeeze(0))
     return torch.stack(rows) if rows else None
 
 

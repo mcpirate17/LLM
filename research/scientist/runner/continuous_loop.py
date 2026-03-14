@@ -336,7 +336,7 @@ class _ContinuousLoopMixin:
                 and e.get("screening_loss_ratio") is not None
                 and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
                 and e.get("result_id") not in _investigated_fps
-                # Also check by fingerprint from the linked program_result
+                and "provisional_random_tokens" not in (e.get("tags") or "")
             ])
             # More robust: filter by fingerprint
             if _investigated_fps:
@@ -344,7 +344,8 @@ class _ContinuousLoopMixin:
                 for e in leaderboard:
                     if (e.get("tier") == "screening"
                             and e.get("screening_loss_ratio") is not None
-                            and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold):
+                            and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
+                            and "provisional_random_tokens" not in (e.get("tags") or "")):
                         # Look up the fingerprint for this result
                         try:
                             fp_row = nb.conn.execute(

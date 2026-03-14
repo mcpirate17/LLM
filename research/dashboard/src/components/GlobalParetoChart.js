@@ -6,6 +6,7 @@ const PALETTE = [
   '#39d2c0', '#e3b341', '#db61a2', '#79c0ff', '#7ee787',
 ];
 const MAX_VISIBLE_POINTS_FOR_TOP20 = 120;
+const MIN_FRONTIER_POINTS = 8;
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
@@ -28,6 +29,16 @@ function noveltyValue(program) {
   const behavioral = finiteOrNull(program.behavioral_novelty);
   if (structural != null && behavioral != null) return Math.max(structural, behavioral);
   return structural ?? behavioral ?? 0;
+}
+
+function bestLossRatio(program) {
+  const candidates = [
+    finiteOrNull(program.validation_loss_ratio),
+    finiteOrNull(program.investigation_loss_ratio),
+    finiteOrNull(program.screening_loss_ratio),
+    finiteOrNull(program.loss_ratio),
+  ];
+  return candidates.find((value) => value != null) ?? null;
 }
 
 function GlobalParetoChart({
@@ -70,12 +81,14 @@ function GlobalParetoChart({
     return (programs || [])
       .filter((p) =>
         (p.stage1_passed || p.screening_passed || p.tier) &&
-        p.loss_ratio != null &&
-        p.param_count != null
+        bestLossRatio(p) != null &&
+        (p.param_count != null || p.graph_n_params_estimate != null)
       )
       .map((p) => {
-        const accuracy = Math.max(0, 1 - Number(p.loss_ratio || 1));
-        const paramsM = Number(p.param_count || 0) / 1e6;
+        const lossRatio = bestLossRatio(p);
+        const accuracy = Math.max(0, 1 - Number(lossRatio || 1));
+        const rawParams = finiteOrNull(p.param_count ?? p.graph_n_params_estimate) ?? 0;
+        const paramsM = rawParams / 1e6;
         const noveltyAxis = noveltyValue(p);
         const explicitScore = finiteOrNull(p._score ?? p.composite_score ?? p.score);
         const fallbackScore = (accuracy * 100) + (noveltyAxis * 25) - paramsM * 0.25;
@@ -97,7 +110,13 @@ function GlobalParetoChart({
     if (!survivors.length) return { points: [], percentile: 20 };
     const sorted = [...survivors].sort((a, b) => (b.score || 0) - (a.score || 0));
     const top20Count = Math.max(1, Math.ceil(sorted.length * 0.2));
+    if (sorted.length <= MIN_FRONTIER_POINTS) {
+      return { points: sorted, percentile: 100 };
+    }
     const top20 = sorted.slice(0, top20Count);
+    if (top20.length < MIN_FRONTIER_POINTS) {
+      return { points: sorted.slice(0, Math.min(sorted.length, MIN_FRONTIER_POINTS)), percentile: Math.ceil((MIN_FRONTIER_POINTS / sorted.length) * 100) };
+    }
     if (top20.length > MAX_VISIBLE_POINTS_FOR_TOP20) {
       const top10Count = Math.max(1, Math.ceil(sorted.length * 0.1));
       return { points: sorted.slice(0, top10Count), percentile: 10 };
@@ -109,7 +128,10 @@ function GlobalParetoChart({
   const frontierPercentile = filteredFrontier.percentile;
   const chartTitle = `${title} (Top ${frontierPercentile}% by score)`;
 
-const fingerprints = useMemo(() => Array.from(new Set(frontierPoints.map((p) => p.graph_fingerprint || 'unknown'))), [frontierPoints]);
+  const fingerprints = useMemo(
+    () => Array.from(new Set(frontierPoints.map((p) => p.graph_fingerprint || 'unknown'))),
+    [frontierPoints],
+  );
   
   const fingerprintColors = useMemo(() => {
     const map = {};

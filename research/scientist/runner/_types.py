@@ -93,6 +93,10 @@ class RunConfig:
     hf_subset: str = ""            # e.g. "wikitext-2-raw-v1"
     hf_split: str = "train"        # train | validation | test
     hf_text_key: str = "text"      # column name containing text
+    # Screening WikiText eval (fast real-token perplexity at screening time)
+    skip_screening_wikitext: bool = False  # set True to disable screening WikiText eval
+    # Escalation threshold: auto-escalate if ppl_200/ppl_500 exceeds this ratio
+    improvement_ratio_escalation_threshold: float = 2.0
     # Synthesis grammar
     min_depth: int = 3
     max_depth: int = 10

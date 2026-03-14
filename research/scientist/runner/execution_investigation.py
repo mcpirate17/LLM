@@ -253,13 +253,12 @@ class _ExecutionInvestigationMixin:
                             best_tp_json = json.dumps(tp.to_dict())
                             break
 
-                # Brittle risk override: if the investigation LR is good on
-                # its own merits (< 0.3), don't let the screening→investigation
-                # multiplier veto promotion.  Prevents false positives when
-                # screening LR was unrealistically low (e.g. lucky seed).
+                # Gate: pass investigation if loss quality is good enough.
+                # Robustness is tracked as a ranking signal (robustness_grade)
+                # but no longer a hard gate — models with 1/3 pass rate but
+                # strong real-token quality should still proceed.
                 investigation_passed = (
-                    robustness >= 0.5
-                    and (best_lr or 1.0) < 0.5
+                    (best_lr or 1.0) < 0.5
                     and (not brittle_risk
                          or (best_lr is not None and best_lr < 0.3))
                 )

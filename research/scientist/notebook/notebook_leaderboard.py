@@ -7,6 +7,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
+from ..leaderboard_scoring import build_score_kwargs
 
 _LEADERBOARD_MANAGED_COLUMNS = frozenset({
     "entry_id",
@@ -26,6 +27,77 @@ _LEADERBOARD_MANAGED_COLUMNS = frozenset({
 class _LeaderboardMixin:
     """Leaderboard operations for the Lab Notebook."""
     __slots__ = ()
+
+    @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        return num if num == num else None
+
+    def _normalize_benchmark_fields(self, entry: Dict[str, Any]) -> None:
+        """Backfill stable benchmark aliases from persisted artifact payloads."""
+        raw_payload = entry.pop("_external_benchmarks_json", None)
+        payload = None
+        if raw_payload and isinstance(raw_payload, str):
+            try:
+                payload = json.loads(raw_payload)
+            except (json.JSONDecodeError, TypeError):
+                payload = None
+
+        screening = payload.get("screening_wikitext") if isinstance(payload, dict) else None
+        screening_metrics = screening.get("metrics") if isinstance(screening, dict) else {}
+
+        wikitext_ppl = self._coerce_float(
+            entry.get("wikitext_ppl")
+            or entry.get("wikitext_perplexity")
+            or screening_metrics.get("wikitext_perplexity")
+        )
+        if wikitext_ppl is not None:
+            entry["wikitext_ppl"] = wikitext_ppl
+            entry.setdefault("peak_ppl", wikitext_ppl)
+
+        improvement_ratio = self._coerce_float(
+            entry.get("wikitext_ppl_improvement_ratio")
+            or entry.get("wikitext_improvement_ratio")
+            or entry.get("wikitext_ppl_improvement")
+            or screening_metrics.get("wikitext_ppl_improvement")
+        )
+        if improvement_ratio is not None:
+            entry["improvement_ratio"] = improvement_ratio
+
+        if screening:
+            entry.setdefault("screening_wikitext_status", screening.get("status"))
+            entry.setdefault("screening_wikitext_metric_version", screening.get("metric_version"))
+            entry.setdefault("screening_wikitext_variant", screening.get("variant"))
+            elapsed_ms = self._coerce_float(screening.get("elapsed_ms"))
+            if elapsed_ms is not None:
+                entry.setdefault("screening_wikitext_elapsed_ms", elapsed_ms)
+
+        trajectory_payload = payload.get("wikitext_trajectory") if isinstance(payload, dict) else None
+        checkpoints = trajectory_payload.get("checkpoints") if isinstance(trajectory_payload, dict) else None
+        if isinstance(checkpoints, dict):
+            ordered_steps = []
+            for step, values in checkpoints.items():
+                try:
+                    step_num = int(step)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(values, dict):
+                    continue
+                ppl = self._coerce_float(values.get("ppl"))
+                if ppl is None:
+                    continue
+                ordered_steps.append((step_num, ppl))
+            ordered_steps.sort(key=lambda item: item[0])
+            if ordered_steps:
+                trajectory = [ppl for _, ppl in ordered_steps]
+                entry["wikitext_ppl_trajectory"] = trajectory
+                entry["peak_ppl"] = min(trajectory)
+                entry["eval_budget_steps"] = ordered_steps[-1][0]
+                if len(trajectory) >= 2 and trajectory[1] > 0:
+                    entry.setdefault("improvement_ratio", trajectory[0] / trajectory[1])
 
     def _highest_tier(self, rows: List[Dict[str, Any]]) -> Optional[str]:
         tiers = [str(r.get("tier") or "").lower() for r in rows if r.get("tier")]
@@ -83,9 +155,10 @@ class _LeaderboardMixin:
         d = dict(existing) if existing else {}
         # Sanitize all incoming values
         kwargs = sanitize_for_db(kwargs)
-        update_items = self._leaderboard_update_items(kwargs)
-        
-        d.update(dict(update_items))
+
+        # Merge caller kwargs into d first so derived fields can read them
+        for col, val in self._leaderboard_update_items(kwargs):
+            d[col] = val
         if tags is not None: d["tags"] = tags
         if notes is not None: d["notes"] = notes
         d["tier"] = tier
@@ -94,51 +167,34 @@ class _LeaderboardMixin:
         d["is_reference"] = int(is_reference)
         if reference_name: d["reference_name"] = reference_name
 
-        nov_conf = d.get("novelty_confidence")
-        if nov_conf is None and pr_row:
-            nov_conf = pr_row["novelty_confidence"]
-        structural_counts = self._graph_structural_counts(
-            resolved_result_id,
-            graph_json=pr_row["graph_json"] if pr_row else None,
-        )
+        # Auto-derive robustness_grade from investigation_robustness.
+        # A: >=2/3, B: 1/3-2/3, C: <1/3, None: untested.
+        if not kwargs.get("robustness_grade"):
+            inv_rob = d.get("investigation_robustness")
+            if inv_rob is not None:
+                try:
+                    inv_rob_f = float(inv_rob)
+                    if inv_rob_f >= 2 / 3:
+                        grade = "A"
+                    elif inv_rob_f >= 1 / 3:
+                        grade = "B"
+                    else:
+                        grade = "C"
+                    d["robustness_grade"] = grade
+                    kwargs["robustness_grade"] = grade
+                except (TypeError, ValueError):
+                    pass
 
-        composite = self.compute_composite_score(
-            screening_lr=d.get("screening_loss_ratio"),
-            screening_nov=d.get("screening_novelty"),
-            inv_lr=d.get("investigation_loss_ratio"),
-            inv_robust=d.get("investigation_robustness"),
-            val_lr=d.get("validation_loss_ratio"),
-            val_baseline=d.get("validation_baseline_ratio"),
-            val_std=d.get("validation_multi_seed_std"),
-            novelty_confidence=nov_conf,
-            scaling_param_efficiency=d.get("scaling_param_efficiency"),
-            is_reference=bool(is_reference),
-            routing_savings=d.get("routing_savings_ratio"),
-            compression_ratio=d.get("compression_ratio"),
-            discovery_lr=d.get("discovery_loss_ratio"),
-            spectral_norm=d.get("fp_jacobian_spectral_norm"),
-            robustness_noise=d.get("robustness_noise_score"),
-            quant_retention=d.get("quant_int8_retention"),
-            long_ctx_score=d.get("robustness_long_ctx_score"),
-            init_std=d.get("init_sensitivity_std"),
-            loss_improvement_rate=d.get("loss_improvement_rate"),
-            quant_quality_per_byte=d.get("quant_quality_per_byte"),
-            ncd_score=d.get("ncd_score"),
-            n_routing_ops=structural_counts.get("routing"),
-            n_sparse_ops=structural_counts.get("sparse"),
-            n_moe_ops=structural_counts.get("moe"),
-            recursion_savings=d.get("recursion_savings_ratio"),
-            depth_savings=d.get("depth_savings_ratio"),
-            activation_sparsity=d.get("activation_sparsity_score"),
-            max_viable_seq_len=d.get("max_viable_seq_len"),
-            long_ctx_scaling=d.get("robustness_long_ctx_scaling_score"),
-            long_ctx_passkey=d.get("robustness_long_ctx_passkey_score"),
-            long_ctx_multi_hop=d.get("robustness_long_ctx_multi_hop_score"),
-            long_ctx_assoc=d.get("robustness_long_ctx_assoc_score"),
-            routing_expert_count=d.get("routing_expert_count"),
-            routing_confidence_mean=d.get("routing_confidence_mean"),
-            routing_drop_rate=d.get("routing_drop_rate"),
+        update_items = self._leaderboard_update_items(kwargs)
+
+        score_kwargs = build_score_kwargs(
+            self.conn,
+            self,
+            resolved_result_id,
+            d,
+            bool(is_reference),
         )
+        composite = self.compute_composite_score(**score_kwargs)
 
         # Compute efficiency_multiple from program_results operational metrics
         eff_mult = kwargs.get("efficiency_multiple")
@@ -270,6 +326,7 @@ class _LeaderboardMixin:
             "pr.robustness_long_ctx_assoc_score AS robustness_long_ctx_assoc_score, "
             "pr.robustness_long_ctx_multi_hop_score AS robustness_long_ctx_multi_hop_score, "
             "pr.robustness_long_ctx_passkey_score AS robustness_long_ctx_passkey_score, "
+            "pr.external_benchmarks_json AS _external_benchmarks_json, "
             "pr.efficiency_multiple AS _pr_efficiency_multiple "
             "FROM leaderboard l "
             "LEFT JOIN program_results pr ON pr.result_id = l.result_id "
@@ -328,6 +385,7 @@ class _LeaderboardMixin:
             d.pop("_pr_discovery_loss_ratio", None)
             d.pop("_pr_validation_loss_ratio", None)
             d.pop("_pr_efficiency_multiple", None)
+            self._normalize_benchmark_fields(d)
             
             if d.get("investigation_best_training"):
                 try:
@@ -458,12 +516,17 @@ class _LeaderboardMixin:
                 val_lr=d.get("validation_loss_ratio"),
                 val_baseline=d.get("validation_baseline_ratio"),
                 val_std=d.get("validation_multi_seed_std"),
+                robustness_score=d.get("validation_robustness_score"),
+                is_unstable=d.get("validation_is_unstable"),
                 novelty_confidence=nov_conf,
                 scaling_param_efficiency=d.get("scaling_param_efficiency"),
                 is_reference=bool(d.get("is_reference")),
                 routing_savings=d.get("routing_savings_ratio"),
                 compression_ratio=d.get("compression_ratio"),
                 n_routing_ops=structural_counts.get("routing"),
+                wikitext_score=d.get("wikitext_score"),
+                investigation_passed=d.get("investigation_passed"),
+                validation_passed=d.get("validation_passed"),
             )
             sets.append("composite_score = ?")
             params.append(composite)

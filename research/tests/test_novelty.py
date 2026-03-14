@@ -149,6 +149,28 @@ class TestNoveltyScoring(unittest.TestCase):
         # overall_novelty should be <= raw_novelty (penalty is <= 1.0)
         self.assertLessEqual(nov.overall_novelty, expected_raw + 0.01)
 
+    def test_behavior_signature_contributes_to_fingerprint_novelty(self):
+        """Fingerprint novelty is not just 1 - max(CKA)."""
+        from research.eval.fingerprint import BehavioralFingerprint, _blend_behavioral_novelty
+
+        fp = BehavioralFingerprint(
+            cka_vs_transformer=0.3,
+            cka_vs_ssm=0.2,
+            cka_vs_conv=0.1,
+            interaction_locality=1.0,
+            interaction_sparsity=0.0,
+            interaction_symmetry=1.0,
+            interaction_hierarchy=0.0,
+            isotropy=1.0,
+            rank_ratio=0.0,
+            sensitivity_uniformity=1.0,
+            hierarchy_fitness=1.0,
+        )
+        expected_cka_only = 0.7
+        blended = _blend_behavioral_novelty(fp)
+        self.assertGreater(blended, expected_cka_only)
+        self.assertLessEqual(blended, 1.0)
+
     def test_duplicate_penalization(self):
         """Exact duplicate fingerprints should be penalized."""
         from research.eval.metrics import novelty_score
@@ -247,6 +269,27 @@ class TestNoveltyCalibration(unittest.TestCase):
                                    analyses_succeeded=0)
         nov = novelty_score(graph, fingerprint=fp)
         self.assertAlmostEqual(nov.novelty_confidence, 0.3)
+
+    def test_heuristic_fingerprint_not_valid_for_promotion_by_default(self):
+        """Heuristic novelty should require override policy downstream."""
+        from research.eval.metrics import novelty_score
+        from research.eval.fingerprint import BehavioralFingerprint
+        from research.synthesis.graph import ComputationGraph
+
+        graph = ComputationGraph(model_dim=256)
+        inp = graph.add_input()
+        op = graph.add_op("relu", [inp])
+        graph.set_output(op)
+
+        fp = BehavioralFingerprint(
+            novelty_score=0.6,
+            cka_source="heuristic_fallback",
+            novelty_valid_for_promotion=False,
+            novelty_validity_reason="heuristic_fallback_reference",
+        )
+        nov = novelty_score(graph, fingerprint=fp)
+        self.assertFalse(nov.novelty_valid_for_promotion)
+        self.assertEqual(nov.novelty_validity_reason, "heuristic_fallback_reference")
 
     def test_novelty_confidence_persisted_in_db(self):
         """novelty_confidence column exists and round-trips through DB."""
@@ -522,6 +565,50 @@ class TestNoveltyCalibration(unittest.TestCase):
             lb = nb.get_leaderboard(limit=10)
             scores = {e["entry_id"]: e["composite_score"] for e in lb}
             self.assertGreater(scores[eid_high], scores[eid_low])
+
+    def test_composite_score_rewards_real_token_quality(self):
+        """WikiText quality should materially improve composite score."""
+        from research.scientist.notebook import LabNotebook
+
+        weak = LabNotebook.compute_composite_score(
+            screening_lr=0.15,
+            screening_nov=0.8,
+            wikitext_score=0.45,
+            wikitext_perplexity=180.0,
+        )
+        strong = LabNotebook.compute_composite_score(
+            screening_lr=0.15,
+            screening_nov=0.8,
+            wikitext_score=0.68,
+            wikitext_perplexity=30.0,
+        )
+        self.assertGreater(strong, weak)
+
+    def test_failed_investigation_only_penalized_with_negative_evidence(self):
+        """Failed investigation should hurt only when robustness/token quality are weak."""
+        from research.scientist.notebook import LabNotebook
+
+        weak = LabNotebook.compute_composite_score(
+            screening_lr=0.02,
+            screening_nov=0.8,
+            inv_lr=0.2,
+            inv_robust=0.3333,
+            investigation_passed=False,
+            validation_passed=False,
+            wikitext_score=0.45,
+            wikitext_perplexity=180.0,
+        )
+        strong = LabNotebook.compute_composite_score(
+            screening_lr=0.02,
+            screening_nov=0.8,
+            inv_lr=0.2,
+            inv_robust=0.3333,
+            investigation_passed=False,
+            validation_passed=False,
+            wikitext_score=0.67,
+            wikitext_perplexity=35.0,
+        )
+        self.assertGreater(strong, weak)
 
 
 class TestBaselineDataFn(unittest.TestCase):

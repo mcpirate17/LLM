@@ -74,10 +74,22 @@ CREATE TABLE IF NOT EXISTS aria_proposals (
     FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 
+CREATE TABLE IF NOT EXISTS suggestion_outcomes (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    suggestion_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    fingerprint TEXT,
+    intent TEXT,
+    outcome TEXT NOT NULL, -- 'applied', 'rejected'
+    details_json TEXT,
+    session_id TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_components_category ON components(category);
 CREATE INDEX IF NOT EXISTS idx_components_status ON components(status);
 CREATE INDEX IF NOT EXISTS idx_workflows_author ON workflows(author);
 CREATE INDEX IF NOT EXISTS idx_proposals_status ON aria_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_suggestion_outcomes_id ON suggestion_outcomes(suggestion_id);
 """
 
 
@@ -298,6 +310,36 @@ def get_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     return dict(row)
+
+
+# ── Feedback Loop ─────────────────────────────────────────────────────
+
+def record_suggestion_outcome(
+    suggestion_id: str,
+    outcome: str,
+    timestamp: str,
+    fingerprint: Optional[str] = None,
+    intent: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+) -> None:
+    """Record when a user applies or rejects a suggestion (Task 3I)."""
+    conn = _get_conn()
+    conn.execute(
+        """INSERT INTO suggestion_outcomes 
+           (suggestion_id, outcome, timestamp, fingerprint, intent, details_json, session_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            suggestion_id,
+            outcome,
+            timestamp,
+            fingerprint,
+            intent,
+            json.dumps(details) if details else None,
+            session_id,
+        ),
+    )
+    conn.commit()
 
 
 def cleanup_orphaned_workflows(max_age_hours: int = 24) -> int:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ast
 import operator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
@@ -39,6 +39,18 @@ class OpCategory(Enum):
 # We use strings for symbolic dims: "B" (batch), "S" (seq), "D" (model dim)
 # and ints for concrete dims
 ShapeSym = Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AlgebraicType:
+    """Input/output algebraic contract for a primitive."""
+
+    space: str
+    input_constraint: str
+    output_guarantee: str
+
+
+_EUCLIDEAN_TYPE = AlgebraicType("euclidean", "real", "real")
 
 
 @dataclass(frozen=True)
@@ -66,11 +78,9 @@ class PrimitiveOp:
     # False for routing signal helpers that produce non-standard outputs
     # (tuples, indices, reduced dims) consumed by specific routing ops.
     standalone: bool = True
-    # Algebraic space this op operates in. Used by grammar to prevent
-    # incompatible compositions (e.g., tropical_matmul after exp_map).
-    # "euclidean" ops compose with anything; non-euclidean ops require
-    # matching space context.
+    # Backward-compatible coarse algebraic space tag.
     algebraic_space: str = "euclidean"
+    algebraic_type: AlgebraicType = field(default_factory=lambda: _EUCLIDEAN_TYPE)
 
     def __hash__(self):
         return hash(self.name)
@@ -604,6 +614,45 @@ _ALGEBRAIC_SPACE_TAGS: Dict[str, str] = {
     "sparse_threshold": "spiking",
 }
 
+_ALGEBRAIC_TYPE_TAGS: Dict[str, AlgebraicType] = {
+    "poincare_add": AlgebraicType("poincare", "unit_ball", "unit_ball"),
+    "exp_map": AlgebraicType("poincare", "real", "unit_ball"),
+    "log_map": AlgebraicType("euclidean", "unit_ball", "real"),
+    "hyp_distance": AlgebraicType("poincare", "unit_ball", "distance"),
+    "hyp_linear": AlgebraicType("poincare", "unit_ball", "unit_ball"),
+    "hyp_tangent_nonlinear": AlgebraicType("poincare", "unit_ball", "unit_ball"),
+    "hyperbolic_norm": AlgebraicType("poincare", "unit_ball", "unit_ball"),
+    "tropical_add": AlgebraicType("tropical", "tropical_tensor", "tropical_tensor"),
+    "tropical_matmul": AlgebraicType("tropical", "tropical_tensor", "tropical_tensor"),
+    "tropical_attention": AlgebraicType("tropical", "real", "real"),
+    "tropical_gate": AlgebraicType("tropical", "real", "real"),
+    "tropical_center": AlgebraicType("tropical", "real", "real"),
+    "tropical_router": AlgebraicType("tropical", "tropical_tensor", "routing_scores"),
+    "padic_expand": AlgebraicType("padic", "real", "padic_tensor"),
+    "padic_gate": AlgebraicType("padic", "real", "padic_tensor"),
+    "padic_residual": AlgebraicType("padic", "padic_tensor", "real"),
+    "ultrametric_attention": AlgebraicType("padic", "padic_tensor", "padic_tensor"),
+    "clifford_attention": AlgebraicType("clifford", "real", "real"),
+    "geometric_product": AlgebraicType("clifford", "multivector", "multivector"),
+    "rotor_transform": AlgebraicType("clifford", "multivector", "multivector"),
+    "grade_select": AlgebraicType("clifford", "multivector", "grade_component"),
+    "grade_mix": AlgebraicType("clifford", "real", "real"),
+    "lif_neuron": AlgebraicType("spiking", "real", "spikes"),
+    "spike_rate_code": AlgebraicType("spiking", "real", "spikes"),
+    "stdp_attention": AlgebraicType("spiking", "spikes", "spikes"),
+    "sparse_threshold": AlgebraicType("spiking", "real", "spikes"),
+}
+
+_SPACE_DEFAULT_TYPES: Dict[str, AlgebraicType] = {
+    "euclidean": AlgebraicType("euclidean", "real", "real"),
+    "poincare": AlgebraicType("poincare", "unit_ball", "unit_ball"),
+    "tropical": AlgebraicType("tropical", "tropical_tensor", "tropical_tensor"),
+    "clifford": AlgebraicType("clifford", "multivector", "multivector"),
+    "padic": AlgebraicType("padic", "padic_tensor", "padic_tensor"),
+    "spiking": AlgebraicType("spiking", "spikes", "spikes"),
+    "any": AlgebraicType("any", "any", "any"),
+}
+
 VALID_ALGEBRAIC_SPACES: frozenset = frozenset({
     "euclidean", "poincare", "tropical", "clifford", "padic", "spiking", "any",
 })
@@ -621,6 +670,35 @@ def _apply_algebraic_space_tags() -> None:
 
 
 _apply_algebraic_space_tags()
+
+
+def _apply_algebraic_type_tags() -> None:
+    for op_name, algebraic_type in _ALGEBRAIC_TYPE_TAGS.items():
+        op = PRIMITIVE_REGISTRY.get(op_name)
+        if op is not None:
+            object.__setattr__(op, "algebraic_type", algebraic_type)
+            object.__setattr__(op, "algebraic_space", algebraic_type.space)
+
+
+_apply_algebraic_type_tags()
+
+
+def algebraic_types_compatible(
+    producer: AlgebraicType,
+    consumer: AlgebraicType,
+) -> bool:
+    """Check output→input algebraic compatibility."""
+    if consumer.input_constraint == "any" or producer.output_guarantee == "any":
+        return True
+    if consumer.input_constraint == producer.output_guarantee:
+        return True
+    if consumer.input_constraint == "real" and producer.output_guarantee == "real":
+        return True
+    return False
+
+
+def default_algebraic_type_for_space(space: str) -> AlgebraicType:
+    return _SPACE_DEFAULT_TYPES.get(space, _SPACE_DEFAULT_TYPES["euclidean"])
 
 
 # ── Helper Functions ──────────────────────────────────────────────────
@@ -648,3 +726,7 @@ def register_external_primitive(op: PrimitiveOp) -> None:
             opcode = len(OPCODE_MAP)
             OPCODE_MAP[op.name] = opcode
             REVERSE_OPCODE_MAP[opcode] = op.name
+        tagged = _ALGEBRAIC_TYPE_TAGS.get(op.name)
+        if tagged is not None:
+            object.__setattr__(PRIMITIVE_REGISTRY[op.name], "algebraic_type", tagged)
+            object.__setattr__(PRIMITIVE_REGISTRY[op.name], "algebraic_space", tagged.space)

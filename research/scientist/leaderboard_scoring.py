@@ -19,6 +19,9 @@ _GPT2_REF = {
     "forward_time_ms": 0.43,
 }
 
+_WIKITEXT_REF_SCORE_FLOOR = 0.5868
+_WIKITEXT_REF_PPL_CEILING = 72.68
+
 
 def compute_efficiency_multiple(
     loss_ratio: Optional[float] = None,
@@ -106,6 +109,11 @@ def build_score_kwargs(
     kw["n_routing_ops"] = structural_counts.get("routing")
     kw["n_sparse_ops"] = structural_counts.get("sparse")
     kw["n_moe_ops"] = structural_counts.get("moe")
+    # Routing efficiency metrics stored in program_results metadata
+    if pr:
+        _pr_row = dict(pr) if hasattr(pr, "keys") else {}
+        kw.setdefault("routing_fast_fraction", _pr_row.get("routing_fast_fraction"))
+        kw.setdefault("routing_balance_score", _pr_row.get("routing_balance_score"))
     kw.update(extra)
     return kw
 
@@ -118,6 +126,8 @@ def compute_composite_score(
     val_lr: Optional[float] = None,
     val_baseline: Optional[float] = None,
     val_std: Optional[float] = None,
+    robustness_score: Optional[float] = None,
+    is_unstable: Optional[bool] = None,
     novelty_confidence: Optional[float] = None,
     scaling_param_efficiency: Optional[float] = None,
     is_reference: bool = False,
@@ -147,6 +157,11 @@ def compute_composite_score(
     routing_expert_count: Optional[int] = None,
     routing_confidence_mean: Optional[float] = None,
     routing_drop_rate: Optional[float] = None,
+    routing_fast_fraction: Optional[float] = None,
+    routing_balance_score: Optional[float] = None,
+    wikitext_score: Optional[float] = None,
+    investigation_passed: Optional[bool] = None,
+    validation_passed: Optional[bool] = None,
     decompose: bool = False,
     **kwargs: Any,
 ) -> Union[float, Dict[str, Any]]:
@@ -230,7 +245,7 @@ def compute_composite_score(
         # Floor at 0.3: novel architectures that haven't converged still get
         # 30% novelty credit. Without this floor, the gate creates a degenerate
         # fitness landscape where novelty can never overcome a loss deficit.
-        novelty_gate = max(0.3, min(1.0, (0.9 - perf_lr) / 0.6))
+        novelty_gate = min(1.0, 0.3 + 0.7 * max(0.0, (0.9 - perf_lr) / 0.6))
     score += 40.0 * eff_nov * conf * novelty_gate
     _track("novelty", _s0)
 
@@ -274,6 +289,20 @@ def compute_composite_score(
                 waste = 0.05 - routing_savings
                 score -= 30.0 * waste  # max penalty ~1.5 at savings=0
     _track("routing_savings", _s0)
+
+    # Routing efficiency bonus: reward models that route effectively
+    _s0 = score
+    if routing_fast_fraction is not None and routing_fast_fraction > 0.05:
+        # Up to 20pts for routing a significant fraction of tokens to fast paths
+        score += 20.0 * min(1.0, routing_fast_fraction)
+        # Balance bonus: up to 10pts for well-distributed routing
+        if routing_balance_score is not None and routing_balance_score > 0.5:
+            score += 10.0 * routing_balance_score
+        # Multiplicative efficiency bonus when routing saves compute AND loss is good
+        if scaling_param_efficiency is not None and scaling_param_efficiency > 1.0:
+            routing_eff = 1.0 + routing_fast_fraction * 0.5
+            score *= min(1.3, routing_eff)  # cap at 30% boost
+    _track("routing_efficiency", _s0)
 
     _s0 = score
     if compression_ratio is not None:
@@ -330,6 +359,8 @@ def compute_composite_score(
         score += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
     if robustness_noise is not None:
         score += 15.0 * max(0, 1.0 - robustness_noise)
+    if robustness_score is not None:
+        score += 15.0 * robustness_score
     if quant_retention is not None:
         score += 15.0 * max(0, quant_retention - 0.5) / 0.5
     _track("robustness", _s0)
@@ -353,6 +384,8 @@ def compute_composite_score(
     # 5. Generalization Utility (The "Anti-Cheat")
     _s0 = score
     wikitext_perplexity = kwargs.get("wikitext_perplexity")
+    if wikitext_score is not None:
+        score += 35.0 * max(0.0, min(1.0, wikitext_score))
     if wikitext_perplexity is not None:
         if wikitext_perplexity > 1000000:
             if decompose:
@@ -360,9 +393,44 @@ def compute_composite_score(
                 _bd["_disqualified"] = True  # type: ignore[assignment]
                 return {"composite_score": 0.0, "breakdown": _bd}
             return 0.0
+        if wikitext_perplexity > _WIKITEXT_REF_PPL_CEILING:
+            over_ref = min(
+                2.0,
+                (wikitext_perplexity - _WIKITEXT_REF_PPL_CEILING)
+                / max(_WIKITEXT_REF_PPL_CEILING, 1e-6),
+            )
+            score -= 20.0 * over_ref
         if wikitext_perplexity > 1000:
             score -= 50.0 * math.log10(wikitext_perplexity / 1000.0)
     _track("generalization", _s0)
+
+    # 5b. Investigation robustness — positive signal + reliability penalty.
+    _s0 = score
+    # Positive: gracefully degrading reward for investigation robustness.
+    # +10 for fully robust (1.0), +3.3 for 1/3 pass rate, +0 for untested.
+    if inv_robust is not None and inv_robust > 0:
+        score += 10.0 * inv_robust
+    # Negative: penalty for investigation failure WITHOUT strong real-token
+    # evidence.  Models that fail investigation but beat references on
+    # WikiText should not be penalised as hard.
+    inv_failed = investigation_passed is False and validation_passed is not True
+    if inv_failed:
+        # Cap penalty for models with frontier-competitive WikiText scores
+        has_frontier_evidence = (
+            wikitext_score is not None
+            and wikitext_score >= _WIKITEXT_REF_SCORE_FLOOR
+        )
+        if inv_robust is not None and inv_robust < 0.5 and not has_frontier_evidence:
+            score -= 25.0 * min(1.0, (0.5 - inv_robust) / 0.5)
+        if wikitext_score is not None and wikitext_score < _WIKITEXT_REF_SCORE_FLOOR:
+            score -= 20.0 * min(
+                1.0,
+                (_WIKITEXT_REF_SCORE_FLOOR - wikitext_score)
+                / max(_WIKITEXT_REF_SCORE_FLOOR, 1e-6),
+            )
+        elif wikitext_score is None and wikitext_perplexity is None:
+            score -= 8.0
+    _track("investigation_reliability", _s0)
 
     # 6. Numerical Integrity (Spectral Floor)
     _s0 = score
@@ -374,6 +442,8 @@ def compute_composite_score(
     _s0 = score
     if val_std is not None and val_std > 0.1:
         score -= 50.0 * min(2.0, val_std / 0.5)
+    if is_unstable:
+        score -= 40.0
     if entropy is not None and entropy > 0.95:
         score -= 5.0 * (entropy - 0.95)
     _track("penalties", _s0)

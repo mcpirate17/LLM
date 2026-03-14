@@ -271,3 +271,36 @@ class TestRegistry:
     def test_is_native_false(self):
         assert not aria_bridge.is_native('nonexistent')
         assert not aria_bridge.is_native('attention')
+
+
+class TestFp16Bridge:
+    def test_list_native_fp16_ops(self):
+        ops = aria_bridge.list_native_fp16_ops()
+        assert isinstance(ops, list)
+        for name in ['relu', 'gelu', 'silu', 'sigmoid', 'add', 'mul', 'matmul', 'softmax', 'rmsnorm']:
+            assert name in ops, f"{name} missing from fp16 native ops"
+
+    def test_dispatch_unary_fp16(self):
+        x = np.array([-1.0, 0.0, 2.0], dtype=np.float16)
+        y = aria_bridge.dispatch_unary_fp16('relu', x)
+        assert y.dtype == np.float16
+        np.testing.assert_allclose(y.astype(np.float32), np.maximum(x.astype(np.float32), 0.0), atol=1e-3)
+
+    def test_dispatch_unary_fp16_preserves_shape(self):
+        x = np.array([[-1.0, 0.0], [2.0, -3.0]], dtype=np.float16)
+        y = aria_bridge.dispatch_unary_fp16('relu', x)
+        assert y.shape == x.shape
+        np.testing.assert_allclose(y.astype(np.float32), np.maximum(x.astype(np.float32), 0.0), atol=1e-3)
+
+    def test_dispatch_matmul_fp16(self):
+        A = np.random.randn(4, 8).astype(np.float16)
+        B = np.random.randn(8, 3).astype(np.float16)
+        C = aria_bridge.dispatch_matmul_fp16(A, B)
+        assert C.dtype == np.float16
+        np.testing.assert_allclose(C.astype(np.float32), (A @ B).astype(np.float32), atol=5e-2, rtol=1e-2)
+
+    def test_dispatch_matmul_fp16_rejects_non_matrix(self):
+        A = np.random.randn(4, 8, 2).astype(np.float16)
+        B = np.random.randn(8, 3).astype(np.float16)
+        with pytest.raises(ValueError, match="expects 2D arrays"):
+            aria_bridge.dispatch_matmul_fp16(A, B)

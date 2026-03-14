@@ -7,8 +7,11 @@ import LearningPanel from './components/LearningPanel';
 import SummaryCards from './components/SummaryCards';
 import LiveFeed from './components/LiveFeed';
 import GlobalParetoChart from './components/GlobalParetoChart';
+import StabilityQualityQuadrant from './components/charts/StabilityQualityQuadrant';
 import ActionQueue from './components/ActionQueue';
 import StatusBar from './components/StatusBar';
+import ReferenceArchitectures from './components/ReferenceArchitectures';
+import DecisionTraces from './components/DecisionTraces';
 import {
   AnalyticsTab,
   ErrorBoundary,
@@ -175,11 +178,11 @@ const NAV_CATEGORIES = {
   },
   knowledge: {
     label: 'Knowledge',
-    tabs: ['reports', 'trends', 'log'],
+    tabs: ['reports', 'trends', 'decisions', 'log'],
   },
   diagnostics: {
     label: 'Diagnostics',
-    tabs: ['perf'],
+    tabs: ['perf', 'references'],
   }
 };
 
@@ -192,6 +195,8 @@ function AppContent({ onRunningChange }) {
     comparison: 'Comparison',
     perf: 'Optimization',
     reports: 'Reports',
+    references: 'References',
+    decisions: 'Decisions',
     log: 'Log',
   };
   const TAB_TIPS = {
@@ -202,7 +207,9 @@ function AppContent({ onRunningChange }) {
     comparison: 'Side-by-side architecture comparison (5)',
     perf: 'System performance and optimization metrics (6)',
     reports: 'Publishable findings, campaigns, and knowledge base (7)',
-    log: 'Raw notebook entries and cycle timeline (8)',
+    references: 'Reference models (GPT-2, Mamba, etc.) baselines (8)',
+    decisions: 'Recent automated research decision traces (9)',
+    log: 'Raw notebook entries and cycle timeline (0)',
   };
 
   // Centralized data from AriaDataProvider
@@ -1589,7 +1596,10 @@ function AppContent({ onRunningChange }) {
               </div>
               <div className="overview-right card" style={{ padding: 24 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Discovery Frontier</div>
-                <GlobalParetoChart programs={leaderboardEntries} onSelectProgram={handleSelectProgram} onNavigateTab={(tab) => setActiveTab(tab)} />
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 20 }}>
+                  <GlobalParetoChart programs={leaderboardEntries} onSelectProgram={handleSelectProgram} onNavigateTab={(tab) => setActiveTab(tab)} />
+                  <StabilityQualityQuadrant entries={leaderboardEntries} onSelectProgram={handleSelectProgram} />
+                </div>
                 <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 20 }}>
                   <LiveFeed
                     apiBase={API_BASE}
@@ -1675,6 +1685,17 @@ function AppContent({ onRunningChange }) {
             <NativeProfilePanel />
             <PerfDashboard />
           </Suspense>
+        )}
+
+        {activeTab === 'references' && (
+          <ReferenceArchitectures
+            leaderboardEntries={leaderboardEntries}
+            onSelectProgram={handleSelectProgram}
+          />
+        )}
+
+        {activeTab === 'decisions' && (
+          <DecisionTraces />
         )}
 
         {activeTab === 'reports' && (

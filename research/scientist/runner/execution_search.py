@@ -26,6 +26,17 @@ class _ExecutionSearchMixin:
 
     __slots__ = ()
 
+    # Ops considered "routing" for dashboard template stats
+    _ROUTING_OPS = frozenset({
+        "entropy_router", "token_type_classifier", "route_topk", "route_lanes",
+        "route_recursion", "adaptive_lane_mixer", "mixed_recursion_gate",
+        "early_exit", "cascade", "speculative", "adaptive_recursion",
+        "mod_topk", "token_merging", "token_merge", "relu_gate_routing",
+        "moe_topk", "moe_2expert", "routing_conditioned_compression",
+        "mixture_of_experts", "moe", "conditional_compute", "routing_node",
+        "difficulty_routed_block",
+    })
+
     def _run_evolution_thread(self, exp_id: str, config: RunConfig,
                                hypothesis: str):
         """Execute evolutionary search in background."""
@@ -64,6 +75,11 @@ class _ExecutionSearchMixin:
                 fitnesses = [ind.fitness for ind in population]
                 avg_fit = sum(fitnesses) / len(fitnesses) if fitnesses else 0
                 best_fit = max(fitnesses) if fitnesses else 0
+                
+                # Template stats (Task 1I)
+                n_routing = sum(1 for ind in population if any(node.op_name in self._ROUTING_OPS for node in ind.graph.nodes.values() if not node.is_input))
+                n_standard = len(population) - n_routing
+
                 with self._lock:
                     self._progress.current_generation = gen + 1
                     self._progress.status = "evaluating"
@@ -72,7 +88,7 @@ class _ExecutionSearchMixin:
                     self._progress.elapsed_seconds = time.time() - t_start
                     self._progress.aria_message = (
                         f"Generation {gen + 1}/{config.n_generations}: "
-                        f"best={best_fit:.3f}, avg={avg_fit:.3f}"
+                        f"best={best_fit:.3f}, avg={avg_fit:.3f}, routing={n_routing}/{len(population)}"
                     )
                 self._emit_event("evolution_generation", {
                     "experiment_id": exp_id,
@@ -81,6 +97,8 @@ class _ExecutionSearchMixin:
                     "best_fitness": best_fit,
                     "avg_fitness": avg_fit,
                     "population_size": len(population),
+                    "n_routing": n_routing,
+                    "n_standard": n_standard,
                 })
                 try:
                     nb.add_entry(ExperimentEntry(
@@ -89,7 +107,7 @@ class _ExecutionSearchMixin:
                         content=(
                             f"Gen {gen + 1}/{config.n_generations}: "
                             f"best={best_fit:.3f}, avg={avg_fit:.3f}, "
-                            f"pop={len(population)}"
+                            f"pop={len(population)}, routing={n_routing}/{len(population)}"
                         ),
                         experiment_id=exp_id,
                         metadata={
@@ -101,6 +119,8 @@ class _ExecutionSearchMixin:
                                 "best_fitness": best_fit,
                                 "avg_fitness": avg_fit,
                                 "population_size": len(population),
+                                "n_routing": n_routing,
+                                "n_standard": n_standard,
                             },
                         },
                     ))
@@ -247,8 +267,10 @@ class _ExecutionSearchMixin:
             eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
             def on_evaluate(graph, fitness, sandbox_result, s1_result):
+                bfp = fingerprint_cache.get(graph.fingerprint())
                 self._on_program_evaluated(graph, fitness, sandbox_result, s1_result,
-                                           eval_counters, nb, exp_id, model_source="novelty")
+                                           eval_counters, nb, exp_id, model_source="novelty",
+                                           behavioral_fingerprint=bfp)
 
             def combined_fitness_fn(graph):
                 """Compile once, run sandbox + micro-train + fingerprint in one pass."""
@@ -326,6 +348,11 @@ class _ExecutionSearchMixin:
                 novelties = [ind.novelty for ind in population]
                 avg_fit = sum(fitnesses) / len(fitnesses) if fitnesses else 0
                 best_fit = max(fitnesses) if fitnesses else 0
+                
+                # Template stats (Task 1I)
+                n_routing = sum(1 for ind in population if any(node.op_name in self._ROUTING_OPS for node in ind.graph.nodes.values() if not node.is_input))
+                n_standard = len(population) - n_routing
+
                 with self._lock:
                     self._progress.current_generation = gen + 1
                     self._progress.status = "evaluating"
@@ -335,7 +362,7 @@ class _ExecutionSearchMixin:
                     self._progress.elapsed_seconds = time.time() - t_start
                     self._progress.aria_message = (
                         f"Generation {gen + 1}/{config.n_generations}: "
-                        f"archive={archive.size()}, best_fit={best_fit:.3f}"
+                        f"archive={archive.size()}, best_fit={best_fit:.3f}, routing={n_routing}/{len(population)}"
                     )
                 self._emit_event("novelty_generation", {
                     "experiment_id": exp_id,
@@ -345,6 +372,8 @@ class _ExecutionSearchMixin:
                     "avg_fitness": avg_fit,
                     "archive_size": archive.size(),
                     "best_novelty": max(novelties) if novelties else 0,
+                    "n_routing": n_routing,
+                    "n_standard": n_standard,
                 })
                 try:
                     best_novelty = max(novelties) if novelties else 0
@@ -354,7 +383,7 @@ class _ExecutionSearchMixin:
                         content=(
                             f"Gen {gen + 1}/{config.n_generations}: "
                             f"best_fit={best_fit:.3f}, archive={archive.size()}, "
-                            f"novelty={best_novelty:.3f}"
+                            f"novelty={best_novelty:.3f}, routing={n_routing}/{len(population)}"
                         ),
                         experiment_id=exp_id,
                         metadata={
@@ -367,6 +396,8 @@ class _ExecutionSearchMixin:
                                 "avg_fitness": avg_fit,
                                 "archive_size": archive.size(),
                                 "best_novelty": best_novelty,
+                                "n_routing": n_routing,
+                                "n_standard": n_standard,
                             },
                         },
                     ))

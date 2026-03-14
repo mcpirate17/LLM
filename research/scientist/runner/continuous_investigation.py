@@ -99,6 +99,7 @@ class _ContinuousInvestigationMixin:
                 if e.get("tier") == "screening"
                 and e.get("screening_loss_ratio") is not None
                 and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
+                and "provisional_random_tokens" not in (e.get("tags") or "")
             ]
             if investigated_fps:
                 candidates = [
@@ -119,6 +120,7 @@ class _ContinuousInvestigationMixin:
             min_spectral_norm=config.pre_inv_min_spectral_norm,
             max_spectral_norm=config.pre_inv_max_spectral_norm,
             min_improvement_rate=config.pre_inv_min_improvement_rate,
+            ref_lr_ceiling=self._reference_margin_ceiling(config, nb),
         )
 
         # Filter out already-investigated fingerprints
@@ -140,8 +142,13 @@ class _ContinuousInvestigationMixin:
         # ── Stage B: Composite score + rank ──
         ref_lr = self._get_reference_baseline_lr(nb)
         for row in eligible:
-            row["_pre_inv_score"] = LabNotebook.compute_pre_investigation_score(
+            base = LabNotebook.compute_pre_investigation_score(
                 row, best_ref_lr=ref_lr)
+            # Judgment boost: up to +15% for high-confidence candidates
+            j = row.get("judgment_score")
+            if j is not None and isinstance(j, (int, float)) and j > 0.5:
+                base *= 1.0 + 0.15 * min(1.0, (j - 0.5) * 2.0)
+            row["_pre_inv_score"] = base
 
         eligible.sort(key=lambda r: r.get("_pre_inv_score", 0), reverse=True)
         top_n = eligible[:config.pre_inv_top_n]
@@ -178,7 +185,93 @@ class _ContinuousInvestigationMixin:
                 probed.append(row)
             top_n = probed
 
-        return [r["result_id"] for r in top_n if r.get("result_id")]
+        result_ids = [r["result_id"] for r in top_n if r.get("result_id")]
+
+        # ── Stage D: Recipe re-roll for screened_out frontier models ──
+        # Models that failed investigation (robustness < 0.5) but have
+        # frontier-competitive real-token quality deserve reinvestigation
+        # with fresh training programs before being permanently buried.
+        reinvest_ids = self._get_reinvestigation_candidates(nb, exclude=set(result_ids))
+        if reinvest_ids:
+            logger.info(
+                "Pre-inv gate Stage D: %d screened_out frontier models queued for recipe re-roll",
+                len(reinvest_ids),
+            )
+            result_ids.extend(reinvest_ids)
+
+        return result_ids
+
+    _MAX_REINVESTIGATION_ATTEMPTS = 2
+
+    def _get_reinvestigation_candidates(
+        self, nb: LabNotebook, exclude: set, limit: int = 3,
+    ) -> List[str]:
+        """Find screened_out models with WikiText quality above the investigation tier.
+
+        These are architectures that failed robustness (typically 1/3 training
+        programs passed) but demonstrably generalise on real tokens.  They get
+        reinvestigated with fresh training programs — same architecture, new
+        recipe — before any architectural mutation is considered.
+
+        Capped at ``_MAX_REINVESTIGATION_ATTEMPTS`` per model to prevent
+        infinite re-roll loops.
+        """
+        max_attempts = self._MAX_REINVESTIGATION_ATTEMPTS
+        try:
+            rows = nb.conn.execute("""
+                SELECT l.result_id, l.wikitext_score, l.investigation_robustness,
+                       COALESCE(l.reinvestigation_count, 0) AS reinvest_count
+                FROM leaderboard l
+                WHERE l.tier = 'screened_out'
+                  AND l.wikitext_score IS NOT NULL
+                  AND l.wikitext_score > (
+                      SELECT COALESCE(MAX(l2.wikitext_score), 0)
+                      FROM leaderboard l2
+                      WHERE l2.tier = 'investigation'
+                  )
+                  AND COALESCE(l.investigation_robustness, 0) < 0.5
+                  AND COALESCE(l.reinvestigation_count, 0) < ?
+                ORDER BY l.wikitext_score DESC
+                LIMIT ?
+            """, (max_attempts, limit + len(exclude))).fetchall()
+        except Exception as e:
+            logger.debug("Reinvestigation query failed: %s", e)
+            return []
+
+        candidates = [
+            r["result_id"] for r in rows
+            if r["result_id"] and r["result_id"] not in exclude
+        ][:limit]
+
+        # Increment reinvestigation count for selected candidates
+        for rid in candidates:
+            try:
+                nb.conn.execute(
+                    "UPDATE leaderboard SET reinvestigation_count = COALESCE(reinvestigation_count, 0) + 1 "
+                    "WHERE result_id = ?",
+                    (rid,),
+                )
+            except Exception:
+                pass
+            logger.info(
+                "  Recipe re-roll candidate: %s (wikitext_score above investigation tier)",
+                rid[:8],
+            )
+        if candidates:
+            try:
+                nb.conn.commit()
+            except Exception:
+                pass
+
+        return candidates
+
+    def _reference_margin_ceiling(self, config: RunConfig, nb: LabNotebook) -> Optional[float]:
+        """Convert the reference margin knob into a concrete Stage-A LR ceiling."""
+        best_ref_lr = self._get_reference_baseline_lr(nb)
+        if best_ref_lr is None:
+            return None
+        margin = max(0.1, float(config.pre_inv_reference_margin or 1.0))
+        return float(best_ref_lr) * margin
 
     def _run_inline_investigation(self, config: RunConfig, nb: LabNotebook,
                                    leaderboard: list, n_experiments: int,
@@ -413,9 +506,12 @@ class _ContinuousInvestigationMixin:
                 # its own merits (< 0.3), don't let the screening→investigation
                 # multiplier veto promotion.  Prevents false positives when
                 # screening LR was unrealistically low (e.g. lucky seed).
+                # Gate: pass investigation if loss quality is good enough.
+                # Robustness is tracked as a ranking signal (robustness_grade)
+                # but no longer a hard gate — models with 1/3 pass rate but
+                # strong real-token quality should still proceed.
                 investigation_passed = (
-                    robustness >= 0.5
-                    and (best_lr or 1.0) < 0.5
+                    (best_lr or 1.0) < 0.5
                     and (not brittle_risk
                          or (best_lr is not None and best_lr < 0.3))
                 )

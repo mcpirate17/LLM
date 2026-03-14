@@ -374,6 +374,51 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Basis expansion → activation (sinusoidal features)",
         support=8, avg_loss_ratio=0.200, lift=1.0,
     ),
+    Motif(
+        name="hyperbolic_residual_bridge",
+        motif_class=MOTIF_CLASS_SSM,
+        steps=(
+            MotifStep("exp_map", OpRole.MIX),
+            MotifStep("hyp_linear", OpRole.PROJECT),
+            MotifStep("hyp_tangent_nonlinear", OpRole.ACTIVATE),
+            MotifStep("log_map", OpRole.MIX),
+        ),
+        description="Leaderboard-seeded hyperbolic bridge block: exp_map → hyp_linear → tangent nonlinearity → log_map",
+        support=2, avg_loss_ratio=0.010, lift=1.9,
+    ),
+    Motif(
+        name="tropical_attention_gate",
+        motif_class=MOTIF_CLASS_ATTENTION,
+        steps=(
+            MotifStep("tropical_attention", OpRole.MIX),
+            MotifStep("tropical_gate", OpRole.GATE),
+            MotifStep("tropical_center", OpRole.NORMALIZE),
+        ),
+        description="Leaderboard-seeded tropical block: attention → gate → tropical centering",
+        support=3, avg_loss_ratio=0.009, lift=2.1,
+    ),
+    Motif(
+        name="clifford_attention_mix",
+        motif_class=MOTIF_CLASS_CHANNEL,
+        steps=(
+            MotifStep("clifford_attention", OpRole.MIX),
+            MotifStep("grade_mix", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Leaderboard-seeded Clifford block: multivector attention → grade mixing → projection",
+        support=3, avg_loss_ratio=0.008, lift=2.3,
+    ),
+    Motif(
+        name="padic_hierarchy_block",
+        motif_class=MOTIF_CLASS_SSM,
+        steps=(
+            MotifStep("padic_expand", OpRole.PROJECT),
+            MotifStep("ultrametric_attention", OpRole.MIX),
+            MotifStep("padic_residual", OpRole.RESIDUAL),
+        ),
+        description="Leaderboard-seeded p-adic hierarchy block: expansion → ultrametric attention → residual merge",
+        support=4, avg_loss_ratio=0.009, lift=2.4,
+    ),
 
     # ── Channel mixing cores ────────────────────────────────────────
     Motif(
@@ -423,11 +468,10 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="routed_ternary",
         motif_class=MOTIF_CLASS_SPARSE,
         steps=(
-            MotifStep("entropy_router", OpRole.ROUTE),
             MotifStep("ternary_projection", OpRole.PROJECT),
             MotifStep("silu", OpRole.ACTIVATE, substitutable=True),
         ),
-        description="Entropy-gated ternary projection (4x efficiency)",
+        description="Ternary projection → activation (4x efficiency, routing via template)",
         support=5, avg_loss_ratio=0.088, lift=4.0,
     ),
     Motif(
@@ -456,10 +500,9 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="conditional_skip",
         motif_class=MOTIF_CLASS_GATE,
         steps=(
-            MotifStep("entropy_router", OpRole.ROUTE),
             MotifStep("gated_linear", OpRole.GATE),
         ),
-        description="Entropy-gated conditional compute (skip easy tokens)",
+        description="Gated linear conditional compute (routing via template)",
         support=8, avg_loss_ratio=0.130, lift=2.0,
     ),
 )

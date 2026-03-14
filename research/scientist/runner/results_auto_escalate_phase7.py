@@ -76,6 +76,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                    WHERE l.tier = 'screening' AND l.screening_passed = 1
                      AND COALESCE(l.is_reference, 0) = 0
                      AND l.investigation_loss_ratio IS NULL
+                     AND (l.tags IS NULL OR l.tags NOT LIKE '%provisional_random_tokens%')
                    ORDER BY l.composite_score DESC
                    LIMIT ?""",
                 (config.auto_investigate_top_n,),

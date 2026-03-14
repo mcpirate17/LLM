@@ -629,11 +629,17 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                     <div style={{ fontSize: 13, color: 'var(--accent-purple)', fontWeight: 600 }}>
                       {program.most_similar_to || 'Truly Novel (No match)'}
                     </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                      Highest CKA similarity among the known baseline families.
+                    </div>
                   </div>
                   {(program.fp_cka_vs_transformer != null || program.fp_cka_vs_ssm != null) && (
                     <div style={{ width: '100%', borderTop: '1px solid var(--border)', paddingTop: 12 }}>
                       <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>
-                        CKA Distance vs Baselines
+                        CKA Similarity vs Baselines
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                        Higher percentages mean this program behaves more like that baseline family.
                       </div>
                       {[
                         { label: 'Transformer', value: program.fp_cka_vs_transformer, color: 'var(--accent-blue)' },

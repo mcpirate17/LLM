@@ -476,8 +476,8 @@ class _ContinuousModesMixin:
         })
 
         # Cap depth/ops for novelty search to prevent recursion overflow
-        min(config.max_depth, 12)
-        min(config.max_ops, 20)
+        config.max_depth = min(config.max_depth, 12)
+        config.max_ops = min(config.max_ops, 20)
 
         grammar = self._build_grammar_config(config)
         ns_config = NoveltySearchConfig(
@@ -493,8 +493,10 @@ class _ContinuousModesMixin:
         eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
         def on_evaluate(graph, fitness, sandbox_result, s1_result):
+            bfp = fingerprint_cache.get(graph.fingerprint())
             self._on_program_evaluated(graph, fitness, sandbox_result, s1_result,
-                                       eval_counters, nb, exp_id, model_source="novelty")
+                                       eval_counters, nb, exp_id, model_source="novelty",
+                                       behavioral_fingerprint=bfp)
 
         def combined_fitness_fn(graph):
             """Compile once, run sandbox + micro-train + fingerprint in one pass."""

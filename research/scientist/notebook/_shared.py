@@ -849,6 +849,8 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "novelty_validity_reason": "TEXT",
     "novelty_requires_justification": "INTEGER",
     "novelty_scoring_policy_version": "TEXT",
+    "validation_robustness_score": "REAL",
+    "validation_is_unstable": "INTEGER",
     "fingerprint_full_ran": "INTEGER",
     # CKA provenance
     "cka_source": "TEXT",
@@ -872,6 +874,13 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     # WikiText perplexity (domain generalization)
     "wikitext_perplexity": "REAL",
     "wikitext_score": "REAL",
+    "wikitext_pre_perplexity": "REAL",
+    "wikitext_ppl_improvement": "REAL",
+    "screening_wikitext_status": "TEXT",
+    "screening_wikitext_metric_version": "TEXT",
+    "screening_wikitext_variant": "TEXT",
+    "screening_wikitext_elapsed_ms": "REAL",
+    "screening_wikitext_budget_json": "TEXT",
     # TinyStories (domain generalization)
     "tinystories_perplexity": "REAL",
     "tinystories_score": "REAL",
@@ -897,4 +906,15 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "robustness_long_ctx_combined_score": "REAL",
     # Efficiency multiple (geomean of per-dimension ratios vs GPT-2)
     "efficiency_multiple": "REAL",
+    # Judgment engine score (pre-screening confidence from research signals)
+    "judgment_score": "REAL",
+    # Real-token eval trajectory checkpoints (Phase 0, real-token eval action plan)
+    "wikitext_ppl_200": "REAL",
+    "wikitext_ppl_500": "REAL",
+    "wikitext_improvement_ratio": "REAL",
+    "wikitext_eval_steps": "INTEGER",
+    "wikitext_pre_perplexity": "REAL",
+    "wikitext_ppl_improvement": "REAL",
+    "screening_wikitext_status": "TEXT",
+    "screening_wikitext_metric_version": "TEXT",
 }

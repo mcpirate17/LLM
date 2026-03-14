@@ -80,6 +80,14 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "model_source": entry.get("model_source"),
         "reference_name": entry.get("reference_name"),
         "timestamp": entry.get("timestamp"),
+        # Real-token eval fields (needed by StabilityQualityQuadrant)
+        "wikitext_perplexity": entry.get("wikitext_perplexity"),
+        "wikitext_ppl": entry.get("wikitext_ppl"),
+        "wikitext_score": entry.get("wikitext_score"),
+        "peak_ppl": entry.get("peak_ppl"),
+        "robustness_grade": entry.get("robustness_grade"),
+        "evaluation_stage": entry.get("evaluation_stage"),
+        "steps_to_divergence": entry.get("steps_to_divergence"),
     }
 
 

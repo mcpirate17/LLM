@@ -184,18 +184,18 @@ def _judgment_rerank(
     graphs: List,
     nb: LabNotebook,
     log: logging.Logger,
-) -> List:
+) -> List[Tuple[Any, float]]:
     """Rerank candidates by judgment score, preserving exploration budget.
 
     Fetches research signals from the notebook, scores each candidate,
     sorts by total_score descending, but reserves the bottom 15% of slots
     for under-sampled candidates (lowest support counts).
 
-    Returns reranked list with hard-failure candidates removed.
-    Falls back to original order if judgment module unavailable.
+    Returns list of (graph, judgment_score) tuples with hard-failure candidates removed.
+    Falls back to original order with neutral scores if judgment module unavailable.
     """
     if not _HAS_JUDGMENT or not graphs:
-        return graphs
+        return [(g, 0.5) for g in graphs]
 
     # Fetch signals from notebook (fast — cached in DB)
     try:
@@ -204,9 +204,11 @@ def _judgment_rerank(
         risk = nb.get_failure_risk_signatures(limit=50)
         signals["failure_risk_signatures"] = risk.get("failure_risk_signatures", [])
         signals["critical_failures"] = risk.get("critical_failures", [])
+        signals["fingerprint_buckets"] = nb.get_fingerprint_buckets(limit=5)
+        signals["lineage_successors"] = nb.get_lineage_successor_stats(limit=50)
     except Exception as exc:
         log.debug("judgment_rerank: signals fetch failed (%s), using original order", exc)
-        return graphs
+        return [(g, 0.5) for g in graphs]
 
     ctx = JudgmentContext()
     scored: List[tuple] = []
@@ -232,7 +234,7 @@ def _judgment_rerank(
         log.info("judgment_rerank: filtered %d candidates with critical failures", skipped)
 
     if not scored:
-        return graphs
+        return [(g, 0.5) for g in graphs]
 
     # Sort by score descending
     scored.sort(key=lambda t: t[1], reverse=True)
@@ -248,7 +250,23 @@ def _judgment_rerank(
         explore_pool.sort(key=lambda t: t[2])
         scored = exploit + explore_pool
 
-    return [t[0] for t in scored]
+    # Decision trace: log judgment summary for observability
+    try:
+        scores = [t[1] for t in scored]
+        nb.log_learning_event(
+            "judgment_rerank",
+            f"Reranked {n} candidates ({skipped} filtered)",
+            n_candidates=n,
+            n_filtered=skipped,
+            score_min=round(min(scores), 3),
+            score_max=round(max(scores), 3),
+            score_mean=round(sum(scores) / len(scores), 3),
+            n_explore=n_explore,
+        )
+    except Exception:
+        pass
+
+    return [(t[0], t[1]) for t in scored]
 
 
 class _ExecutionScreeningMixin:
@@ -578,6 +596,11 @@ class _ExecutionScreeningMixin:
         if grammar_weights:
             old_weights = dict(grammar.category_weights)
             grammar.category_weights.update(grammar_weights)
+            n_changed = sum(
+                1
+                for key, value in grammar_weights.items()
+                if old_weights.get(key) != value
+            )
             self._log_grammar_weight_application(
                 nb,
                 exp_id,
@@ -589,6 +612,17 @@ class _ExecutionScreeningMixin:
             results["applied_grammar_weights"] = dict(grammar.category_weights)
             if grammar_gate:
                 results["grammar_weight_attribution"] = grammar_gate
+            self._emit_event("learning_event", {
+                "event_type": "grammar_weights_applied",
+                "experiment_id": exp_id,
+                "n_changed": n_changed,
+                "max_depth": int(config.max_depth),
+                "max_ops": int(config.max_ops),
+                "description": (
+                    f"Applied learned grammar weights ({n_changed} categories changed; "
+                    f"depth<= {int(config.max_depth)}, ops<= {int(config.max_ops)})"
+                ),
+            })
 
         if champion_bias:
             before_bias = dict(grammar.category_weights)
@@ -617,16 +651,6 @@ class _ExecutionScreeningMixin:
                 final_weights=dict(grammar.category_weights),
             )
             results["applied_grammar_weights"] = dict(grammar.category_weights)
-            # Emit SSE so LiveFeed can show learning events
-            source_weights = grammar_weights or {}
-            n_changed = sum(1 for k in source_weights
-                            if old_weights.get(k) != source_weights[k])
-            self._emit_event("learning_event", {
-                "event_type": "grammar_weights_applied",
-                "experiment_id": exp_id,
-                "n_changed": n_changed,
-                "description": f"Applied learned grammar weights ({n_changed} categories changed)",
-            })
         else:
             grammar.category_weights["math_space"] = config.math_space_weight
 
@@ -730,12 +754,16 @@ class _ExecutionScreeningMixin:
             exp_id=exp_id,
             results=results,
         )
+        # judgment_scores maps graph id(graph) → score for persistence
+        _judgment_scores: Dict[int, float] = {}
         if graphs:
             graphs = rank_synthesis_candidates_by_stability(graphs)
             results["stability_reranked"] = True
-            graphs = _judgment_rerank(graphs, nb, logger)
-            if len(graphs) != results.get("total", 0):
-                results["judgment_filtered"] = results.get("total", 0) - len(graphs)
+            ranked = _judgment_rerank(graphs, nb, logger)
+            if len(ranked) != results.get("total", 0):
+                results["judgment_filtered"] = results.get("total", 0) - len(ranked)
+            _judgment_scores = {id(g): s for g, s in ranked}
+            graphs = [g for g, _ in ranked]
         with self._lock:
             self._progress.total_programs = len(graphs)
 
@@ -788,6 +816,10 @@ class _ExecutionScreeningMixin:
             # Collect all metrics for this program
             program_metrics: Dict[str, Any] = {}
             program_metrics.update(self._extract_graph_metrics(graph))
+            # Persist judgment score for promotion decisions
+            j_score = _judgment_scores.get(id(graph))
+            if j_score is not None:
+                program_metrics["judgment_score"] = j_score
 
             # Estimate FLOPs
             try:

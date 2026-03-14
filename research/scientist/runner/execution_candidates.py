@@ -314,6 +314,35 @@ class _ExecutionCandidatesMixin:
         except Exception:
             pass
 
+        # Apply designer feedback signals (from Aria suggestion outcomes)
+        try:
+            from pathlib import Path
+            import json as _json
+            feedback_path = Path("research/runtime/learning/designer_feedback.json")
+            if feedback_path.exists():
+                payload = _json.loads(feedback_path.read_text())
+                if isinstance(payload, dict):
+                    # accepted_ops: ops the user applied in designer → boost
+                    for op_name, count in (payload.get("accepted_ops") or {}).items():
+                        try:
+                            n = int(count)
+                        except (TypeError, ValueError):
+                            continue
+                        if n >= 2:
+                            boost = min(1.5, 1.0 + 0.1 * n)
+                            grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * boost
+                    # rejected_ops: ops the user rejected → penalize
+                    for op_name, count in (payload.get("rejected_ops") or {}).items():
+                        try:
+                            n = int(count)
+                        except (TypeError, ValueError):
+                            continue
+                        if n >= 2:
+                            penalty = max(0.6, 1.0 - 0.08 * n)
+                            grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * penalty
+        except Exception:
+            pass
+
         return grammar
 
     def _run_pending_investigation(self):

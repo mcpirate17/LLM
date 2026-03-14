@@ -608,13 +608,6 @@ class _DashboardMixin:
 
         return past
 
-    def _get_scaling_reference_manager(self):
-        if not hasattr(self, "_scaling_ref_mgr"):
-            from ...eval.scaling_reference import ScalingReferenceManager
-            cache_path = str(Path(self.notebook_path).parent / "scaling_reference_cache.db")
-            self._scaling_ref_mgr = ScalingReferenceManager(cache_path=cache_path)
-        return self._scaling_ref_mgr
-
     def _make_fitness_fn(self, config: RunConfig, *,
                          on_evaluate=None,
                          fitness_cache=None):
@@ -754,6 +747,7 @@ class _DashboardMixin:
         final_loss = s1_result.get("final_loss")
         throughput = s1_result.get("throughput")
         training_curve = s1_result.get("training_curve")
+        from ._helpers import screening_wikitext_fields
 
         # Training metrics
         program_metrics["initial_loss"] = s1_result.get("initial_loss")
@@ -771,6 +765,7 @@ class _DashboardMixin:
         program_metrics["generalization_gap"] = s1_result.get("generalization_gap")
         program_metrics["discovery_loss"] = s1_result.get("discovery_loss")
         program_metrics["discovery_loss_ratio"] = s1_result.get("discovery_loss_ratio")
+        program_metrics.update(screening_wikitext_fields(s1_result))
         program_metrics.update({k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")})
         # Propagate error info from training result to DB record
         if s1_result.get("error_type"):
@@ -1013,6 +1008,14 @@ class _DashboardMixin:
                 nb.store_training_curve(rid, training_curve)
             except Exception:
                 pass
+        if rid:
+            try:
+                from ...eval.wikitext_eval import screening_wikitext_payload
+                payload = screening_wikitext_payload(s1_result)
+                if payload:
+                    nb.set_external_benchmarks(rid, payload)
+            except Exception as e:
+                logger.debug("Screening benchmark payload persist failed for %s: %s", rid, e)
 
         # Every S1 survivor gets a screening-tier leaderboard entry
         if s1_passed and rid:
@@ -1030,6 +1033,8 @@ class _DashboardMixin:
                     "activation_sparsity_score": program_metrics.get("activation_sparsity_score"),
                     "depth_savings_ratio": program_metrics.get("depth_savings_ratio"),
                     "compression_ratio": program_metrics.get("compression_ratio"),
+                    "wikitext_perplexity": program_metrics.get("wikitext_perplexity"),
+                    "wikitext_score": program_metrics.get("wikitext_score"),
                 })
             except Exception as e:
                 logger.debug("Screening leaderboard upsert failed for %s: %s", rid, e)

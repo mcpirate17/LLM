@@ -118,9 +118,11 @@ class _ExecutionExperimentPhase3Mixin:
             ):
                 if k in s1_result:
                     program_metrics[k] = s1_result.get(k)
+            from ._helpers import screening_wikitext_fields
+            program_metrics.update(screening_wikitext_fields(s1_result))
             self._merge_s1_telemetry(program_metrics, s1_result)
 
-            nb.record_program_result(
+            result_id = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=cand.fingerprint,
                 graph_json="{}",
@@ -133,6 +135,13 @@ class _ExecutionExperimentPhase3Mixin:
                 arch_spec_json=cand.arch_spec_json,
                 **program_metrics,
             )
+            try:
+                from ...eval.wikitext_eval import screening_wikitext_payload
+                payload = screening_wikitext_payload(s1_result)
+                if payload:
+                    nb.set_external_benchmarks(result_id, payload)
+            except Exception:
+                pass
 
     def _prepare_screening_orchestrator(
         self,

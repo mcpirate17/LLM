@@ -5,13 +5,16 @@ Centralised here to avoid duplication across submodules.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+_REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
 
 # ── Normalized loss_ratio ──
 # loss_ratio = final_loss / initial_loss is init-dependent: Kaiming init
@@ -151,6 +154,137 @@ def check_inflight_health(
         state.grad_strikes = 0
 
     return None
+
+
+def clear_gpu_memory() -> None:
+    """Release GPU memory and run garbage collection.
+
+    Centralised cleanup to avoid duplicating torch.cuda.empty_cache() +
+    gc.collect() across 13+ call sites in runner submodules.
+    """
+    import gc
+    try:
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _torch.cuda.empty_cache()
+    except Exception:
+        pass
+    gc.collect()
+
+
+def screening_wikitext_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract persisted screening WikiText fields from a result dict."""
+    fields: Dict[str, Any] = {}
+    for key in (
+        "wikitext_perplexity",
+        "wikitext_score",
+        "wikitext_pre_perplexity",
+        "wikitext_ppl_improvement",
+        "screening_wikitext_status",
+        "screening_wikitext_metric_version",
+    ):
+        value = row.get(key)
+        if value is not None:
+            fields[key] = value
+
+    budget = row.get("screening_wikitext_budget")
+    if budget:
+        fields["screening_wikitext_budget_json"] = json.dumps(
+            budget,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    variant = row.get("variant")
+    if variant is not None:
+        fields["screening_wikitext_variant"] = variant
+
+    elapsed = row.get("elapsed_ms")
+    if elapsed is not None:
+        fields["screening_wikitext_elapsed_ms"] = elapsed
+
+    return fields
+
+
+def trajectory_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract persisted trajectory-probe fields from a benchmark result dict."""
+    fields: Dict[str, Any] = {}
+    for key in (
+        "wikitext_ppl_200",
+        "wikitext_ppl_500",
+        "wikitext_improvement_ratio",
+        "wikitext_eval_steps",
+    ):
+        value = row.get(key)
+        if value is not None:
+            fields[key] = value
+
+    if row.get("wikitext_improvement_ratio") is not None:
+        fields["wikitext_ppl_improvement_ratio"] = row["wikitext_improvement_ratio"]
+    if row.get("eval_budget_steps") is not None:
+        fields["eval_budget_steps"] = row["eval_budget_steps"]
+    if row.get("evaluation_stage"):
+        fields["evaluation_stage"] = row["evaluation_stage"]
+    if row.get("capability_tier"):
+        fields["capability_tier"] = row["capability_tier"]
+    return fields
+
+
+def _load_best_reference_probe_ppl(step: int) -> Optional[float]:
+    """Return the best cached reference PPL at the requested checkpoint."""
+    try:
+        payload = json.loads(_REFERENCE_TRAJECTORY_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    trajectories = payload.get("trajectories")
+    if not isinstance(trajectories, dict):
+        return None
+    best = None
+    step_key = str(step)
+    for trajectory in trajectories.values():
+        if not isinstance(trajectory, dict):
+            continue
+        checkpoints = trajectory.get("checkpoints")
+        if not isinstance(checkpoints, dict):
+            continue
+        point = checkpoints.get(step) or checkpoints.get(step_key)
+        if not isinstance(point, dict):
+            continue
+        try:
+            ppl = float(point.get("ppl"))
+        except (TypeError, ValueError):
+            continue
+        if best is None or ppl < best:
+            best = ppl
+    return best
+
+
+def _trajectory_probe_capability_tier(
+    ppl_500: Optional[float],
+    improvement_ratio: Optional[float],
+    threshold: float,
+) -> str:
+    """Classify probe outcome for downstream escalation and UI."""
+    if ppl_500 is not None:
+        best_ref_ppl = _load_best_reference_probe_ppl(500)
+        if best_ref_ppl is not None and ppl_500 <= best_ref_ppl * 1.2:
+            return "frontier_signal"
+        if best_ref_ppl is not None and ppl_500 <= best_ref_ppl * 1.5:
+            return "near_frontier"
+    if improvement_ratio is not None and improvement_ratio >= threshold:
+        return "slow_burn"
+    return "routine"
+
+
+def apply_adaptive_grad_clip(model: Any, current_clip: float) -> float:
+    """Return the effective grad clip norm, respecting model's recommendation.
+
+    Math-space models recommend higher clip values (5.0 vs default 1.0).
+    """
+    model_clip = getattr(model, "recommended_grad_clip", None)
+    if model_clip is not None and model_clip > current_clip:
+        return model_clip
+    return current_clip
 
 
 def _native_proactive_gating(graph) -> Dict[str, Any]:
@@ -358,16 +492,18 @@ def _evaluate_investigation_benchmarks(
     arch_spec_json_str: str | None,
     graph_json_str: str | None,
     cached_json_load,
-) -> Tuple[Any, Any, Any, Any]:
+) -> Dict[str, Any]:
     """Run lightweight benchmark evals for investigation survivors.
 
     Compiles the model once and runs both WikiText and TinyStories evals
     on the same instance to avoid redundant compilation.
     """
-    inv_wikitext_ppl = None
-    inv_wikitext_score = None
-    inv_tinystories_ppl = None
-    inv_tinystories_score = None
+    result: Dict[str, Any] = {
+        "inv_wikitext_ppl": None,
+        "inv_wikitext_score": None,
+        "inv_tinystories_ppl": None,
+        "inv_tinystories_score": None,
+    }
 
     try:
         model = _build_benchmark_model(
@@ -380,26 +516,52 @@ def _evaluate_investigation_benchmarks(
         )
     except Exception as exc:
         logger.debug("Benchmark model build failed: %s", exc)
-        return (None, None, None, None)
+        return result
 
     if model is None:
-        return (None, None, None, None)
+        return result
 
     eval_seq_len = min(128, config.max_seq_len)
 
     try:
-        from ...eval.wikitext_eval import evaluate_wikitext_perplexity
+        from ...eval.wikitext_eval import evaluate_wikitext_trajectory
 
-        wt_result = evaluate_wikitext_perplexity(
+        wt_result = evaluate_wikitext_trajectory(
             model, config.vocab_size, dev,
-            n_train_steps=200, seq_len=eval_seq_len,
+            checkpoints=(200, 500),
+            seq_len=eval_seq_len,
         )
-        inv_wikitext_ppl = wt_result.get("wikitext_perplexity")
-        inv_wikitext_score = wt_result.get("wikitext_score")
-        if inv_wikitext_ppl is not None:
+        ckpts = wt_result.get("checkpoints") or {}
+        ckpt_200 = ckpts.get(200) or ckpts.get("200") or {}
+        ckpt_500 = ckpts.get(500) or ckpts.get("500") or {}
+        ppl_200 = ckpt_200.get("ppl")
+        ppl_500 = ckpt_500.get("ppl")
+        improvement_ratio = wt_result.get("improvement_ratio")
+        result["wikitext_ppl_200"] = ppl_200
+        result["wikitext_ppl_500"] = ppl_500
+        result["wikitext_improvement_ratio"] = improvement_ratio
+        result["wikitext_eval_steps"] = 500
+        result["eval_budget_steps"] = 500
+        result["evaluation_stage"] = "PROBED"
+        result["capability_tier"] = _trajectory_probe_capability_tier(
+            ppl_500,
+            improvement_ratio,
+            float(getattr(config, "improvement_ratio_escalation_threshold", 2.0) or 2.0),
+        )
+        result["inv_wikitext_ppl"] = wt_result.get("peak_ppl") or ppl_500 or ppl_200
+        result["inv_wikitext_score"] = (
+            ckpt_500.get("score")
+            if ckpt_500.get("score") is not None
+            else ckpt_200.get("score")
+        )
+        result["wikitext_trajectory_payload"] = wt_result
+        if result["inv_wikitext_ppl"] is not None:
             logger.info(
-                "Investigation WikiText ppl=%.1f score=%.3f",
-                inv_wikitext_ppl, inv_wikitext_score or 0,
+                "Investigation WikiText probe ppl200=%s ppl500=%s ratio=%s tier=%s",
+                f"{ppl_200:.1f}" if isinstance(ppl_200, (int, float)) else "n/a",
+                f"{ppl_500:.1f}" if isinstance(ppl_500, (int, float)) else "n/a",
+                f"{improvement_ratio:.2f}" if isinstance(improvement_ratio, (int, float)) else "n/a",
+                result["capability_tier"],
             )
     except Exception as exc:
         logger.debug("Investigation WikiText eval skipped: %s", exc)
@@ -411,23 +573,18 @@ def _evaluate_investigation_benchmarks(
             model, config.vocab_size, dev,
             n_train_steps=200, seq_len=eval_seq_len,
         )
-        inv_tinystories_ppl = ts_result.get("tinystories_perplexity")
-        inv_tinystories_score = ts_result.get("tinystories_score")
-        if inv_tinystories_ppl is not None:
+        result["inv_tinystories_ppl"] = ts_result.get("tinystories_perplexity")
+        result["inv_tinystories_score"] = ts_result.get("tinystories_score")
+        if result["inv_tinystories_ppl"] is not None:
             logger.info(
                 "Investigation TinyStories ppl=%.1f score=%.3f",
-                inv_tinystories_ppl, inv_tinystories_score or 0,
+                result["inv_tinystories_ppl"], result["inv_tinystories_score"] or 0,
             )
     except Exception as exc:
         logger.debug("Investigation TinyStories eval skipped: %s", exc)
 
     del model
-    return (
-        inv_wikitext_ppl,
-        inv_wikitext_score,
-        inv_tinystories_ppl,
-        inv_tinystories_score,
-    )
+    return result
 
 
 # Single-threaded pool for background benchmark evals — avoids blocking the
@@ -457,9 +614,14 @@ def _submit_benchmark_eval(
 
     The investigation loop can continue to the next candidate immediately
     instead of blocking on 400 training steps per benchmark.
+
+    Creates a fresh LabNotebook connection in the background thread because
+    SQLite connections cannot be shared across threads (check_same_thread).
     """
+    db_path = str(nb.db_path)
+
     def _run() -> None:
-        wt_ppl, wt_score, ts_ppl, ts_score = _evaluate_investigation_benchmarks(
+        benchmark_result = _evaluate_investigation_benchmarks(
             config=config,
             dev=dev,
             model_source=model_source,
@@ -467,24 +629,28 @@ def _submit_benchmark_eval(
             graph_json_str=graph_json_str,
             cached_json_load=cached_json_load,
         )
-        _record_investigation_result(
-            nb=nb,
-            exp_id=exp_id,
-            source_result_id=source_result_id,
-            source=source,
-            model_source=model_source,
-            graph_json_str=graph_json_str,
-            arch_spec_json_str=arch_spec_json_str,
-            n_passed=n_passed,
-            best_lr=best_lr,
-            best_tp_json=best_tp_json,
-            robustness=robustness,
-            investigation_passed=investigation_passed,
-            inv_wikitext_ppl=wt_ppl,
-            inv_wikitext_score=wt_score,
-            inv_tinystories_ppl=ts_ppl,
-            inv_tinystories_score=ts_score,
-        )
+        # Create a thread-local notebook for DB writes
+        from ..notebook import LabNotebook
+        thread_nb = LabNotebook(db_path)
+        try:
+            _record_investigation_result(
+                nb=thread_nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                benchmark_result=benchmark_result,
+            )
+            thread_nb.flush_writes()
+        finally:
+            thread_nb.close()
 
     return _benchmark_pool.submit(_run)
 
@@ -503,14 +669,10 @@ def _record_investigation_result(
     best_tp_json: str | None,
     robustness: float,
     investigation_passed: bool,
-    inv_wikitext_ppl: Any,
-    inv_wikitext_score: Any,
-    inv_tinystories_ppl: Any,
-    inv_tinystories_score: Any,
+    benchmark_result: Dict[str, Any],
 ) -> None:
     """Persist leaderboard and program-results updates for investigation."""
-    from ..leaderboard import LeaderboardManager
-
+    trajectory_fields = trajectory_probe_fields(benchmark_result)
     nb.upsert_leaderboard(
         result_id=source_result_id,
         model_source=model_source,
@@ -525,18 +687,19 @@ def _record_investigation_result(
         tier="investigation" if investigation_passed else "screened_out",
         novelty_confidence=source.get("novelty_confidence"),
         fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
-        wikitext_perplexity=inv_wikitext_ppl,
-        wikitext_score=inv_wikitext_score,
-        tinystories_perplexity=inv_tinystories_ppl,
-        tinystories_score=inv_tinystories_score,
+        wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
+        wikitext_score=benchmark_result.get("inv_wikitext_score"),
+        tinystories_perplexity=benchmark_result.get("inv_tinystories_ppl"),
+        tinystories_score=benchmark_result.get("inv_tinystories_score"),
         routing_savings_ratio=source.get("routing_savings_ratio"),
         activation_sparsity_score=source.get("activation_sparsity_score"),
         depth_savings_ratio=source.get("depth_savings_ratio"),
         compression_ratio=source.get("compression_ratio"),
         loss_improvement_rate=source.get("loss_improvement_rate"),
+        **trajectory_fields,
     )
 
-    nb.record_program_result(
+    result_id = nb.record_program_result(
         experiment_id=exp_id,
         graph_fingerprint=source.get("graph_fingerprint", source_result_id),
         graph_json=graph_json_str or "{}",
@@ -555,11 +718,48 @@ def _record_investigation_result(
         training_program_json=best_tp_json,
         model_source=model_source,
         arch_spec_json=arch_spec_json_str,
-        wikitext_perplexity=inv_wikitext_ppl,
-        wikitext_score=inv_wikitext_score,
-        tinystories_perplexity=inv_tinystories_ppl,
-        tinystories_score=inv_tinystories_score,
+        wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
+        wikitext_score=benchmark_result.get("inv_wikitext_score"),
+        tinystories_perplexity=benchmark_result.get("inv_tinystories_ppl"),
+        tinystories_score=benchmark_result.get("inv_tinystories_score"),
+        wikitext_ppl_200=benchmark_result.get("wikitext_ppl_200"),
+        wikitext_ppl_500=benchmark_result.get("wikitext_ppl_500"),
+        wikitext_improvement_ratio=benchmark_result.get("wikitext_improvement_ratio"),
+        wikitext_eval_steps=benchmark_result.get("wikitext_eval_steps"),
     )
+    source_updates = {
+        "wikitext_perplexity": benchmark_result.get("inv_wikitext_ppl"),
+        "wikitext_score": benchmark_result.get("inv_wikitext_score"),
+        "wikitext_ppl_200": benchmark_result.get("wikitext_ppl_200"),
+        "wikitext_ppl_500": benchmark_result.get("wikitext_ppl_500"),
+        "wikitext_improvement_ratio": benchmark_result.get("wikitext_improvement_ratio"),
+        "wikitext_eval_steps": benchmark_result.get("wikitext_eval_steps"),
+    }
+    set_parts = []
+    set_params: List[Any] = []
+    for col, value in source_updates.items():
+        if value is None:
+            continue
+        set_parts.append(f"{col} = ?")
+        set_params.append(value)
+    if set_parts:
+        set_params.append(source_result_id)
+        nb.conn.execute(
+            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
+            set_params,
+        )
+        nb._maybe_commit()
+    try:
+        from ...eval.wikitext_eval import trajectory_wikitext_payload
+        payload = trajectory_wikitext_payload(
+            benchmark_result.get("wikitext_trajectory_payload") or {}
+        )
+        if payload:
+            nb.set_external_benchmarks(result_id, payload)
+            if source_result_id != result_id:
+                nb.set_external_benchmarks(source_result_id, payload)
+    except Exception:
+        pass
 
 
 def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
@@ -571,6 +771,7 @@ def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
     result_id = row.get("result_id")
     if not result_id:
         return None
+    wiki_fields = screening_wikitext_fields(row)
     return nb.upsert_leaderboard(
         result_id=result_id,
         model_source=row.get("model_source") or "graph_synthesis",
@@ -585,4 +786,5 @@ def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
         activation_sparsity_score=row.get("activation_sparsity_score"),
         depth_savings_ratio=row.get("depth_savings_ratio"),
         compression_ratio=row.get("compression_ratio"),
+        **wiki_fields,
     )

@@ -156,6 +156,41 @@ class TestMorphologicalConstraints(unittest.TestCase):
 
         self.assertTrue(found, "Expected at least one generated graph to include a functional primitive")
 
+    def test_generated_graphs_respect_final_depth_and_op_budget(self):
+        from research.synthesis.grammar import GrammarConfig, generate_layer_graph
+        from research.synthesis.validator import validate_graph
+
+        cfg = GrammarConfig(
+            model_dim=64,
+            max_depth=6,
+            max_ops=12,
+            residual_prob=0.2,
+        )
+
+        valid_graphs = []
+        for seed in range(1, 80):
+            try:
+                graph = generate_layer_graph(cfg, seed=seed)
+            except ValueError:
+                continue
+            result = validate_graph(
+                graph,
+                max_depth=cfg.max_depth,
+                max_ops=cfg.max_ops,
+                max_params_ratio=cfg.max_params_ratio,
+                min_splits=cfg.min_splits,
+            )
+            self.assertTrue(result.valid, result.errors)
+            valid_graphs.append(graph)
+            if len(valid_graphs) >= 3:
+                break
+
+        self.assertGreaterEqual(
+            len(valid_graphs),
+            3,
+            "Expected strict generation to yield multiple graphs within the final screening budget",
+        )
+
 
 @unittest.skipUnless(HAS_TORCH, "torch not available")
 class TestFunctionalArchitectureBuild(unittest.TestCase):
@@ -418,6 +453,16 @@ class TestGrammarWeightPersistence(unittest.TestCase):
         self.assertIn("generated_op_distribution", src)
         self.assertIn("generation_distribution_shift", src)
         self.assertIn("architecture_distribution_shift", src)
+
+    def test_execute_experiment_emits_budgeted_grammar_learning_event(self):
+        """Learned-grammar telemetry should include the active structural budget."""
+        import inspect
+        from research.scientist.runner import ExperimentRunner
+
+        src = inspect.getsource(ExperimentRunner._execute_experiment)
+        self.assertIn('"max_depth": int(config.max_depth)', src)
+        self.assertIn('"max_ops": int(config.max_ops)', src)
+        self.assertIn("Applied learned grammar weights (", src)
 
 
 class TestFrontierOps(unittest.TestCase):

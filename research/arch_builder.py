@@ -279,28 +279,24 @@ class StateSpaceMixer(nn.Module):
         self.dt_proj = nn.Linear(dim, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        from .synthesis.compiler import _parallel_associative_scan
+
         B, S, D = x.shape
-        dt = F.softplus(self.dt_proj(x))  # (B, S, D)
-        # Discretize A: average dt across sequence for a single decay rate
-        dt_mean = dt.mean(dim=1)  # (B, D)
-        log_a = (self.A * dt_mean.unsqueeze(-1)).clamp(-10, 0)  # (B, D, N)
-
-        b_x = self.B(x).reshape(B, S, D, self.state_dim)
-
-        # Vectorized scan via causal conv with exponential kernel per state dim.
-        # h[t] = decay * h[t-1] + b_x[t] → convolve with [decay^(S-1), ..., 1]
         N = self.state_dim
-        indices = torch.arange(S, device=x.device, dtype=x.dtype)  # (S,)
-        # Kernel: exp(log_a * (S-1-s)) for each (B, D, N)
-        # Process each state dim via grouped conv1d
-        # Flatten (D, N) → channels for grouped conv
-        log_a_avg = log_a.mean(dim=0)  # (D, N) — average across batch for shared kernel
-        kernel = torch.exp(log_a_avg.reshape(D * N, 1, 1) * (S - 1 - indices).reshape(1, 1, S))  # (D*N, 1, S)
+        dt = F.softplus(self.dt_proj(x))  # (B, S, D)
 
-        # b_x: (B, S, D, N) → (B, D*N, S) for grouped conv
-        u = b_x.permute(0, 2, 3, 1).reshape(B, D * N, S)
-        h = F.conv1d(F.pad(u, (S - 1, 0)), kernel, groups=D * N)  # (B, D*N, S)
-        h = h.reshape(B, D, N, S).permute(0, 3, 1, 2).reshape(B * S, D * N)  # (B*S, D*N)
+        # Per-timestep input-dependent decay via true parallel scan
+        log_a = (self.A.view(1, 1, D, N) * dt.unsqueeze(-1)).clamp(-10, 0)  # (B, S, D, N)
+        b_x = self.B(x).reshape(B, S, D, N)
+
+        # Reshape so sequence dim is last: (B, D, N, S)
+        log_a_t = log_a.permute(0, 2, 3, 1).contiguous()
+        b_x_t = b_x.permute(0, 2, 3, 1).contiguous()
+
+        h_t = _parallel_associative_scan(log_a_t, b_x_t)
+
+        # (B, D, N, S) -> (B*S, D*N) for output projection
+        h = h_t.permute(0, 3, 1, 2).reshape(B * S, D * N)
 
         y = self.C(h).reshape(B, S, D)
         return y + x * self.D

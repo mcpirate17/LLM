@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .primitives import get_primitive, PrimitiveOp
+from .primitives import get_primitive, PrimitiveOp, _ALGEBRAIC_SPACE_TAGS
 from .graph import ComputationGraph, ShapeInfo
 
 try:
@@ -33,9 +33,51 @@ except ImportError:
 from research.env import aria_core, HAS_ARIA_CORE
 
 
+# ── Math-space op names (frozen at import time) ──────────────────────
+_MATHSPACE_OPS: frozenset = frozenset(_ALGEBRAIC_SPACE_TAGS)
+
 # ── Registry System ───────────────────────────────────────────────────
 
 _OP_DISPATCH: Dict[str, Callable[[nn.Module, Tuple[torch.Tensor, ...], Dict], torch.Tensor]] = {}
+
+
+# ── Parallel Associative Scan ────────────────────────────────────────
+
+def _parallel_associative_scan(log_a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Parallel prefix scan for linear recurrence h[t] = exp(log_a[t]) * h[t-1] + b[t].
+
+    Uses Kogge-Stone doubling: O(S log S) work, O(log S) sequential depth.
+    Operates along the last dimension of log_a (the sequence dimension).
+
+    Args:
+        log_a: (..., S) log-decay factors per timestep, should be in [-10, 0].
+        b: (..., S) additive input per timestep.
+
+    Returns:
+        h: (..., S) scan output where h[t] = sum_{i<=t} prod_{j=i+1..t} exp(log_a[j]) * b[i].
+    """
+    S = log_a.shape[-1]
+    if S <= 1:
+        return b
+
+    a = torch.exp(log_a)
+    h = b
+
+    stride = 1
+    while stride < S:
+        # Combine position t with position t-stride
+        # Identity element: (a=1, b=0) for positions without a predecessor
+        h = torch.cat([
+            h[..., :stride],
+            a[..., stride:] * h[..., :-stride] + h[..., stride:],
+        ], dim=-1)
+        a = torch.cat([
+            a[..., :stride],
+            a[..., stride:] * a[..., :-stride],
+        ], dim=-1)
+        stride *= 2
+
+    return h
 
 
 def register_op(name: str):
@@ -746,47 +788,38 @@ def _op_graph_attention(module, inputs, _):
 
 @register_op("state_space")
 def _op_state_space(module, inputs, _):
-    """S4-style state space mixer with parallel scan via causal convolution."""
+    """S4-style state space mixer with true parallel associative scan.
+
+    Uses Kogge-Stone parallel prefix scan for the linear recurrence
+    h[t] = exp(log_a[t]) * h[t-1] + b_x[t], supporting per-timestep
+    input-dependent decay (no averaging approximation).
+    """
     if not hasattr(module, 'ssm_A'):
         return inputs[0]
     x = inputs[0]
     B, S, D = x.shape
     N = module.ssm_state_dim
-    
+
     # dt: (B, S, D)
     dt = F.softplus(module.ssm_dt(x))
     # A: (D, N), dt: (B, S, D) -> log_a: (B, S, D, N)
     log_a = module.ssm_A.view(1, 1, D, N) * dt.unsqueeze(-1)
-    # Clamp log_a for stability: -10 to 0 (decay factor 4e-5 to 1.0)
     log_a = torch.clamp(log_a, min=-10.0, max=0.0)
-    
+
     # b_x: (B, S, D, N)
     b_x = module.ssm_B(x).view(B, S, D, N)
-    
-    # Parallel scan approximation via exponential decay convolution.
-    # For simplicity and correctness in the synthesis context, we'll use
-    # the same vectorized scan as selective_scan but extended to state_dim N.
-    # h[t] = sum_{i=0}^t exp(sum_{j=i+1}^t log_a[j]) * b_x[i]
-    
-    # In state_space, log_a depends on x, so a simple conv1d with constant kernel 
-    # only works if log_a is constant over time. If not, we need a true parallel scan.
-    # For the synthesis baseline, we'll use the average log_a over the sequence
-    # to allow vectorized execution while preserving some input-dependence.
-    avg_log_a = log_a.mean(dim=1) # (B, D, N)
-    
-    indices = torch.arange(S, device=x.device, dtype=x.dtype)
-    # kernel: (B, D, N, S)
-    log_kernel = avg_log_a.unsqueeze(-1) * (S - 1 - indices).view(1, 1, 1, S)
-    kernel = torch.exp(log_kernel)
-    
-    # Reshape for grouped conv1d: (B*D*N, 1, S)
-    kernel_grouped = kernel.view(B * D * N, 1, S)
-    u_swapped = b_x.permute(0, 2, 3, 1).reshape(1, B * D * N, S)
-    
-    h_swapped = F.conv1d(F.pad(u_swapped, (S - 1, 0)), kernel_grouped, groups=B * D * N)
-    h = h_swapped.view(B, D, N, S).permute(0, 3, 1, 2) # (B, S, D, N)
-    
-    y = module.ssm_C(h.reshape(B, S, D * N))
+
+    # Reshape so sequence dim is last for parallel scan: (B, D, N, S)
+    log_a_t = log_a.permute(0, 2, 3, 1)  # (B, D, N, S)
+    b_x_t = b_x.permute(0, 2, 3, 1)      # (B, D, N, S)
+
+    # True parallel associative scan — O(S log S) work, O(log S) depth
+    h_t = _parallel_associative_scan(log_a_t.contiguous(), b_x_t.contiguous())
+
+    # Reshape back: (B, D, N, S) -> (B, S, D, N) -> (B, S, D*N)
+    h = h_t.permute(0, 3, 1, 2).reshape(B, S, D * N)
+
+    y = module.ssm_C(h)
     return y + x * module.ssm_D
 
 @register_op("conv_only")
@@ -1013,23 +1046,39 @@ def _op_rwkv_time_mixing(module, inputs, _):
         return F.linear(out, module.W_o)
 
     r = torch.sigmoid(r_raw)
-    w = -torch.exp(module.w_decay)
+    w = -torch.exp(module.w_decay)  # (D,) — negative log-decay
     u = module.u_bonus
 
-    if S <= 128:
-        exp_w = torch.exp(w).unsqueeze(0)
-        wkv = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-        wkv_denom = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-        outputs = []
-        for t in range(S):
-            kt, vt = k[:, t], v[:, t]
-            p = torch.exp(u + kt)
-            outputs.append(r[:, t] * (wkv + p * vt) / (wkv_denom + p).clamp(min=1e-8))
-            wkv = (wkv * exp_w) + torch.exp(kt) * vt
-            wkv_denom = (wkv_denom * exp_w) + torch.exp(kt)
-        out = torch.stack(outputs, dim=1)
-    else:
-        out = r * v
+    # Vectorized WKV via causal convolution with exponential decay kernel.
+    # Recurrences: wkv[t] = exp(w)*wkv[t-1] + exp(k[t])*v[t]
+    #              denom[t] = exp(w)*denom[t-1] + exp(k[t])
+    # Both are constant-decay linear recurrences → causal conv1d.
+    exp_k = torch.exp(k.clamp(-20, 20))  # (B, S, D) — clamp for stability
+
+    # Build exponential decay kernel: K[d, 1, s] = exp(w[d] * (S-1-s))
+    # Reversed so conv1d correlation computes the causal sum correctly.
+    indices = torch.arange(S, device=x.device, dtype=x.dtype)
+    log_kernel = w.view(D, 1, 1) * (S - 1 - indices).view(1, 1, S)  # (D, 1, S)
+    kernel = torch.exp(log_kernel.clamp(-20, 0))
+
+    # Inclusive scan via causal conv1d: h[t] = sum_{i=0}^{t} K[t-i] * input[i]
+    u_wkv = (exp_k * v).permute(0, 2, 1)  # (B, D, S) — input for wkv scan
+    u_den = exp_k.permute(0, 2, 1)         # (B, D, S) — input for denom scan
+
+    wkv_incl = F.conv1d(F.pad(u_wkv, (S - 1, 0)), kernel, groups=D)  # (B, D, S)
+    den_incl = F.conv1d(F.pad(u_den, (S - 1, 0)), kernel, groups=D)  # (B, D, S)
+
+    # Exclusive scan (state BEFORE update): shift right by 1, pad with 0
+    wkv_before = F.pad(wkv_incl[..., :-1], (1, 0))  # (B, D, S)
+    den_before = F.pad(den_incl[..., :-1], (1, 0))   # (B, D, S)
+
+    # Transpose back to (B, S, D) for output computation
+    wkv_before = wkv_before.permute(0, 2, 1)
+    den_before = den_before.permute(0, 2, 1)
+
+    # output[t] = r[t] * (wkv_before[t] + exp(u+k[t])*v[t]) / (den_before[t] + exp(u+k[t]))
+    p = torch.exp((u + k).clamp(-20, 20))  # (B, S, D)
+    out = r * (wkv_before + p * v) / (den_before + p).clamp(min=1e-8)
 
     return F.linear(out, module.W_o)
 
@@ -1788,7 +1837,7 @@ def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...
     """Execute a single primitive operation via the registry."""
     if op_name in _OP_DISPATCH:
         result = _OP_DISPATCH[op_name](module, inputs, config)
-        
+
         # Telemetry for registered math space ops (if any)
         if op_name.startswith("math_"):
             nonfinite = int((~torch.isfinite(result)).sum().item())
@@ -2175,9 +2224,40 @@ class CompiledLayer(nn.Module):
             node = graph.nodes[nid]
             if node.is_input: continue
             input_shapes = [graph.nodes[iid].output_shape for iid in node.input_ids]
-            self.ops[str(nid)] = CompiledOp(node.op_name, node.config, 
+            self.ops[str(nid)] = CompiledOp(node.op_name, node.config,
                                             input_shapes[0] if input_shapes else ShapeInfo(),
                                             node.output_shape, graph.model_dim)
+
+        # Pre-compute math-space block boundary nodes.
+        # A math-space op needs post-normalization when ANY of its consumers
+        # is non-math-space (or it's the output node with no consumers).
+        # Back-to-back math ops (e.g. tropical_matmul → tropical_add) are
+        # left unnormalized to preserve algebraic semantics within blocks.
+        self._mathspace_boundary_nids: set = set()
+        self._mathspace_boundary_norms = nn.ModuleDict()
+        consumers_of: Dict[int, List[int]] = {nid: [] for nid in graph.nodes}
+        for nid in self.topo_order:
+            for iid in graph.nodes[nid].input_ids:
+                consumers_of[iid].append(nid)
+        output_id = graph._output_node_id
+        for nid in self.topo_order:
+            node = graph.nodes[nid]
+            if node.is_input or node.op_name not in _MATHSPACE_OPS:
+                continue
+            # Check: does this math-space op feed into any non-math-space consumer?
+            is_boundary = False
+            node_consumers = consumers_of.get(nid, [])
+            if not node_consumers and nid == output_id:
+                # Final op in graph is math-space — must normalize before lm_head
+                is_boundary = True
+            else:
+                for cid in node_consumers:
+                    consumer_node = graph.nodes[cid]
+                    if consumer_node.op_name not in _MATHSPACE_OPS:
+                        is_boundary = True
+                        break
+            if is_boundary:
+                self._mathspace_boundary_nids.add(str(nid))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Execute the computation graph with liveness-based memory management.
@@ -2213,7 +2293,24 @@ class CompiledLayer(nn.Module):
             else:
                 # Build input tuple only for registered consumers
                 inputs = tuple(node_outputs[iid] for iid in node.input_ids)
-                node_outputs[nid] = self.ops[str(nid)](*inputs)
+                out = self.ops[str(nid)](*inputs)
+                # Normalize at math-space block boundaries (not between
+                # consecutive math ops — preserves algebraic semantics).
+                # LayerNorm is created lazily using the actual tensor's last
+                # dim, because shape inference can be wrong for ops like
+                # tropical_matmul that output (B,S,S) instead of (B,S,D).
+                nid_str = str(nid)
+                if nid_str in self._mathspace_boundary_nids:
+                    actual_dim = out.shape[-1]
+                    if nid_str not in self._mathspace_boundary_norms:
+                        norm = nn.LayerNorm(actual_dim, device=out.device, dtype=out.dtype)
+                        self._mathspace_boundary_norms[nid_str] = norm
+                    norm = self._mathspace_boundary_norms[nid_str]
+                    if norm.normalized_shape[0] != actual_dim:
+                        norm = nn.LayerNorm(actual_dim, device=out.device, dtype=out.dtype)
+                        self._mathspace_boundary_norms[nid_str] = norm
+                    out = norm(out)
+                node_outputs[nid] = out
 
             # Immediately decrement counts for this node's inputs
             for iid in node.input_ids:
@@ -2280,6 +2377,21 @@ class SynthesizedModel(nn.Module):
         for layer in self.layers:
             if hasattr(layer, "set_capture_heatmap"):
                 layer.set_capture_heatmap(enabled)
+
+    @property
+    def has_mathspace_ops(self) -> bool:
+        """True if any layer contains non-euclidean math-space ops."""
+        return any(layer._mathspace_boundary_norms for layer in self.layers)
+
+    @property
+    def recommended_grad_clip(self) -> float:
+        """Adaptive clip norm: 5.0 for math-space architectures, 1.0 otherwise.
+
+        Math-space ops (tropical, clifford, hyperbolic) produce legitimately
+        larger gradients due to non-euclidean geometry. Clipping at 1.0
+        starves them; 5.0 allows learning while still catching explosions.
+        """
+        return 5.0 if self.has_mathspace_ops else 1.0
 
     def param_count(self) -> int:
         return sum(p.numel() for p in self.parameters())

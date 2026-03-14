@@ -39,6 +39,12 @@ except ImportError:
 # Smooth min via log-sum-exp preserves gradient flow to both branches.
 
 _SMOOTH_TAU: float = 0.1  # Temperature for smooth min/max
+_SMOOTH_S_REF: float = 128.0
+
+
+def _adaptive_temperature(base_tau: float, size: int) -> float:
+    scale = max(1.0, (max(int(size), 1) / _SMOOTH_S_REF) ** 0.5)
+    return max(base_tau * scale, 1e-4)
 
 
 def _smooth_min(x: torch.Tensor, y: torch.Tensor, tau: float = _SMOOTH_TAU) -> torch.Tensor:
@@ -48,10 +54,11 @@ def _smooth_min(x: torch.Tensor, y: torch.Tensor, tau: float = _SMOOTH_TAU) -> t
     Converges to min(x, y) as τ→0.  With τ=0.1, both inputs receive
     gradient proportional to exp(-x_i/τ) / (exp(-x_i/τ) + exp(-y_i/τ)).
     """
-    inv_tau = 1.0 / tau
+    adaptive_tau = _adaptive_temperature(tau, x.shape[-1] if x.ndim else 1)
+    inv_tau = 1.0 / adaptive_tau
     # Stack for logsumexp along new dim 0: shape (2, *input_shape)
     stacked = torch.stack([-x * inv_tau, -y * inv_tau], dim=0)
-    return -tau * torch.logsumexp(stacked, dim=0)
+    return -adaptive_tau * torch.logsumexp(stacked, dim=0)
 
 
 def _smooth_min_dim(x: torch.Tensor, dim: int, tau: float = _SMOOTH_TAU) -> torch.Tensor:
@@ -59,8 +66,9 @@ def _smooth_min_dim(x: torch.Tensor, dim: int, tau: float = _SMOOTH_TAU) -> torc
 
     Replaces x.min(dim=dim).values with a differentiable version.
     """
-    inv_tau = 1.0 / tau
-    return -tau * torch.logsumexp(-x * inv_tau, dim=dim)
+    adaptive_tau = _adaptive_temperature(tau, x.shape[dim])
+    inv_tau = 1.0 / adaptive_tau
+    return -adaptive_tau * torch.logsumexp(-x * inv_tau, dim=dim)
 
 
 def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -92,11 +100,15 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
             pass
 
     # CPU fast path: native C kernel
-    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.ndim == 3 and b.ndim == 3 and a.device.type == "cpu":
+    if _HAS_ARIA_CORE and a.is_contiguous() and b.ndim == 3 and a.ndim == 3 and a.device.type == "cpu":
         B, S, D = a.shape
-        _, D2, _ = b.shape
-        if D == D2:
-            return torch.stack([aria_core.tropical_matmul_f32(a[i], b[i]) for i in range(B)])
+        native_b = None
+        if b.is_contiguous() and b.shape[1] == D:
+            native_b = b
+        elif b.shape[2] == D:
+            native_b = b.transpose(1, 2).contiguous()
+        if native_b is not None:
+            return aria_core.tropical_matmul_batched_f32(a, native_b)
 
     # Chunked torch fallback — avoids O(S^2 * D) peak memory
     B, S1, D1 = a.shape
@@ -131,8 +143,9 @@ def tropical_softmax(x: torch.Tensor, dim: int = -1,
     """
     # Adaptive: scale temperature with sqrt(S/128) to prevent
     # numerical underflow for long sequences
-    S = x.shape[1] if x.ndim >= 2 else 1
-    adaptive_t = temperature * max(1.0, (S / 128.0) ** 0.5)
+    reduce_dim = dim if dim >= 0 else x.ndim + dim
+    reduce_size = x.shape[reduce_dim] if x.ndim and 0 <= reduce_dim < x.ndim else 1
+    adaptive_t = _adaptive_temperature(temperature, reduce_size)
     return torch.softmax(-x / adaptive_t, dim=dim)
 
 

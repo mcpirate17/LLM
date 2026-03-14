@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
@@ -32,6 +32,8 @@ class Individual:
     generation: int = 0
     parent_fingerprint: Optional[str] = None
     metadata: Dict = field(default_factory=dict)
+    pareto_rank: int = 0
+    crowding_dist: float = 0.0
 
     @property
     def fingerprint(self) -> str:
@@ -64,6 +66,7 @@ class EvolutionConfig:
     tournament_size: int = 5
     mutation_rate: float = 0.7
     crossover_rate: float = 0.3
+    fresh_injection_rate: float = 0.1
     elitism: int = 5  # top N carry over unchanged
     # Fitness weighting
     fitness_weight: float = 0.5
@@ -126,6 +129,7 @@ def evolutionary_search(
 
     # Evaluate initial population
     _evaluate_population(population, fitness_fn, novelty_fn, config)
+    nsga2_rank(population)
     population = _enforce_population_diversity(
         population=population,
         fitness_fn=fitness_fn,
@@ -145,8 +149,7 @@ def evolutionary_search(
         new_population = []
 
         # Elitism: keep top individuals
-        population.sort(key=lambda x: x.fitness * config.fitness_weight +
-                        x.novelty * config.novelty_weight, reverse=True)
+        population.sort(key=lambda x: _combined_score(x, config), reverse=True)
         new_population.extend(population[:config.elitism])
 
         # Fill rest with offspring (with max attempts to prevent infinite loop)
@@ -166,44 +169,23 @@ def evolutionary_search(
                 )
                 break
 
-            if rng.random() < config.crossover_rate and len(population) >= 2:
-                # Crossover
-                p1 = _tournament_select(population, config.tournament_size, rng,
-                                   config.fitness_weight, config.novelty_weight)
-                p2 = _tournament_select(population, config.tournament_size, rng,
-                                   config.fitness_weight, config.novelty_weight)
-                try:
-                    child_graph = _crossover_graphs(p1.graph, p2.graph, grammar, rng)
-                    # Deterministic parent ordering for lineage hash stability
-                    parents = sorted([p1.fingerprint, p2.fingerprint])
-                    child = Individual(
-                        graph=child_graph,
-                        generation=gen + 1,
-                        parent_fingerprint=f"{parents[0]}x{parents[1]}",
-                    )
-                    new_population.append(child)
-                except (ValueError, RuntimeError):
-                    fill_failures += 1
-            else:
-                # Mutation
-                parent = _tournament_select(population, config.tournament_size, rng,
-                                   config.fitness_weight, config.novelty_weight)
-                try:
-                    child_graph = _mutate_graph(parent.graph, grammar, rng)
-                    child = Individual(
-                        graph=child_graph,
-                        generation=gen + 1,
-                        parent_fingerprint=parent.fingerprint,
-                    )
-                    new_population.append(child)
-                except (ValueError, RuntimeError):
-                    # If mutation fails, generate fresh
+            reproduction_mode = _choose_reproduction_mode(config, rng)
+            mode_handlers = {
+                "crossover": lambda: _spawn_crossover_individual(population, config, grammar, rng, gen + 1),
+                "mutation": lambda: _spawn_mutation_individual(population, config, grammar, rng, gen + 1),
+                "fresh": lambda: _spawn_fresh_individual(grammar, rng, gen + 1),
+            }
+            try:
+                child = mode_handlers[reproduction_mode]()
+                new_population.append(child)
+            except (ValueError, RuntimeError):
+                if reproduction_mode != "fresh":
                     try:
-                        graph = generate_layer_graph(grammar, seed=rng.randint(0, 2**32))
-                        child = Individual(graph=graph, generation=gen + 1)
-                        new_population.append(child)
+                        new_population.append(_spawn_fresh_individual(grammar, rng, gen + 1))
                     except (ValueError, RuntimeError):
                         fill_failures += 1
+                else:
+                    fill_failures += 1
 
         if not new_population:
             logger.error(
@@ -214,8 +196,9 @@ def evolutionary_search(
 
         population = new_population
 
-        # Evaluate
+        # Evaluate and rank with NSGA-II
         _evaluate_population(population, fitness_fn, novelty_fn, config)
+        nsga2_rank(population)
         population = _enforce_population_diversity(
             population=population,
             fitness_fn=fitness_fn,
@@ -234,12 +217,17 @@ def evolutionary_search(
                 gen + 1, config.n_generations, len(population), best_fit,
             )
 
+            # Update grammar weights from Pareto front every 5 generations
+            front_weights = pareto_front_op_weights(population)
+            if front_weights:
+                for op_name, w in front_weights.items():
+                    grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * w
+
         if callback:
             callback(gen, population)
 
     # Final sort
-    population.sort(key=lambda x: x.fitness * config.fitness_weight +
-                    x.novelty * config.novelty_weight, reverse=True)
+    population.sort(key=lambda x: _combined_score(x, config), reverse=True)
     return population
 
 
@@ -298,7 +286,7 @@ def _enforce_population_diversity(
         return population
 
     def score(ind: Individual) -> float:
-        return ind.fitness * config.fitness_weight + ind.novelty * config.novelty_weight
+        return _combined_score(ind, config)
 
     ranked = sorted(population, key=score, reverse=True)
     
@@ -384,9 +372,294 @@ def _tournament_select(
     fitness_weight: float = 0.5,
     novelty_weight: float = 0.5,
 ) -> Individual:
-    """Tournament selection with weighted fitness + novelty."""
+    """Tournament selection with NSGA-II crowded comparison when available."""
     candidates = rng.sample(population, min(tournament_size, len(population)))
-    return max(candidates, key=lambda x: x.fitness * fitness_weight + x.novelty * novelty_weight)
+
+    def _cmp_key(x: Individual) -> Tuple[float, float]:
+        if x.pareto_rank > 0:
+            # Lower rank better (negate so max works), higher crowding better
+            return (-x.pareto_rank, x.crowding_dist)
+        return (x.fitness * fitness_weight + x.novelty * novelty_weight, 0.0)
+
+    return max(candidates, key=_cmp_key)
+
+
+_DEFAULT_OBJECTIVES: List[Tuple[str, str]] = [("fitness", "max"), ("novelty", "max")]
+
+
+def fast_non_dominated_sort(
+    population: List[Individual],
+    objectives: Sequence[Tuple[str, str]] = _DEFAULT_OBJECTIVES,
+) -> List[List[Individual]]:
+    """NSGA-II fast non-dominated sort.
+
+    Args:
+        population: Individuals to rank.
+        objectives: List of ``(attr_name, "min"|"max")`` tuples.
+
+    Returns:
+        List of Pareto fronts (front 0 = non-dominated).
+    """
+    n = len(population)
+    if n == 0:
+        return []
+
+    # Pre-extract objective values for O(1) access in inner loop.
+    obj_vals: List[List[float]] = []
+    signs = [1.0 if d == "max" else -1.0 for _, d in objectives]
+    for ind in population:
+        obj_vals.append([getattr(ind, attr) * s for attr, (_, s) in zip(
+            [o[0] for o in objectives], zip(objectives, signs)
+        )])
+
+    # domination_count[i] = how many individuals dominate i
+    domination_count = [0] * n
+    # dominated_set[i] = indices dominated by i
+    dominated_set: List[List[int]] = [[] for _ in range(n)]
+
+    for i in range(n):
+        vi = obj_vals[i]
+        for j in range(i + 1, n):
+            vj = obj_vals[j]
+            i_dom_j = True
+            j_dom_i = True
+            for k in range(len(objectives)):
+                if vi[k] < vj[k]:
+                    i_dom_j = False
+                if vj[k] < vi[k]:
+                    j_dom_i = False
+                if not i_dom_j and not j_dom_i:
+                    break
+            if i_dom_j:
+                dominated_set[i].append(j)
+                domination_count[j] += 1
+            elif j_dom_i:
+                dominated_set[j].append(i)
+                domination_count[i] += 1
+
+    # Build fronts
+    fronts: List[List[Individual]] = []
+    current_front_idx: List[int] = [i for i in range(n) if domination_count[i] == 0]
+
+    rank = 1
+    while current_front_idx:
+        front = [population[i] for i in current_front_idx]
+        for ind in front:
+            ind.pareto_rank = rank
+        fronts.append(front)
+        next_front_idx: List[int] = []
+        for i in current_front_idx:
+            for j in dominated_set[i]:
+                domination_count[j] -= 1
+                if domination_count[j] == 0:
+                    next_front_idx.append(j)
+        current_front_idx = next_front_idx
+        rank += 1
+
+    return fronts
+
+
+def assign_crowding_distance(
+    front: List[Individual],
+    objectives: Sequence[Tuple[str, str]] = _DEFAULT_OBJECTIVES,
+) -> None:
+    """Compute and assign crowding distance for a single Pareto front."""
+    n = len(front)
+    if n <= 2:
+        for ind in front:
+            ind.crowding_dist = float("inf")
+        return
+
+    for ind in front:
+        ind.crowding_dist = 0.0
+
+    for attr, _ in objectives:
+        sorted_front = sorted(front, key=lambda x: getattr(x, attr))
+        obj_min = getattr(sorted_front[0], attr)
+        obj_max = getattr(sorted_front[-1], attr)
+        span = obj_max - obj_min
+        sorted_front[0].crowding_dist = float("inf")
+        sorted_front[-1].crowding_dist = float("inf")
+        if span <= 0:
+            continue
+        inv_span = 1.0 / span
+        for i in range(1, n - 1):
+            diff = getattr(sorted_front[i + 1], attr) - getattr(sorted_front[i - 1], attr)
+            sorted_front[i].crowding_dist += diff * inv_span
+
+
+def nsga2_rank(
+    population: List[Individual],
+    objectives: Optional[Sequence[Tuple[str, str]]] = None,
+) -> List[Individual]:
+    """Rank population using NSGA-II non-dominated sort + crowding distance.
+
+    Args:
+        population: Individuals to rank.
+        objectives: Objective specs; defaults to fitness(max) + novelty(max).
+
+    Returns:
+        Population sorted by (pareto_rank ASC, crowding_dist DESC).
+    """
+    if not population:
+        return population
+
+    objs = objectives if objectives is not None else _DEFAULT_OBJECTIVES
+    fronts = fast_non_dominated_sort(population, objs)
+    for front in fronts:
+        assign_crowding_distance(front, objs)
+
+    population.sort(key=lambda x: (x.pareto_rank, -x.crowding_dist))
+    return population
+
+
+def pareto_front_op_weights(
+    population: List[Individual],
+    baseline_weight: float = 1.0,
+    boost: float = 1.5,
+    penalty: float = 0.7,
+) -> Dict[str, float]:
+    """Extract grammar op weight adjustments from Pareto front analysis.
+
+    Ops that appear disproportionately in rank-0 individuals get boosted;
+    ops that appear only in dominated individuals get penalized.
+
+    Args:
+        population: NSGA-II ranked population (must have pareto_rank set).
+        baseline_weight: Default weight for unaffected ops.
+        boost: Weight multiplier for Pareto-front-enriched ops.
+        penalty: Weight multiplier for dominated-only ops.
+
+    Returns:
+        Dict mapping op_name → weight multiplier.
+    """
+    if not population:
+        return {}
+
+    front_ops: Dict[str, int] = {}
+    dominated_ops: Dict[str, int] = {}
+
+    for ind in population:
+        ops = [n.op_name for n in ind.graph.nodes.values() if not n.is_input]
+        counter = front_ops if ind.pareto_rank == 0 else dominated_ops
+        for op in ops:
+            counter[op] = counter.get(op, 0) + 1
+
+    all_ops = set(front_ops) | set(dominated_ops)
+    weights: Dict[str, float] = {}
+
+    for op in all_ops:
+        f_count = front_ops.get(op, 0)
+        d_count = dominated_ops.get(op, 0)
+        total = f_count + d_count
+        if total == 0:
+            continue
+        front_ratio = f_count / total
+        if front_ratio > 0.6:
+            weights[op] = baseline_weight * boost
+        elif front_ratio < 0.2 and d_count >= 3:
+            weights[op] = baseline_weight * penalty
+        # else: leave at default (no entry = no override)
+
+    return weights
+
+
+def _combined_score(ind: Individual, config: EvolutionConfig) -> float:
+    """Weighted population score used consistently across selection and ranking."""
+    if ind.pareto_rank > 0:
+        # Lower pareto_rank is better, higher crowding_dist is better
+        return -ind.pareto_rank + ind.crowding_dist * 0.001
+    return ind.fitness * config.fitness_weight + ind.novelty * config.novelty_weight
+
+
+def _choose_reproduction_mode(
+    config: EvolutionConfig,
+    rng: random.Random,
+) -> str:
+    """Sample a reproduction mode from configured probabilities."""
+    modes = (
+        ("fresh", max(0.0, float(config.fresh_injection_rate))),
+        ("crossover", max(0.0, float(config.crossover_rate))),
+        ("mutation", max(0.0, float(config.mutation_rate))),
+    )
+    total = sum(weight for _, weight in modes)
+    if total <= 0:
+        return "mutation"
+    draw = rng.random() * total
+    cumulative = 0.0
+    for mode, weight in modes:
+        cumulative += weight
+        if draw <= cumulative:
+            return mode
+    return "mutation"
+
+
+def _spawn_fresh_individual(
+    grammar: GrammarConfig,
+    rng: random.Random,
+    generation: int,
+) -> Individual:
+    """Generate a fresh individual directly from the grammar."""
+    graph = generate_layer_graph(grammar, seed=rng.randint(0, 2**32))
+    child = Individual(graph=graph, generation=generation)
+    child.metadata["fresh_injection"] = True
+    return child
+
+
+def _spawn_mutation_individual(
+    population: List[Individual],
+    config: EvolutionConfig,
+    grammar: GrammarConfig,
+    rng: random.Random,
+    generation: int,
+) -> Individual:
+    """Sample a parent and return a mutation child."""
+    parent = _tournament_select(
+        population,
+        config.tournament_size,
+        rng,
+        config.fitness_weight,
+        config.novelty_weight,
+    )
+    child_graph = _mutate_graph(parent.graph, grammar, rng)
+    return Individual(
+        graph=child_graph,
+        generation=generation,
+        parent_fingerprint=parent.fingerprint,
+    )
+
+
+def _spawn_crossover_individual(
+    population: List[Individual],
+    config: EvolutionConfig,
+    grammar: GrammarConfig,
+    rng: random.Random,
+    generation: int,
+) -> Individual:
+    """Sample two parents and return a crossover child."""
+    if len(population) < 2:
+        raise ValueError("crossover requires at least two parents")
+    p1 = _tournament_select(
+        population,
+        config.tournament_size,
+        rng,
+        config.fitness_weight,
+        config.novelty_weight,
+    )
+    p2 = _tournament_select(
+        population,
+        config.tournament_size,
+        rng,
+        config.fitness_weight,
+        config.novelty_weight,
+    )
+    child_graph = _crossover_graphs(p1.graph, p2.graph, grammar, rng)
+    parents = sorted([p1.fingerprint, p2.fingerprint])
+    return Individual(
+        graph=child_graph,
+        generation=generation,
+        parent_fingerprint=f"{parents[0]}x{parents[1]}",
+    )
 
 
 def _mutate_graph(
@@ -598,5 +871,4 @@ def _category_histogram(graph: ComputationGraph) -> Dict[str, int]:
             continue
         hist[cat] = hist.get(cat, 0) + 1
     return hist
-
 

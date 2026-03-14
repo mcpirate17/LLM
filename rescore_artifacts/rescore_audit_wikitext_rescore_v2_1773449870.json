@@ -1,0 +1,382 @@
+{
+  "version": "wikitext_rescore_v2",
+  "timestamp": "2026-03-13T20:57:50",
+  "db_path": "research/lab_notebook.db",
+  "snapshot_table": "leaderboard_snapshot_wikitext_rescore_v2",
+  "total_rows": 3480,
+  "dry_run": false,
+  "tier_counts": {
+    "validation": 116,
+    "screened_out": 94,
+    "screening": 2963,
+    "investigation": 307
+  },
+  "rows_changed": 204,
+  "screening_only_count": 2930,
+  "wikitext_score_fixed_count": 196,
+  "no_real_token_metrics_count": 2930,
+  "before_top20": [
+    {
+      "result_id": "1df90e93-4b0",
+      "tier": "validation",
+      "composite_score": 224.5573,
+      "screening_loss_ratio": 0.01411523775257376,
+      "investigation_loss_ratio": 0.19990083114894655,
+      "wikitext_perplexity": 96.3,
+      "is_reference": false
+    },
+    {
+      "result_id": "ref_rwkv_61754c8e",
+      "tier": "validation",
+      "composite_score": 174.4112,
+      "screening_loss_ratio": 0.17655436408032052,
+      "investigation_loss_ratio": 0.17655436408032052,
+      "wikitext_perplexity": 25.77,
+      "is_reference": true
+    },
+    {
+      "result_id": "3e879c77-3d2",
+      "tier": "screened_out",
+      "composite_score": 173.9774,
+      "screening_loss_ratio": 0.01114035654869683,
+      "investigation_loss_ratio": 0.024340433106384552,
+      "wikitext_perplexity": 36.99,
+      "is_reference": false
+    },
+    {
+      "result_id": "bb3de42f-f5c",
+      "tier": "screening",
+      "composite_score": 171.7913,
+      "screening_loss_ratio": 0.012611815642261538,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "296cb201-3b3",
+      "tier": "validation",
+      "composite_score": 170.1666,
+      "screening_loss_ratio": 0.00881851107091064,
+      "investigation_loss_ratio": 0.02659414522519249,
+      "wikitext_perplexity": 53.93,
+      "is_reference": false
+    },
+    {
+      "result_id": "ref_mamba_76ff10cd",
+      "tier": "validation",
+      "composite_score": 169.972,
+      "screening_loss_ratio": 0.20708068701642898,
+      "investigation_loss_ratio": 0.20708068701642898,
+      "wikitext_perplexity": 72.68,
+      "is_reference": true
+    },
+    {
+      "result_id": "6a350ce4-45a",
+      "tier": "screened_out",
+      "composite_score": 166.9655,
+      "screening_loss_ratio": 0.011653144517500704,
+      "investigation_loss_ratio": 0.21587268143929667,
+      "wikitext_perplexity": 92.42,
+      "is_reference": false
+    },
+    {
+      "result_id": "c975c2cd-8d8",
+      "tier": "screening",
+      "composite_score": 165.9186,
+      "screening_loss_ratio": 0.0098645303245098,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "ref_retrieval_augmented_ab5cf5ae",
+      "tier": "validation",
+      "composite_score": 164.8588,
+      "screening_loss_ratio": 0.25037877491195,
+      "investigation_loss_ratio": 0.25037877491195,
+      "wikitext_perplexity": 28.3,
+      "is_reference": true
+    },
+    {
+      "result_id": "ref_gpt2_5b3b2643",
+      "tier": "validation",
+      "composite_score": 163.6345,
+      "screening_loss_ratio": 0.2646341975879313,
+      "investigation_loss_ratio": 0.2646341975879313,
+      "wikitext_perplexity": 29.35,
+      "is_reference": true
+    },
+    {
+      "result_id": "030dd59a-303",
+      "tier": "validation",
+      "composite_score": 163.1572,
+      "screening_loss_ratio": 0.011875651398015129,
+      "investigation_loss_ratio": 0.2305613452157066,
+      "wikitext_perplexity": 48.04,
+      "is_reference": false
+    },
+    {
+      "result_id": "76dfc660-d02",
+      "tier": "screened_out",
+      "composite_score": 162.6342,
+      "screening_loss_ratio": 0.010043337817679762,
+      "investigation_loss_ratio": 0.19773129957750182,
+      "wikitext_perplexity": 38.38,
+      "is_reference": false
+    },
+    {
+      "result_id": "58c65730-e84",
+      "tier": "screened_out",
+      "composite_score": 162.3598,
+      "screening_loss_ratio": 0.010596946113289199,
+      "investigation_loss_ratio": 0.23480237972707685,
+      "wikitext_perplexity": 43.97,
+      "is_reference": false
+    },
+    {
+      "result_id": "5992327c-92b",
+      "tier": "screened_out",
+      "composite_score": 162.2489,
+      "screening_loss_ratio": 0.011866123007921964,
+      "investigation_loss_ratio": 0.24155468103216218,
+      "wikitext_perplexity": 291.7,
+      "is_reference": false
+    },
+    {
+      "result_id": "ec4f0207-bb8",
+      "tier": "validation",
+      "composite_score": 162.0927,
+      "screening_loss_ratio": 0.00812136606136074,
+      "investigation_loss_ratio": 0.03227689180029444,
+      "wikitext_perplexity": 237.94,
+      "is_reference": false
+    },
+    {
+      "result_id": "154fee74-84c",
+      "tier": "screening",
+      "composite_score": 161.871,
+      "screening_loss_ratio": 0.010680308222276358,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "b85752f0-d27",
+      "tier": "screening",
+      "composite_score": 161.2011,
+      "screening_loss_ratio": 0.010647297366554419,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "08c5c3b5-dfb",
+      "tier": "validation",
+      "composite_score": 154.9748,
+      "screening_loss_ratio": 0.010616400032638498,
+      "investigation_loss_ratio": 0.01180091820542179,
+      "wikitext_perplexity": 40.52,
+      "is_reference": false
+    },
+    {
+      "result_id": "563e60ca-cff",
+      "tier": "validation",
+      "composite_score": 145.4273,
+      "screening_loss_ratio": 0.01325517427654232,
+      "investigation_loss_ratio": 0.14615905496292492,
+      "wikitext_perplexity": 75.81,
+      "is_reference": false
+    },
+    {
+      "result_id": "376ba2a7-105",
+      "tier": "validation",
+      "composite_score": 145.4273,
+      "screening_loss_ratio": 0.01325517427654232,
+      "investigation_loss_ratio": 0.14615905496292492,
+      "wikitext_perplexity": 75.81,
+      "is_reference": false
+    }
+  ],
+  "after_top20": [
+    {
+      "result_id": "1df90e93-4b0",
+      "tier": "validation",
+      "composite_score": 237.647,
+      "screening_loss_ratio": 0.01411523775257376,
+      "investigation_loss_ratio": 0.19990083114894655,
+      "wikitext_perplexity": 96.3,
+      "is_reference": false
+    },
+    {
+      "result_id": "ref_rwkv_61754c8e",
+      "tier": "validation",
+      "composite_score": 198.4492,
+      "screening_loss_ratio": 0.17655436408032052,
+      "investigation_loss_ratio": 0.17655436408032052,
+      "wikitext_perplexity": 25.77,
+      "is_reference": true
+    },
+    {
+      "result_id": "3e879c77-3d2",
+      "tier": "screened_out",
+      "composite_score": 196.7939,
+      "screening_loss_ratio": 0.01114035654869683,
+      "investigation_loss_ratio": 0.024340433106384552,
+      "wikitext_perplexity": 36.99,
+      "is_reference": false
+    },
+    {
+      "result_id": "296cb201-3b3",
+      "tier": "validation",
+      "composite_score": 191.7126,
+      "screening_loss_ratio": 0.00881851107091064,
+      "investigation_loss_ratio": 0.02659414522519249,
+      "wikitext_perplexity": 53.93,
+      "is_reference": false
+    },
+    {
+      "result_id": "ref_mamba_76ff10cd",
+      "tier": "validation",
+      "composite_score": 190.51,
+      "screening_loss_ratio": 0.20708068701642898,
+      "investigation_loss_ratio": 0.20708068701642898,
+      "wikitext_perplexity": 72.68,
+      "is_reference": true
+    },
+    {
+      "result_id": "ref_retrieval_augmented_ab5cf5ae",
+      "tier": "validation",
+      "composite_score": 188.5783,
+      "screening_loss_ratio": 0.25037877491195,
+      "investigation_loss_ratio": 0.25037877491195,
+      "wikitext_perplexity": 28.3,
+      "is_reference": true
+    },
+    {
+      "result_id": "ref_gpt2_5b3b2643",
+      "tier": "validation",
+      "composite_score": 187.2315,
+      "screening_loss_ratio": 0.2646341975879313,
+      "investigation_loss_ratio": 0.2646341975879313,
+      "wikitext_perplexity": 29.35,
+      "is_reference": true
+    },
+    {
+      "result_id": "76dfc660-d02",
+      "tier": "screened_out",
+      "composite_score": 185.3282,
+      "screening_loss_ratio": 0.010043337817679762,
+      "investigation_loss_ratio": 0.19773129957750182,
+      "wikitext_perplexity": 38.38,
+      "is_reference": false
+    },
+    {
+      "result_id": "030dd59a-303",
+      "tier": "validation",
+      "composite_score": 185.0917,
+      "screening_loss_ratio": 0.011875651398015129,
+      "investigation_loss_ratio": 0.2305613452157066,
+      "wikitext_perplexity": 48.04,
+      "is_reference": false
+    },
+    {
+      "result_id": "58c65730-e84",
+      "tier": "screened_out",
+      "composite_score": 184.5953,
+      "screening_loss_ratio": 0.010596946113289199,
+      "investigation_loss_ratio": 0.23480237972707685,
+      "wikitext_perplexity": 43.97,
+      "is_reference": false
+    },
+    {
+      "result_id": "6a350ce4-45a",
+      "tier": "screened_out",
+      "composite_score": 181.263,
+      "screening_loss_ratio": 0.011653144517500704,
+      "investigation_loss_ratio": 0.21587268143929667,
+      "wikitext_perplexity": 92.42,
+      "is_reference": false
+    },
+    {
+      "result_id": "08c5c3b5-dfb",
+      "tier": "validation",
+      "composite_score": 177.4833,
+      "screening_loss_ratio": 0.010616400032638498,
+      "investigation_loss_ratio": 0.01180091820542179,
+      "wikitext_perplexity": 40.52,
+      "is_reference": false
+    },
+    {
+      "result_id": "bb3de42f-f5c",
+      "tier": "screening",
+      "composite_score": 171.7913,
+      "screening_loss_ratio": 0.012611815642261538,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "c975c2cd-8d8",
+      "tier": "screening",
+      "composite_score": 165.9186,
+      "screening_loss_ratio": 0.0098645303245098,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "563e60ca-cff",
+      "tier": "validation",
+      "composite_score": 164.964,
+      "screening_loss_ratio": 0.01325517427654232,
+      "investigation_loss_ratio": 0.14615905496292492,
+      "wikitext_perplexity": 75.81,
+      "is_reference": false
+    },
+    {
+      "result_id": "376ba2a7-105",
+      "tier": "validation",
+      "composite_score": 164.964,
+      "screening_loss_ratio": 0.01325517427654232,
+      "investigation_loss_ratio": 0.14615905496292492,
+      "wikitext_perplexity": 75.81,
+      "is_reference": false
+    },
+    {
+      "result_id": "154fee74-84c",
+      "tier": "screening",
+      "composite_score": 161.871,
+      "screening_loss_ratio": 0.010680308222276358,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "b85752f0-d27",
+      "tier": "screening",
+      "composite_score": 161.2011,
+      "screening_loss_ratio": 0.010647297366554419,
+      "investigation_loss_ratio": null,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    },
+    {
+      "result_id": "390ddb7a-30c",
+      "tier": "validation",
+      "composite_score": 148.8796,
+      "screening_loss_ratio": 0.011193141723049476,
+      "investigation_loss_ratio": 0.01126996646874389,
+      "wikitext_perplexity": 27.15,
+      "is_reference": false
+    },
+    {
+      "result_id": "54be580d-0e5",
+      "tier": "screened_out",
+      "composite_score": 142.2848,
+      "screening_loss_ratio": 0.008870864356943139,
+      "investigation_loss_ratio": 0.9718061799862593,
+      "wikitext_perplexity": null,
+      "is_reference": false
+    }
+  ]
+}

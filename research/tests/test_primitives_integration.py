@@ -24,6 +24,7 @@ pytestmark = pytest.mark.unit
 # Detect available dependencies
 try:
     import torch
+    import torch.nn as nn
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -333,6 +334,48 @@ class TestSpikingPrimitives(unittest.TestCase):
         out.sum().backward()
         self.assertIsNotNone(self.x.grad)
         self.assertGreater(self.x.grad.abs().sum().item(), 0)
+
+    def test_spiking_grad_scale_uses_inverse_sqrt_depth(self):
+        from research.mathspaces.spiking import execute_spike_rate_code
+
+        shallow_x = self.x.detach().clone().requires_grad_(True)
+        deep_x = self.x.detach().clone().requires_grad_(True)
+        shallow_module = nn.Module()
+        shallow_module.n_layers = 1
+        deep_module = nn.Module()
+        deep_module.n_layers = 9
+
+        execute_spike_rate_code(shallow_module, shallow_x).sum().backward()
+        execute_spike_rate_code(deep_module, deep_x).sum().backward()
+
+        shallow_grad = shallow_x.grad.abs().mean().item()
+        deep_grad = deep_x.grad.abs().mean().item()
+        self.assertGreater(shallow_grad, deep_grad)
+        self.assertAlmostEqual(deep_grad / shallow_grad, 1.0 / 3.0, delta=0.1)
+
+
+@unittest.skipUnless(HAS_TORCH, "torch required")
+class TestMathspaceStability(unittest.TestCase):
+    def test_hyperbolic_linear_curvature_is_bounded(self):
+        from research.mathspaces.hyperbolic import HyperbolicLinear
+
+        layer = HyperbolicLinear(dim=8, c=50.0)
+        self.assertGreater(layer.c, 0.0)
+        self.assertLessEqual(layer.c, 10.0)
+
+    def test_padic_valuation_zero_is_finite(self):
+        from research.mathspaces.padic import padic_valuation
+
+        value = padic_valuation(torch.zeros(2, 3, 4))
+        self.assertTrue(torch.isfinite(value).all())
+
+    def test_tropical_softmax_remains_normalized_for_long_sequences(self):
+        from research.mathspaces.tropical import tropical_softmax
+
+        scores = torch.linspace(-2.0, 2.0, steps=512).view(1, 1, 512)
+        weights = tropical_softmax(scores, dim=-1, temperature=0.1)
+        sums = weights.sum(dim=-1)
+        torch.testing.assert_close(sums, torch.ones_like(sums), atol=1e-5, rtol=1e-5)
 
 
 

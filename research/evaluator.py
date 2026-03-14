@@ -261,6 +261,9 @@ def stage1_micro_train(
 
         # Build model
         model = build_model(spec, config).to(dev)
+        # Adaptive clip for math-space architectures
+        from .scientist.runner._helpers import apply_adaptive_grad_clip
+        max_grad_norm = apply_adaptive_grad_clip(model, max_grad_norm)
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
 
         # --- Part 1: Discovery (Random Tokens) ---

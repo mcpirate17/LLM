@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+from pathlib import Path
 import queue
 import threading
 import time
@@ -183,6 +184,14 @@ class _CoreMixin:
         if self._baseline is None:
             self._baseline = TransformerBaseline()
         return self._baseline
+
+    def _get_scaling_reference_manager(self):
+        """Lazily create the shared scaling-reference manager."""
+        if not hasattr(self, "_scaling_ref_mgr"):
+            from ...eval.scaling_reference import ScalingReferenceManager
+            cache_path = str(Path(self.notebook_path).parent / "scaling_reference_cache.db")
+            self._scaling_ref_mgr = ScalingReferenceManager(cache_path=cache_path)
+        return self._scaling_ref_mgr
 
     def _get_corpus_batcher(self, config: RunConfig) -> Optional[CorpusTokenBatcher]:
         """Lazily create or reuse corpus batcher for corpus-mode training."""
@@ -422,4 +431,3 @@ class _CoreMixin:
             score = (v - vmin) / (vmax - vmin)
             out[k] = score if higher_is_better else (1.0 - score)
         return out
-
