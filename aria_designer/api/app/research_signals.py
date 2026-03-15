@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from typing import Any, Dict, Optional, Set
@@ -9,6 +10,8 @@ import requests
 
 from .component_identity import canonicalize_component_id
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 _RESEARCH_SIGNALS_CACHE_LOCK = threading.Lock()
 _RESEARCH_SIGNALS_CACHE: Dict[str, Any] = {
@@ -24,6 +27,7 @@ def _extract_component_ids(entry: Dict[str, Any]) -> list[str]:
         try:
             graph = json.loads(graph_json)
         except Exception:
+            logger.debug("Failed to parse graph_json for component ID extraction", exc_info=True)
             graph = None
         if isinstance(graph, dict):
             nodes = graph.get("nodes")
@@ -53,6 +57,7 @@ def _get_json(url: str, *, timeout: float) -> Optional[Any]:
             return None
         return resp.json() if resp.content else None
     except Exception:
+        logger.debug("HTTP request to %s failed", url, exc_info=True)
         return None
 
 
@@ -119,6 +124,7 @@ def fetch_leaderboard_top_entries(
         try:
             composite = float(entry.get("composite_score") or 0.0)
         except Exception:
+            logger.debug("Failed to parse composite_score for leaderboard entry", exc_info=True)
             composite = 0.0
         if composite >= float(min_composite):
             filtered.append(_hydrate_leaderboard_entry(entry))

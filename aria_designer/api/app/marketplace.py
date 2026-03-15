@@ -1,5 +1,4 @@
 from typing import List, Dict, Any
-import requests
 
 def search_marketplace(query: str = "") -> List[Dict[str, Any]]:
     """

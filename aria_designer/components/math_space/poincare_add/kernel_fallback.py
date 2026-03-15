@@ -1,6 +1,5 @@
 """Kernel handler for poincare_add — dispatches to aria_core.poincare_add_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

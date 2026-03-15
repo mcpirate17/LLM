@@ -55,12 +55,13 @@ import { useAriaCoDesign } from './hooks/useAriaCoDesign'
 const defaultEdgeOptions = {
   type: 'smoothstep',
   animated: false,
-  style: { stroke: '#5a8ab5', strokeWidth: 2 },
+  pathOptions: { borderRadius: 20 },
+  style: { stroke: '#5a8ab5', strokeWidth: 1.5 },
   markerEnd: {
     type: MarkerType.ArrowClosed,
     color: '#5a8ab5',
-    width: 16,
-    height: 16,
+    width: 14,
+    height: 14,
   },
 }
 

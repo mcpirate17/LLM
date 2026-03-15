@@ -762,8 +762,6 @@ def test_preview_workflow_multi_input_ports(client):
 
 
 def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
-    from app import main as main_mod
-
     workflow = {
         "schema_version": "workflow_graph.v1",
         "workflow_id": "wf_ai_learning_loop",

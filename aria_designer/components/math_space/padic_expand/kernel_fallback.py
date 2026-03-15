@@ -1,6 +1,5 @@
 """Kernel handler for padic_expand — dispatches to aria_core.padic_expand_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

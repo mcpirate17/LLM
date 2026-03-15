@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 def _append_edge(edges: List[Dict[str, Any]], source: str, target: str, source_port: str = "out", target_port: str = "in") -> None:
@@ -234,6 +237,7 @@ def _auto_layout_workflow(
             try:
                 return float(pos.get("y", 0))
             except Exception:
+                logger.debug("Failed to parse node y-position, defaulting to 0.0", exc_info=True)
                 return 0.0
         group.sort(key=_y)
 

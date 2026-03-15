@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Tuple
 import yaml
 
 
-@dataclass
+@dataclass(slots=True)
 class PropertyIssue:
     code: str
     message: str

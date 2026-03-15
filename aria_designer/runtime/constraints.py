@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import yaml
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 
 def _load_manifest(component_id: str, components_dir: str) -> Optional[Dict]:

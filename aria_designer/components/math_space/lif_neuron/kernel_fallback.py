@@ -1,6 +1,5 @@
 """Kernel handler for lif_neuron — dispatches to aria_core.lif_neuron_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

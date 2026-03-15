@@ -9,10 +9,10 @@ the evaluation loop.
 from __future__ import annotations
 import torch
 import torch.nn as nn
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Optional
 import aria_core
 
-from research.synthesis.graph import ComputationGraph, OpNode
+from research.synthesis.graph import ComputationGraph
 from research.synthesis.compiler import CompiledLayer
 
 # Map primitive names to aria_core op types (from bindings.cpp)

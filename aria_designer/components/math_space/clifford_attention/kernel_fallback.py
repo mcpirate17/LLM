@@ -1,6 +1,5 @@
 """Kernel handler for clifford_attention — dispatches to aria_core.clifford_attention_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

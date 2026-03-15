@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
@@ -30,12 +30,12 @@ if _RESEARCH_ROOT not in sys.path:
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.eval.perf_budget import evaluate_perf_budget_gate
 from research.perf_contract import build_duplicate_work_report, build_perf_contract
-from research.synthesis.primitives import PRIMITIVE_REGISTRY, get_primitive, safe_eval_formula
+from research.synthesis.primitives import PRIMITIVE_REGISTRY, safe_eval_formula
 
 
 # ── Static Analysis ──────────────────────────────────────────────────
 
-@dataclass
+@dataclass(slots=True)
 class OpProfile:
     """Per-op performance profile."""
     node_id: int
@@ -46,7 +46,7 @@ class OpProfile:
     has_native_kernel: bool = False
 
 
-@dataclass
+@dataclass(slots=True)
 class ProfileReport:
     """Complete performance profile for a workflow."""
     # Graph-level static analysis

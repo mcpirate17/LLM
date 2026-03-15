@@ -370,6 +370,7 @@ def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, A
             existing_graph = json.loads(existing["graph_json"])
             old_fingerprint = (existing_graph.get("metadata") or {}).get("graph_fingerprint")
     except Exception:
+        logger.warning("Failed to load existing workflow fingerprint for %s", workflow_id, exc_info=True)
         old_fingerprint = None
 
     # Calculate fingerprint if bridge is available
@@ -564,7 +565,7 @@ def estimate_workflow(req: ValidateWorkflowRequest) -> Dict[str, Any]:
                 val = eval(formula, {"__builtins__": {}}, {"D": 256, "D_in": 256, "D_out": 256, "vocab_size": 32000})
                 total_params += int(val)
             except Exception:
-                pass
+                logger.warning("Failed to evaluate param_formula for component %s: %s", node.component_type, formula, exc_info=True)
 
     return {
         "workflow_id": req.workflow.workflow_id,

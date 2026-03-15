@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Tuple
 
-from .component_identity import canonicalize_component_id
+from .component_identity import canonicalize_component_id, component_leaf
 
 
 _INTENT_KEYWORDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
@@ -194,7 +194,7 @@ def _topological_nodes(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]])
 
 
 def _leaf_token(node: Dict[str, Any]) -> str:
-    return str(node.get("component_type") or "").split("/")[-1].lower()
+    return component_leaf(node.get("component_type") or "")
 
 
 def _find_first_index(nodes: List[Dict[str, Any]], predicate) -> int | None:

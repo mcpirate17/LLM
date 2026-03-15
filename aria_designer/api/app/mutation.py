@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
+from .component_identity import component_leaf
 from .database import get_workflow, save_proposal
 from .intent_parser import IntentConstraints, component_groups, parse_intent_constraints
 from .models import AriaPatchProposalModel, PatchOpModel
@@ -20,11 +21,6 @@ _MUTATION_PENALTIES = {
     "remove_node": 0.08,
     "rewire": 0.02,
 }
-
-
-def _component_leaf(component_type: str) -> str:
-    token = str(component_type or "").strip()
-    return token.rsplit("/", 1)[-1].lower() if token else ""
 
 
 def _loss_ratio_value(parent_scores: Dict[str, Any]) -> float:
@@ -73,9 +69,9 @@ def _resolve_signal_component(
     options: Sequence[str] = (),
     fallback_component: str = "",
 ) -> str:
-    normalized = _component_leaf(op_name)
+    normalized = component_leaf(op_name)
     option_map = {
-        _component_leaf(component_type): component_type
+        component_leaf(component_type): component_type
         for component_type in options
         if component_type
     }
@@ -242,17 +238,17 @@ def _build_replacement_mutation(
         return None
     node = rng.choice(candidates)
     current = str(node.get("component_type") or "")
-    current_leaf = _component_leaf(current)
+    current_leaf = component_leaf(current)
     options = [
         item for item in constraints.replacement_components
-        if _component_leaf(item) != current_leaf
+        if component_leaf(item) != current_leaf
     ]
     if not options:
         return None
     parents, children, nodes_by_id = _graph_adjacency(graph)
     node_id = str(node.get("id"))
-    prev_ops = [_component_leaf(nodes_by_id[parent_id].get("component_type")) for parent_id in parents.get(node_id, [])]
-    next_ops = [_component_leaf(nodes_by_id[child_id].get("component_type")) for child_id in children.get(node_id, [])]
+    prev_ops = [component_leaf(nodes_by_id[parent_id].get("component_type")) for parent_id in parents.get(node_id, [])]
+    next_ops = [component_leaf(nodes_by_id[child_id].get("component_type")) for child_id in children.get(node_id, [])]
     replacement = ""
     pair_rates = _signal_pair_rates(fetch_research_recommendation_signals())
     if pair_rates:
@@ -306,8 +302,8 @@ def _build_add_layer_mutation(
     pair_rates = _signal_pair_rates(fetch_research_recommendation_signals())
     if pair_rates:
         preferred_component = _best_neighbor_component(
-            (_component_leaf(source_node.get("component_type")),),
-            (_component_leaf(target_node.get("component_type")),),
+            (component_leaf(source_node.get("component_type")),),
+            (component_leaf(target_node.get("component_type")),),
             pair_rates,
             constraints,
             fallback_component=inserted_component or str(target_node.get("component_type") or ""),

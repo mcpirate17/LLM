@@ -10,7 +10,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .intent_parser import _COMPONENT_GROUPS, _LEAF_GROUPS, component_groups
+from .intent_parser import _LEAF_GROUPS, component_groups
 
 __all__ = ["get_component_tips", "get_patterns_summary"]
 

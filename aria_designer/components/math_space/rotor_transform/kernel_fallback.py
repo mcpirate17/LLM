@@ -1,6 +1,5 @@
 """Kernel handler for rotor_transform — dispatches to aria_core.rotor_transform_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

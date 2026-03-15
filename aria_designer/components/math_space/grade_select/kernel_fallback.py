@@ -1,6 +1,5 @@
 """Kernel handler for grade_select — dispatches to aria_core.grade_select_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

@@ -14,10 +14,13 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import sys
 import os
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 _RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "research"))
 if _RESEARCH_ROOT not in sys.path:
@@ -103,6 +106,7 @@ def import_survivors(
             from research.synthesis.serializer import graph_from_json
             graph = graph_from_json(graph_json_str)
         except Exception:
+            logger.warning("Failed to parse graph for entry: %s", prog.get("result_id", "unknown"), exc_info=True)
             continue
 
         # Check if all ops are in PRIMITIVE_REGISTRY

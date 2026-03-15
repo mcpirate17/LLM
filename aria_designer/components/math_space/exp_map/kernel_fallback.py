@@ -1,6 +1,5 @@
 """Kernel handler for exp_map — dispatches to aria_core.exp_map_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

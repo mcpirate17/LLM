@@ -3,11 +3,14 @@ Unified Component Registry for aria_designer runtime.
 Consolidates logic from compiler.py, bridge.py, and research/ component_registry.
 """
 
+import logging
 import os
 import yaml
 import importlib.util
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).resolve().parent
 _PROJECT_ROOT = _HERE.parent.parent
@@ -41,6 +44,7 @@ class ComponentRegistry:
             with open(self.mapping_file, "r", encoding="utf-8") as f:
                 self.mapping_config = yaml.safe_load(f) or {}
         except Exception:
+            logger.warning("Failed to parse manifest YAML: %s", self.mapping_file, exc_info=True)
             return
 
         self.aliases = self.mapping_config.get("aliases", {})
@@ -93,6 +97,7 @@ class ComponentRegistry:
             self.manifests[component_type] = manifest
             return manifest
         except Exception:
+            logger.warning("Failed to import component manifest: %s", component_type, exc_info=True)
             return None
 
     def get_handler(self, component_type: str):

@@ -24,7 +24,7 @@ from ..models import (
 )
 from ..patcher import apply_patch_ops
 from ..suggestions import suggest_components
-from ..mutation import refine_winner
+from ..mutation import refine_winner, _MUTATION_PENALTIES
 HAS_SUGGESTIONS = True  # kept for test monkeypatching compatibility
 from ..research_signals import (
     fetch_research_recommendation_signals,
@@ -873,7 +873,9 @@ def _build_refinement_quality_snapshot(workflow_json: Dict[str, Any]) -> Dict[st
 
 def _run_native_refinement_smoke_test(workflow_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try: from aria_core import smoke_test_graph  # type: ignore
-    except Exception: return None
+    except Exception:
+        logger.debug("aria_core smoke_test_graph not available", exc_info=True)
+        return None
     try: result = smoke_test_graph(workflow_json, 256, 32)
     except TypeError: result = smoke_test_graph(workflow_json)
     except Exception as exc: return {"ok": False, "error": str(exc)}
@@ -881,13 +883,14 @@ def _run_native_refinement_smoke_test(workflow_json: Dict[str, Any]) -> Optional
     return {k: getattr(result, k) for k in ("ok", "has_params", "grad_flows", "no_nan") if hasattr(result, k)}
 
 def _estimate_patch_quality_multiplier(ops: List[Dict[str, Any]], parent_scores: Optional[Dict[str, Any]] = None) -> float:
-    """Estimate quality retention multiplier for a patch."""
-    from ..mutation import _MUTATION_PENALTIES
-    constraints = parse_intent_constraints(None, parent_scores)
+    """Estimate quality retention multiplier for a patch using shared penalty table."""
     penalty = sum(_MUTATION_PENALTIES.get(str(op.get("op") or ""), 0.04) for op in ops)
-    if constraints.preserve_novelty: penalty *= 0.85
+    constraints = parse_intent_constraints(None, parent_scores)
+    if constraints.preserve_novelty:
+        penalty *= 0.85
     tier = str((parent_scores or {}).get("tier") or "").lower()
-    if tier in {"investigation", "validation", "breakthrough"}: penalty *= 1.15
+    if tier in {"investigation", "validation", "breakthrough"}:
+        penalty *= 1.15
     return max(0.75, 1.0 - penalty)
 
 # ---------------------------------------------------------------------------
@@ -913,7 +916,8 @@ def list_proposals(status: Optional[str] = Query(None), workflow_id: Optional[st
                 versions[wf_id] = cv
             bv = 0
             try: bv = int(json.loads(proposal.get("patch_json") or "{}").get("base_version") or 0)
-            except Exception: pass
+            except Exception:
+                logger.debug("Failed to parse base_version from proposal %s", proposal.get("proposal_id", "unknown"), exc_info=True)
             if bv > 0 and cv > 0 and bv != cv: continue
             filtered.append(proposal)
         proposals = filtered

@@ -6,6 +6,8 @@ import {
   Loader,
   XCircle,
   Box,
+  ArrowDownToLine,
+  ArrowUpFromLine,
 } from 'lucide-react'
 import { CATEGORY_ICONS } from '../utils/categoryConfig'
 
@@ -16,6 +18,9 @@ function formatFlops(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
   return String(n)
 }
+
+const IO_INPUT_IDS = new Set(['input', 'graph_input'])
+const IO_OUTPUT_IDS = new Set(['output_head', 'graph_output'])
 
 const DTYPE_COLORS = {
   tensor: '#17a3ff',
@@ -33,7 +38,12 @@ function DesignerNode({ data, selected, onHelp, hardwareView, heatmapView, maxFl
     const cid = data.componentId || ''
     label = cid.split('/').pop() || label || 'unknown'
   }
-  const IconComponent = CATEGORY_ICONS[category] || Box
+  const componentId = data.componentId || ''
+  const isInput = IO_INPUT_IDS.has(componentId)
+  const isOutput = IO_OUTPUT_IDS.has(componentId)
+  const isIO = isInput || isOutput
+  const IOIcon = isInput ? ArrowDownToLine : isOutput ? ArrowUpFromLine : null
+  const IconComponent = IOIcon || CATEGORY_ICONS[category] || Box
   const evalStatus = data.evalStatus // 'running' | 'pass' | 'fail' | null
   const evalClass = evalStatus ? `eval-${evalStatus}` : ''
 
@@ -57,7 +67,7 @@ function DesignerNode({ data, selected, onHelp, hardwareView, heatmapView, maxFl
 
   return (
     <div 
-      className={`designer-node cat-${category || 'default'} ${selected ? 'selected' : ''} ${evalClass} ${hwClass} ${heatmapView ? 'heatmap-active' : ''}`}
+      className={`designer-node cat-${category || 'default'} ${selected ? 'selected' : ''} ${evalClass} ${hwClass} ${heatmapView ? 'heatmap-active' : ''} ${isIO ? 'node-io' : ''} ${isInput ? 'node-io-input' : ''} ${isOutput ? 'node-io-output' : ''}`}
       style={heatmapStyle}
     >
       {inputs.map((port, i) => (
@@ -116,12 +126,12 @@ function DesignerNode({ data, selected, onHelp, hardwareView, heatmapView, maxFl
               </div>
             )}
           </div>
-        ) : (
+        ) : !isIO ? (
           <div className="node-io-row">
             <span className="node-io-pill">IN {inputs.length}</span>
             <span className="node-io-pill">OUT {outputs.length}</span>
           </div>
-        )}
+        ) : null}
       </div>
 
       {performance.has_params && (

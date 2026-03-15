@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 import importlib.util
@@ -5,6 +6,8 @@ import os
 import yaml
 from .dispatch import KernelDispatcher
 from .port_dtypes import find_unsupported_edge_dtype_pairings
+
+logger = logging.getLogger(__name__)
 
 class WorkflowModule(nn.Module):
     def __init__(self, workflow_json, component_registry):
@@ -132,7 +135,7 @@ class WorkflowModule(nn.Module):
                     return result.get('y', result.get('out', next(iter(result.values()))))
                 return result
             except Exception:
-                pass  # Fall through to module invocation
+                logger.debug("Native dispatch failed for node %s, using fallback", node_id, exc_info=True)
 
         if len(node_inputs) == 1:
             key, val = next(iter(node_inputs.items()))

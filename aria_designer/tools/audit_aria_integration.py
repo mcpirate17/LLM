@@ -39,7 +39,7 @@ from runtime.bridge import (  # noqa: E402
 )
 
 
-@dataclass
+@dataclass(slots=True)
 class ComponentAudit:
     component_id: str
     category: str

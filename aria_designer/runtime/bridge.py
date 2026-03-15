@@ -12,13 +12,12 @@ Usage:
 
 from __future__ import annotations
 
-import copy
 import sys
 import os
 import time
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # Ensure research/ is importable
 _HERE = Path(__file__).resolve().parent
@@ -147,7 +146,7 @@ def workflow_to_graph(workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM,
 
 # ── Compression / Efficiency Analysis ─────────────────────────────────
 
-@dataclass
+@dataclass(slots=True)
 class CompressionResult:
     pruning_curve: List[Dict[str, float]] = field(default_factory=list)
     baseline_loss: float = 0.0

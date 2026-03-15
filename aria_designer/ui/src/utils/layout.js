@@ -1,5 +1,9 @@
+import ELK from 'elkjs/lib/elk.bundled.js'
+
 const DEFAULT_GRID = [15, 15]
 const DEFAULT_NODE_SIZE = { width: 170, height: 90 }
+
+const IO_COMPONENT_IDS = new Set(['input', 'graph_input', 'output_head', 'graph_output'])
 const VIEWPORT_BOUNDS = { minX: -2000, minY: -2000, maxX: 5000, maxY: 5000 }
 
 function toFiniteNumber(value, fallback) {
@@ -274,4 +278,92 @@ export function tidySelectedNodes(nodes, targetNodeIds, options = {}) {
   }
 
   return nodes.map((n) => (out.has(n.id) ? { ...n, position: out.get(n.id) } : n))
+}
+
+function isIONode(node) {
+  const cid = node.data?.componentId || node.data?.component_type || ''
+  return IO_COMPONENT_IDS.has(cid)
+}
+
+function isInputNode(node) {
+  const cid = node.data?.componentId || node.data?.component_type || ''
+  return cid === 'input' || cid === 'graph_input'
+}
+
+export async function layoutWithElk(nodes, edges, options = {}) {
+  const elk = new ELK()
+  const grid = options.grid || DEFAULT_GRID
+
+  const nodeCount = nodes.length
+  const baseNodeSep = 95
+  const baseLayerSep = 120
+  const scale = nodeCount > 20 ? 1 + (nodeCount - 20) * 0.015 : 1
+  const nodeNodeSpacing = Math.round(baseNodeSep * scale)
+  const layerSpacing = Math.round(baseLayerSep * scale)
+
+  const elkNodes = nodes.map((node) => {
+    const size = getNodeSize(node)
+    const w = isIONode(node) ? Math.max(150, size.width) : Math.max(160, size.width)
+    const h = Math.max(90, size.height)
+
+    const ports = []
+    const inputs = node.data?.inputs || []
+    const outputs = node.data?.outputs || []
+
+    inputs.forEach((port) => {
+      ports.push({ id: `${node.id}__in__${port.name}`, properties: { 'port.side': 'NORTH' } })
+    })
+    outputs.forEach((port) => {
+      ports.push({ id: `${node.id}__out__${port.name}`, properties: { 'port.side': 'SOUTH' } })
+    })
+
+    const layoutOptions = { portConstraints: 'FIXED_ORDER' }
+    if (isInputNode(node)) {
+      layoutOptions['elk.layered.layerConstraint'] = 'FIRST'
+    } else if (isIONode(node) && !isInputNode(node)) {
+      layoutOptions['elk.layered.layerConstraint'] = 'LAST'
+    }
+
+    return { id: node.id, width: w, height: h, ports, layoutOptions }
+  })
+
+  const elkEdges = edges.map((edge) => {
+    const srcHandle = edge.sourceHandle || 'output'
+    const tgtHandle = edge.targetHandle || 'input'
+    return {
+      id: edge.id,
+      sources: [`${edge.source}__out__${srcHandle}`],
+      targets: [`${edge.target}__in__${tgtHandle}`],
+    }
+  })
+
+  const graph = {
+    id: 'root',
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'DOWN',
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.spacing.nodeNode': String(nodeNodeSpacing),
+      'elk.layered.spacing.nodeNodeBetweenLayers': String(layerSpacing),
+      'elk.spacing.edgeNode': '30',
+      'elk.spacing.edgeEdge': '20',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '30',
+    },
+    children: elkNodes,
+    edges: elkEdges,
+  }
+
+  const laid = await elk.layout(graph)
+
+  const posMap = new Map()
+  for (const child of laid.children || []) {
+    posMap.set(child.id, snapPositionToGrid({ x: child.x, y: child.y }, grid))
+  }
+
+  return nodes.map((node) => {
+    const pos = posMap.get(node.id)
+    if (!pos) return node
+    return { ...node, position: pos }
+  })
 }

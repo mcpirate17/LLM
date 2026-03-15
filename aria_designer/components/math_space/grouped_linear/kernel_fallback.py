@@ -1,6 +1,5 @@
 """Kernel handler for grouped_linear — dispatches to aria_core.linear_grouped_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler, _make_weight
 
 class ComponentHandler(NativeComponentHandler):

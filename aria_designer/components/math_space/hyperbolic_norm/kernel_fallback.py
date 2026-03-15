@@ -1,6 +1,5 @@
 """Kernel handler for hyperbolic_norm — dispatches to aria_core.hyperbolic_norm_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

@@ -1,6 +1,5 @@
 """Kernel handler for hyp_distance — dispatches to aria_core.hyp_distance_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):

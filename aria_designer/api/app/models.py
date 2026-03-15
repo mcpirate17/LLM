@@ -137,26 +137,3 @@ class ChatMessageRequest(BaseModel):
     workflow: Optional[WorkflowGraphModel] = None
     session_id: Optional[str] = None
 
-
-class ChatPatchProposal(BaseModel):
-    rationale: str
-    ops: List[PatchOpModel] = Field(default_factory=list)
-
-
-class ChatMessageResponse(BaseModel):
-    session_id: str
-    role: Literal["aria"] = "aria"
-    content: str
-    patch_proposal: Optional[ChatPatchProposal] = None
-    suggestions: List[Dict[str, Any]] = Field(default_factory=list)
-    needs_clarification: bool = False
-
-
-class ConversationSession(BaseModel):
-    session_id: str
-    workflow_id: Optional[str] = None
-    started_at: str
-    last_message_at: str
-    status: Literal["active", "ended"] = "active"
-    message_count: int = 0
-

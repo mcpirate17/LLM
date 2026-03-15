@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from runtime.bridge import workflow_to_graph
-from runtime.profiler import profile_static, profile_static_graph, profile_runtime, ProfileReport
+from runtime.profiler import profile_static, profile_static_graph, profile_runtime
 
 
 def _simple_mlp():

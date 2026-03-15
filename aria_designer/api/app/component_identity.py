@@ -252,6 +252,12 @@ def collect_unresolved_component_ids(workflow: Dict[str, Any], registry_ids: Ite
             unresolved.append(ct)
     return unresolved
 
+def component_leaf(component_type: str) -> str:
+    """Extract the leaf portion of a component type string, lowercased."""
+    token = str(component_type or "").strip()
+    return token.rsplit("/", 1)[-1].lower() if token else ""
+
+
 def discover_concepts(message: str) -> List[Dict[str, str]]:
     """Extract component concepts from natural language.
     

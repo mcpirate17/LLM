@@ -12,8 +12,15 @@ from pathlib import Path
 
 import yaml
 
-SCHEMA_PATH = Path(__file__).parent.parent / "schemas" / "component_manifest.v1.schema.json"
-COMPONENTS_ROOT = Path(__file__).parent.parent / "components"
+# Ensure parent package is importable
+_PROJECT_ROOT = Path(__file__).parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from api.app.loader import REQUIRED_KEYS, VALID_CATEGORIES  # noqa: E402
+
+SCHEMA_PATH = _PROJECT_ROOT / "schemas" / "component_manifest.v1.schema.json"
+COMPONENTS_ROOT = _PROJECT_ROOT / "components"
 
 # Try jsonschema if available, fallback to basic validation
 try:
@@ -21,16 +28,6 @@ try:
     HAS_JSONSCHEMA = True
 except ImportError:
     HAS_JSONSCHEMA = False
-
-REQUIRED_KEYS = {"id", "version", "name", "category", "inputs", "outputs", "implementation"}
-
-VALID_CATEGORIES = {
-    "math", "linear_algebra", "structural", "routing",
-    "mixing", "channel_mixing", "normalization", "positional",
-    "blocks", "io", "representation", "topology",
-    "sequence", "frequency", "functional",
-    "math_space", "data_io", "data_transform", "control_flow",
-}
 
 VALID_DTYPES = {
     "tensor", "scalar", "index", "mask", "complex_tensor", "dataset", "list", "record"

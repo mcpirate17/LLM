@@ -89,7 +89,7 @@ def test_component_contract(comp_path):
         for f in ["data.bin", "data.csv"]:
             if Path(f).exists():
                 try: os.remove(f)
-                except: pass
+                except Exception: pass
         
     # 6. Verify outputs
     for out in manifest.get("outputs", []):

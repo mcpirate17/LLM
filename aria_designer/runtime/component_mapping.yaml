@@ -42,10 +42,10 @@ aliases:
   alibi: learnable_bias
   convolutional: conv1d_seq
   learned_absolute: learnable_bias
-  random_fourier: fourier_mixing
-  rope: rope
+  random_fourier: identity
+  rope: rope_rotate
   binary_hash: sign_ste
-  complex_valued: fourier_mixing
+  complex_valued: identity
   mixture_embedding: moe_topk
   multi_resolution: basis_expansion
   quaternion: multi_head_mix
@@ -106,10 +106,10 @@ approximate_alias_notes:
   alibi: "Mapped to learnable_bias; ALiBi positional bias semantics are approximate."
   convolutional: "Mapped to conv1d_seq; exact positional encoding semantics are approximate."
   learned_absolute: "Mapped to learnable_bias; learned absolute position table semantics are approximate."
-  random_fourier: "Mapped to fourier_mixing; random feature sampling semantics are approximate."
-  rope: "Mapped to rope primitive; rotational embedding."
+  random_fourier: "Mapped to identity; fourier_mixing removed for causality violation."
+  rope: "Mapped to rope_rotate primitive; rotational embedding."
   binary_hash: "Mapped to sign_ste; binary hashing semantics are approximate."
-  complex_valued: "Mapped to fourier_mixing; complex arithmetic semantics are approximate."
+  complex_valued: "Mapped to identity; fourier_mixing removed for causality violation."
   mixture_embedding: "Mapped to moe_topk; embedding mixture semantics are approximate."
   multi_resolution: "Mapped to basis_expansion; multi-scale semantics are approximate."
   quaternion: "Mapped to multi_head_mix; quaternion algebra semantics are approximate."

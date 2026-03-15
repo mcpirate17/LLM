@@ -1,6 +1,5 @@
 """Kernel handler for log_map — dispatches to aria_core.log_map_f32."""
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler
 
 class ComponentHandler(NativeComponentHandler):
