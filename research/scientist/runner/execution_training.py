@@ -1059,12 +1059,13 @@ class _ExecutionTrainingMixin:
             grad_norms: List[float] = []
             training_curve: List[Dict] = []
 
-            seq_len = min(128, config.max_seq_len)
+            safe_max_seq = min(config.max_seq_len, 512)
+            seq_len = min(128, safe_max_seq)
             # Apply curriculum seq_len schedule
             try:
                 base_seq = program.curriculum.get_seq_len(0, n_steps)
                 if base_seq and base_seq > 0:
-                    seq_len = min(base_seq, config.max_seq_len)
+                    seq_len = min(base_seq, safe_max_seq)
             except Exception:
                 pass
 
@@ -1076,7 +1077,7 @@ class _ExecutionTrainingMixin:
                 try:
                     curr_seq = program.curriculum.get_seq_len(step, n_steps)
                     if curr_seq and curr_seq > 0:
-                        seq_len = min(curr_seq, config.max_seq_len)
+                        seq_len = min(curr_seq, safe_max_seq)
                 except Exception:
                     pass
 

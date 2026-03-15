@@ -148,6 +148,7 @@ void aria_sensitivity_metrics_f32(
         per_pos = per_pos_stack;
     } else {
         per_pos = (float *)malloc((size_t)seq_len * sizeof(float));
+        if (!per_pos) { out[0] = sqrtf(frob_sq); out[1] = 0.0f; out[2] = 0.0f; return; }
     }
 
     for (int64_t j = 0; j < seq_len; j++) per_pos[j] = 0.0f;

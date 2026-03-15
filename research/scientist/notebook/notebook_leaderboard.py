@@ -161,7 +161,17 @@ class _LeaderboardMixin:
             d[col] = val
         if tags is not None: d["tags"] = tags
         if notes is not None: d["notes"] = notes
-        d["tier"] = tier
+        # Never downgrade tier — only allow promotion or same-tier updates
+        _TIER_RANK = {"screened_out": 0, "screening": 1, "investigation": 2, "validation": 3, "breakthrough": 4}
+        existing_tier = d.get("tier") or "screening"
+        if _TIER_RANK.get(tier, 0) >= _TIER_RANK.get(existing_tier, 0):
+            d["tier"] = tier
+        else:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "Blocked tier downgrade for %s: %s -> %s", resolved_result_id, existing_tier, tier)
+            tier = existing_tier  # preserve existing tier for SQL write below
+            d["tier"] = existing_tier
         d["model_source"] = model_source
         if architecture_desc: d["architecture_desc"] = architecture_desc
         d["is_reference"] = int(is_reference)

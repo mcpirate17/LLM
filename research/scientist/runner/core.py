@@ -258,7 +258,7 @@ class _CoreMixin:
             return None
 
         try:
-            ds = load_dataset(ds_name, subset, split=split, trust_remote_code=True)
+            ds = load_dataset(ds_name, subset, split=split)
             texts = []
             char_budget = int(config.corpus_max_chars)
             total = 0

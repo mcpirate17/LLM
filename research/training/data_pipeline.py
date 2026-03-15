@@ -49,6 +49,27 @@ class WhitespaceHashTokenizer:
         return ids
 
 
+class TiktokenAdapter:
+    """Production-grade BPE tokenizer via tiktoken (GPT-2 vocabulary).
+
+    Uses the GPT-2 BPE encoding (50,257 subword tokens). Token IDs are
+    projected into [0, vocab_size) via modulo so the model's embedding
+    layer does not need to change. This preserves architecture fingerprints
+    while giving proper subword segmentation.
+    """
+
+    def __init__(self, encoding_name: str = "gpt2"):
+        import tiktoken
+        self._enc = tiktoken.get_encoding(encoding_name)
+        self.native_vocab_size = self._enc.n_vocab
+
+    def encode(self, text: str, vocab_size: int) -> List[int]:
+        ids = self._enc.encode(text, allowed_special=set())
+        if vocab_size > 0 and vocab_size < self.native_vocab_size:
+            return [t % vocab_size for t in ids]
+        return ids
+
+
 @dataclass
 class CorpusConfig:
     path: str
@@ -103,6 +124,8 @@ class CorpusTokenBatcher:
         lowered = (name or "byte").strip().lower()
         if lowered == "whitespace":
             return WhitespaceHashTokenizer()
+        if lowered in ("tiktoken", "bpe", "gpt2"):
+            return TiktokenAdapter()
         return ByteTokenizer()
 
     def _detect_format(self) -> str:

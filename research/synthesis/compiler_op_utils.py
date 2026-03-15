@@ -20,8 +20,11 @@ except ImportError:
     HAS_CPU_OPS = False
     cpu_ops = None
 
-from research.env import aria_core, HAS_ARIA_CORE
+try:
+    from research.env import aria_core, HAS_ARIA_CORE
+except ImportError:
     aria_core = None
+    HAS_ARIA_CORE = False
 
 def _record_sparse_telemetry(module: nn.Module, op_name: str, density: float,
                              fallback_reason: Optional[str] = None) -> None:
@@ -44,7 +47,7 @@ def _record_sparse_telemetry(module: nn.Module, op_name: str, density: float,
 
 def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_experts: torch.Tensor,
                               logits: Optional[torch.Tensor] = None) -> None:
-    """Record MoE routing statistics: entropy, expert utilization, drop rate."""
+    """Record MoE routing statistics with lightweight sampling."""
     telemetry = getattr(module, "routing_telemetry", {
         "tokens_total": 0,
         "tokens_processed": 0,
@@ -52,33 +55,32 @@ def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_expert
         "entropy_sum": 0.0,
         "count": 0,
         "heatmap": None,
+        "_call_count": -1,
     })
-    
+
+    telemetry["_call_count"] += 1
     B, S = selected_experts.shape[:2]
     total_tokens = B * S
     telemetry["tokens_total"] += total_tokens
-    telemetry["tokens_processed"] += total_tokens # Assuming all tokens processed for now
-    
-    # Expert utilization
+    telemetry["tokens_processed"] += total_tokens
+
+    if telemetry["_call_count"] & 7 != 0:
+        telemetry["count"] += 1
+        setattr(module, "routing_telemetry", telemetry)
+        return
+
     counts = torch.histc(selected_experts.float(), bins=n_experts, min=0, max=n_experts-1)
     telemetry["expert_counts"] += counts
-    
-    # Entropy if logits provided
+
     if logits is not None:
         probs = F.softmax(logits, dim=-1)
         entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
         telemetry["entropy_sum"] += entropy
         telemetry["count"] += 1
 
-    # Z13: Savings and Depth ratios
-    # If selected_experts contains indices of active tokens (e.g. top-k), 
-    # we can estimate savings.
-    # For now, we'll just track if any tokens were skipped.
-    
-    # Optional heatmap capture (first batch element only)
     if getattr(module, "_capture_heatmap", False) and telemetry["heatmap"] is None:
         telemetry["heatmap"] = selected_experts[0].detach().cpu().numpy().tolist()
-        
+
     setattr(module, "routing_telemetry", telemetry)
 
 def _build_nm_mask(weight: torch.Tensor, n: int, m: int) -> torch.Tensor:
@@ -166,4 +168,3 @@ def _c(x):
     return (HAS_ARIA_CORE and x.device.type == "cpu"
             and x.dtype == torch.float32 and not x.requires_grad
             and x.dim() >= 1 and x.numel() > 0)
-

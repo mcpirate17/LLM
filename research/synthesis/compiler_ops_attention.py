@@ -160,7 +160,7 @@ def _op_gather_topk(_, inputs, config):
     x, scores = inputs[0], inputs[1]
     k = min(int(config.get("k", 4)), x.shape[1])
     if scores.dim() == 3:
-        scores = scores.squeeze(-1)
+        scores = scores.mean(dim=-1)
     if _c(x) and _c(scores) and scores.dim() == 2 and x.dim() == 3:
         gathered, _ = aria_core.gather_topk_f32(scores, x, k)
         if gathered.shape[1] < x.shape[1]:

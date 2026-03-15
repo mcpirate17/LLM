@@ -99,6 +99,7 @@ const initialState = {
     steps: 2500, batch_size: 4, n_training_programs: 3, seq_len: 256,
     data_source: 'corpus',
     hf_dataset: 'roneneldan/TinyStories', hf_subset: '',
+    tokenizer: 'byte',
   },
   backfillRunning: false,
   backfillResult: null,
@@ -901,6 +902,18 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                           <option value="huggingface">HuggingFace</option>
                         </select>
                       </div>
+                      <div>
+                        <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Tokenizer</label>
+                        <select
+                          value={manualRunConfig.tokenizer}
+                          onChange={e => dispatch({ type: 'SET_MODAL', payload: { manualRunConfig: { ...manualRunConfig, tokenizer: e.target.value } } })}
+                          style={{ width: '100%', padding: '4px 6px', fontSize: 12 }}
+                        >
+                          <option value="byte">Byte (1 byte = 1 token)</option>
+                          <option value="tiktoken">BPE / tiktoken (GPT-2, ~4x context)</option>
+                          <option value="whitespace">Whitespace hash</option>
+                        </select>
+                      </div>
                       {manualRunConfig.data_source === 'huggingface' && (
                         <>
                           <div>
@@ -958,6 +971,9 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                               preflight_override: true,
                               enforce_preflight: true,
                             };
+                            if (manualRunConfig.tokenizer && manualRunConfig.tokenizer !== 'byte') {
+                              body.tokenizer_mode = manualRunConfig.tokenizer;
+                            }
                             if (manualRunConfig.data_source === 'huggingface') {
                               body.hf_dataset = manualRunConfig.hf_dataset;
                               body.hf_subset = manualRunConfig.hf_subset;
@@ -993,7 +1009,7 @@ function ProgramDetail({ resultId, onClose, onActionComplete, onSelectExperiment
                       </button>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-                      {manualRunConfig.n_training_programs} program(s), {manualRunConfig.steps} steps, batch={manualRunConfig.batch_size}, seq={manualRunConfig.seq_len}, data={manualRunConfig.data_source}
+                      {manualRunConfig.n_training_programs} program(s), {manualRunConfig.steps} steps, batch={manualRunConfig.batch_size}, seq={manualRunConfig.seq_len}, data={manualRunConfig.data_source}, tok={manualRunConfig.tokenizer}
                       {manualRunConfig.data_source === 'huggingface' && manualRunConfig.hf_dataset && ` (${manualRunConfig.hf_dataset})`}
                     </div>
                   </div>

@@ -82,7 +82,7 @@ class RunConfig:
     corpus_path: str = "/home/tim/Projects/LLM/research/micro_corpus.txt"      # TXT or JSONL path for corpus mode
     corpus_format: str = "auto"  # "auto" | "txt" | "jsonl"
     corpus_text_key: str = "text"  # JSONL key when format is jsonl
-    tokenizer_mode: str = "byte"  # "byte" | "whitespace"
+    tokenizer_mode: str = "byte"  # "byte" | "whitespace" | "tiktoken"
     corpus_max_chars: int = 200000
     corpus_train_fraction: float = 0.9
     corpus_val_fraction: float = 0.1

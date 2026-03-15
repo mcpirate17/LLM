@@ -228,6 +228,11 @@ void aria_matmul_f16(const uint16_t *A, const uint16_t *B, uint16_t *C,
     float *Af = (float *)malloc(sizeof(float) * (size_t)(M * K));
     float *Bf = (float *)malloc(sizeof(float) * (size_t)(K * N));
     float *Cf = (float *)malloc(sizeof(float) * (size_t)(M * N));
+    if (!Af || !Bf || !Cf) {
+        memset(C, 0, sizeof(uint16_t) * (size_t)(M * N));
+        free(Af); free(Bf); free(Cf);
+        return;
+    }
     int64_t total_a = M * K;
 #ifdef __F16C__
     {
@@ -275,6 +280,7 @@ void aria_matmul_f16(const uint16_t *A, const uint16_t *B, uint16_t *C,
 void aria_softmax_f16(const uint16_t *x, uint16_t *y, int64_t batch, int64_t dim) {
     float *xf = (float *)malloc(sizeof(float) * (size_t)dim);
     float *yf = (float *)malloc(sizeof(float) * (size_t)dim);
+    if (!xf || !yf) { free(xf); free(yf); return; }
     for (int64_t b = 0; b < batch; b++) {
         const uint16_t *xb = x + b * dim;
         uint16_t *yb = y + b * dim;
@@ -310,6 +316,7 @@ void aria_softmax_f16(const uint16_t *x, uint16_t *y, int64_t batch, int64_t dim
 void aria_rmsnorm_f16(const uint16_t *x, const uint16_t *weight, uint16_t *y,
                       int64_t batch, int64_t dim, float eps) {
     float *wf = (float *)malloc(sizeof(float) * (size_t)dim);
+    if (!wf) return;
 #ifdef __F16C__
     {
         int64_t vec_end = dim - (dim % 8);
@@ -324,6 +331,7 @@ void aria_rmsnorm_f16(const uint16_t *x, const uint16_t *weight, uint16_t *y,
 #endif
     float *xf = (float *)malloc(sizeof(float) * (size_t)dim);
     float *yf = (float *)malloc(sizeof(float) * (size_t)dim);
+    if (!xf || !yf) { free(wf); free(xf); free(yf); return; }
     for (int64_t b = 0; b < batch; b++) {
         const uint16_t *xb = x + b * dim;
         uint16_t *yb = y + b * dim;

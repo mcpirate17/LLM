@@ -11,7 +11,6 @@ that conforms to a standard interface, then they're composed into a full model.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -24,27 +23,7 @@ from .utils import (
 )
 
 from .morphological_box import ArchSpec
-from .defaults import MODEL_DIM, VOCAB_SIZE
-
-
-# ── Configuration ──────────────────────────────────────────────────────
-
-@dataclass
-class BuildConfig:
-    """Concrete hyperparameters for building a model from an ArchSpec."""
-    dim: int = MODEL_DIM
-    n_heads: int = 8
-    n_kv_heads: int = 4
-    n_layers: int = 6
-    vocab_size: int = VOCAB_SIZE
-    max_seq_len: int = 512
-    mlp_ratio: float = 3.0
-    dropout: float = 0.0
-    # MoE params (if channel_mixing=moe_topk)
-    moe_num_experts: int = 4
-    moe_topk: int = 2
-    # Compression (if token_mixing=compressed_attention)
-    compression_factor: int = 4
+from .arch_builder_config import BuildConfig
 
 
 # ── Token Representation Modules ───────────────────────────────────────

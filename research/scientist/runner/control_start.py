@@ -480,16 +480,9 @@ class _ControlStartMixin:
         else:
             logger.info("Force re-investigation: skipping tier/fingerprint guards for %s",
                         ", ".join(r[:8] for r in result_ids))
-            # Reset tier to screening so the investigation can re-promote
-            for rid in result_ids:
-                try:
-                    nb.conn.execute(
-                        "UPDATE leaderboard SET tier = 'screening', "
-                        "investigation_passed = NULL, investigation_loss_ratio = NULL, "
-                        "investigation_robustness = NULL, investigation_best_training = NULL "
-                        "WHERE result_id = ?", (rid,))
-                except Exception:
-                    pass
+            # Force re-investigation: don't clear existing leaderboard data.
+            # The investigation results will only be updated if the new run
+            # produces better results (enforced in _record_investigation_result).
             try:
                 nb.conn.commit()
             except Exception:

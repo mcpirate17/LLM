@@ -1,8 +1,11 @@
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 _DEFAULT_CACHE_PATH = "~/.cache/hydra/la3_tuning_cache.json"
@@ -43,7 +46,8 @@ def _ensure_loaded() -> dict[str, dict[str, Any]]:
             _CACHE = {}
     except FileNotFoundError:
         _CACHE = {}
-    except Exception:
+    except Exception as exc:
+        _log.warning("LA3 tuning cache load failed: %s", exc)
         _CACHE = {}
 
     return _CACHE
@@ -80,8 +84,8 @@ def set(kind: str, key: str, value: Any) -> None:
 
     try:
         _atomic_write_json(_cache_path(), cache)
-    except Exception:
-        # Best-effort only.
+    except Exception as exc:
+        _log.warning("LA3 tuning cache write failed: %s", exc)
         return
 
 

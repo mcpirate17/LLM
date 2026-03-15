@@ -655,6 +655,24 @@ def _submit_benchmark_eval(
     return _benchmark_pool.submit(_run)
 
 
+_TIER_RANK = {"screened_out": 0, "screening": 1, "investigation": 2, "validation": 3, "breakthrough": 4}
+
+
+def _safe_tier(nb, result_id: str, proposed: str) -> str:
+    """Return the higher of existing tier and proposed tier to prevent downgrades."""
+    try:
+        row = nb.conn.execute(
+            "SELECT tier FROM leaderboard WHERE result_id = ?", (result_id,)
+        ).fetchone()
+        if row:
+            existing = str(row["tier"] or "screening")
+            if _TIER_RANK.get(existing, 0) > _TIER_RANK.get(proposed, 0):
+                return existing
+    except Exception:
+        pass
+    return proposed
+
+
 def _record_investigation_result(
     *,
     nb,
@@ -671,7 +689,26 @@ def _record_investigation_result(
     investigation_passed: bool,
     benchmark_result: Dict[str, Any],
 ) -> None:
-    """Persist leaderboard and program-results updates for investigation."""
+    """Persist leaderboard and program-results updates for investigation.
+
+    Protects existing investigation data: if the entry already has better
+    investigation results (lower loss ratio, higher robustness), those are
+    preserved rather than overwritten by a weaker re-investigation.
+    """
+    # Check if existing investigation results are better — never overwrite with worse
+    existing_inv = nb.conn.execute(
+        "SELECT investigation_loss_ratio, investigation_robustness, investigation_passed, "
+        "investigation_best_training FROM leaderboard WHERE result_id = ?",
+        (source_result_id,)
+    ).fetchone()
+    if existing_inv and existing_inv["investigation_passed"]:
+        existing_lr = existing_inv["investigation_loss_ratio"]
+        if existing_lr is not None and best_lr is not None and existing_lr < best_lr:
+            best_lr = existing_lr
+            robustness = max(robustness, float(existing_inv["investigation_robustness"] or 0))
+            best_tp_json = existing_inv["investigation_best_training"] or best_tp_json
+            investigation_passed = True
+
     trajectory_fields = trajectory_probe_fields(benchmark_result)
     nb.upsert_leaderboard(
         result_id=source_result_id,
@@ -684,7 +721,7 @@ def _record_investigation_result(
         investigation_robustness=robustness,
         investigation_best_training=best_tp_json,
         investigation_passed=investigation_passed,
-        tier="investigation" if investigation_passed else "screened_out",
+        tier=_safe_tier(nb, source_result_id, "investigation" if investigation_passed else "screened_out"),
         novelty_confidence=source.get("novelty_confidence"),
         fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
         wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),

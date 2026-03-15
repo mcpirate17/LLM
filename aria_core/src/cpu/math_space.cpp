@@ -43,6 +43,11 @@ void aria_tropical_attention_f32(const float *x, float *y,
         float *yb = y + b * seq * dim;
         float *dist = (float *)malloc(sizeof(float) * (size_t)seq);
         float *weights = (float *)malloc(sizeof(float) * (size_t)seq);
+        if (!dist || !weights) {
+            memcpy(yb, xb, sizeof(float) * (size_t)(seq * dim));
+            free(dist); free(weights);
+            continue;
+        }
 
         for (int64_t i = 0; i < seq; i++) {
             const float *xi = xb + i * dim;
@@ -118,6 +123,11 @@ void aria_tropical_gate_f32(const float *x, float *y,
         float *dist = (float *)malloc(sizeof(float) * (size_t)seq);
         float *weights = (float *)malloc(sizeof(float) * (size_t)seq);
         float *gated = (float *)malloc(sizeof(float) * (size_t)dim);
+        if (!dist || !weights || !gated) {
+            memcpy(yb, xb, sizeof(float) * (size_t)(seq * dim));
+            free(dist); free(weights); free(gated);
+            continue;
+        }
 
         for (int64_t i = 0; i < seq; i++) {
             const float *xi = xb + i * dim;
@@ -273,13 +283,19 @@ void aria_hyp_distance_f32(const float *x, const float *y, float *out,
             
             float nx[4096];
             float *nx_ptr = nx;
-            if (dim > 4096) nx_ptr = (float*)malloc(dim * sizeof(float));
-            
+            if (dim > 4096) {
+                nx_ptr = (float*)malloc(dim * sizeof(float));
+                if (!nx_ptr) { out[b * seq + s] = 0.0f; continue; }
+            }
+
             for(int64_t d=0; d<dim; d++) nx_ptr[d] = -xv[d];
-            
+
             float diff[4096];
             float *diff_ptr = diff;
-            if (dim > 4096) diff_ptr = (float*)malloc(dim * sizeof(float));
+            if (dim > 4096) {
+                diff_ptr = (float*)malloc(dim * sizeof(float));
+                if (!diff_ptr) { if (dim > 4096) free(nx_ptr); out[b * seq + s] = 0.0f; continue; }
+            }
 
             extern void aria_poincare_add_f32(const float *x, const float *v, float *y,
                                              int64_t batch, int64_t dim, float c);

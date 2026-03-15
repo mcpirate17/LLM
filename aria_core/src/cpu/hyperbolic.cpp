@@ -51,6 +51,11 @@ static inline void _mobius_add_single(const float *u, const float *v, float *y, 
     if (dim > 4096) {
         u_p = (float *)malloc(dim * sizeof(float));
         v_p = (float *)malloc(dim * sizeof(float));
+        if (!u_p || !v_p) {
+            for (int64_t d = 0; d < dim; d++) y[d] = u[d];
+            free(u_p); free(v_p);
+            return;
+        }
     }
     memcpy(u_p, u, dim * sizeof(float));
     memcpy(v_p, v, dim * sizeof(float));
@@ -148,12 +153,18 @@ void aria_hyperbolic_distance_f32(const float *x, const float *y, float *out,
 
         float nx[4096];
         float *nx_p = nx;
-        if (dim > 4096) nx_p = (float *)malloc(dim * sizeof(float));
+        if (dim > 4096) {
+            nx_p = (float *)malloc(dim * sizeof(float));
+            if (!nx_p) { out[b] = 0.0f; continue; }
+        }
         for (int64_t d = 0; d < dim; d++) nx_p[d] = -xb[d];
 
         float diff[4096];
         float *diff_p = diff;
-        if (dim > 4096) diff_p = (float *)malloc(dim * sizeof(float));
+        if (dim > 4096) {
+            diff_p = (float *)malloc(dim * sizeof(float));
+            if (!diff_p) { if (dim > 4096) free(nx_p); out[b] = 0.0f; continue; }
+        }
 
         _mobius_add_single(nx_p, yb, diff_p, dim, c);
 
@@ -515,7 +526,10 @@ void aria_log_map_backward_f32(const float *x, const float *grad_out, float *gra
         /* Clamp x to ball, then compute ||x_c|| */
         float xc[4096];
         float *xc_p = xc;
-        if (dim > 4096) xc_p = (float *)malloc((size_t)dim * sizeof(float));
+        if (dim > 4096) {
+            xc_p = (float *)malloc((size_t)dim * sizeof(float));
+            if (!xc_p) { memcpy(gib, gb, (size_t)dim * sizeof(float)); continue; }
+        }
         memcpy(xc_p, xb, (size_t)dim * sizeof(float));
         _clamp_norm_vec(xc_p, dim, max_norm);
 

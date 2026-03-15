@@ -165,6 +165,10 @@ def create_app(
     from .api_routes.analytics_bp import register_analytics_routes
     from .api_routes.experiments_bp import register_experiments_routes
     from .api_routes.programs_bp import register_programs_routes
+    from .api_routes.reporting_bp import register_reporting_routes
+    from .api_routes.strategy_bp import register_strategy_bp_routes
+    from .api_routes.general_bp import register_general_routes
+    from .api_routes.chat_bp import register_chat_routes
     from .api_routes.leaderboard_bp import register_leaderboard_routes
     from .api_routes.native_bp import register_native_routes
     from .api_routes.campaigns_bp import register_campaigns_routes
@@ -173,11 +177,17 @@ def create_app(
     from .api_routes.diagnostics_bp import register_diagnostics_routes
     from .api_routes.config_bp import register_config_routes
     from .api_routes.events_bp import register_events_routes
+    from .api_routes.system_bp import register_system_routes
+    from .api_routes.designer_bp import register_designer_routes
     from .api_routes.misc_bp import register_misc_routes
 
     register_analytics_routes(app, context)
     register_experiments_routes(app, context)
     register_programs_routes(app, context)
+    register_reporting_routes(app, context)
+    register_strategy_bp_routes(app, context)
+    register_general_routes(app, context)
+    register_chat_routes(app, context)
     register_leaderboard_routes(app, context)
     register_native_routes(app, context)
     register_campaigns_routes(app, context)
@@ -186,6 +196,8 @@ def create_app(
     register_diagnostics_routes(app, context)
     register_config_routes(app, context)
     register_events_routes(app, context)
+    register_system_routes(app, context)
+    register_designer_routes(app, context)
     # misc LAST, since it contains the catch-all /<path:path> fallback
     register_misc_routes(app, context)
 

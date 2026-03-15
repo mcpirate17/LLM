@@ -1,6 +1,6 @@
-"""aria_core — Unified high-performance kernel library for Aria."""
+"""aria_core.aria_core — inner package for backward compat."""
 import warnings
-import torch  # ensure torch libs are loaded first
+import torch  # noqa: F401 — ensure torch libs loaded first
 
 _C_AVAILABLE = False
 _C_IMPORT_ERROR = None
@@ -14,35 +14,3 @@ except (ImportError, ModuleNotFoundError) as exc:
         RuntimeWarning,
         stacklevel=2,
     )
-
-
-def __getattr__(name: str):
-    if not _C_AVAILABLE:
-        if name == "relu_f32":
-            return lambda x: torch.relu(x)
-        if name == "gelu_f32":
-            return lambda x: torch.nn.functional.gelu(x)
-        if name == "add_f32":
-            return lambda a, b: a + b
-        if name == "sub_f32":
-            return lambda a, b: a - b
-        if name == "mul_f32":
-            return lambda a, b: a * b
-        if name == "matmul_f32":
-            return lambda a, b: a @ b
-        if name == "linear_f32":
-            return lambda x, w, b=None: torch.nn.functional.linear(x, w, b)
-        if name == "softmax_f32":
-            return lambda x: torch.nn.functional.softmax(x, dim=-1)
-        if name == "rmsnorm_f32":
-            def _rmsnorm_f32(x, w, eps=1e-5):
-                rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps)
-                return (x / rms) * w
-
-            return _rmsnorm_f32
-        raise ModuleNotFoundError(
-            "aria_core.aria_core._C is not available; build extension to access kernel symbols."
-        ) from _C_IMPORT_ERROR
-    raise AttributeError(name)
-
-__version__ = "0.1.0"

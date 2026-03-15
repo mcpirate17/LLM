@@ -42,6 +42,20 @@ _MATHSPACE_OPS: frozenset = frozenset(_ALGEBRAIC_SPACE_TAGS)
 _OP_DISPATCH: Dict[str, Callable[[nn.Module, Tuple[torch.Tensor, ...], Dict], torch.Tensor]] = {}
 
 
+def _register_split_op_modules() -> None:
+    """Prefer split op implementations when they are available."""
+    try:
+        from .compiler_ops_math import OP_IMPLS as math_ops
+        from .compiler_ops_attention import OP_IMPLS as attention_ops
+        from .compiler_ops_mathspaces import OP_IMPLS as mathspace_ops
+        from .compiler_ops_routing import OP_IMPLS as routing_ops
+    except Exception:
+        return
+
+    for registry in (math_ops, attention_ops, mathspace_ops, routing_ops):
+        _OP_DISPATCH.update(registry)
+
+
 # ── Parallel Associative Scan ────────────────────────────────────────
 
 def _parallel_associative_scan(log_a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -1184,7 +1198,8 @@ def _op_gather_topk(_, inputs, config):
     x, scores = inputs[0], inputs[1]
     k = min(int(config.get("k", 4)), x.shape[1])
     if scores.dim() == 3:
-        scores = scores.squeeze(-1)
+        # Reduce to (B, S) — mean over last dim handles any D, not just D=1
+        scores = scores.mean(dim=-1)
     if _c(x) and _c(scores) and scores.dim() == 2 and x.dim() == 3:
         gathered, _ = aria_core.gather_topk_f32(scores, x, k)
         if gathered.shape[1] < x.shape[1]:
@@ -1503,9 +1518,9 @@ def _op_mixed_recursion_gate(module, inputs, config):
         mask = (depths >= i).float().unsqueeze(-1)
         # Apply transformation for this step
         # proj: (D, D) or similar
-        step_out = F.linear(out, module.step_projs[i])
+        step_out = F.linear(out, module.step_projs[i].to(out.dtype))
         out = (1 - mask) * out + mask * step_out
-        
+
     _record_routing_telemetry(module, max_depth, depths, logits=scores)
     return out
 
@@ -1833,6 +1848,9 @@ def _op_stdp_attention(module, inputs, config):
 def _op_sparse_threshold(module, inputs, config):
     from ..mathspaces.spiking import execute_sparse_threshold
     return execute_sparse_threshold(module, inputs[0])
+
+
+_register_split_op_modules()
 
 
 def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...],
@@ -2203,12 +2221,23 @@ class CompiledOp(nn.Module):
         self.V_comp = self._make_param((d_in, rank), std=0.02)
 
     def _cast_params_to(self, dtype: torch.dtype) -> None:
-        """Cast all parameter tensors to match input dtype (bf16 autocast safety)."""
+        """Cast raw parameters to match input dtype (bf16 autocast safety).
+
+        Covers direct params and ParameterList children (e.g. step_projs).
+        Skips nn.Linear/nn.Sequential submodules which handle autocast internally.
+        """
         if dtype == torch.float32:
             return
-        for name, param in self.named_parameters(recurse=False):
-            if param.dtype != dtype:
+        # Direct parameters (raw nn.Parameter attrs used with F.linear)
+        for param in self._parameters.values():
+            if param is not None and param.dtype != dtype:
                 param.data = param.data.to(dtype)
+        # ParameterList children (e.g. step_projs for mixed_recursion_gate)
+        for child in self._modules.values():
+            if isinstance(child, torch.nn.ParameterList):
+                for param in child:
+                    if param.dtype != dtype:
+                        param.data = param.data.to(dtype)
 
     def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
         """Execute this primitive operation."""

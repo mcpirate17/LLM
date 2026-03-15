@@ -252,4 +252,26 @@ static inline __m512 _mm512_atanh_ps(__m512 x) {
 #define aria_simd_sigmoid_ps _mm256_sigmoid_ps
 #endif
 
+/* ── Scalar fallback for non-SIMD platforms (ARM, older x86) ────────── */
+
+#if !defined(__AVX512F__) && !defined(__AVX2__)
+#include <math.h>
+
+static inline void aria_scalar_exp_f32(const float *in, float *out, int n) {
+    for (int i = 0; i < n; i++) out[i] = expf(in[i]);
+}
+static inline void aria_scalar_log_f32(const float *in, float *out, int n) {
+    for (int i = 0; i < n; i++) out[i] = logf(in[i]);
+}
+static inline void aria_scalar_tanh_f32(const float *in, float *out, int n) {
+    for (int i = 0; i < n; i++) out[i] = tanhf(in[i]);
+}
+static inline void aria_scalar_sigmoid_f32(const float *in, float *out, int n) {
+    for (int i = 0; i < n; i++) out[i] = 1.0f / (1.0f + expf(-in[i]));
+}
+static inline void aria_scalar_atanh_f32(const float *in, float *out, int n) {
+    for (int i = 0; i < n; i++) out[i] = atanhf(in[i]);
+}
+#endif
+
 #endif /* ARIA_SIMD_MATH_H */

@@ -475,6 +475,30 @@ _register(PrimitiveOp("latent_attention_compressor", OpCategory.PARAMETERIZED, 1
                        has_params=True,
                        description="Multi-Head Latent Attention (MLA) style KV cache compression"))
 
+# ── Weight-efficient projections ─────────────────────────────────────
+
+_register(PrimitiveOp("low_rank_proj", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D//2",
+                       description="Low-rank factored projection (U @ V)"))
+_register(PrimitiveOp("grouped_linear", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D//4",
+                       description="Group-wise linear projection (4 groups)"))
+_register(PrimitiveOp("bottleneck_proj", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D//2",
+                       description="Bottleneck projection (down then up)"))
+_register(PrimitiveOp("shared_basis_proj", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*16",
+                       description="Shared-basis projection (8 basis vectors + mixing)"))
+_register(PrimitiveOp("tied_proj", OpCategory.PARAMETERIZED, 1, "identity",
+                       has_params=True, param_formula="D*D//4",
+                       description="Tied projection (shared down+up weights)"))
+_register(PrimitiveOp("sort_seq", OpCategory.SEQUENCE, 1, "identity",
+                       description="Sort tokens by L2 norm along sequence dim"))
+
+# Note: Math space ops (padic_*, tropical_*, hyp_*, clifford_*, stdp_*)
+# are dynamically registered by research.mathspaces.registry.register_all_mathspaces()
+# Do NOT register them statically here — they need execute_fn from mathspaces.
+
 # ── Functional (operator-learning / neural-field) ────────────────────
 
 _register(PrimitiveOp("basis_expansion", OpCategory.FUNCTIONAL, 1, "identity",

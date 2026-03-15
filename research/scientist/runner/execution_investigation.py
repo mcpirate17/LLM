@@ -114,10 +114,12 @@ class _ExecutionInvestigationMixin:
                 model_source = source.get("model_source") or "graph_synthesis"
 
                 # Generate training programs (queue-level scheduling telemetry)
+                # Cap curriculum max_seq_len to avoid OOM with quadratic-attention ops
+                tp_max_seq = min(config.max_seq_len, 512)
                 training_programs, tp_sched = synthesize_training_program_batch(
                     n_programs=config.n_training_programs,
                     n_steps=config.investigation_steps,
-                    max_seq_len=config.max_seq_len,
+                    max_seq_len=tp_max_seq,
                     seed_offset=prog_idx * 1000,
                 )
                 results.setdefault("training_program_scheduling", []).append({
@@ -182,6 +184,7 @@ class _ExecutionInvestigationMixin:
                         "passed": tp_result.get("passed", False),
                         "loss_ratio": tp_result.get("loss_ratio"),
                         "final_loss": tp_result.get("final_loss"),
+                        "error": tp_result.get("error"),
                     })
 
                     del model
@@ -227,6 +230,8 @@ class _ExecutionInvestigationMixin:
 
                 investigation_entry = {
                     "result_id": source_result_id,
+                    "data_mode": str(config.data_mode or "random"),
+                    "data_source": str(config.hf_dataset or config.corpus_path or "random"),
                     "robustness": robustness,
                     "best_loss_ratio": best_lr,
                     "screening_loss_ratio": screening_lr,
@@ -240,6 +245,7 @@ class _ExecutionInvestigationMixin:
                     "best_training_program": best_tp.get("training_program") if best_tp else None,
                     "training_program_scheduling_avg_ms": tp_sched.get("scheduling_avg_ms"),
                     "training_program_scheduling_max_ms": tp_sched.get("scheduling_max_ms"),
+                    "training_errors": [r["error"] for r in tp_results if r.get("error")],
                 }
                 results["investigation_results"].append(investigation_entry)
 
@@ -297,10 +303,7 @@ class _ExecutionInvestigationMixin:
                         best_tp_json=best_tp_json,
                         robustness=robustness,
                         investigation_passed=investigation_passed,
-                        inv_wikitext_ppl=None,
-                        inv_wikitext_score=None,
-                        inv_tinystories_ppl=None,
-                        inv_tinystories_score=None,
+                        benchmark_result={},
                     )
 
                 # Save checkpoint after each candidate completes

@@ -35,4 +35,13 @@ extern "C" void scipy_cblas_sgemm(enum CBLAS_ORDER, enum CBLAS_TRANSPOSE, enum C
 static const float GELU_COEFF = 0.7978845608028654f;  /* sqrt(2/pi) */
 static const float GELU_CUBIC = 0.044715f;
 
+/* Stack allocation threshold: dims above this use heap malloc */
+#define ARIA_STACK_ALLOC_THRESHOLD 4096
+
+/* OMP parallelization thresholds for compute-bound loops */
+#define ARIA_OMP_COMPUTE_THRESHOLD 256
+
+/* Default numerical epsilon for stability */
+#define ARIA_EPSILON_DEFAULT 1e-8f
+
 #endif /* ARIA_KERNELS_COMMON_H */

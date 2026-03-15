@@ -169,6 +169,8 @@ Op-pair bigrams are tracked in `failure_signatures`. Combinations that fail >85%
 - `eval/` — sandbox, metrics, fingerprinting, pruning/perf helpers
 - `dashboard/` — React app (used by `--mode=dashboard`)
 - `search/`, `training/`, `tools/` — search/training/utilities
+- `../archive/research-tools/` — quarantined maintenance scripts that are not
+  part of the active `research` runtime or import surface
 
 ## Frontend Dev (optional)
 

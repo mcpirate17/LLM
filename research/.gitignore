@@ -22,12 +22,17 @@ dashboard/package-lock.json
 *.db-wal
 *.db-shm
 *.log
+:memory:*
+*:memory:*
 checkpoints/
+perf_artifacts/
 
 # Native runner build artifacts
 runtime/native/build/
 runtime/native/cython/build/
 runtime/native/rust/aria-scheduler/target/
+*.so
+runtime/native/cython/*.so
 synthesis/build/
 
 # Test runner artifacts

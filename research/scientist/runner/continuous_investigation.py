@@ -548,10 +548,7 @@ class _ContinuousInvestigationMixin:
                         best_tp_json=best_tp_json,
                         robustness=robustness,
                         investigation_passed=investigation_passed,
-                        inv_wikitext_ppl=None,
-                        inv_wikitext_score=None,
-                        inv_tinystories_ppl=None,
-                        inv_tinystories_score=None,
+                        benchmark_result={},
                     )
 
             # Complete experiment with LLM analysis

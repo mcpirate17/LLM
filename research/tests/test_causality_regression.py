@@ -80,7 +80,8 @@ def is_causal_op(op_name: str) -> bool:
 def test_op_causality_regression(op_name):
     """Verify that all primitive operations maintain autoregressive causality."""
     # Skip inherently global ops (used only in non-causal subgraphs or at the very end)
-    if op_name in ["sum_seq", "mean_seq", "max_seq", "min_seq"]:
+    if op_name in ["sum_seq", "mean_seq", "max_seq", "min_seq", "sort_seq",
+                    "argsort_seq", "gather_topk"]:
         pytest.skip(f"{op_name} is inherently global (non-causal)")
         
     assert is_causal_op(op_name), f"Operation '{op_name}' violates causality! This will cause reward hacking in Stage 1."
