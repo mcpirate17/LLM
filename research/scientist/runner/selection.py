@@ -189,8 +189,8 @@ class _SelectionMixin:
             total = (1.0 - float(config.selection_family_bonus_weight)) * base_score + (
                 float(config.selection_family_bonus_weight) * bonus
             )
-            # Small additive term to prefer insight bundles with positive historical interactions.
-            interaction_term = (insight_interaction.get(rid, 0.5) - 0.5) * 0.12
+            # Additive term to prefer insight bundles with positive historical interactions.
+            interaction_term = (insight_interaction.get(rid, 0.5) - 0.5) * 0.20
             total += interaction_term
             scored.append({
                 "result_id": rid,
@@ -309,8 +309,23 @@ class _SelectionMixin:
         nb: LabNotebook,
         candidates: List[Dict[str, Any]],
     ) -> Tuple[Dict[str, List[str]], List[str]]:
-        """Match active insights to candidates and return per-result + global bundles."""
-        insights = nb.get_insights(limit=120)
+        """Match active insights to candidates using structured matching.
+
+        Filters out display_only insights and those with confidence <= 0.55.
+        Uses insight_level + subject_key for structured matching instead of
+        naive token-in-content overlap.
+        """
+        insights = nb.get_insights(limit=120, exclude_display_only=True)
+        if not insights:
+            return {}, []
+
+        # Filter: only insights better than coin flip
+        insights = [
+            i for i in insights
+            if (self._to_float(i.get("alpha"), default=1.0)
+                / (self._to_float(i.get("alpha"), default=1.0)
+                   + self._to_float(i.get("beta_"), default=1.0))) > 0.55
+        ]
         if not insights:
             return {}, []
 
@@ -321,25 +336,59 @@ class _SelectionMixin:
             if not rid:
                 continue
             tokens = self._candidate_tokens(row)
+            graph_n_ops = self._to_float(row.get("graph_n_ops"), default=0)
             if not tokens:
                 continue
             scored: List[Tuple[float, str]] = []
             for insight in insights:
                 insight_id = str(insight.get("insight_id") or "")
-                content = str(insight.get("content") or "").lower()
-                if not insight_id or not content:
+                if not insight_id:
                     continue
-                hit_count = sum(1 for token in tokens if token in content)
-                if hit_count <= 0:
-                    continue
-                confidence = self._to_float(insight.get("confidence"), default=0.5)
-                score = hit_count * max(0.1, confidence)
-                scored.append((score, insight_id))
+                confidence = self._to_float(insight.get("alpha"), default=1.0) / (
+                    self._to_float(insight.get("alpha"), default=1.0)
+                    + self._to_float(insight.get("beta_"), default=1.0)
+                )
+                level = str(insight.get("insight_level") or "op")
+                subject = str(insight.get("subject_key") or "")
+
+                matched = False
+                if level == "composition":
+                    # Match if candidate graph contains the ops in subject_key
+                    subject_ops = {s.strip() for s in subject.split("+") if s.strip()}
+                    if subject_ops and subject_ops.issubset(tokens):
+                        matched = True
+                elif level == "structural":
+                    # Match based on graph properties
+                    if "graph_size" in subject:
+                        matched = True  # structural size insights apply globally
+                    elif subject in tokens:
+                        matched = True
+                elif level == "template":
+                    # Match if any subject token appears in candidate tokens
+                    subject_parts = {s.strip().lower() for s in subject.replace("+", " ").replace("_", " ").split() if len(s.strip()) >= 3}
+                    if subject_parts & tokens:
+                        matched = True
+                else:
+                    # Fallback: op-level, match subject_key directly
+                    if subject and subject in tokens:
+                        matched = True
+
+                if not matched:
+                    # Token fallback for backwards compat with legacy insights
+                    content = str(insight.get("content") or "").lower()
+                    hit_count = sum(1 for token in tokens if token in content)
+                    if hit_count >= 2:
+                        matched = True
+                        confidence *= 0.8  # Discount token-matched insights
+
+                if matched:
+                    scored.append((confidence, insight_id))
+
             if not scored:
                 continue
             scored.sort(key=lambda item: item[0], reverse=True)
-            matched = [insight_id for _, insight_id in scored[:3]]
-            by_result[rid] = matched
+            matched_ids = [insight_id for _, insight_id in scored[:3]]
+            by_result[rid] = matched_ids
             for score, insight_id in scored[:5]:
                 global_scores[insight_id] = max(global_scores.get(insight_id, 0.0), score)
 

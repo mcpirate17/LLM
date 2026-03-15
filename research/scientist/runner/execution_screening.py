@@ -166,6 +166,106 @@ def _cached_signal_weight_maps(
     return template_weights, motif_weights
 
 
+def _apply_insight_adjustments(
+    nb: LabNotebook,
+    grammar: GrammarConfig,
+    template_weights: Dict[str, float],
+    motif_weights: Dict[str, float],
+) -> None:
+    """Apply high-confidence Bayesian insights to grammar config.
+
+    - Structural insights: adjust max_ops, residual_prob
+    - Template insights: scale template weights
+    - Composition insights: boost motif weights for winning op combos
+    """
+    _MIN_CONFIDENCE = 0.6
+
+    # ── Structural insights ──
+    try:
+        structural = nb.get_insights(
+            exclude_display_only=True, insight_level="structural", limit=20,
+        )
+    except Exception:
+        structural = []
+
+    for ins in structural:
+        alpha = float(ins.get("alpha") or 1.0)
+        beta_ = float(ins.get("beta_") or 1.0)
+        conf = alpha / (alpha + beta_)
+        if conf < _MIN_CONFIDENCE:
+            continue
+
+        subject = str(ins.get("subject_key") or "")
+        evidence = ins.get("evidence_json")
+        if isinstance(evidence, str):
+            try:
+                import json as _json
+                evidence = _json.loads(evidence)
+            except Exception:
+                evidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        if subject == "graph_size_cap" and evidence.get("recommended_max"):
+            recommended = int(evidence["recommended_max"])
+            grammar.max_ops = min(grammar.max_ops, recommended)
+        elif subject == "graph_size_optimal":
+            # Nudge composition_depth toward the optimal bucket
+            best = evidence.get("best_bucket", "")
+            if "7-9" in best:
+                grammar.composition_depth = min(grammar.composition_depth, 2)
+                grammar.max_ops = min(grammar.max_ops, 12)
+
+    # ── Template insights ──
+    try:
+        template_insights = nb.get_insights(
+            exclude_display_only=True, insight_level="template", limit=20,
+        )
+    except Exception:
+        template_insights = []
+
+    for ins in template_insights:
+        alpha = float(ins.get("alpha") or 1.0)
+        beta_ = float(ins.get("beta_") or 1.0)
+        conf = alpha / (alpha + beta_)
+        if conf < _MIN_CONFIDENCE:
+            continue
+
+        subject = str(ins.get("subject_key") or "")
+        # Suppress templates matching the subject
+        subject_parts = {s.strip().lower() for s in subject.replace("+", " ").replace("_", " ").split() if len(s.strip()) >= 3}
+        for tpl_name in list(template_weights.keys()):
+            tpl_parts = {s.lower() for s in tpl_name.replace("_", " ").split()}
+            if subject_parts & tpl_parts:
+                template_weights[tpl_name] *= max(0.2, 1.0 - conf * 0.6)
+
+    # ── Composition insights ──
+    try:
+        composition = nb.get_insights(
+            exclude_display_only=True, insight_level="composition", limit=20,
+        )
+    except Exception:
+        composition = []
+
+    for ins in composition:
+        alpha = float(ins.get("alpha") or 1.0)
+        beta_ = float(ins.get("beta_") or 1.0)
+        conf = alpha / (alpha + beta_)
+        if conf < _MIN_CONFIDENCE:
+            continue
+
+        subject = str(ins.get("subject_key") or "")
+        subject_ops = {s.strip() for s in subject.split("+") if s.strip()}
+        if not subject_ops:
+            continue
+
+        for motif_name, motif in VALIDATED_MOTIFS.items():
+            motif_ops = {step.op_name for step in motif.steps}
+            if subject_ops & motif_ops:
+                base = motif_weights.get(motif_name, motif.lift)
+                motif_weights[motif_name] = base * (1.0 + conf * 0.3)
+
+
 def _build_signal_weight_maps(nb: LabNotebook) -> Tuple[Dict[str, float], Dict[str, float]]:
     try:
         op_pair_priors = nb.get_op_pair_priors(min_support=5, limit=50)
@@ -598,6 +698,11 @@ class _ExecutionScreeningMixin:
         else:
             grammar.template_weights = template_weights
         grammar.motif_weights = motif_weights
+        # Apply Bayesian insight adjustments to grammar config
+        try:
+            _apply_insight_adjustments(nb, grammar, grammar.template_weights, grammar.motif_weights)
+        except Exception as e:
+            logger.debug("Insight grammar adjustment failed: %s", e)
         old_weights = dict(grammar.category_weights)
 
         if grammar_weights:

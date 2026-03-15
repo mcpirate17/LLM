@@ -27,8 +27,16 @@ class _KnowledgeMixin:
         insight_type: Optional[str] = None,
         subject_key: Optional[str] = None,
         semantic_key: Optional[str] = None,
+        alpha: float = 1.0,
+        beta_: float = 1.0,
+        display_only: bool = False,
+        insight_level: str = "op",
+        evidence_json: Optional[Dict] = None,
     ) -> str:
-        """Record an insight/learning, superseding active semantic duplicates."""
+        """Record an insight/learning, superseding active semantic duplicates.
+
+        If category is 'failure_mode', display_only is forced to True.
+        """
         inferred_type, inferred_subject, inferred_semantic = infer_insight_identity(
             category,
             content,
@@ -36,6 +44,15 @@ class _KnowledgeMixin:
         insight_type = str(insight_type or inferred_type).strip() or inferred_type
         subject_key = str(subject_key or inferred_subject).strip() or inferred_subject
         semantic_key = str(semantic_key or inferred_semantic).strip() or inferred_semantic
+
+        # Hard gate: failure_mode insights are always display-only
+        if category == "failure_mode":
+            display_only = True
+
+        # Compute confidence from Bayesian posterior
+        alpha = max(0.01, float(alpha))
+        beta_ = max(0.01, float(beta_))
+        confidence = alpha / (alpha + beta_)
 
         if semantic_key:
             existing = self.conn.execute(
@@ -51,10 +68,13 @@ class _KnowledgeMixin:
                 )
 
         insight_id = str(uuid.uuid4())[:12]
+        evidence_json_str = json.dumps(evidence_json) if evidence_json else None
         insert_sql = """INSERT INTO insights
             (insight_id, timestamp, experiment_id, category, insight_type,
-             subject_key, semantic_key, content, confidence, supporting_evidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+             subject_key, semantic_key, content, confidence, supporting_evidence,
+             alpha, beta_, display_only, insight_level, n_predictions, n_correct,
+             evidence_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)"""
         insert_params = (
             insight_id,
             time.time(),
@@ -66,6 +86,11 @@ class _KnowledgeMixin:
             content,
             confidence,
             evidence,
+            alpha,
+            beta_,
+            1 if display_only else 0,
+            insight_level,
+            evidence_json_str,
         )
         try:
             self.conn.execute(insert_sql, insert_params)
@@ -91,18 +116,58 @@ class _KnowledgeMixin:
         self._maybe_commit()
 
 
-    def get_insights(self, category: Optional[str] = None,
-                     status: str = "active", limit: int = 50) -> List[Dict]:
+    def get_insights(
+        self,
+        category: Optional[str] = None,
+        status: str = "active",
+        limit: int = 50,
+        exclude_display_only: bool = False,
+        insight_level: Optional[str] = None,
+    ) -> List[Dict]:
         query = "SELECT * FROM insights WHERE status = ?"
-        params = [status]
+        params: List[Any] = [status]
         if category:
             query += " AND category = ?"
             params.append(category)
+        if exclude_display_only:
+            query += " AND display_only = 0"
+        if insight_level:
+            query += " AND insight_level = ?"
+            params.append(insight_level)
         query += " ORDER BY confidence DESC, timestamp DESC LIMIT ?"
         params.append(limit)
         rows = self.conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        results = []
+        for r in rows:
+            d = dict(r)
+            # Parse evidence_json if present
+            if d.get("evidence_json"):
+                try:
+                    d["evidence_json"] = json.loads(d["evidence_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            results.append(d)
+        return results
 
+
+    def update_insight_bayesian(self, insight_id: str, success: bool) -> None:
+        """Increment alpha (success) or beta_ (failure). Recompute confidence.
+
+        This is the single code path for Bayesian updates to insight confidence.
+        Confidence = posterior mean of Beta(alpha, beta_).
+        """
+        col = "alpha" if success else "beta_"
+        self.conn.execute(
+            f"""UPDATE insights SET
+                {col} = {col} + 1,
+                confidence = (alpha + CASE WHEN ? THEN 1 ELSE 0 END)
+                    / (alpha + beta_ + 1),
+                n_predictions = n_predictions + 1,
+                n_correct = n_correct + CASE WHEN ? THEN 1 ELSE 0 END
+            WHERE insight_id = ?""",
+            (int(success), int(success), insight_id),
+        )
+        self._maybe_commit()
 
     def record_selection_insight_trial(
         self,

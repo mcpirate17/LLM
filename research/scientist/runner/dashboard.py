@@ -1146,3 +1146,15 @@ class _DashboardMixin:
                     "resolved_from": "leaderboard",
                 },
             )
+            # Bayesian update: insights that predict well gain confidence
+            try:
+                trial_insight_ids = trial.get("insight_ids_json") or []
+                if isinstance(trial_insight_ids, str):
+                    trial_insight_ids = json.loads(trial_insight_ids)
+                for insight_id in trial_insight_ids:
+                    nb.update_insight_bayesian(
+                        str(insight_id),
+                        success=(outcome == "supported"),
+                    )
+            except Exception:
+                pass

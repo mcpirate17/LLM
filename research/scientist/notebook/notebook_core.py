@@ -392,6 +392,29 @@ class _NotebookCore:
                    WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''"""
             )
 
+        # Migrate insights: add Bayesian columns (alpha, beta_, display_only, etc.)
+        for col_name, col_def in (
+            ("alpha", "REAL DEFAULT 1.0"),
+            ("beta_", "REAL DEFAULT 1.0"),
+            ("display_only", "INTEGER DEFAULT 0"),
+            ("insight_level", "TEXT DEFAULT 'op'"),
+            ("n_predictions", "INTEGER DEFAULT 0"),
+            ("n_correct", "INTEGER DEFAULT 0"),
+            ("evidence_json", "TEXT"),
+        ):
+            if col_name not in insight_cols:
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE insights ADD COLUMN {col_name} {col_def}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+        # Backfill display_only=1 for existing failure_mode insights
+        self.conn.execute(
+            "UPDATE insights SET display_only = 1 WHERE category = 'failure_mode' AND display_only = 0"
+        )
+
         # Migrate leaderboard: add efficiency and robustness columns
         lb_cols = {
             row[1] for row in

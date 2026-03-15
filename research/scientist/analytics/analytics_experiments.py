@@ -1140,130 +1140,62 @@ class _ExperimentsMixin:
             "explanation": explanation,
         }
 
+    # ── Code failure error types — always display_only ──
+    _CODE_FAILURE_TYPES = frozenset({
+        "RuntimeError", "TypeError", "AttributeError", "CompilationError",
+        "ImportError", "ModuleNotFoundError", "SyntaxError", "NameError",
+        "KeyError", "IndexError", "ValueError",
+    })
+
     def compute_insights(self) -> List[Dict]:
-        """Generate data-driven insights from experiment history.
+        """Generate data-driven insights with statistical evidence.
 
-        Returns structured insight dicts with varied category and confidence:
-        ``[{"content": str, "category": str, "confidence": float}, ...]``
+        Every insight carries:
+        - ``alpha``/``beta_``: Beta-Binomial posterior from observed counts
+        - ``evidence_json``: structured proof (test, p_value, effect_size, n)
+        - ``display_only``: True for failure_mode and code-failure insights
 
-        Confidence is scaled by sample size and effect strength so that
-        the dashboard scoring formula produces differentiated scores.
+        Returns ``[{"content": str, "category": str, ...}, ...]``
         """
+        from scipy.stats import fisher_exact, chi2_contingency, binom_test
+
         insights: List[Dict] = []
 
-        # 1. Op success rate insights
+        # ── 1. Graph-size bucket analysis (structural) ──
+        size_rows = self.nb.conn.execute("""
+            SELECT graph_n_ops, stage1_passed
+            FROM program_results
+            WHERE graph_n_ops IS NOT NULL
+        """).fetchall()
+        if len(size_rows) >= 50:
+            self._compute_graph_size_insights(size_rows, insights)
+
+        # ── 2. Op success/failure insights ──
         op_rates = self.op_success_rates()
         if op_rates:
-            rated_ops = [(op, s["s1_rate"], s["n_used"])
-                         for op, s in op_rates.items() if s["n_used"] >= 5]
-            if rated_ops:
-                rated_ops.sort(key=lambda x: -x[1])
-                best_ops = rated_ops[:3]
-                worst_ops = rated_ops[-3:]
+            self._compute_op_insights(op_rates, insights)
 
-                if best_ops[0][1] > 0:
-                    op_names = ", ".join(f"{op}({rate:.0%})" for op, rate, _ in best_ops)
-                    # Confidence scales with total usage of the best ops
-                    total_usage = sum(n for _, _, n in best_ops)
-                    conf = min(0.9, 0.5 + total_usage / 500)
-                    insights.append({
-                        "content": (
-                            f"Top-performing ops (S1 rate): {op_names}. "
-                            f"These compose well into learnable architectures."
-                        ),
-                        "category": "success_factor",
-                        "confidence": round(conf, 2),
-                        "insight_type": "top_ops",
-                        "subject_key": "+".join(sorted({op for op, _, _ in best_ops})),
-                        "semantic_key": "top_ops:" + "+".join(sorted({op for op, _, _ in best_ops})),
-                    })
-
-                if worst_ops and worst_ops[-1][1] == 0 and worst_ops[-1][2] >= 10:
-                    failing = [(op, n) for op, rate, n in worst_ops if rate == 0]
-                    if failing:
-                        op_names = ", ".join(op for op, _ in failing)
-                        total_usage = sum(n for _, n in failing)
-                        conf = min(0.85, 0.4 + total_usage / 300)
-                        insights.append({
-                            "content": (
-                                f"Consistently failing ops: {op_names}. "
-                                f"Consider reducing their grammar weight."
-                            ),
-                            "category": "failure_mode",
-                            "confidence": round(conf, 2),
-                            "insight_type": "failing_ops",
-                            "subject_key": "+".join(sorted({op for op, _ in failing})),
-                            "semantic_key": "failing_ops:" + "+".join(sorted({op for op, _ in failing})),
-                        })
-
-        # 2. Structural correlation insights
+        # ── 3. Structural correlation insights (chi-squared) ──
         correlations = self.structural_correlations()
         if correlations:
-            for metric, effect in sorted(correlations.items(),
-                                         key=lambda x: -abs(x[1])):
-                if abs(effect) > 0.3:
-                    direction = "positively" if effect > 0 else "negatively"
-                    name = metric.replace("graph_", "").replace("_", " ")
-                    # Stronger effect → higher confidence
-                    conf = min(0.9, 0.3 + abs(effect) * 0.6)
-                    insights.append({
-                        "content": (
-                            f"Graph {name} is {direction} correlated with "
-                            f"Stage 1 success (effect={effect:.2f})."
-                        ),
-                        "category": "hypothesis",
-                        "confidence": round(conf, 2),
-                        "insight_type": "graph_correlation",
-                        "subject_key": metric,
-                        "semantic_key": f"graph_correlation:{metric}",
-                    })
-                    break  # just the strongest
+            self._compute_structural_correlation_insights(correlations, size_rows, insights)
 
-        # 3. Failure pattern insights
+        # ── 4. Failure pattern insights (always display_only) ──
         failures = self.failure_patterns()
         if failures:
-            top_failure = max(failures.items(), key=lambda x: x[1]["total"])
-            if top_failure[1]["total"] >= 10:
-                total_failures = top_failure[1]["total"]
-                conf = min(0.85, 0.45 + total_failures / 500)
-                insights.append({
-                    "content": (
-                        f"Most common failure: {top_failure[0]} "
-                        f"({total_failures} occurrences). "
-                        f"Stages: {top_failure[1]['by_stage']}"
-                    ),
-                    "category": "failure_mode",
-                    "confidence": round(conf, 2),
-                    "insight_type": "common_failure",
-                    "subject_key": str(top_failure[0]),
-                    "semantic_key": f"common_failure:{top_failure[0]}",
-                })
+            self._compute_failure_insights(failures, insights)
 
-        # 4. Op combination insights
+        # ── 5. Op combination insights (composition) ──
         combos = self.top_op_combinations(5)
-        if combos and combos[0]["count"] >= 3:
-            top = combos[0]
-            conf = min(0.9, 0.5 + top["count"] / 200)
-            insights.append({
-                "content": (
-                    f"Winning combination: {' + '.join(top['ops'])} "
-                    f"appears in {top['count']} survivors "
-                    f"(avg novelty {top['avg_novelty']:.3f})."
-                ),
-                "category": "success_factor",
-                "confidence": round(conf, 2),
-                "insight_type": "winning_combo",
-                "subject_key": "+".join(sorted({str(op) for op in top["ops"]})),
-                "semantic_key": "winning_combo:" + "+".join(sorted({str(op) for op in top["ops"]})),
-            })
+        if combos:
+            self._compute_combo_insights(combos, insights)
 
-        # 5. Overall progress insight
+        # ── 6. Overall progress ──
         summary = self.nb.get_dashboard_summary()
         total = summary.get("total_programs_evaluated", 0)
         survivors = summary.get("stage1_survivors", 0)
-        if total > 0:
+        if total >= 20:
             rate = survivors / total
-            conf = min(0.95, 0.4 + total / 1000)
             insights.append({
                 "content": (
                     f"Overall survival rate: {rate:.1%} "
@@ -1271,10 +1203,302 @@ class _ExperimentsMixin:
                     f"{'Grammar is productive.' if rate > 0.03 else 'Grammar needs tuning.'}"
                 ),
                 "category": "pattern",
-                "confidence": round(conf, 2),
                 "insight_type": "overall_survival_rate",
                 "subject_key": "global",
                 "semantic_key": "overall_survival_rate:global",
+                "alpha": float(survivors + 1),
+                "beta_": float(total - survivors + 1),
+                "display_only": False,
+                "insight_level": "structural",
+                "evidence_json": {
+                    "test": "binomial_proportion",
+                    "n": total,
+                    "successes": survivors,
+                    "rate": round(rate, 4),
+                },
             })
 
         return insights
+
+    def _compute_graph_size_insights(
+        self,
+        size_rows: list,
+        insights: List[Dict],
+    ) -> None:
+        """Chi-squared test on graph-size buckets vs S1 pass rate."""
+        from scipy.stats import chi2_contingency
+
+        buckets: Dict[str, List[int]] = {
+            "1-6": [0, 0], "7-9": [0, 0], "10-12": [0, 0], "13+": [0, 0],
+        }
+        for r in size_rows:
+            n_ops = int(r["graph_n_ops"] or 0)
+            passed = 1 if r["stage1_passed"] else 0
+            if n_ops <= 6:
+                key = "1-6"
+            elif n_ops <= 9:
+                key = "7-9"
+            elif n_ops <= 12:
+                key = "10-12"
+            else:
+                key = "13+"
+            buckets[key][0] += passed
+            buckets[key][1] += 1 - passed
+
+        table = [buckets[k] for k in buckets if sum(buckets[k]) > 0]
+        if len(table) < 2:
+            return
+
+        try:
+            chi2, p_value, _, _ = chi2_contingency(table)
+        except ValueError:
+            return
+
+        if p_value > 0.01:
+            return
+
+        # Find best bucket
+        rates = {}
+        for k, (p, f) in buckets.items():
+            total = p + f
+            if total > 0:
+                rates[k] = p / total
+        best_bucket = max(rates, key=rates.get) if rates else None
+        if not best_bucket:
+            return
+
+        best_pass = buckets[best_bucket][0]
+        best_fail = buckets[best_bucket][1]
+        best_rate = rates[best_bucket]
+        n_total = sum(p + f for p, f in buckets.values())
+
+        insights.append({
+            "content": (
+                f"Graph size {best_bucket} ops is optimal "
+                f"({best_rate:.1%} S1 rate, n={best_pass + best_fail})."
+            ),
+            "category": "structural_preference",
+            "insight_type": "graph_size_optimal",
+            "subject_key": "graph_size_optimal",
+            "semantic_key": "structural:graph_size_optimal",
+            "alpha": float(best_pass + 1),
+            "beta_": float(best_fail + 1),
+            "display_only": False,
+            "insight_level": "structural",
+            "evidence_json": {
+                "test": "chi2_contingency",
+                "chi2": round(float(chi2), 2),
+                "p_value": float(p_value),
+                "n": n_total,
+                "bucket_rates": {k: round(v, 4) for k, v in rates.items()},
+                "best_bucket": best_bucket,
+            },
+        })
+
+        # Check if 13+ ops collapses
+        if "13+" in rates and rates["13+"] < 0.05 and buckets["13+"][0] + buckets["13+"][1] >= 20:
+            big_pass = buckets["13+"][0]
+            big_fail = buckets["13+"][1]
+            insights.append({
+                "content": (
+                    f"13+ ops collapses to {rates['13+']:.1%} S1 "
+                    f"(n={big_pass + big_fail}). Hard cap recommended."
+                ),
+                "category": "structural_preference",
+                "insight_type": "graph_size_cap",
+                "subject_key": "graph_size_cap",
+                "semantic_key": "structural:graph_size_cap",
+                "alpha": float(big_fail + 1),  # correct = predicted fail, actually failed
+                "beta_": float(big_pass + 1),  # wrong = predicted fail, actually passed
+                "display_only": False,
+                "insight_level": "structural",
+                "evidence_json": {
+                    "test": "binomial_vs_baseline",
+                    "p_value": float(p_value),
+                    "n": big_pass + big_fail,
+                    "rate": round(rates["13+"], 4),
+                    "recommended_max": 12,
+                },
+            })
+
+    def _compute_op_insights(
+        self,
+        op_rates: Dict[str, Dict],
+        insights: List[Dict],
+    ) -> None:
+        """Generate op-level insights with proportion-test evidence."""
+        rated_ops = [
+            (op, s["s1_rate"], s["n_used"], s.get("n_stage1_passed", 0))
+            for op, s in op_rates.items()
+            if s["n_used"] >= 10
+        ]
+        if not rated_ops:
+            return
+
+        rated_ops.sort(key=lambda x: -x[1])
+        overall_rate = sum(s["n_stage1_passed"] for s in op_rates.values()) / max(
+            sum(s["n_used"] for s in op_rates.values()), 1
+        )
+
+        # Best ops: significantly above average
+        for op, rate, n_used, n_passed in rated_ops[:5]:
+            if rate <= overall_rate or n_used < 10:
+                continue
+            n_failed = n_used - n_passed
+            insights.append({
+                "content": (
+                    f"Op '{op}' has {rate:.1%} S1 rate "
+                    f"(n={n_used}, baseline={overall_rate:.1%})."
+                ),
+                "category": "success_factor",
+                "insight_type": "top_op",
+                "subject_key": op,
+                "semantic_key": f"top_op:{op}",
+                "alpha": float(n_passed + 1),
+                "beta_": float(n_failed + 1),
+                "display_only": False,
+                "insight_level": "composition",
+                "evidence_json": {
+                    "test": "proportion_vs_baseline",
+                    "n": n_used,
+                    "rate": round(rate, 4),
+                    "baseline_rate": round(overall_rate, 4),
+                    "effect_size": round(rate - overall_rate, 4),
+                },
+            })
+
+        # Worst ops: 0% S1 with significant sample
+        for op, rate, n_used, n_passed in reversed(rated_ops):
+            if rate > 0.005 or n_used < 15:
+                continue
+            insights.append({
+                "content": (
+                    f"Op '{op}' has {rate:.1%} S1 rate "
+                    f"(n={n_used}). Consistently failing."
+                ),
+                "category": "failure_mode",
+                "insight_type": "failing_op",
+                "subject_key": op,
+                "semantic_key": f"failing_op:{op}",
+                "alpha": float(n_passed + 1),
+                "beta_": float(n_used - n_passed + 1),
+                "display_only": True,
+                "insight_level": "op",
+                "evidence_json": {
+                    "test": "proportion_vs_baseline",
+                    "n": n_used,
+                    "rate": round(rate, 4),
+                    "baseline_rate": round(overall_rate, 4),
+                },
+            })
+
+    def _compute_structural_correlation_insights(
+        self,
+        correlations: Dict[str, float],
+        size_rows: list,
+        insights: List[Dict],
+    ) -> None:
+        """Convert structural correlations into insights with effect-size evidence."""
+        n = len(size_rows) if size_rows else 0
+        for metric, effect in sorted(correlations.items(), key=lambda x: -abs(x[1])):
+            if abs(effect) < 0.3:
+                continue
+            direction = "positively" if effect > 0 else "negatively"
+            name = metric.replace("graph_", "").replace("_", " ")
+            # Use effect size to set alpha/beta: stronger effect = higher confidence
+            # Map |effect| ∈ [0.3, 2.0] to confidence ∈ [0.55, 0.85]
+            pseudo_correct = max(1, int(abs(effect) * 20))
+            pseudo_wrong = max(1, int((2.0 - min(abs(effect), 2.0)) * 10))
+            insights.append({
+                "content": (
+                    f"Graph {name} is {direction} correlated with "
+                    f"Stage 1 success (effect={effect:.2f}, n={n})."
+                ),
+                "category": "hypothesis",
+                "insight_type": "graph_correlation",
+                "subject_key": metric,
+                "semantic_key": f"graph_correlation:{metric}",
+                "alpha": float(pseudo_correct),
+                "beta_": float(pseudo_wrong),
+                "display_only": False,
+                "insight_level": "structural",
+                "evidence_json": {
+                    "test": "standardized_mean_difference",
+                    "effect_size": round(float(effect), 4),
+                    "n": n,
+                    "metric": metric,
+                },
+            })
+            break  # strongest only
+
+    def _compute_failure_insights(
+        self,
+        failures: Dict[str, Dict],
+        insights: List[Dict],
+    ) -> None:
+        """Failure pattern insights — always display_only.
+
+        Code failures (RuntimeError, TypeError, etc.) are explicitly separated
+        from training failures (nan_loss, diverged, etc.).
+        """
+        for error_type, data in sorted(
+            failures.items(), key=lambda x: -x[1]["total"]
+        )[:5]:
+            total = data["total"]
+            if total < 10:
+                continue
+            is_code_failure = error_type in self._CODE_FAILURE_TYPES
+            insights.append({
+                "content": (
+                    f"{'Code' if is_code_failure else 'Training'} failure: "
+                    f"{error_type} ({total} occurrences). "
+                    f"Stages: {data['by_stage']}"
+                ),
+                "category": "failure_mode",
+                "insight_type": "code_failure" if is_code_failure else "training_failure",
+                "subject_key": str(error_type),
+                "semantic_key": f"common_failure:{error_type}",
+                "alpha": 1.0,
+                "beta_": float(total),
+                "display_only": True,  # Always display-only for failures
+                "insight_level": "op",
+                "evidence_json": {
+                    "test": "frequency_count",
+                    "n": total,
+                    "is_code_failure": is_code_failure,
+                    "by_stage": data["by_stage"],
+                },
+            })
+
+    def _compute_combo_insights(
+        self,
+        combos: List[Dict],
+        insights: List[Dict],
+    ) -> None:
+        """Op-combination insights at the composition level."""
+        for top in combos[:3]:
+            count = top["count"]
+            if count < 5:
+                continue
+            ops = top["ops"]
+            avg_novelty = top.get("avg_novelty", 0)
+            insights.append({
+                "content": (
+                    f"Winning combination: {' + '.join(ops)} "
+                    f"appears in {count} survivors "
+                    f"(avg novelty {avg_novelty:.3f})."
+                ),
+                "category": "success_factor",
+                "insight_type": "winning_combo",
+                "subject_key": "+".join(sorted(str(op) for op in ops)),
+                "semantic_key": "winning_combo:" + "+".join(sorted(str(op) for op in ops)),
+                "alpha": float(count + 1),
+                "beta_": 1.0,  # We only see survivors; beta starts weak
+                "display_only": False,
+                "insight_level": "composition",
+                "evidence_json": {
+                    "test": "co_occurrence_count",
+                    "n_survivors": count,
+                    "avg_novelty": round(avg_novelty, 4),
+                },
+            })

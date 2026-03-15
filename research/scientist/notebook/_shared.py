@@ -402,7 +402,14 @@ CREATE TABLE IF NOT EXISTS insights (
     supporting_evidence TEXT,
     status TEXT DEFAULT 'active',  -- 'active', 'confirmed', 'refuted', 'superseded'
     confirmation_strength REAL DEFAULT 0.0,  -- quantitative confidence score
-    independent_validations INTEGER DEFAULT 0  -- count of independent confirmation attempts
+    independent_validations INTEGER DEFAULT 0,  -- count of independent confirmation attempts
+    alpha REAL DEFAULT 1.0,  -- Beta-Binomial posterior: successes + 1
+    beta_ REAL DEFAULT 1.0,  -- Beta-Binomial posterior: failures + 1
+    display_only INTEGER DEFAULT 0,  -- if 1, never used in scoring/grammar
+    insight_level TEXT DEFAULT 'op',  -- 'op', 'structural', 'template', 'composition'
+    n_predictions INTEGER DEFAULT 0,
+    n_correct INTEGER DEFAULT 0,
+    evidence_json TEXT  -- structured statistical evidence (test, p_value, effect_size, etc.)
 );
 
 CREATE TABLE IF NOT EXISTS training_curves (
