@@ -1,19 +1,6 @@
 """Python fallback kernel for relu."""
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from components.base import make_unary_handler
 
-class ReluModule(nn.Module):
-    def forward(self, x):
-        return F.relu(x)
-
-class ComponentHandler:
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return ReluModule()
-
-    def forward(self, inputs, config):
-        x = inputs['x']
-        return {'y': F.relu(x)}
+ComponentHandler = make_unary_handler(lambda x: F.relu(x))

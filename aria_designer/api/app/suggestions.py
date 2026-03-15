@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set
 
-from .component_identity import canonicalize_component_id
+from .component_identity import canonicalize_component_id, component_leaf
 from .database import list_components
 from .intent_parser import compute_insertion_point
 from .research_signals import fetch_leaderboard_top_entries
+
+logger = logging.getLogger(__name__)
 
 
 def _canon_leaf(name: str) -> str:
     """Resolve aliases to canonical leaf name for matching."""
     canonical = canonicalize_component_id(name)
-    return canonical.split("/")[-1] if canonical else str(name or "").strip().lower()
+    return component_leaf(canonical) if canonical else component_leaf(name)
 
 
 def _build_component_indexes(
@@ -38,40 +41,26 @@ def suggest_components(
     prompt: str | None = None,
     research_signals: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Suggest next components based on the current graph state.
-    Returns a list of component manifests to suggest.
-    """
+    """Suggest next components based on the current graph state."""
     nodes = workflow.get("nodes", [])
     edges = workflow.get("edges", [])
-    
-    # Simple heuristic: look at leaf nodes (nodes with no outgoing edges)
-    # and suggest compatible components.
-    
-    node_ids = {n["id"] for n in nodes}
+
     source_ids = {e["source"] for e in edges}
     leaf_nodes = [n for n in nodes if n["id"] not in source_ids]
-    
-    suggestions = []
-    
-    # Get all approved components
+
     all_components = list_components(status="approved")
     by_category, by_id, input_components = _build_component_indexes(all_components)
 
     node_types = [str(n.get("component_type", "")) for n in nodes]
     categories_present = {t.split("/", 1)[0] for t in node_types if "/" in t}
-    graph_size = len(nodes)
-    prompt_lower = (prompt or "").lower()
-    used_component_ids = {
-        str(n.get("component_type", "")).split("/")[-1].lower()
-        for n in nodes
-        if str(n.get("component_type", "")).strip()
-    }
     ctx: Dict[str, Any] = {
-        "graph_size": graph_size,
+        "graph_size": len(nodes),
         "categories_present": categories_present,
-        "prompt_lower": prompt_lower,
-        "used_component_ids": used_component_ids,
+        "prompt_lower": (prompt or "").lower(),
+        "used_component_ids": {
+            str(n.get("component_type", "")).split("/")[-1].lower()
+            for n in nodes if str(n.get("component_type", "")).strip()
+        },
         "all_types": set(),
         "is_stability_prompt": False,
         "missing_norm": False,
@@ -85,37 +74,50 @@ def suggest_components(
         "components_by_id": by_id,
         "insertion_hints_by_type": {},
     }
-        
+
+    suggestions: List[Dict[str, Any]] = []
+
     if not leaf_nodes:
-        # Empty graph? Suggest Input
         for component in input_components:
             suggestions.append(_make_suggestion(
-                component,
-                "Start with an input node.",
-                score=0.98,
-                evidence=["Canvas is empty", "No graph input nodes found"],
-                context=ctx,
+                component, "Start with an input node.",
+                score=0.98, evidence=["Canvas is empty", "No graph input nodes found"], context=ctx,
             ))
-        prompt_boosted = _suggest_from_prompt(by_category, by_id, prompt, context=ctx)
-        if prompt_boosted:
-            suggestions.extend(prompt_boosted)
+        suggestions.extend(_suggest_from_prompt(by_category, by_id, prompt, context=ctx))
         return _dedupe_suggestions(suggestions)[:5]
 
-    prompt_boosted = _suggest_from_prompt(by_category, by_id, prompt, context=ctx)
-    if prompt_boosted:
-        suggestions.extend(prompt_boosted)
-
-    # Direct component name matching from prompt
+    suggestions.extend(_suggest_from_prompt(by_category, by_id, prompt, context=ctx))
     if prompt:
-        name_matched = _suggest_by_name(by_id, prompt, context=ctx)
-        if name_matched:
-            suggestions.extend(name_matched)
+        suggestions.extend(_suggest_by_name(by_id, prompt, context=ctx))
 
-    # Collect all component types for graph-level analysis
     all_types = {str(n.get("component_type", "")).split("/")[-1].lower() for n in nodes}
     ctx["all_types"] = set(all_types)
 
-    # Look at leaf nodes; if the only leaf is graph_output, use its predecessors
+    suggestions.extend(_suggest_for_leaf_nodes(leaf_nodes, nodes, edges, by_category, ctx))
+    suggestions.extend(_suggest_graph_gaps(all_types, nodes, by_category, by_id, prompt, ctx))
+
+    if "io" not in categories_present and len(nodes) > 0:
+        suggestions.extend(_suggest_component_ids(
+            by_id, ["output_head"],
+            "Consider adding an explicit output head for clearer endpoint semantics.",
+            score=0.65, evidence=["Graph has no explicit io/output head node"], context=ctx,
+        ))
+
+    ranked = sorted(_dedupe_suggestions(suggestions), key=lambda s: s.get("score", 0), reverse=True)
+    return ranked[:5]
+
+
+def _suggest_for_leaf_nodes(
+    leaf_nodes: List[Dict[str, Any]],
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    by_category: Dict[str, List[Dict[str, Any]]],
+    ctx: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Suggest components based on leaf node types."""
+    suggestions: List[Dict[str, Any]] = []
+
+    # If the only leaf is graph_output, use its predecessors
     analysis_nodes = leaf_nodes
     if all("output" in str(n.get("component_type", "")) for n in leaf_nodes) and edges:
         target_ids = {e["target"] for e in edges if e["target"] in {n["id"] for n in leaf_nodes}}
@@ -128,54 +130,61 @@ def suggest_components(
         if "input" in comp_type:
             suggestions.extend(_suggest_category(
                 by_category, "linear_algebra", "Add a linear layer.",
-                score=0.72, evidence=[f"Leaf node '{comp_type}' usually feeds projection"], context=ctx
+                score=0.72, evidence=[f"Leaf node '{comp_type}' usually feeds projection"], context=ctx,
             ))
             suggestions.extend(_suggest_category(
                 by_category, "math", "Apply an elementwise operation.",
-                score=0.66, evidence=[f"Leaf node '{comp_type}' benefits from nonlinearity"], context=ctx
+                score=0.66, evidence=[f"Leaf node '{comp_type}' benefits from nonlinearity"], context=ctx,
             ))
-
         elif "linear" in comp_type:
             suggestions.extend(_suggest_category(
                 by_category, "math", "Add an activation function.",
-                score=0.78, evidence=["Linear layer at leaf", "Activation not yet applied downstream"], context=ctx
+                score=0.78, evidence=["Linear layer at leaf", "Activation not yet applied downstream"], context=ctx,
             ))
             suggestions.extend(_suggest_category(
                 by_category, "normalization", "Normalize the output.",
-                score=0.74, evidence=["Linear output can drift in scale"], context=ctx, exclude_ids={"no_norm", "none"}
+                score=0.74, evidence=["Linear output can drift in scale"], context=ctx, exclude_ids={"no_norm", "none"},
             ))
-
         elif "relu" in comp_type or "gelu" in comp_type or "silu" in comp_type:
             suggestions.extend(_suggest_category(
                 by_category, "linear_algebra", "Project to a new dimension.",
-                score=0.70, evidence=["Activation leaf found", "Projection expands modeling capacity"], context=ctx
+                score=0.70, evidence=["Activation leaf found", "Projection expands modeling capacity"], context=ctx,
             ))
             suggestions.extend(_suggest_category(
                 by_category, "blocks", "Add a transformer block.",
-                score=0.57, evidence=["Activation stage can be wrapped in reusable block"], context=ctx
+                score=0.57, evidence=["Activation stage can be wrapped in reusable block"], context=ctx,
             ))
-
         elif "norm" in comp_type:
             suggestions.extend(_suggest_category(
                 by_category, "mixing", "Add attention.",
-                score=0.69, evidence=["Normalized features are ready for mixing"], context=ctx
+                score=0.69, evidence=["Normalized features are ready for mixing"], context=ctx,
             ))
+    return suggestions
 
-    # Graph-level gap analysis: suggest what's missing for a strong architecture
+
+def _suggest_graph_gaps(
+    all_types: Set[str],
+    nodes: List[Dict[str, Any]],
+    by_category: Dict[str, List[Dict[str, Any]]],
+    by_id: Dict[str, Dict[str, Any]],
+    prompt: str | None,
+    ctx: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Suggest missing architectural components (normalization, attention, stability)."""
+    suggestions: List[Dict[str, Any]] = []
     has_norm = any(t in all_types for t in ("layernorm", "layernorm_pre", "rmsnorm", "rmsnorm_pre"))
     has_attn = any(t in all_types for t in ("softmax_attention", "linear_attention", "graph_attention"))
 
-    # Stability/brittleness analysis: always prioritize normalization if missing
     is_stability_prompt = prompt and any(
         kw in prompt.lower() for kw in ("brittle", "gradient", "unstable", "nan", "explod", "stabil", "zero grad")
     )
     ctx["is_stability_prompt"] = bool(is_stability_prompt)
     ctx["missing_norm"] = not has_norm
     ctx["missing_attn"] = not has_attn
+
     if is_stability_prompt and not has_norm:
         suggestions.insert(0, _make_suggestion(
-            by_id.get("rmsnorm") or
-            next((c for c in by_category.get("normalization", [])), {}),
+            by_id.get("rmsnorm") or next((c for c in by_category.get("normalization", [])), {}),
             "Critical: add normalization to prevent exploding logits and zero gradients. "
             "Without normalization before the output head, magnitudes grow unchecked, "
             "causing softmax saturation and training failure.",
@@ -183,42 +192,27 @@ def suggest_components(
             evidence=["Prompt indicates stability concern", "No normalization operators detected"],
             context=ctx,
         ))
-    elif is_stability_prompt and has_norm:
-        # Has norm but still brittle — suggest residual connections
-        if "add" not in all_types:
-            suggestions.insert(0, _make_suggestion(
-                by_id.get("add") or {},
-                "Add residual (skip) connections to stabilize gradient flow. "
-                "Without skip connections, deep graphs suffer from vanishing gradients.",
-                score=0.94,
-                evidence=["Prompt indicates gradient instability", "No residual add operator found"],
-                context=ctx,
-            ))
-
-    if not suggestions:
-        if not has_norm:
-            suggestions.extend(_suggest_category(
-                by_category, "normalization", "Add normalization for training stability.",
-                score=0.76, evidence=["No normalization category detected in graph"], context=ctx, exclude_ids={"no_norm", "none"}
-            ))
-        if not has_attn and len(nodes) > 3:
-            suggestions.extend(_suggest_category(
-                by_category, "mixing", "Add a mixing/attention layer for richer representations.",
-                score=0.72, evidence=["Graph depth suggests representation bottleneck", "No attention-like mixing found"], context=ctx
-            ))
-
-    if "io" not in categories_present and graph_size > 0:
-        suggestions.extend(_suggest_component_ids(
-            by_id,
-            ["output_head"],
-            "Consider adding an explicit output head for clearer endpoint semantics.",
-            score=0.65,
-            evidence=["Graph has no explicit io/output head node"],
+    elif is_stability_prompt and has_norm and "add" not in all_types:
+        suggestions.insert(0, _make_suggestion(
+            by_id.get("add") or {},
+            "Add residual (skip) connections to stabilize gradient flow. "
+            "Without skip connections, deep graphs suffer from vanishing gradients.",
+            score=0.94,
+            evidence=["Prompt indicates gradient instability", "No residual add operator found"],
             context=ctx,
         ))
 
-    ranked = sorted(_dedupe_suggestions(suggestions), key=lambda s: s.get("score", 0), reverse=True)
-    return ranked[:5]
+    if not has_norm:
+        suggestions.extend(_suggest_category(
+            by_category, "normalization", "Add normalization for training stability.",
+            score=0.76, evidence=["No normalization category detected in graph"], context=ctx, exclude_ids={"no_norm", "none"},
+        ))
+    if not has_attn and len(nodes) > 3:
+        suggestions.extend(_suggest_category(
+            by_category, "mixing", "Add a mixing/attention layer for richer representations.",
+            score=0.72, evidence=["Graph depth suggests representation bottleneck", "No attention-like mixing found"], context=ctx,
+        ))
+    return suggestions
 
 
 def _dedupe_suggestions(suggestions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -447,49 +441,69 @@ def _score_adjustment(
     if "normalization" in reason.lower() and (cid in {"no_norm", "none"} or "no_norm" in cid):
         delta -= 0.3
 
-    # Research-driven priors (cross-system signals from research analytics).
-    canon_cid = _canon_leaf(cid)
-    op_priors = research.get("op_priors") if isinstance(research, dict) else None
-    if isinstance(op_priors, list):
-        op_rate = None
-        for row in op_priors:
-            op_name = _canon_leaf(str((row or {}).get("op_name") or ""))
-            if op_name == canon_cid:
-                try:
-                    op_rate = float((row or {}).get("s1_rate"))
-                except Exception:
-                    op_rate = None
-                break
-        if op_rate is not None:
-            # Reward high-S1 operators and penalize low-S1 operators.
-            delta += (op_rate - 0.5) * 0.2
+    delta += _research_score_delta(component, cid, prompt_lower, all_types, research)
 
-    toxic_ops = research.get("toxic_ops") if isinstance(research, dict) else None
+    leaderboard_component_sets, leaderboard_total_entries = _get_leaderboard_component_sets(ctx)
+    if leaderboard_component_sets:
+        lb_delta, _ = _leaderboard_boost(component, leaderboard_component_sets, leaderboard_total_entries)
+        delta += lb_delta
+
+    return delta
+
+
+def _research_score_delta(
+    component: Dict[str, Any],
+    cid: str,
+    prompt_lower: str,
+    all_types: Set[str],
+    research: Dict[str, Any],
+) -> float:
+    """Score adjustment from research analytics signals (op priors, pairs, failures)."""
+    if not isinstance(research, dict) or not research:
+        return 0.0
+
+    delta = 0.0
+    canon_cid = _canon_leaf(cid)
+
+    # Op success rate priors
+    op_priors = research.get("op_priors")
+    if isinstance(op_priors, list):
+        for row in op_priors:
+            if _canon_leaf(str((row or {}).get("op_name") or "")) == canon_cid:
+                try:
+                    delta += (float((row or {}).get("s1_rate")) - 0.5) * 0.2
+                except Exception:
+                    pass
+                break
+
+    # Toxic ops penalty
+    toxic_ops = research.get("toxic_ops")
     if isinstance(toxic_ops, list):
-        toxic_set = {_canon_leaf(str(x)) for x in toxic_ops}
-        if canon_cid in toxic_set:
+        if canon_cid in {_canon_leaf(str(x)) for x in toxic_ops}:
             delta -= 0.12
 
-    comp_techniques = research.get("compression_techniques") if isinstance(research, dict) else None
+    # Compression technique boost
+    comp_techniques = research.get("compression_techniques")
     if isinstance(comp_techniques, list) and any(tok in prompt_lower for tok in ("compress", "flop", "latency", "efficien")):
         low_rank_like = {"low_rank", "bottleneck", "grouped_linear", "structured_sparse", "shared_basis"}
         if canon_cid in low_rank_like and any(canon_cid in str(t).lower() for t in comp_techniques):
             delta += 0.06
 
-    insights = research.get("insights") if isinstance(research, dict) else None
+    # Insight-driven stability boost
+    insights = research.get("insights")
     if isinstance(insights, list):
         stability_keywords = ("stability", "exploding", "nan", "gradient")
         if any(tok in prompt_lower for tok in stability_keywords):
             for ins in insights[:40]:
-                category = str((ins or {}).get("category") or "").lower()
+                cat = str((ins or {}).get("category") or "").lower()
                 content = str((ins or {}).get("content") or "").lower()
-                if category in {"failure_mode", "success_factor"} and any(k in content for k in stability_keywords):
-                    if category == "success_factor" and str(component.get("category", "")).lower() == "normalization":
+                if cat in {"failure_mode", "success_factor"} and any(k in content for k in stability_keywords):
+                    if cat == "success_factor" and str(component.get("category", "")).lower() == "normalization":
                         delta += 0.02
                     break
 
     # Op-pair priors: boost components that pair well with existing graph ops
-    op_pair_priors = research.get("op_pair_priors") if isinstance(research, dict) else None
+    op_pair_priors = research.get("op_pair_priors")
     if isinstance(op_pair_priors, list) and all_types:
         pair_boost = 0.0
         pair_count = 0
@@ -498,39 +512,28 @@ def _score_adjustment(
                 continue
             op_a = _canon_leaf(str(pair.get("op_a") or ""))
             op_b = _canon_leaf(str(pair.get("op_b") or ""))
-            rate = pair.get("success_rate")
-            if rate is None:
-                continue
             try:
-                rate = float(rate)
+                rate = float(pair.get("success_rate"))
             except (TypeError, ValueError):
                 continue
-            # Check if this candidate pairs with any existing op
             if (op_a == canon_cid and op_b in all_types) or (op_b == canon_cid and op_a in all_types):
                 pair_boost += (rate - 0.5) * 0.15
                 pair_count += 1
         if pair_count > 0:
             delta += min(0.08, pair_boost / pair_count)
 
-    # Failure risk signatures: penalize components involved in toxic patterns
-    failure_sigs = research.get("failure_risk_signatures") if isinstance(research, dict) else None
+    # Failure risk signatures
+    failure_sigs = research.get("failure_risk_signatures")
     if isinstance(failure_sigs, list):
         for sig in failure_sigs:
             if not isinstance(sig, dict):
                 continue
-            pattern = str(sig.get("pattern") or "")
-            if canon_cid in pattern.lower():
+            if canon_cid in str(sig.get("pattern") or "").lower():
                 try:
-                    penalty = float(sig.get("penalty") or 0.0)
+                    delta -= min(0.1, float(sig.get("penalty") or 0.0) * 0.1)
                 except (TypeError, ValueError):
-                    penalty = 0.0
-                delta -= min(0.1, penalty * 0.1)
+                    pass
                 break
-
-    leaderboard_component_sets, leaderboard_total_entries = _get_leaderboard_component_sets(ctx)
-    if leaderboard_component_sets:
-        lb_delta, _ = _leaderboard_boost(component, leaderboard_component_sets, leaderboard_total_entries)
-        delta += lb_delta
 
     return delta
 
@@ -579,6 +582,7 @@ def _extract_component_ids_from_entry(entry: Dict[str, Any]) -> Set[str]:
         try:
             graph = json.loads(graph_json)
         except Exception:
+            logger.debug("Failed to parse graph_json in leaderboard entry", exc_info=True)
             graph = None
         if isinstance(graph, dict):
             nodes = graph.get("nodes")

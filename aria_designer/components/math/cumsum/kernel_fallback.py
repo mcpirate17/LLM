@@ -1,18 +1,4 @@
-"""Auto-generated Python fallback kernel for cumsum."""
-import torch
-import torch.nn as nn
+"""Python fallback kernel for cumsum (identity stub)."""
+from components.base import make_unary_handler
 
-
-class ComponentHandler:
-    """Fallback handler for cumsum."""
-
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return nn.Identity()
-
-    def forward(self, inputs, config):
-        x = inputs["x"]
-        # TODO: implement cumsum
-        return {"y": x}
+ComponentHandler = make_unary_handler(lambda x: x)

@@ -1,19 +1,5 @@
 """Python fallback kernel for exp."""
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from components.base import make_unary_handler
 
-class ExpModule(nn.Module):
-    def forward(self, x):
-        return torch.exp(torch.clamp(x, -20, 20))
-
-class ComponentHandler:
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return ExpModule()
-
-    def forward(self, inputs, config):
-        x = inputs['x']
-        return {'y': torch.exp(torch.clamp(x, -20, 20))}
+ComponentHandler = make_unary_handler(lambda x: torch.exp(torch.clamp(x, -20, 20)))

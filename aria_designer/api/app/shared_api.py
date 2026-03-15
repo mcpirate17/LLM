@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import threading
 import time as _time_mod
@@ -130,6 +129,7 @@ def _store_run(run_id: str, data: Dict[str, Any]) -> None:
 
 def _update_run(run_id: str, updates: Dict[str, Any]) -> None:
     with _EVAL_RUNS_LOCK:
+        _evict_old_runs()
         if run_id in _EVAL_RUNS:
             _EVAL_RUNS[run_id].update(updates)
             _EVAL_RUNS[run_id]["_updated_ts"] = _time_mod.time()
@@ -137,6 +137,7 @@ def _update_run(run_id: str, updates: Dict[str, Any]) -> None:
 
 def _get_run(run_id: str) -> Optional[Dict[str, Any]]:
     with _EVAL_RUNS_LOCK:
+        _evict_old_runs()
         return _EVAL_RUNS.get(run_id)
 
 
@@ -293,7 +294,7 @@ def _sync_lineage_to_research(payload: Dict[str, Any]) -> bool:
             logger.warning("Lineage sync failed (%s): %s", resp.status_code, resp.text[:200])
             return False
         return True
-    except Exception as exc:
+    except (requests.RequestException, OSError) as exc:
         logger.warning("Lineage sync unavailable: %s", exc)
         return False
 
@@ -318,7 +319,7 @@ def _auto_promote_workflow_to_research(workflow: Dict[str, Any]) -> Optional[Dic
             logger.warning("Auto-promotion returned no result_id: %s", data)
             return _auto_promote_workflow_locally(workflow)
         return data
-    except Exception as exc:
+    except (requests.RequestException, OSError) as exc:
         logger.warning("Auto-promotion unavailable: %s", exc)
     return _auto_promote_workflow_locally(workflow)
 
@@ -341,6 +342,7 @@ def _convert_workflow_to_graph(
     try:
         model_dim = int((workflow.get("metadata") or {}).get("model_dim") or 256)
     except Exception:
+        logger.debug("Failed to parse model_dim from workflow metadata, defaulting to 256", exc_info=True)
         model_dim = 256
 
     try:
@@ -357,11 +359,13 @@ def _convert_workflow_to_graph(
     try:
         loss_ratio = float(loss_ratio) if loss_ratio is not None else 1.0
     except Exception:
+        logger.debug("Failed to parse loss_ratio from workflow metadata, defaulting to 1.0", exc_info=True)
         loss_ratio = 1.0
     novelty_score = meta.get("novelty_score")
     try:
         novelty_score = float(novelty_score) if novelty_score is not None else None
     except Exception:
+        logger.debug("Failed to parse novelty_score from workflow metadata", exc_info=True)
         novelty_score = None
 
     # Compute param_count from the graph
@@ -482,7 +486,7 @@ def _auto_promote_workflow_locally(workflow: Dict[str, Any]) -> Optional[Dict[st
         try:
             nb.close()
         except Exception:
-            pass
+            logger.debug("Failed to close notebook connection", exc_info=True)
 
 
 # ── Workflow Semantic Warnings ────────────────────────────────────────
@@ -502,6 +506,7 @@ def _collect_workflow_semantic_warnings(workflow_json: Dict[str, Any]) -> List[D
         try:
             cap = bridge_component_capability(component_type)
         except Exception:
+            logger.debug("Failed to get capability for component %s", component_type, exc_info=True)
             continue
         if not cap.get("bridge_supported"):
             continue
@@ -524,75 +529,6 @@ def _collect_workflow_semantic_warnings(workflow_json: Dict[str, Any]) -> List[D
                 }
             )
     return warnings
-
-
-# ── Original Graph Fetch ─────────────────────────────────────────────
-
-
-def _try_fetch_original_graph(
-    metadata: dict[str, Any], model_dim: int,
-) -> tuple[Any, dict[str, str]] | None:
-    """Try to fetch the original ComputationGraph from research notebook.
-
-    When a workflow was imported from research (has result_id in metadata),
-    deserialize the original graph_json directly, bypassing the lossy
-    workflow_to_graph() round-trip.
-
-    Returns ``(graph, cg_to_aria_map)`` on success, ``None`` on failure.
-    """
-    result_id = metadata.get("result_id")
-    if not result_id:
-        return None
-
-    db_path = _RESEARCH_ROOT / "lab_notebook.db"
-    if not db_path.exists():
-        return None
-
-    try:
-        from research.scientist.notebook import LabNotebook
-        from research.synthesis.serializer import graph_from_json
-
-        nb = LabNotebook(str(db_path))
-        detail = nb.get_program_detail(str(result_id))
-        if detail is None:
-            return None
-
-        graph_json_str = detail.get("graph_json")
-        if not graph_json_str:
-            return None
-
-        graph = graph_from_json(graph_json_str)
-
-        # Override model_dim to match the eval budget
-        graph.model_dim = model_dim
-
-        # Validate fingerprint if available
-        expected_fp = metadata.get("graph_fingerprint")
-        if expected_fp and graph.fingerprint() != expected_fp:
-            logger.info(
-                "Workflow has been modified (fingerprint changed from %s to %s). "
-                "Bypassing original graph load.",
-                graph.fingerprint(), expected_fp,
-            )
-            return None
-
-        # Build cg_to_aria map by parsing workflow node IDs.
-        # The importer creates IDs like "op_{cg_id}_{op_name}" and "input_{cg_id}".
-        # We don't have the workflow nodes here, so build the canonical mapping
-        # from the graph's topo order using the same convention as graph_to_workflow().
-        cg_to_aria: dict[str, str] = {}
-        for cg_id in graph.topological_order():
-            node = graph.nodes[cg_id]
-            if node.is_input:
-                cg_to_aria[cg_id] = f"input_{cg_id}"
-            else:
-                cg_to_aria[cg_id] = f"op_{cg_id}_{node.op_name}"
-
-        return (graph, cg_to_aria)
-
-    except Exception:
-        logger.debug("Failed to fetch original graph for result_id=%s", result_id, exc_info=True)
-        return None
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -659,8 +595,6 @@ __all__ = [
     "_auto_promote_workflow_locally",
     # Semantic warnings
     "_collect_workflow_semantic_warnings",
-    # Original graph fetch
-    "_try_fetch_original_graph",
     # Re-exports from research
     "evaluate_perf_budget_gate",
     "build_duplicate_work_report",

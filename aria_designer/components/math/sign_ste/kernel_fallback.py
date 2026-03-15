@@ -1,18 +1,4 @@
-"""Auto-generated Python fallback kernel for sign_ste."""
-import torch
-import torch.nn as nn
+"""Python fallback kernel for sign_ste (identity stub)."""
+from components.base import make_unary_handler
 
-
-class ComponentHandler:
-    """Fallback handler for sign_ste."""
-
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        return nn.Identity()
-
-    def forward(self, inputs, config):
-        x = inputs["x"]
-        # TODO: implement sign_ste
-        return {"y": x}
+ComponentHandler = make_unary_handler(lambda x: x)
