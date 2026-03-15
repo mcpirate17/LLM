@@ -4,10 +4,18 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from flask import send_from_directory
+from flask import jsonify, request, send_from_directory
+from ..notebook import LabNotebook
 from ..persona import get_aria
 from ..code_agent import _spawn_code_agent_task
-from ._chat import run_local_chat_agent
+from ._chat import code_agent_task_snapshot, run_local_chat_agent
+from ._designer import (
+    designer_idle_state,
+    designer_service_status,
+    designer_touch_activity,
+    start_designer_services,
+    stop_designer_services,
+)
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)

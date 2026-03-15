@@ -1,0 +1,26 @@
+[
+  {
+    "workflow_id": "wf_adaptive_lane_moe_v1",
+    "name": "Adaptive Lane Split V1 - Fast GELU vs MoE",
+    "path": "/home/tim/Projects/LLM/aria_designer/workflows/generated/wf_adaptive_lane_moe_v1.json",
+    "variant": "fast_gelu_vs_moe"
+  },
+  {
+    "workflow_id": "wf_adaptive_lane_moe_v2",
+    "name": "Adaptive Lane Split V2 - Ultrametric Routed-MoE",
+    "path": "/home/tim/Projects/LLM/aria_designer/workflows/generated/wf_adaptive_lane_moe_v2.json",
+    "variant": "ultrametric_then_moe"
+  },
+  {
+    "workflow_id": "wf_adaptive_lane_moe_v3",
+    "name": "Adaptive Lane Split V3 - Routed-MoE with Dense Refinement",
+    "path": "/home/tim/Projects/LLM/aria_designer/workflows/generated/wf_adaptive_lane_moe_v3.json",
+    "variant": "moe_then_dense_refine"
+  },
+  {
+    "workflow_id": "wf_adaptive_lane_moe_v4",
+    "name": "Adaptive Lane Split V4 - Ultrametric Routed-MoE Bottleneck",
+    "path": "/home/tim/Projects/LLM/aria_designer/workflows/generated/wf_adaptive_lane_moe_v4.json",
+    "variant": "ultrametric_moe_bottleneck"
+  }
+]

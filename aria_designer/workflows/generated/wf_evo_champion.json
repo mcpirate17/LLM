@@ -1,0 +1,345 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "evo_r2_add_proj_up_before_moe",
+  "name": "Evolved (add_norm_before_combine) from Adaptive Lane V6 - Load-Balanced MoE + Residual",
+  "metadata": {
+    "family": "adaptive_lane_split",
+    "source_fingerprint": "23a9c75ef7ee1da6",
+    "variant": "balanced_moe_residual",
+    "adaptation_notes": "Based on top routing graph: token_type\u2192lane_router\u2192relu\u2192load_balance\u2192add\u2192rmsnorm\u2192rwkv\u2192add. Added load_balance_loss to prevent expert collapse.",
+    "mutation": "add_norm_before_combine"
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "component_type": "io/input",
+      "params": {
+        "dim": 256,
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "norm_pre",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 100
+        }
+      }
+    },
+    {
+      "id": "difficulty",
+      "component_type": "routing/difficulty_scorer",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 200
+        }
+      }
+    },
+    {
+      "id": "lane_router",
+      "component_type": "routing/lane_router",
+      "params": {
+        "num_lanes": 2
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 300
+        }
+      }
+    },
+    {
+      "id": "dispatch_fast",
+      "component_type": "structural/conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 0
+      },
+      "ui_meta": {
+        "position": {
+          "x": 180,
+          "y": 420
+        }
+      }
+    },
+    {
+      "id": "dispatch_hard",
+      "component_type": "structural/conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 1
+      },
+      "ui_meta": {
+        "position": {
+          "x": 700,
+          "y": 420
+        }
+      }
+    },
+    {
+      "id": "fast_proj",
+      "component_type": "linear_algebra/linear_proj",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 180,
+          "y": 540
+        }
+      }
+    },
+    {
+      "id": "fast_act",
+      "component_type": "math/relu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 180,
+          "y": 640
+        }
+      }
+    },
+    {
+      "id": "hard_moe",
+      "component_type": "channel_mixing/moe_topk",
+      "params": {
+        "top_k": 2,
+        "num_experts": 4
+      },
+      "ui_meta": {
+        "position": {
+          "x": 700,
+          "y": 540
+        }
+      }
+    },
+    {
+      "id": "hard_norm",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 700,
+          "y": 640
+        }
+      }
+    },
+    {
+      "id": "hard_act",
+      "component_type": "math/silu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 700,
+          "y": 740
+        }
+      }
+    },
+    {
+      "id": "evo_norm_2535",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 800
+        }
+      }
+    },
+    {
+      "id": "combine",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 860
+        }
+      }
+    },
+    {
+      "id": "residual",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 960
+        }
+      }
+    },
+    {
+      "id": "compress",
+      "component_type": "linear_algebra/linear_proj_down",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 1060
+        }
+      }
+    },
+    {
+      "id": "output",
+      "component_type": "io/output_head",
+      "params": {
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 1160
+        }
+      }
+    },
+    {
+      "id": "proj_up_evo",
+      "component_type": "linear_algebra/linear_proj_up",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 700,
+          "y": 480
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "input",
+      "source_port": "y",
+      "target": "norm_pre",
+      "target_port": "x"
+    },
+    {
+      "id": "e1",
+      "source": "norm_pre",
+      "source_port": "y",
+      "target": "difficulty",
+      "target_port": "x"
+    },
+    {
+      "id": "e2",
+      "source": "difficulty",
+      "source_port": "y",
+      "target": "lane_router",
+      "target_port": "x"
+    },
+    {
+      "id": "e3",
+      "source": "lane_router",
+      "source_port": "y",
+      "target": "dispatch_fast",
+      "target_port": "x"
+    },
+    {
+      "id": "e4",
+      "source": "lane_router",
+      "source_port": "y",
+      "target": "dispatch_hard",
+      "target_port": "x"
+    },
+    {
+      "id": "e5",
+      "source": "dispatch_fast",
+      "source_port": "y",
+      "target": "fast_proj",
+      "target_port": "x"
+    },
+    {
+      "id": "e6",
+      "source": "fast_proj",
+      "source_port": "y",
+      "target": "fast_act",
+      "target_port": "x"
+    },
+    {
+      "id": "e7",
+      "source": "proj_up_evo",
+      "source_port": "y",
+      "target": "hard_moe",
+      "target_port": "x"
+    },
+    {
+      "id": "e8",
+      "source": "hard_moe",
+      "source_port": "y",
+      "target": "hard_norm",
+      "target_port": "x"
+    },
+    {
+      "id": "e9",
+      "source": "hard_norm",
+      "source_port": "y",
+      "target": "hard_act",
+      "target_port": "x"
+    },
+    {
+      "id": "e10",
+      "source": "evo_norm_2535",
+      "source_port": "y",
+      "target": "combine",
+      "target_port": "a"
+    },
+    {
+      "id": "e11",
+      "source": "hard_act",
+      "source_port": "y",
+      "target": "combine",
+      "target_port": "b"
+    },
+    {
+      "id": "e12",
+      "source": "combine",
+      "source_port": "y",
+      "target": "residual",
+      "target_port": "a"
+    },
+    {
+      "id": "e_skip",
+      "source": "input",
+      "source_port": "y",
+      "target": "residual",
+      "target_port": "b"
+    },
+    {
+      "id": "e13",
+      "source": "residual",
+      "source_port": "y",
+      "target": "compress",
+      "target_port": "x"
+    },
+    {
+      "id": "e14",
+      "source": "compress",
+      "source_port": "y",
+      "target": "output",
+      "target_port": "x"
+    },
+    {
+      "id": "e_evo_evo_norm_2535",
+      "source": "fast_act",
+      "source_port": "y",
+      "target": "evo_norm_2535",
+      "target_port": "x"
+    },
+    {
+      "id": "e_proj_up_evo",
+      "source": "dispatch_hard",
+      "source_port": "y",
+      "target": "proj_up_evo",
+      "target_port": "x"
+    }
+  ]
+}

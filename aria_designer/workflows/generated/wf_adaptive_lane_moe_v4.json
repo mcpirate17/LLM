@@ -1,0 +1,270 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "wf_adaptive_lane_moe_v4",
+  "name": "Adaptive Lane Split V4 - Ultrametric Routed-MoE Bottleneck",
+  "metadata": {
+    "family": "adaptive_lane_split",
+    "requested_pattern": "difficulty_split_fast_vs_routed_moe",
+    "source_fingerprint": "23a9c75ef7ee1da6",
+    "source_note": "Inspired by imported survivor fingerprint 23a9c75ef7ee1da6; mapped to approved Aria Designer components.",
+    "variant": "ultrametric_moe_bottleneck"
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "component_type": "io/input",
+      "params": {
+        "source_type": "synthetic",
+        "synthetic_pattern": "gaussian",
+        "batch_size": 2,
+        "seq_len": 64,
+        "seed": 42,
+        "dim": 256,
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "difficulty",
+      "component_type": "routing/difficulty_scorer",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 120
+        }
+      }
+    },
+    {
+      "id": "lane_router",
+      "component_type": "routing/lane_router",
+      "params": {
+        "num_lanes": 2,
+        "routing_mode": "threshold"
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 240
+        }
+      }
+    },
+    {
+      "id": "dispatch_fast",
+      "component_type": "structural/conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 0
+      },
+      "ui_meta": {
+        "position": {
+          "x": 220,
+          "y": 380
+        }
+      }
+    },
+    {
+      "id": "dispatch_hard",
+      "component_type": "structural/conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 1
+      },
+      "ui_meta": {
+        "position": {
+          "x": 660,
+          "y": 380
+        }
+      }
+    },
+    {
+      "id": "fast_gelu",
+      "component_type": "math/gelu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 220,
+          "y": 500
+        }
+      }
+    },
+    {
+      "id": "hard_ultra",
+      "component_type": "math_space/ultrametric_attention",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 660,
+          "y": 500
+        }
+      }
+    },
+    {
+      "id": "hard_moe",
+      "component_type": "channel_mixing/moe_topk",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 660,
+          "y": 620
+        }
+      }
+    },
+    {
+      "id": "hard_bottleneck",
+      "component_type": "math_space/bottleneck_proj",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 660,
+          "y": 740
+        }
+      }
+    },
+    {
+      "id": "hard_gelu",
+      "component_type": "math/gelu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 660,
+          "y": 860
+        }
+      }
+    },
+    {
+      "id": "combine",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 860
+        }
+      }
+    },
+    {
+      "id": "compress",
+      "component_type": "linear_algebra/linear_proj_down",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 980
+        }
+      }
+    },
+    {
+      "id": "output",
+      "component_type": "io/output_head",
+      "params": {
+        "vocab_size": 32000,
+        "tie_weights": true
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 1100
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_input_y_difficulty_x",
+      "source": "input",
+      "source_port": "y",
+      "target": "difficulty",
+      "target_port": "x"
+    },
+    {
+      "id": "e_difficulty_y_lane_router_x",
+      "source": "difficulty",
+      "source_port": "y",
+      "target": "lane_router",
+      "target_port": "x"
+    },
+    {
+      "id": "e_lane_router_y_dispatch_fast_x",
+      "source": "lane_router",
+      "source_port": "y",
+      "target": "dispatch_fast",
+      "target_port": "x"
+    },
+    {
+      "id": "e_lane_router_y_dispatch_hard_x",
+      "source": "lane_router",
+      "source_port": "y",
+      "target": "dispatch_hard",
+      "target_port": "x"
+    },
+    {
+      "id": "e_dispatch_fast_y_fast_gelu_x",
+      "source": "dispatch_fast",
+      "source_port": "y",
+      "target": "fast_gelu",
+      "target_port": "x"
+    },
+    {
+      "id": "e_dispatch_hard_y_hard_ultra_x",
+      "source": "dispatch_hard",
+      "source_port": "y",
+      "target": "hard_ultra",
+      "target_port": "x"
+    },
+    {
+      "id": "e_hard_ultra_y_hard_moe_x",
+      "source": "hard_ultra",
+      "source_port": "y",
+      "target": "hard_moe",
+      "target_port": "x"
+    },
+    {
+      "id": "e_hard_moe_y_hard_bottleneck_x",
+      "source": "hard_moe",
+      "source_port": "y",
+      "target": "hard_bottleneck",
+      "target_port": "x"
+    },
+    {
+      "id": "e_hard_bottleneck_y_hard_gelu_x",
+      "source": "hard_bottleneck",
+      "source_port": "y",
+      "target": "hard_gelu",
+      "target_port": "x"
+    },
+    {
+      "id": "e_fast_gelu_y_combine_a",
+      "source": "fast_gelu",
+      "source_port": "y",
+      "target": "combine",
+      "target_port": "a"
+    },
+    {
+      "id": "e_hard_gelu_y_combine_b",
+      "source": "hard_gelu",
+      "source_port": "y",
+      "target": "combine",
+      "target_port": "b"
+    },
+    {
+      "id": "e_combine_y_compress_x",
+      "source": "combine",
+      "source_port": "y",
+      "target": "compress",
+      "target_port": "x"
+    },
+    {
+      "id": "e_compress_y_output_x",
+      "source": "compress",
+      "source_port": "y",
+      "target": "output",
+      "target_port": "x"
+    }
+  ]
+}

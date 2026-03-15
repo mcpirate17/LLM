@@ -1,0 +1,98 @@
+{
+  "generated_at": "2026-03-14T19:07:01.510079+00:00",
+  "db_path": "/home/tim/Projects/LLM/aria_designer/api/aria_designer.db",
+  "scope": "imported",
+  "limit": 5,
+  "ordered": false,
+  "apply_workflow_metadata": false,
+  "summary": {
+    "attempted": 5,
+    "rescored": 4,
+    "avg_old_bridge_novelty": 0.19088721497393235,
+    "avg_new_bridge_novelty": 0.28090005869993734,
+    "avg_delta": 0.09001284372600499,
+    "median_delta": 0.0698193684220314,
+    "max_delta": 0.20044844972263112,
+    "min_delta": 0.01996418833732605
+  },
+  "rescored": [
+    {
+      "workflow_id": "imported_92bf394f-61c",
+      "name": "Imported 92bf394f-61c",
+      "author": "import:research",
+      "version": 7,
+      "result_id": "92bf394f-61c",
+      "source_novelty": 0.7791585326194763,
+      "old_bridge_novelty": 0.0249390243902439,
+      "new_bridge_novelty": 0.22538747411287502,
+      "delta_new_minus_old": 0.20044844972263112,
+      "behavioral_novelty": 0.520482626637056,
+      "structural_novelty": 0.041565040650406504,
+      "most_similar_to": "transformer",
+      "graph_fingerprint": "8c8521b20f951ed8",
+      "model_dim": 256,
+      "n_ops": 1,
+      "updated_metadata": false
+    },
+    {
+      "workflow_id": "imported_1df90e93-4b0",
+      "name": "Imported 1df90e93-4b0",
+      "author": "import:research",
+      "version": 8,
+      "result_id": "1df90e93-4b0",
+      "source_novelty": 0.8001494407653809,
+      "old_bridge_novelty": 0.2142987847328186,
+      "new_bridge_novelty": 0.3025354743003845,
+      "delta_new_minus_old": 0.08823668956756592,
+      "behavioral_novelty": 0.5526054364126015,
+      "structural_novelty": 0.3571646213531494,
+      "most_similar_to": "transformer",
+      "graph_fingerprint": "23a9c75ef7ee1da6",
+      "model_dim": 256,
+      "n_ops": 3,
+      "updated_metadata": false
+    },
+    {
+      "workflow_id": "imported_e05a25b9-5ab",
+      "name": "Imported e05a25b9-5ab",
+      "author": "import:research",
+      "version": 1,
+      "result_id": "e05a25b9-5ab",
+      "source_novelty": 0.8302652835845947,
+      "old_bridge_novelty": 0.24709759652614594,
+      "new_bridge_novelty": 0.2984996438026428,
+      "delta_new_minus_old": 0.05140204727649689,
+      "behavioral_novelty": 0.5270925814370223,
+      "structural_novelty": 0.4118293225765228,
+      "most_similar_to": "transformer",
+      "graph_fingerprint": "ae7c3c76c783f0f1",
+      "model_dim": 256,
+      "n_ops": 6,
+      "updated_metadata": false
+    },
+    {
+      "workflow_id": "imported_a3ed3a13-003",
+      "name": "Imported a3ed3a13-003",
+      "author": "import:research",
+      "version": 1,
+      "result_id": "a3ed3a13-003",
+      "source_novelty": 0.8453232049942017,
+      "old_bridge_novelty": 0.277213454246521,
+      "new_bridge_novelty": 0.29717764258384705,
+      "delta_new_minus_old": 0.01996418833732605,
+      "behavioral_novelty": 0.5158884892042255,
+      "structural_novelty": 0.4620223939418793,
+      "most_similar_to": "transformer",
+      "graph_fingerprint": "dc39390e208305b8",
+      "model_dim": 256,
+      "n_ops": 8,
+      "updated_metadata": false
+    }
+  ],
+  "errors": [
+    {
+      "workflow_id": "imported_ecc9d263-5a8",
+      "reason": "Graph has cycles or disconnected components. Remaining nodes: ['node_2', 'node_3', 'node_4', 'node_5', 'node_6', 'node_7'] (First error: Unknown op: fourier_mixing)"
+    }
+  ]
+}

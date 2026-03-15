@@ -1,0 +1,379 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "wf_predator_v1",
+  "name": "Predator V1 \u2014 Sparse Routed + Compression Gate + RWKV",
+  "metadata": {
+    "family": "predator",
+    "variant": "sparse_routed_rwkv"
+  },
+  "nodes": [
+    {
+      "id": "in",
+      "component_type": "io/input",
+      "params": {
+        "dim": 256,
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "norm0",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 80
+        }
+      }
+    },
+    {
+      "id": "diff",
+      "component_type": "routing/difficulty_scorer",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 160
+        }
+      }
+    },
+    {
+      "id": "router",
+      "component_type": "routing/lane_router",
+      "params": {
+        "num_lanes": 2
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 240
+        }
+      }
+    },
+    {
+      "id": "d_fast",
+      "component_type": "structural/conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 0
+      },
+      "ui_meta": {
+        "position": {
+          "x": 140,
+          "y": 340
+        }
+      }
+    },
+    {
+      "id": "d_hard",
+      "component_type": "structural/conditional_dispatch",
+      "params": {
+        "num_lanes": 2,
+        "lane": 1
+      },
+      "ui_meta": {
+        "position": {
+          "x": 740,
+          "y": 340
+        }
+      }
+    },
+    {
+      "id": "f_up",
+      "component_type": "linear_algebra/linear_proj_up",
+      "params": {
+        "out_dim": 512
+      },
+      "ui_meta": {
+        "position": {
+          "x": 140,
+          "y": 440
+        }
+      }
+    },
+    {
+      "id": "f_sparse",
+      "component_type": "linear_algebra/nm_sparse_linear",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 140,
+          "y": 520
+        }
+      }
+    },
+    {
+      "id": "f_act",
+      "component_type": "math/silu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 140,
+          "y": 600
+        }
+      }
+    },
+    {
+      "id": "f_down",
+      "component_type": "linear_algebra/linear_proj_down",
+      "params": {
+        "out_dim": 256
+      },
+      "ui_meta": {
+        "position": {
+          "x": 140,
+          "y": 680
+        }
+      }
+    },
+    {
+      "id": "h_rwkv",
+      "component_type": "mixing/rwkv_time_mixing",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 740,
+          "y": 440
+        }
+      }
+    },
+    {
+      "id": "h_norm",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 740,
+          "y": 520
+        }
+      }
+    },
+    {
+      "id": "h_sparse",
+      "component_type": "linear_algebra/nm_sparse_linear",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 740,
+          "y": 600
+        }
+      }
+    },
+    {
+      "id": "h_act",
+      "component_type": "math/silu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 740,
+          "y": 680
+        }
+      }
+    },
+    {
+      "id": "merge",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 780
+        }
+      }
+    },
+    {
+      "id": "norm1",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 860
+        }
+      }
+    },
+    {
+      "id": "compress",
+      "component_type": "math_space/bottleneck_proj",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 940
+        }
+      }
+    },
+    {
+      "id": "residual",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 1020
+        }
+      }
+    },
+    {
+      "id": "out",
+      "component_type": "io/output_head",
+      "params": {
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 1100
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "in",
+      "source_port": "y",
+      "target": "norm0",
+      "target_port": "x"
+    },
+    {
+      "id": "e1",
+      "source": "norm0",
+      "source_port": "y",
+      "target": "diff",
+      "target_port": "x"
+    },
+    {
+      "id": "e2",
+      "source": "diff",
+      "source_port": "y",
+      "target": "router",
+      "target_port": "x"
+    },
+    {
+      "id": "e3",
+      "source": "router",
+      "source_port": "y",
+      "target": "d_fast",
+      "target_port": "x"
+    },
+    {
+      "id": "e4",
+      "source": "router",
+      "source_port": "y",
+      "target": "d_hard",
+      "target_port": "x"
+    },
+    {
+      "id": "e5",
+      "source": "d_fast",
+      "source_port": "y",
+      "target": "f_up",
+      "target_port": "x"
+    },
+    {
+      "id": "e6",
+      "source": "f_up",
+      "source_port": "y",
+      "target": "f_sparse",
+      "target_port": "x"
+    },
+    {
+      "id": "e7",
+      "source": "f_sparse",
+      "source_port": "y",
+      "target": "f_act",
+      "target_port": "x"
+    },
+    {
+      "id": "e8",
+      "source": "f_act",
+      "source_port": "y",
+      "target": "f_down",
+      "target_port": "x"
+    },
+    {
+      "id": "e9",
+      "source": "d_hard",
+      "source_port": "y",
+      "target": "h_rwkv",
+      "target_port": "x"
+    },
+    {
+      "id": "e10",
+      "source": "h_rwkv",
+      "source_port": "y",
+      "target": "h_norm",
+      "target_port": "x"
+    },
+    {
+      "id": "e11",
+      "source": "h_norm",
+      "source_port": "y",
+      "target": "h_sparse",
+      "target_port": "x"
+    },
+    {
+      "id": "e12",
+      "source": "h_sparse",
+      "source_port": "y",
+      "target": "h_act",
+      "target_port": "x"
+    },
+    {
+      "id": "e13",
+      "source": "f_down",
+      "source_port": "y",
+      "target": "merge",
+      "target_port": "a"
+    },
+    {
+      "id": "e14",
+      "source": "h_act",
+      "source_port": "y",
+      "target": "merge",
+      "target_port": "b"
+    },
+    {
+      "id": "e15",
+      "source": "merge",
+      "source_port": "y",
+      "target": "norm1",
+      "target_port": "x"
+    },
+    {
+      "id": "e16",
+      "source": "norm1",
+      "source_port": "y",
+      "target": "compress",
+      "target_port": "x"
+    },
+    {
+      "id": "e17",
+      "source": "compress",
+      "source_port": "y",
+      "target": "residual",
+      "target_port": "a"
+    },
+    {
+      "id": "e_skip",
+      "source": "in",
+      "source_port": "y",
+      "target": "residual",
+      "target_port": "b"
+    },
+    {
+      "id": "e18",
+      "source": "residual",
+      "source_port": "y",
+      "target": "out",
+      "target_port": "x"
+    }
+  ]
+}

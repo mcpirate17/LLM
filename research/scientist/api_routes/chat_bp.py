@@ -68,6 +68,10 @@ def _spawn_code_agent_task(*args, **kwargs):
     return _misc_bp_mod._spawn_code_agent_task(*args, **kwargs)
 
 
+def code_agent_task_snapshot(*args, **kwargs):
+    return _misc_bp_mod.code_agent_task_snapshot(*args, **kwargs)
+
+
 def register_chat_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     @app.route("/api/aria/chat/guardrails")
@@ -755,4 +759,3 @@ def register_chat_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-

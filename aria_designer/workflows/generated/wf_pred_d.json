@@ -1,0 +1,333 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "wf_pred_d",
+  "name": "Predator D \u2014 Triple Path (Sparse FFN + RWKV + SSM)",
+  "metadata": {
+    "family": "predator"
+  },
+  "nodes": [
+    {
+      "id": "in",
+      "component_type": "io/input",
+      "params": {
+        "dim": 256,
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "norm0",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "s1",
+      "component_type": "structural/split2",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "s2",
+      "component_type": "structural/split2",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 740,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "f_up",
+      "component_type": "linear_algebra/linear_proj_up",
+      "params": {
+        "out_dim": 512
+      },
+      "ui_meta": {
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "f_sp",
+      "component_type": "linear_algebra/nm_sparse_linear",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "f_act",
+      "component_type": "math/silu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "f_dn",
+      "component_type": "linear_algebra/linear_proj_down",
+      "params": {
+        "out_dim": 256
+      },
+      "ui_meta": {
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "m_rwkv",
+      "component_type": "mixing/rwkv_time_mixing",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "m_act",
+      "component_type": "math/silu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "h_ssm",
+      "component_type": "linear_algebra/selective_scan",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 880,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "h_act",
+      "component_type": "math/silu",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 880,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "proj",
+      "component_type": "linear_algebra/linear_proj_down",
+      "params": {
+        "out_dim": 256
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "mh_add",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "cat",
+      "component_type": "structural/concat",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "norm1",
+      "component_type": "linear_algebra/rmsnorm",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "res",
+      "component_type": "math/add",
+      "params": {},
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": "out",
+      "component_type": "io/output_head",
+      "params": {
+        "vocab_size": 32000
+      },
+      "ui_meta": {
+        "position": {
+          "x": 440,
+          "y": 0
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_in_norm0",
+      "source": "in",
+      "source_port": "y",
+      "target": "norm0",
+      "target_port": "x"
+    },
+    {
+      "id": "e_norm0_s1",
+      "source": "norm0",
+      "source_port": "y",
+      "target": "s1",
+      "target_port": "x"
+    },
+    {
+      "id": "e_s1_f_up",
+      "source": "s1",
+      "source_port": "y",
+      "target": "f_up",
+      "target_port": "x"
+    },
+    {
+      "id": "e_f_up_f_sp",
+      "source": "f_up",
+      "source_port": "y",
+      "target": "f_sp",
+      "target_port": "x"
+    },
+    {
+      "id": "e_f_sp_f_act",
+      "source": "f_sp",
+      "source_port": "y",
+      "target": "f_act",
+      "target_port": "x"
+    },
+    {
+      "id": "e_f_act_f_dn",
+      "source": "f_act",
+      "source_port": "y",
+      "target": "f_dn",
+      "target_port": "x"
+    },
+    {
+      "id": "e_s1_s2",
+      "source": "s1",
+      "source_port": "y",
+      "target": "s2",
+      "target_port": "x"
+    },
+    {
+      "id": "e_s2_m_rwkv",
+      "source": "s2",
+      "source_port": "y",
+      "target": "m_rwkv",
+      "target_port": "x"
+    },
+    {
+      "id": "e_m_rwkv_m_act",
+      "source": "m_rwkv",
+      "source_port": "y",
+      "target": "m_act",
+      "target_port": "x"
+    },
+    {
+      "id": "e_s2_h_ssm",
+      "source": "s2",
+      "source_port": "y",
+      "target": "h_ssm",
+      "target_port": "x"
+    },
+    {
+      "id": "e_h_ssm_h_act",
+      "source": "h_ssm",
+      "source_port": "y",
+      "target": "h_act",
+      "target_port": "x"
+    },
+    {
+      "id": "e_m_act_mh_add",
+      "source": "m_act",
+      "source_port": "y",
+      "target": "mh_add",
+      "target_port": "a"
+    },
+    {
+      "id": "e_h_act_mh_add",
+      "source": "h_act",
+      "source_port": "y",
+      "target": "mh_add",
+      "target_port": "b"
+    },
+    {
+      "id": "e_f_dn_cat",
+      "source": "f_dn",
+      "source_port": "y",
+      "target": "cat",
+      "target_port": "a"
+    },
+    {
+      "id": "e_mh_add_cat",
+      "source": "mh_add",
+      "source_port": "y",
+      "target": "cat",
+      "target_port": "b"
+    },
+    {
+      "id": "e_cat_proj",
+      "source": "cat",
+      "source_port": "y",
+      "target": "proj",
+      "target_port": "x"
+    }
+  ]
+}

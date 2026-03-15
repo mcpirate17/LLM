@@ -1,0 +1,265 @@
+{
+  "api_base": "http://127.0.0.1:8091/api/v1",
+  "workflows": [
+    {
+      "workflow_id": "wf_adaptive_lane_moe_v1",
+      "name": "Adaptive Lane Split V1 - Fast GELU vs MoE",
+      "variant": "fast_gelu_vs_moe",
+      "validate_status": null,
+      "validate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/validate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_validate": {
+        "valid": true,
+        "graph_info": {
+          "fingerprint": "89387bfc1d302246",
+          "n_params_estimate": 557056,
+          "n_ops": 5,
+          "depth": 4,
+          "model_dim": 256,
+          "has_gradient_path": true
+        }
+      },
+      "preview_elapsed_ms": null,
+      "preview_status": null,
+      "preview": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/preview (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "evaluate_status": null,
+      "evaluate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/evaluate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_bridge_elapsed_ms": 1383.322,
+      "direct_bridge": {
+        "status": "success",
+        "error": null,
+        "error_stage": null,
+        "graph_fingerprint": "89387bfc1d302246",
+        "n_ops": 5,
+        "depth": 4,
+        "n_params_estimate": 557056,
+        "has_gradient_path": true,
+        "compression_ratio": 1.0,
+        "pruning_tolerance": 0.0,
+        "sparse_op_coverage": 0.0,
+        "triton_compatibility_score": 0.0,
+        "efficiency_score": 0.0,
+        "total_time_ms": 1381.6298379970249,
+        "sandbox_passed": true,
+        "compile_time_ms": 0.20963999850209802,
+        "forward_time_ms": 100.08369699062314,
+        "backward_time_ms": 18.42452000710182,
+        "param_count": 9307648,
+        "peak_memory_mb": 0.0,
+        "grad_norm": 3.80304987501745e-09,
+        "stability_score": 0.0,
+        "cka_vs_transformer": 0.3924356997013092,
+        "cka_vs_ssm": 0.11042005568742752,
+        "cka_vs_conv": 0.3273128867149353,
+        "interaction_locality": 1.0,
+        "interaction_sparsity": 0.6667443513870239,
+        "intrinsic_dim": 217.08360290527344,
+        "isotropy": 1.4082490260177404e-14,
+        "structural_novelty": 0.32095298171043396,
+        "behavioral_novelty": 0.6062185052866104,
+        "overall_novelty": 0.3674008846282959,
+        "most_similar_to": "transformer"
+      }
+    },
+    {
+      "workflow_id": "wf_adaptive_lane_moe_v2",
+      "name": "Adaptive Lane Split V2 - Ultrametric Routed-MoE",
+      "variant": "ultrametric_then_moe",
+      "validate_status": null,
+      "validate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/validate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_validate": {
+        "valid": true,
+        "graph_info": {
+          "fingerprint": "0e9b25e75cd5e12e",
+          "n_params_estimate": 557056,
+          "n_ops": 6,
+          "depth": 5,
+          "model_dim": 256,
+          "has_gradient_path": true
+        }
+      },
+      "preview_elapsed_ms": null,
+      "preview_status": null,
+      "preview": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/preview (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "evaluate_status": null,
+      "evaluate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/evaluate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_bridge_elapsed_ms": 743.076,
+      "direct_bridge": {
+        "status": "success",
+        "error": null,
+        "error_stage": null,
+        "graph_fingerprint": "0e9b25e75cd5e12e",
+        "n_ops": 6,
+        "depth": 5,
+        "n_params_estimate": 557056,
+        "has_gradient_path": true,
+        "compression_ratio": 1.0,
+        "pruning_tolerance": 0.0,
+        "sparse_op_coverage": 0.0,
+        "triton_compatibility_score": 0.0,
+        "efficiency_score": 0.0,
+        "total_time_ms": 740.5487280047964,
+        "sandbox_passed": true,
+        "compile_time_ms": 0.0843599991640076,
+        "forward_time_ms": 10.095830002683215,
+        "backward_time_ms": 17.423119992599823,
+        "param_count": 9307648,
+        "peak_memory_mb": 0.0,
+        "grad_norm": 1.190919896032483e-08,
+        "stability_score": 0.0,
+        "cka_vs_transformer": 0.3853418231010437,
+        "cka_vs_ssm": 0.11423914134502411,
+        "cka_vs_conv": 0.32590797543525696,
+        "interaction_locality": 0.9977117776870728,
+        "interaction_sparsity": 0.6566591858863831,
+        "intrinsic_dim": 217.37464904785156,
+        "isotropy": 4.637530892637187e-08,
+        "structural_novelty": 0.4006969630718231,
+        "behavioral_novelty": 0.6366936924097744,
+        "overall_novelty": 0.40234750509262085,
+        "most_similar_to": "transformer"
+      }
+    },
+    {
+      "workflow_id": "wf_adaptive_lane_moe_v3",
+      "name": "Adaptive Lane Split V3 - Routed-MoE with Dense Refinement",
+      "variant": "moe_then_dense_refine",
+      "validate_status": null,
+      "validate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/validate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_validate": {
+        "valid": true,
+        "graph_info": {
+          "fingerprint": "abc886a3994c5238",
+          "n_params_estimate": 622592,
+          "n_ops": 6,
+          "depth": 5,
+          "model_dim": 256,
+          "has_gradient_path": true
+        }
+      },
+      "preview_elapsed_ms": null,
+      "preview_status": null,
+      "preview": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/preview (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "evaluate_status": null,
+      "evaluate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/evaluate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_bridge_elapsed_ms": 734.963,
+      "direct_bridge": {
+        "status": "success",
+        "error": null,
+        "error_stage": null,
+        "graph_fingerprint": "abc886a3994c5238",
+        "n_ops": 6,
+        "depth": 5,
+        "n_params_estimate": 622592,
+        "has_gradient_path": true,
+        "compression_ratio": 1.0,
+        "pruning_tolerance": 0.0,
+        "sparse_op_coverage": 0.0,
+        "triton_compatibility_score": 0.0,
+        "efficiency_score": 0.0,
+        "total_time_ms": 734.889352999744,
+        "sandbox_passed": true,
+        "compile_time_ms": 0.08434000483248383,
+        "forward_time_ms": 11.203449990716763,
+        "backward_time_ms": 18.585319005069323,
+        "param_count": 9373184,
+        "peak_memory_mb": 0.0,
+        "grad_norm": 1.3571708201709498e-08,
+        "stability_score": 0.0,
+        "cka_vs_transformer": 0.387435644865036,
+        "cka_vs_ssm": 0.10489927977323532,
+        "cka_vs_conv": 0.3163294494152069,
+        "interaction_locality": 0.9999999403953552,
+        "interaction_sparsity": 0.6667976379394531,
+        "intrinsic_dim": 216.97320556640625,
+        "isotropy": 8.488260760941557e-09,
+        "structural_novelty": 0.32677000761032104,
+        "behavioral_novelty": 0.611336552722989,
+        "overall_novelty": 0.3731329143047333,
+        "most_similar_to": "transformer"
+      }
+    },
+    {
+      "workflow_id": "wf_adaptive_lane_moe_v4",
+      "name": "Adaptive Lane Split V4 - Ultrametric Routed-MoE Bottleneck",
+      "variant": "ultrametric_moe_bottleneck",
+      "validate_status": null,
+      "validate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/validate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_validate": {
+        "valid": true,
+        "graph_info": {
+          "fingerprint": "d8266ee322fd7cc6",
+          "n_params_estimate": 589824,
+          "n_ops": 7,
+          "depth": 6,
+          "model_dim": 256,
+          "has_gradient_path": true
+        }
+      },
+      "preview_elapsed_ms": null,
+      "preview_status": null,
+      "preview": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/preview (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "evaluate_status": null,
+      "evaluate": {
+        "error": "HTTPConnectionPool(host='127.0.0.1', port=8091): Max retries exceeded with url: /api/v1/workflows/evaluate (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8091): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+      },
+      "direct_bridge_elapsed_ms": 736.861,
+      "direct_bridge": {
+        "status": "success",
+        "error": null,
+        "error_stage": null,
+        "graph_fingerprint": "d8266ee322fd7cc6",
+        "n_ops": 7,
+        "depth": 6,
+        "n_params_estimate": 589824,
+        "has_gradient_path": true,
+        "compression_ratio": 1.0,
+        "pruning_tolerance": 0.0,
+        "sparse_op_coverage": 0.0,
+        "triton_compatibility_score": 0.0,
+        "efficiency_score": 0.0,
+        "total_time_ms": 734.4167349947384,
+        "sandbox_passed": true,
+        "compile_time_ms": 0.08535000961273909,
+        "forward_time_ms": 10.09564999549184,
+        "backward_time_ms": 15.193159997579642,
+        "param_count": 9340416,
+        "peak_memory_mb": 0.0,
+        "grad_norm": 1.0551683082837826e-08,
+        "stability_score": 0.0,
+        "cka_vs_transformer": 0.3963621258735657,
+        "cka_vs_ssm": 0.10660351067781448,
+        "cka_vs_conv": 0.32213741540908813,
+        "interaction_locality": 0.9999131560325623,
+        "interaction_sparsity": 0.6661528944969177,
+        "intrinsic_dim": 216.97434997558594,
+        "isotropy": 2.7953740655561887e-08,
+        "structural_novelty": 0.4064401090145111,
+        "behavioral_novelty": 0.6294807854552434,
+        "overall_novelty": 0.395332932472229,
+        "most_similar_to": "transformer"
+      }
+    }
+  ]
+}
