@@ -107,8 +107,7 @@ def hyperbolic_distance(x: torch.Tensor, y: torch.Tensor,
         shape = x.shape
         x_flat = x.view(-1, shape[-1])
         y_flat = y.view(-1, shape[-1])
-        out = torch.empty(x_flat.size(0), device=x.device, dtype=x.dtype)
-        aria_core.hyperbolic_distance_f32(x_flat, y_flat, out, c)
+        out = aria_core.hyperbolic_distance_f32(x_flat, y_flat, c)
         return out.view(*shape[:-1], 1)
 
     x = _clamp_norm(x)

@@ -56,7 +56,7 @@
     "rwkv_channel",
     "gather_topk",
     "linear_attention",
-    "entropy_router",
+    "entropy_score",
     "sqrt",
     "fused_linear_gelu"
   ],

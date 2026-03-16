@@ -4,7 +4,6 @@ Consolidates logic from compiler.py, bridge.py, and research/ component_registry
 """
 
 import logging
-import os
 import yaml
 import importlib.util
 from pathlib import Path
@@ -23,11 +22,9 @@ class ComponentRegistry:
         self.mapping_file = mapping_file or _MAPPING_FILE
         self.handlers = {}
         self.manifests = {}
-        
+
         # Mapping config (from component_mapping.yaml)
         self.mapping_config = {}
-        self.aliases = {}
-        self.approximate_alias_notes = {}
         self.passthrough_components = set()
         self.source_components = set()
         self.template_lowered_components = set()
@@ -47,8 +44,6 @@ class ComponentRegistry:
             logger.warning("Failed to parse manifest YAML: %s", self.mapping_file, exc_info=True)
             return
 
-        self.aliases = self.mapping_config.get("aliases", {})
-        self.approximate_alias_notes = self.mapping_config.get("approximate_alias_notes", {})
         self.passthrough_components = set(self.mapping_config.get("passthrough_components", []))
         self.source_components = set(self.mapping_config.get("source_components", []))
         self.template_lowered_components = set(self.mapping_config.get("template_lowered_components", []))
@@ -56,9 +51,6 @@ class ComponentRegistry:
 
     def _resolve_component_dir(self, component_type: str) -> Optional[Path]:
         """Resolve component type to its directory on disk."""
-        # Check aliases first
-        component_type = self.aliases.get(component_type, component_type)
-        
         parts = component_type.split("/")
         if len(parts) == 2:
             cat, cid = parts
@@ -123,9 +115,8 @@ class ComponentRegistry:
         return handler_class
 
     def get_primitive_name(self, component_type: str) -> str:
-        """Map component type to research primitive name."""
-        leaf_id = component_type.split("/")[-1]
-        return self.aliases.get(leaf_id, leaf_id)
+        """Map component type to research primitive name (identity: just the leaf)."""
+        return component_type.split("/")[-1]
 
     def is_passthrough(self, component_type: str) -> bool:
         leaf_id = component_type.split("/")[-1]

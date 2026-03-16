@@ -1,14 +1,9 @@
 """Tests for Aria Designer Collaboration (WebSockets)."""
-import sys
-import os
-from pathlib import Path
 from fastapi.testclient import TestClient
 
-# Add api/ to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "api"))
 
 def test_websocket_broadcast():
-    from app.main import app
+    from aria_designer.api.app.main import app
     client = TestClient(app)
     
     with client.websocket_connect("/api/v1/collaboration/wf_collab") as ws1:
@@ -23,7 +18,7 @@ def test_websocket_broadcast():
             
 def test_websocket_isolation():
     """Verify that messages aren't leaked between workflows."""
-    from app.main import app
+    from aria_designer.api.app.main import app
     client = TestClient(app)
     
     with client.websocket_connect("/api/v1/collaboration/wf_a") as ws_a:

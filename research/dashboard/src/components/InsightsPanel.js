@@ -12,9 +12,10 @@ const CATEGORY_COLORS = {
   failure_mode: 'var(--accent-red)',
   success_factor: 'var(--accent-green)',
   hypothesis: 'var(--accent-purple)',
+  structural_preference: 'var(--accent-cyan, #22d3ee)',
 };
 
-const CATEGORY_ORDER = { success_factor: 4, pattern: 3, hypothesis: 2, failure_mode: 1 };
+const CATEGORY_ORDER = { success_factor: 4, pattern: 3, structural_preference: 3, hypothesis: 2, failure_mode: 1 };
 const STATUS_ORDER = { confirmed: 3, active: 2, superseded: 1, refuted: 0 };
 
 const COLUMNS_FULL = [

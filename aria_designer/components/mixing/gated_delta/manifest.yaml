@@ -1,0 +1,49 @@
+id: gated_delta
+version: 1.0.0
+name: Gated Delta Rule
+category: mixing
+tags:
+- recurrence
+- linear-attention
+- state-space
+status: approved
+description: "Gated delta rule: linear recurrence with decay + update gates for targeted state writes (ICLR 2025)."
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*4"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Combines gating (Mamba2) with the delta rule (DeltaNet) for targeted
+  state memory modification. Two gates control behavior:
+  - alpha (decay): how fast state memory erases
+  - beta (update): how strongly new input modifies state
+
+  The delta term (v*k - h) does targeted overwrites instead of blind accumulation.
+
+  Based on: Gated Delta Networks (NVIDIA, ICLR 2025). Used in Qwen3-Next.
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: y:tensor[B, S, D].
+
+  ### Plain Language
+
+  A fast alternative to attention that remembers selectively. Instead of
+  piling up all past information, it can surgically replace outdated memories
+  with new ones. Two learned gates control forgetting and writing.
+  '

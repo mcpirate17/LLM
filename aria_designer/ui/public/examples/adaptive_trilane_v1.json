@@ -9,16 +9,16 @@
   "nodes": [
     {"id": "input",       "component_type": "io/input",                     "params": {"dim": 256, "vocab_size": 32000},                  "ui_meta": {"position": {"x": 400, "y": 0}}},
     {"id": "embed_proj",  "component_type": "linear_algebra/linear_proj",   "params": {"out_dim": 256},                                   "ui_meta": {"position": {"x": 400, "y": 120}}},
-    {"id": "pos_enc",     "component_type": "positional/rope",              "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 240}}},
+    {"id": "pos_enc",     "component_type": "positional/rope_rotate",              "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 240}}},
 
     {"id": "scorer",      "component_type": "routing/difficulty_scorer",    "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 360}}},
-    {"id": "router",      "component_type": "routing/lane_router",          "params": {"num_lanes": 3},                                   "ui_meta": {"position": {"x": 400, "y": 480}}},
+    {"id": "router",      "component_type": "routing/adaptive_lane_mixer",          "params": {"num_lanes": 3},                                   "ui_meta": {"position": {"x": 400, "y": 480}}},
 
     {"id": "lane1_attn",  "component_type": "mixing/linear_attention",      "params": {},                                                  "ui_meta": {"position": {"x": 80,  "y": 640}}},
     {"id": "lane1_proj",  "component_type": "linear_algebra/linear_proj",   "params": {"out_dim": 256},                                   "ui_meta": {"position": {"x": 80,  "y": 760}}},
 
     {"id": "lane2_rec",   "component_type": "routing/adaptive_recursion",   "params": {"max_depth": 2},                                   "ui_meta": {"position": {"x": 400, "y": 640}}},
-    {"id": "lane2_norm",  "component_type": "normalization/rmsnorm_pre",    "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 760}}},
+    {"id": "lane2_norm",  "component_type": "linear_algebra/rmsnorm",    "params": {},                                                  "ui_meta": {"position": {"x": 400, "y": 760}}},
 
     {"id": "lane3_moe",   "component_type": "channel_mixing/moe_topk",     "params": {"num_experts": 2, "top_k": 1},                     "ui_meta": {"position": {"x": 720, "y": 640}}},
     {"id": "lane3_rec",   "component_type": "routing/adaptive_recursion",   "params": {"max_depth": 4},                                   "ui_meta": {"position": {"x": 720, "y": 760}}},

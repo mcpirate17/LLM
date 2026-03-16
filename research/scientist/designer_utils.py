@@ -6,17 +6,6 @@ Handles conversion between frontend workflow JSON and backend ComputationGraph.
 from __future__ import annotations
 import logging
 from typing import Any, Dict, List
-import sys
-import os
-
-# Ensure project root and aria_designer are in sys.path
-_HERE = os.path.abspath(os.path.dirname(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
-_DESIGNER_ROOT = os.path.join(_PROJECT_ROOT, "aria_designer")
-
-for p in [_PROJECT_ROOT, _DESIGNER_ROOT]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.compiler import compile_graph
@@ -26,7 +15,7 @@ from research.synthesis.workflow_converter import workflow_to_computation_graph 
 logger = logging.getLogger(__name__)
 
 try:
-    from runtime.profiler import profile_workflow
+    from aria_designer.runtime.profiler import profile_workflow
     HAS_PROFILER = True
 except ImportError:
     HAS_PROFILER = False

@@ -6,10 +6,10 @@
     {"id": "n_input", "component_type": "io/input",                    "params": {"dim": 128, "vocab_size": 32000},         "ui_meta": {"position": {"x": 300, "y": 40}}},
     {"id": "n_attn",  "component_type": "mixing/softmax_attention",    "params": {},                                         "ui_meta": {"position": {"x": 160, "y": 180}}},
     {"id": "n_add1",  "component_type": "math/add",                    "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 320}}},
-    {"id": "n_norm1", "component_type": "normalization/rmsnorm_pre",   "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 450}}},
+    {"id": "n_norm1", "component_type": "linear_algebra/rmsnorm",   "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 450}}},
     {"id": "n_mlp",   "component_type": "channel_mixing/swiglu_mlp",   "params": {},                                         "ui_meta": {"position": {"x": 160, "y": 580}}},
     {"id": "n_add2",  "component_type": "math/add",                    "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 710}}},
-    {"id": "n_norm2", "component_type": "normalization/rmsnorm_pre",   "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 840}}},
+    {"id": "n_norm2", "component_type": "linear_algebra/rmsnorm",   "params": {},                                         "ui_meta": {"position": {"x": 300, "y": 840}}},
     {"id": "n_out",   "component_type": "io/output_head",              "params": {"vocab_size": 32000, "tie_weights": true},  "ui_meta": {"position": {"x": 300, "y": 970}}}
   ],
   "edges": [

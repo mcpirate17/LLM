@@ -45,6 +45,7 @@ from ..shared_api import (
 )
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.perf_contract import emit_perf_artifact
+from ..type_utils import dig
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +369,7 @@ def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, A
         existing = db.get_workflow(workflow_id)
         if existing and existing.get("graph_json"):
             existing_graph = json.loads(existing["graph_json"])
-            old_fingerprint = (existing_graph.get("metadata") or {}).get("graph_fingerprint")
+            old_fingerprint = dig(existing_graph, "metadata", "graph_fingerprint")
     except Exception:
         logger.warning("Failed to load existing workflow fingerprint for %s", workflow_id, exc_info=True)
         old_fingerprint = None

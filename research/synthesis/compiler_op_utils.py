@@ -53,6 +53,9 @@ def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_expert
         "tokens_processed": 0,
         "expert_counts": torch.zeros(n_experts, device=selected_experts.device),
         "entropy_sum": 0.0,
+        "confidence_sum": 0.0,
+        "confidence_sq_sum": 0.0,
+        "confidence_count": 0,
         "count": 0,
         "heatmap": None,
         "_call_count": -1,
@@ -76,6 +79,11 @@ def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_expert
         probs = F.softmax(logits, dim=-1)
         entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
         telemetry["entropy_sum"] += entropy
+        # Confidence = max routing probability per token (1.0 = fully confident)
+        conf = probs.max(dim=-1).values.mean().item()
+        telemetry["confidence_sum"] += conf
+        telemetry["confidence_sq_sum"] += conf * conf
+        telemetry["confidence_count"] += 1
         telemetry["count"] += 1
 
     if getattr(module, "_capture_heatmap", False) and telemetry["heatmap"] is None:

@@ -1,0 +1,35 @@
+id: moe_2expert
+version: 1.0.0
+name: 2-Expert MoE
+category: channel_mixing
+tags:
+- moe
+- channel_mixing
+- sparse_compute
+status: approved
+description: Lightweight 2-expert MoE with learned gating
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D*2
+  preserves_gradient: true
+  numerically_risky: false

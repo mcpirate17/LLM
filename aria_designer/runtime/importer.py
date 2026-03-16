@@ -15,7 +15,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import sys
 import os
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -23,8 +22,6 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 _RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "research"))
-if _RESEARCH_ROOT not in sys.path:
-    sys.path.insert(0, os.path.dirname(_RESEARCH_ROOT))
 
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY

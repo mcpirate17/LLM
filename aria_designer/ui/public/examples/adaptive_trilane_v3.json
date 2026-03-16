@@ -9,17 +9,17 @@
   "nodes": [
     {"id": "input",         "component_type": "io/input",                           "params": {"dim": 256, "vocab_size": 32000},      "ui_meta": {"position": {"x": 420, "y": 0}}},
     {"id": "embed_proj",    "component_type": "linear_algebra/linear_proj",         "params": {"out_dim": 256},                       "ui_meta": {"position": {"x": 420, "y": 120}}},
-    {"id": "pos_enc",       "component_type": "positional/rope",                    "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 240}}},
-    {"id": "pre_norm",      "component_type": "normalization/rmsnorm_pre",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 360}}},
+    {"id": "pos_enc",       "component_type": "positional/rope_rotate",                    "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 240}}},
+    {"id": "pre_norm",      "component_type": "linear_algebra/rmsnorm",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 360}}},
 
     {"id": "scorer",        "component_type": "routing/difficulty_scorer",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 480}}},
-    {"id": "router",        "component_type": "routing/lane_router",                "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 420, "y": 600}}},
+    {"id": "router",        "component_type": "routing/adaptive_lane_mixer",                "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 420, "y": 600}}},
 
     {"id": "lane1_fused",   "component_type": "linear_algebra/fused_linear_gelu",   "params": {},                                      "ui_meta": {"position": {"x": 60,  "y": 760}}},
 
     {"id": "lane2_ssm",     "component_type": "linear_algebra/selective_scan",       "params": {},                                      "ui_meta": {"position": {"x": 360, "y": 760}}},
     {"id": "lane2_rec",     "component_type": "routing/mixed_recursion_gate",       "params": {"max_depth": 2},                       "ui_meta": {"position": {"x": 360, "y": 880}}},
-    {"id": "lane2_norm",    "component_type": "normalization/rmsnorm_pre",          "params": {},                                      "ui_meta": {"position": {"x": 360, "y": 1000}}},
+    {"id": "lane2_norm",    "component_type": "linear_algebra/rmsnorm",          "params": {},                                      "ui_meta": {"position": {"x": 360, "y": 1000}}},
 
     {"id": "lane3_moe",     "component_type": "channel_mixing/moe_topk",           "params": {"num_experts": 2, "top_k": 1},         "ui_meta": {"position": {"x": 750, "y": 760}}},
     {"id": "lane3_trop",    "component_type": "math_space/tropical_attention",      "params": {},                                      "ui_meta": {"position": {"x": 750, "y": 880}}},
@@ -32,7 +32,7 @@
     {"id": "residual",      "component_type": "math/add",                           "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 1360}}},
 
     {"id": "balance",       "component_type": "functional/load_balance_loss",       "params": {"num_lanes": 3, "loss_weight": 0.01},  "ui_meta": {"position": {"x": 420, "y": 1480}}},
-    {"id": "compress",      "component_type": "linear_algebra/low_rank",            "params": {"rank_ratio": 4},                      "ui_meta": {"position": {"x": 420, "y": 1600}}},
+    {"id": "compress",      "component_type": "math_space/low_rank_proj",            "params": {"rank_ratio": 4},                      "ui_meta": {"position": {"x": 420, "y": 1600}}},
     {"id": "final_norm",    "component_type": "linear_algebra/rmsnorm",             "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 1720}}},
     {"id": "output",        "component_type": "io/output_head",                    "params": {"vocab_size": 32000},                   "ui_meta": {"position": {"x": 420, "y": 1840}}}
   ],

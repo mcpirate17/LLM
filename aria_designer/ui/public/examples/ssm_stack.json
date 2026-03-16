@@ -30,7 +30,7 @@
     },
     {
       "id": "n_norm1",
-      "component_type": "normalization/rmsnorm_pre",
+      "component_type": "linear_algebra/rmsnorm",
       "params": {},
       "ui_meta": {
         "position": {
@@ -52,7 +52,7 @@
     },
     {
       "id": "n_norm2",
-      "component_type": "normalization/rmsnorm_pre",
+      "component_type": "linear_algebra/rmsnorm",
       "params": {},
       "ui_meta": {
         "position": {

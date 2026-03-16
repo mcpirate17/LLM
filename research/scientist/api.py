@@ -179,6 +179,7 @@ def create_app(
     from .api_routes.events_bp import register_events_routes
     from .api_routes.system_bp import register_system_routes
     from .api_routes.designer_bp import register_designer_routes
+    from .api_routes.observability_bp import register_observability_routes
     from .api_routes.misc_bp import register_misc_routes
 
     register_analytics_routes(app, context)
@@ -198,6 +199,7 @@ def create_app(
     register_events_routes(app, context)
     register_system_routes(app, context)
     register_designer_routes(app, context)
+    register_observability_routes(app, context)
     # misc LAST, since it contains the catch-all /<path:path> fallback
     register_misc_routes(app, context)
 

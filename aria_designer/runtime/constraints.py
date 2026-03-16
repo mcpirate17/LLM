@@ -102,6 +102,9 @@ def check_compatibility(
     # Structural constraints (hard-coded common knowledge)
     reasons.extend(_check_structural_constraints(existing_types, candidate_id, candidate_manifest))
 
+    # Wiring constraints from OP_WIRING_RULES
+    reasons.extend(_check_wiring_constraints(existing_types, candidate_id))
+
     if reasons:
         # Deduplicate
         reasons = list(dict.fromkeys(reasons))
@@ -123,6 +126,47 @@ def _check_structural_constraints(
         reasons.append("Only one graph_input node is allowed")
     if candidate_id == "graph_output" and "graph_output" in existing_types:
         reasons.append("Only one graph_output node is allowed")
+
+    return reasons
+
+
+def _check_wiring_constraints(
+    existing_types: Set[str],
+    candidate_id: str,
+) -> List[str]:
+    """Check OP_WIRING_RULES: signal producers need consumers, consumers need producers."""
+    try:
+        from research.synthesis.primitives import OP_WIRING_RULES
+    except ImportError:
+        return []
+
+    reasons = []
+    rule = OP_WIRING_RULES.get(candidate_id)
+    if rule is None:
+        return []
+
+    # If candidate is a 2-input op, warn if no valid signal producer exists in graph
+    input_signals = rule.get("input_signals", {})
+    for idx, constraint in input_signals.items():
+        from_ops = constraint.get("from_ops")
+        if from_ops is None:
+            continue
+        if not existing_types & set(from_ops):
+            shape_hint = constraint.get("shape_hint", "compatible signal")
+            reasons.append(
+                f"'{candidate_id}' input[{idx}] needs a signal from "
+                f"{from_ops} — add one of those first. "
+                f"Expected: {shape_hint}"
+            )
+
+    # If candidate is a signal producer, warn if no valid consumer exists
+    valid_consumers = rule.get("valid_consumers")
+    if valid_consumers is not None:
+        if not existing_types & (set(valid_consumers) | {"add"}):
+            reasons.append(
+                f"'{candidate_id}' produces a non-standard output — "
+                f"add a consumer first: {valid_consumers}"
+            )
 
     return reasons
 
@@ -160,8 +204,23 @@ def compute_palette_constraints(
             elif "norm" in ctype:
                 suggestions = ["linear_proj", "softmax_attention", "state_space"]
             
+            # Wiring-aware suggestions: if selected node is a signal producer,
+            # suggest its valid consumers; if it needs a signal, suggest producers
+            try:
+                from research.synthesis.primitives import OP_WIRING_RULES
+                rule = OP_WIRING_RULES.get(ctype)
+                if rule:
+                    # Signal producer → suggest consumers
+                    for consumer in rule.get("valid_consumers", []):
+                        suggestions.append(consumer)
+                    # 2-input consumer → suggest signal producers
+                    for idx, constraint in rule.get("input_signals", {}).items():
+                        for producer in (constraint.get("from_ops") or []):
+                            suggestions.append(producer)
+            except ImportError:
+                pass
+
             for s in suggestions:
-                # Find the full component ID in the palette that matches this short name
                 for cid in result:
                     if cid.endswith(f"/{s}") or cid == s:
                         result[cid]["suggested"] = True

@@ -13,6 +13,7 @@ residual template in one branch.
 
 from __future__ import annotations
 
+import contextvars
 import random
 from typing import Callable, Dict, Optional, Tuple
 
@@ -28,6 +29,11 @@ from .primitives import AlgebraicType, PRIMITIVE_REGISTRY, algebraic_types_compa
 
 # Type alias for motif weight dicts passed from judgment engine
 MotifWeights = Optional[Dict[str, float]]
+
+# Thread-safe context for excluded ops — set by apply_template, read by motif pickers
+_excluded_ops_ctx: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
+    "_excluded_ops_ctx", default=frozenset(),
+)
 
 # ── Motif class groupings for slot constraints ──────────────────────
 
@@ -143,7 +149,12 @@ def _pick_compatible_motif(
     motif_class: str,
     weights: MotifWeights = None,
 ) -> Optional[Motif]:
-    candidates = [m for m in MOTIFS_BY_CLASS.get(motif_class, []) if _motif_is_compatible(graph, node_id, m)]
+    excluded = _excluded_ops_ctx.get()
+    candidates = [
+        m for m in MOTIFS_BY_CLASS.get(motif_class, [])
+        if _motif_is_compatible(graph, node_id, m)
+        and not (excluded and any(s.op_name in excluded for s in m.steps))
+    ]
     if not candidates:
         return None
     if len(candidates) == 1:
@@ -159,10 +170,15 @@ def _pick_compatible_motif_from_classes(
     classes: Tuple[str, ...] | list[str],
     weights: MotifWeights = None,
 ) -> Optional[Motif]:
+    excluded = _excluded_ops_ctx.get()
     pool = []
     for cls in classes:
         pool.extend(MOTIFS_BY_CLASS.get(cls, []))
-    candidates = [m for m in pool if _motif_is_compatible(graph, node_id, m)]
+    candidates = [
+        m for m in pool
+        if _motif_is_compatible(graph, node_id, m)
+        and not (excluded and any(s.op_name in excluded for s in m.steps))
+    ]
     if not candidates:
         return None
     candidate_weights = [weights.get(m.name, m.lift) if weights else m.lift for m in candidates]
@@ -608,7 +624,7 @@ def tpl_token_merge_block(
 
     # Token merge
     try:
-        merged = graph.add_op("token_merging", [normed])
+        merged = graph.add_op("token_merge", [normed])
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
@@ -639,17 +655,20 @@ def tpl_conditional_compute(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → entropy_router → gate(sparse_core) → residual_add.
+    """norm → classifier → entropy_score → gate(sparse_core) → residual_add.
 
-    Entropy-based gating: entropy_router produces (B,S,1) difficulty signal.
-    Sparse core operates on full-dim normed input, then gated by entropy.
+    token_type_classifier produces class logits, entropy_score measures their
+    uncertainty as a (B,S,1) difficulty signal. Sparse core gated by entropy.
     """
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    # Entropy router: (B,S,D) → (B,S,1) difficulty signal
+    # Classify → entropy: token_type_classifier (B,S,D)→(B,S,D) logits,
+    # then entropy_score (B,S,D)→(B,S,1) difficulty signal.
     try:
-        difficulty = graph.add_op("entropy_router", [normed])
+        class_logits = graph.add_op("token_type_classifier", [normed],
+                                    config={"n_classes": 4})
+        difficulty = graph.add_op("entropy_score", [class_logits])
     except (ValueError, KeyError):
         return tpl_gated_residual(graph, input_id, rng, weights)
 
@@ -694,9 +713,10 @@ def tpl_difficulty_routed_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → entropy_router → {fast_path, slow_path} → gated_merge → residual.
+    """norm → classifier → entropy_score → {fast_path, slow_path} → gated_merge → residual.
 
-    2-lane routing: entropy_router produces (B,S,1) difficulty signal.
+    2-lane routing: token_type_classifier produces class logits, entropy_score
+    measures their uncertainty as a (B,S,1) difficulty signal.
     Easy tokens (low entropy) get mostly the fast path (cheap linear).
     Hard tokens (high entropy) get fast + slow path (expensive motif).
     Uses mul broadcasting: (B,S,D) * (B,S,1) for differentiable gating.
@@ -705,9 +725,12 @@ def tpl_difficulty_routed_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    # Difficulty scorer: entropy_router → (B,S,1)
+    # Classify → entropy: token_type_classifier (B,S,D)→(B,S,D) logits,
+    # then entropy_score (B,S,D)→(B,S,1) difficulty signal.
     try:
-        difficulty = graph.add_op("entropy_router", [normed])
+        class_logits = graph.add_op("token_type_classifier", [normed],
+                                    config={"n_classes": 4})
+        difficulty = graph.add_op("entropy_score", [class_logits])
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
@@ -1002,6 +1025,127 @@ def tpl_latent_compress_rwkv(
         return mixed
 
 
+# ── 2-Input Routing Templates ─────────────────────────────────────
+#
+# These templates wire routing ops that require a signal producer as
+# input[1], matching OP_WIRING_RULES input_signals constraints.
+
+
+def tpl_signal_routed_compression(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → classifier → {compression_mixture_experts | routing_conditioned_compression} → residual.
+
+    2-input routing: token_type_classifier produces routing signal,
+    which drives per-token compression method selection.
+    """
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Produce routing signal
+    try:
+        signal = graph.add_op("token_type_classifier", [normed],
+                              config={"n_classes": rng.choice([2, 3, 4])})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    # Route through compression op (2-input: data + signal)
+    comp_op = rng.choice(["compression_mixture_experts",
+                          "routing_conditioned_compression"])
+    try:
+        compressed = graph.add_op(comp_op, [normed, signal])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    compressed = _fix_dim(graph, compressed)
+
+    try:
+        return graph.add_op("add", [input_id, compressed])
+    except ValueError:
+        return compressed
+
+
+def tpl_mixed_recursion(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → classifier → mixed_recursion_gate(x, scores) → motif → residual.
+
+    Depth-conditional: token_type_classifier produces depth scores,
+    mixed_recursion_gate applies per-step transforms masked by depth.
+    """
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Depth scores from classifier
+    try:
+        scores = graph.add_op("token_type_classifier", [normed],
+                              config={"n_classes": rng.choice([3, 4, 5])})
+        gated = graph.add_op("mixed_recursion_gate", [normed, scores],
+                             config={"max_depth": rng.choice([2, 3, 4])})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    # Post-routing motif
+    core = _pick_compatible_motif_from_classes(
+        graph, gated, rng, list(_MIXER_CLASSES + _FFN_CLASSES), weights,
+    )
+    if core:
+        processed = _instantiate_motif(graph, gated, core, rng)
+    else:
+        processed = gated
+    processed = _fix_dim(graph, processed)
+
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_topk_retrieval(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → proj → cosine_similarity(proj, proj) → gather_topk → motif → residual.
+
+    Retrieval-style: compute self-similarity scores, gather top-k
+    vectors, process selected subset. Inspired by RAG reference arch.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        scores = graph.add_op("cosine_similarity", [normed, proj])
+        gathered = graph.add_op("gather_topk", [normed, scores],
+                                config={"k": rng.choice([4, 8, 16])})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    # Process gathered subset
+    core = _pick_compatible_motif_from_classes(
+        graph, gathered, rng, list(_FFN_CLASSES), weights,
+    )
+    if core:
+        processed = _instantiate_motif(graph, gathered, core, rng)
+    else:
+        processed = gathered
+    processed = _fix_dim(graph, processed)
+
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
 # ── Template Registry ───────────────────────────────────────────────
 
 TemplateFn = Callable[
@@ -1032,6 +1176,10 @@ TEMPLATES: Dict[str, TemplateFn] = {
     # Latent compression templates (based on best-ever pattern, lr=0.0061)
     "latent_compress_block": tpl_latent_compress_block,
     "latent_compress_rwkv": tpl_latent_compress_rwkv,
+    # 2-input routing templates (signal producer → routing consumer)
+    "signal_routed_compression": tpl_signal_routed_compression,
+    "mixed_recursion": tpl_mixed_recursion,
+    "topk_retrieval": tpl_topk_retrieval,
 }
 
 # Default weights — uniform, can be overridden by judgment engine priors
@@ -1058,6 +1206,10 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     # Latent compression (best-ever pattern, high priority)
     "latent_compress_block": 6.0,       # Latent attn compressor + sparse
     "latent_compress_rwkv": 6.0,        # Full best-ever pattern with RWKV
+    # 2-input routing templates
+    "signal_routed_compression": 4.0,   # Classifier-driven compression MoE
+    "mixed_recursion": 4.0,             # Depth-conditional recursion gate
+    "topk_retrieval": 3.5,              # Retrieval-style gather_topk
 }
 
 
@@ -1082,16 +1234,22 @@ def apply_template(
     template_name: Optional[str] = None,
     template_weights: Optional[Dict[str, float]] = None,
     motif_weights: MotifWeights = None,
+    excluded_ops: frozenset = frozenset(),
 ) -> int:
     """Apply a template to the graph. Main entry point for grammar.
 
     If template_name is None, picks one randomly weighted by priors.
+    excluded_ops: ops to filter out of motif selection (e.g. byte-unsafe ops).
     """
-    if template_name and template_name in TEMPLATES:
-        fn = TEMPLATES[template_name]
-    else:
-        _, fn = pick_template(rng, template_weights)
-    return fn(graph, input_id, rng, motif_weights)
+    token = _excluded_ops_ctx.set(excluded_ops)
+    try:
+        if template_name and template_name in TEMPLATES:
+            fn = TEMPLATES[template_name]
+        else:
+            _, fn = pick_template(rng, template_weights)
+        return fn(graph, input_id, rng, motif_weights)
+    finally:
+        _excluded_ops_ctx.reset(token)
 
 
 # ── Legacy compatibility ────────────────────────────────────────────

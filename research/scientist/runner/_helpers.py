@@ -703,7 +703,8 @@ def _record_investigation_result(
     ).fetchone()
     if existing_inv and existing_inv["investigation_passed"]:
         existing_lr = existing_inv["investigation_loss_ratio"]
-        if existing_lr is not None and best_lr is not None and existing_lr < best_lr:
+        # Never overwrite a passed investigation with a failed one or worse results
+        if best_lr is None or (existing_lr is not None and existing_lr <= best_lr):
             best_lr = existing_lr
             robustness = max(robustness, float(existing_inv["investigation_robustness"] or 0))
             best_tp_json = existing_inv["investigation_best_training"] or best_tp_json

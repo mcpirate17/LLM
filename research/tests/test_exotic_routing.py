@@ -45,7 +45,7 @@ def test_token_type_routing_flow():
     # 1. Classify tokens
     class_idx = g.add_op("token_type_classifier", [in_idx], {"n_classes": 3})
     # 2. Compute entropy (routing signal)
-    entropy_idx = g.add_op("entropy_router", [class_idx], {})
+    entropy_idx = g.add_op("entropy_score", [class_idx], {})
     # 3. Use signal for conditional compression
     out_idx = g.add_op("routing_conditioned_compression", [in_idx, entropy_idx], {})
     g.set_output(out_idx)

@@ -3,9 +3,12 @@
 
 PYTHON ?= python
 
-.PHONY: all aria_core test clean help guardrails-dry guardrails-dry-report perf-summary
+.PHONY: all setup aria_core test clean help guardrails-dry guardrails-dry-report perf-summary
 
 all: aria_core  ## Build everything
+
+setup: aria_core  ## Install workspace packages (editable)
+	uv pip install -e .
 
 # ── aria_core: Unified C++/CUDA kernel library ──────────────────────
 aria_core:  ## Build aria_core C++ extension

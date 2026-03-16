@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from flask import jsonify
+from flask import jsonify, request
 from ..notebook import LabNotebook
 from ._helpers import get_autonomy, _DISMISSED_ACTIONS
 from ._strategy_recommendations import compute_action_queue
@@ -67,3 +67,28 @@ def register_actions_routes(app, context: ApiRouteContext):
         except Exception as e:
             logger.error(f"Error undoing action {action_id}: {e}")
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/aria/autonomy", methods=["GET", "PUT"])
+    def api_aria_autonomy():
+        """Get or update autonomy configuration (trust level, behaviors)."""
+        try:
+            autonomy, _store = get_autonomy(notebook_path)
+            if request.method == "PUT":
+                data = request.get_json(silent=True) or {}
+                config = autonomy.update_config(data)
+                return jsonify(config)
+            return jsonify(autonomy.get_config())
+        except Exception as e:
+            logger.error(f"Error in /api/aria/autonomy: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/aria/activity")
+    def api_aria_activity():
+        """Recent autonomous action history for the activity feed."""
+        try:
+            _autonomy, store = get_autonomy(notebook_path)
+            limit = request.args.get("limit", 50, type=int)
+            return jsonify(store.get_recent(limit=limit))
+        except Exception as e:
+            logger.error(f"Error in /api/aria/activity: {e}")
+            return jsonify([]), 500

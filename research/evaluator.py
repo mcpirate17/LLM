@@ -40,6 +40,7 @@ class Stage0Result:
     forward_time_ms: float = 0.0
     backward_time_ms: float = 0.0
     peak_memory_mb: float = 0.0
+    memory_ratio: float = 0.0  # peak_memory / param_bytes — >10x triggers gate
     output_shape: Optional[str] = None
     grad_norm: float = 0.0
     has_nan_grad: bool = False
@@ -198,9 +199,18 @@ def stage0_smoke_test(
             result.error_type = "zero_grad"
             return result
 
-        # Memory
+        # Memory safety gate
         if dev.type == "cuda":
             result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
+
+        param_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+        if param_bytes > 0:
+            result.memory_ratio = (result.peak_memory_mb * 1024 * 1024) / param_bytes
+        if result.memory_ratio > 10.0:
+            result.error = (f"Memory ratio {result.memory_ratio:.1f}x exceeds 10x limit "
+                            f"(peak={result.peak_memory_mb:.0f}MB, params={param_bytes/1e6:.1f}MB)")
+            result.error_type = "memory_budget_exceeded"
+            return result
 
         result.passed = True
 

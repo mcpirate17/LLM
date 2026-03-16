@@ -1,14 +1,10 @@
 """Tests for the runtime bridge (aria_designer → research/ eval pipeline)."""
 
 import sys
-import os
 import pytest
 from types import SimpleNamespace
 
-# Ensure imports work
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from runtime.bridge import (
+from aria_designer.runtime.bridge import (
     workflow_to_graph,
     validate_workflow_graph,
     estimate_performance,
@@ -102,16 +98,9 @@ def test_resolve_direct_name():
 def test_resolve_category_prefix():
     assert _resolve_primitive("math/relu") == "relu"
     assert _resolve_primitive("linear_algebra/matmul") == "matmul"
-    assert _resolve_primitive("mixing/state_space") in {"selective_scan", "state_space"}
-    assert _resolve_primitive("normalization/rmsnorm_pre") == "rmsnorm"
-    assert _resolve_primitive("mixing/softmax_attention") in {"local_window_attn", "softmax_attention"}
-    assert _resolve_primitive("channel_mixing/swiglu_mlp") in {"fused_linear_gelu", "swiglu_mlp"}
-    assert _resolve_primitive("linear_algebra/block_sparse") == "block_sparse_linear"
-    assert _resolve_primitive("linear_algebra/semi_structured_2_4") == "semi_structured_2_4_linear"
-    assert _resolve_primitive("linear_algebra/low_rank") == "low_rank_proj"
-    assert _resolve_primitive("channel_mixing/basis_expansion_layer") == "basis_expansion"
-    assert _resolve_primitive("mixing/random_feature_attention") == "linear_attention"
-    # assert _resolve_primitive("mixing/differentiable_sort") == "sort_seq"
+    assert _resolve_primitive("mixing/softmax_attention") == "softmax_attention"
+    assert _resolve_primitive("channel_mixing/swiglu_mlp") == "swiglu_mlp"
+    assert _resolve_primitive("linear_algebra/selective_scan") == "selective_scan"
 
 
 def test_resolve_io_returns_none():
@@ -126,21 +115,13 @@ def test_resolve_unknown_raises():
         _resolve_primitive("totally_fake_op_42")
 
 
-def test_execution_capability_alias():
-    info = get_component_execution_capability("mixing/state_space")
+def test_execution_capability_direct_primitive():
+    info = get_component_execution_capability("mixing/softmax_attention")
     assert info["bridge_supported"] is True
-    assert info["primitive_name"] in {"selective_scan", "state_space"}
+    assert info["primitive_name"] == "softmax_attention"
     assert info["execution_class"] == "primitive"
-    assert info["mapping_kind"] in {"alias", "direct"}
-    assert info["semantic_fidelity"] in {"exact", "approximate"}
-
-
-def test_execution_capability_approximate_alias_warning():
-    info = get_component_execution_capability("linear_algebra/low_rank")
-    assert info["bridge_supported"] is True
-    assert info["primitive_name"] == "low_rank_proj"
-    assert info["semantic_fidelity"] == "approximate"
-    assert len(info["warnings"]) >= 1
+    assert info["mapping_kind"] == "direct"
+    assert info["semantic_fidelity"] == "exact"
 
 
 def test_execution_capability_composite_class():
@@ -163,22 +144,24 @@ def test_passthrough_lowering_component_is_supported():
     assert info["bridge_supported"] is True
     assert info["primitive_name"] is None
     assert "passthrough lowering" in info["reason"].lower()
-    merge_info = get_component_execution_capability("routing/token_merging")
+    # Routing ops with real primitives: bridge emits actual op nodes (not passthrough)
+    merge_info = get_component_execution_capability("routing/token_merge")
     assert merge_info["bridge_supported"] is True
-    assert merge_info["primitive_name"] is None
+    assert merge_info["primitive_name"] == "token_merge"
     cascade_info = get_component_execution_capability("routing/cascade")
     assert cascade_info["bridge_supported"] is True
-    assert cascade_info["primitive_name"] is None
+    assert cascade_info["primitive_name"] == "cascade"
     adaptive_info = get_component_execution_capability("routing/adaptive_recursion")
     assert adaptive_info["bridge_supported"] is True
-    assert adaptive_info["primitive_name"] is None
+    assert adaptive_info["primitive_name"] == "adaptive_recursion"
     speculative_info = get_component_execution_capability("routing/speculative")
     assert speculative_info["bridge_supported"] is True
-    assert speculative_info["primitive_name"] is None
+    assert speculative_info["primitive_name"] == "speculative"
+    # difficulty_scorer has no primitive — remains passthrough
     difficulty_info = get_component_execution_capability("routing/difficulty_scorer")
     assert difficulty_info["bridge_supported"] is True
     assert difficulty_info["primitive_name"] is None
-    router_info = get_component_execution_capability("routing/lane_router")
+    router_info = get_component_execution_capability("routing/adaptive_lane_mixer")
     assert router_info["bridge_supported"] is True
     assert router_info["primitive_name"] == "adaptive_lane_mixer"
     dispatch_info = get_component_execution_capability("structural/conditional_dispatch")
@@ -348,7 +331,7 @@ def test_workflow_with_routing_passthrough_components():
     wf = {
         "nodes": [
             {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "routing/token_merging", "params": {}},
+            {"id": "n1", "component_type": "routing/token_merge", "params": {}},
             {"id": "n2", "component_type": "routing/cascade", "params": {}},
             {"id": "n3", "component_type": "relu", "params": {}},
             {"id": "n4", "component_type": "graph_output", "params": {}},
@@ -361,8 +344,8 @@ def test_workflow_with_routing_passthrough_components():
         ],
     }
     graph = workflow_to_graph(wf, model_dim=256)
-    # token_merging + cascade are currently lowered as passthrough
-    assert graph.n_ops() == 1
+    # token_merge + cascade are real primitives, plus relu = 3 ops
+    assert graph.n_ops() == 3
 
 
 def test_workflow_with_adaptive_and_speculative_passthrough():
@@ -382,7 +365,8 @@ def test_workflow_with_adaptive_and_speculative_passthrough():
         ],
     }
     graph = workflow_to_graph(wf, model_dim=256)
-    assert graph.n_ops() == 1
+    # adaptive_recursion + speculative are real primitives, plus gelu = 3 ops
+    assert graph.n_ops() == 3
 
 
 def test_workflow_with_difficulty_lane_dispatch_passthrough():
@@ -390,7 +374,7 @@ def test_workflow_with_difficulty_lane_dispatch_passthrough():
         "nodes": [
             {"id": "n0", "component_type": "graph_input", "params": {}},
             {"id": "n1", "component_type": "routing/difficulty_scorer", "params": {}},
-            {"id": "n2", "component_type": "routing/lane_router", "params": {"num_lanes": 2}},
+            {"id": "n2", "component_type": "routing/adaptive_lane_mixer", "params": {"num_lanes": 2}},
             {"id": "n3", "component_type": "structural/conditional_dispatch", "params": {"num_lanes": 2, "lane": 0}},
             {"id": "n4", "component_type": "gelu", "params": {}},
             {"id": "n5", "component_type": "graph_output", "params": {}},
@@ -404,8 +388,8 @@ def test_workflow_with_difficulty_lane_dispatch_passthrough():
         ],
     }
     graph = workflow_to_graph(wf, model_dim=256)
-    # lane_router now maps to adaptive_lane_mixer (real op),
-    # difficulty_scorer and conditional_dispatch are still passthroughs,
+    # adaptive_lane_mixer is a real op,
+    # difficulty_scorer and conditional_dispatch are passthroughs,
     # so we get: adaptive_lane_mixer + gelu = 2 ops
     assert graph.n_ops() == 2
 
@@ -576,7 +560,7 @@ def test_bridge_result_to_dict():
 
 
 def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
-    import runtime.bridge as bridge_mod
+    import aria_designer.runtime.bridge as bridge_mod
 
     class _FakeGraph:
         def fingerprint(self): return "fp_test"

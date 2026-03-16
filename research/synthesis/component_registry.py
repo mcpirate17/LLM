@@ -1,6 +1,6 @@
 """
 Component Registry: Single source of truth for component type mappings.
-Consolidates aliases and category mappings between aria_designer and research.
+Maps frontend component types to backend primitive names (leaf extraction).
 """
 
 from __future__ import annotations
@@ -15,24 +15,21 @@ _MAPPING_FILE = _PROJECT_ROOT / "aria_designer" / "runtime" / "component_mapping
 
 class ComponentRegistry:
     """Registry for mapping frontend components to backend primitives."""
-    
+
     def __init__(self, mapping_file: Optional[Path] = None):
         self.mapping_file = mapping_file or _MAPPING_FILE
         self.config: Dict[str, Any] = {}
-        self.aliases: Dict[str, str] = {}
-        self.approximate_alias_notes: Dict[str, str] = {}
         self.category_execution_class: Dict[str, str] = {}
         self.component_execution_class: Dict[str, str] = {}
         self.passthrough_components: Set[str] = set()
         self.source_components: Set[str] = set()
         self.template_lowered_components: Set[str] = set()
-        
+
         self.load()
 
     def load(self):
         """Load mapping configuration from YAML."""
         if not self.mapping_file.exists():
-            # Fallback to defaults if file not found
             self._set_defaults()
             return
 
@@ -43,8 +40,6 @@ class ComponentRegistry:
             self._set_defaults()
             return
 
-        self.aliases = self.config.get("aliases", {})
-        self.approximate_alias_notes = self.config.get("approximate_alias_notes", {})
         self.category_execution_class = self.config.get("category_execution_class", {})
         self.component_execution_class = self.config.get("component_execution_class", {})
         self.passthrough_components = set(self.config.get("passthrough_components", []))
@@ -56,20 +51,15 @@ class ComponentRegistry:
         import warnings
         warnings.warn(
             f"component_mapping.yaml not found at {self.mapping_file}; "
-            "component aliases will be unavailable",
+            "component mappings will be unavailable",
             stacklevel=2,
         )
 
     def get_primitive_name(self, component_type: str) -> str:
-        """Map component type to primitive name."""
+        """Map component type to primitive name (leaf extraction)."""
         if not component_type:
             return "identity"
-        
-        # Strip category prefix: "math/relu" -> "relu"
-        leaf_id = component_type.split("/")[-1]
-        
-        # Check aliases
-        return self.aliases.get(leaf_id, leaf_id)
+        return component_type.split("/")[-1]
 
     def is_passthrough(self, component_type: str) -> bool:
         """Check if component is a passthrough (identity)."""

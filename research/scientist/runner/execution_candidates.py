@@ -246,7 +246,7 @@ class _ExecutionCandidatesMixin:
         )
         # Baseline routing/difficulty op boosts (always applied unless overridden)
         _routing_defaults = {
-            "entropy_router": 2.5, "route_topk": 2.0, "route_lanes": 2.0,
+            "entropy_score": 2.5, "route_topk": 2.0, "route_lanes": 2.0,
             "moe_topk": 2.0, "moe_2expert": 2.0, "token_merging": 1.5,
             "cascade": 1.5, "adaptive_recursion": 1.5,
         }
@@ -366,6 +366,29 @@ class _ExecutionCandidatesMixin:
                         if n >= 2:
                             penalty = max(0.6, 1.0 - 0.08 * n)
                             grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * penalty
+        except Exception:
+            pass
+
+        # Gradient stability penalty: penalize ops with severely exploding
+        # gradients from component profiling data (measured, not speculative).
+        # Only targets truly pathological ops — grad_norm ~2000 is normal for
+        # parameterized ops at d=128, so we use high thresholds.
+        try:
+            from research.profiling.schema import ComponentDB
+            with ComponentDB() as cdb:
+                rows = cdb.query(
+                    "SELECT op_name, grad_norm FROM op_profiles "
+                    "WHERE grad_exploding = 1 AND error IS NULL "
+                    "AND grad_norm > 50000"
+                )
+                for row in rows:
+                    op_name = row["op_name"]
+                    grad_norm = float(row["grad_norm"])
+                    if grad_norm > 1_000_000:
+                        mult = 0.3  # catastrophic (reciprocal, div_safe)
+                    else:
+                        mult = 0.6  # severe (log, state_space, conv_only)
+                    grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * mult
         except Exception:
             pass
 

@@ -81,6 +81,9 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "integral_kernel": OpRole.MIX,
     "fixed_point_iter": OpRole.MIX,
     "latent_attention_compressor": OpRole.MIX,
+    "diff_attention": OpRole.MIX,
+    "gated_delta": OpRole.MIX,
+    "conv_only": OpRole.MIX,
     "multi_head_mix": OpRole.MIX,
 
     # ── ROUTE: information flow control ─────────────────────────────
@@ -93,7 +96,6 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "early_exit": OpRole.ROUTE,
     "adaptive_recursion": OpRole.ROUTE,
     "token_merge": OpRole.ROUTE,
-    "token_merging": OpRole.ROUTE,
     "cascade": OpRole.ROUTE,
     "speculative": OpRole.ROUTE,
     "route_topk": OpRole.ROUTE,
@@ -114,7 +116,7 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "relu_gate_routing": OpRole.GATE,
     "progressive_compression_gate": OpRole.GATE,
     "token_type_classifier": OpRole.GATE,
-    "entropy_router": OpRole.GATE,
+    "entropy_score": OpRole.GATE,
 
     # ── POSITION: positional information ────────────────────────────
     "rope_rotate": OpRole.POSITION,

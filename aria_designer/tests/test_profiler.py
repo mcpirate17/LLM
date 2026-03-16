@@ -1,14 +1,10 @@
 """Tests for the runtime profiler."""
 
-import sys
-import os
 import json
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from runtime.bridge import workflow_to_graph
-from runtime.profiler import profile_static, profile_static_graph, profile_runtime
+from aria_designer.runtime.bridge import workflow_to_graph
+from aria_designer.runtime.profiler import profile_static, profile_static_graph, profile_runtime
 
 
 def _simple_mlp():

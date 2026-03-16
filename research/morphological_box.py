@@ -175,7 +175,7 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                    tags=("dynamic_routing", "recursion")),
             Option("layerdrop", "Random layer dropping during training",
                    tags=("stochastic",)),
-            Option("token_merging", "Merge similar tokens to reduce sequence length",
+            Option("token_merge", "Merge similar tokens to reduce sequence length",
                    tags=("token_sparse", "merging")),
             Option("cascade", "Progressive cascade: easy tokens get shallow, hard get deep",
                    tags=("dynamic_routing", "cascade")),

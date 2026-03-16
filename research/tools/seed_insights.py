@@ -113,10 +113,10 @@ SEED_INSIGHTS = [
     # ── Failure modes (display-only) ──
     {
         "category": "failure_mode",
-        "content": "entropy_router broken (0.2% S1, n=2700). Display-only.",
+        "content": "entropy_score broken (0.2% S1, n=2700). Display-only.",
         "insight_type": "failing_op",
-        "subject_key": "entropy_router",
-        "semantic_key": "failing_op:entropy_router",
+        "subject_key": "entropy_score",
+        "semantic_key": "failing_op:entropy_score",
         "alpha": 5.0,
         "beta_": 2695.0,
         "display_only": True,

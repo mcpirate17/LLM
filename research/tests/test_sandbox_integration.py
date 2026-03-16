@@ -199,6 +199,7 @@ class TestDashboardConsistency(unittest.TestCase):
         # Components that are used inside other components, not App.js
         nested_only = {
             "GraphViewer", "FailureAnalysis", "AriaAvatar", "ReportGallery", "ReportDetail",
+            "TopPrograms",
         }
 
         for filepath in self.component_files:
@@ -209,9 +210,10 @@ class TestDashboardConsistency(unittest.TestCase):
             name = basename.replace(".js", "")
             if name in nested_only:
                 continue
-            self.assertIn(
-                f"import {name}",
-                app_content,
+            has_import = f"import {name}" in app_content
+            has_lazy = f"const {name} = React.lazy(" in app_content
+            self.assertTrue(
+                has_import or has_lazy,
                 f"Component {name} not imported in App.js",
             )
 

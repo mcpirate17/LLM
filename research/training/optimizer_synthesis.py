@@ -12,12 +12,15 @@ Examples:
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,9 +64,9 @@ class SynthesizedOptimizer:
             )
         else:
             # Default: AdamW with modified betas
-            betas = (0.9, 0.999)
+            betas = (0.9, 0.95)
             if "high_momentum" in self.components:
-                betas = (0.95, 0.999)
+                betas = (0.95, 0.99)
             if "low_momentum" in self.components:
                 betas = (0.8, 0.95)
             return torch.optim.AdamW(params, lr=lr, weight_decay=wd, betas=betas)
@@ -630,3 +633,182 @@ def synthesize_optimizer(seed: Optional[int] = None) -> SynthesizedOptimizer:
         description=desc,
         seed=seed or 0,
     )
+
+
+# ── Muon Optimizer ────────────────────────────────────────────────────
+
+
+def _newton_schulz_orthogonalize(
+    M: torch.Tensor, n_steps: int = 5,
+) -> torch.Tensor:
+    """Newton-Schulz iteration to approximate the orthogonal component of M.
+
+    Computes the closest orthogonal matrix to M via iterative refinement:
+        X_{k+1} = X_k (aI + bX_k^T X_k + cX_k^T X_k X_k^T X_k)
+    with coefficients (a, b, c) = (3.4445, -4.7750, 2.0315) tuned for
+    fast convergence in 5 iterations.
+    """
+    a, b, c = 3.4445, -4.7750, 2.0315
+    if M.ndim != 2:
+        return M
+    rows, cols = M.shape
+    if rows < cols:
+        M = M.T
+    # Normalize to unit spectral norm for convergence
+    norm = M.norm()
+    if norm < 1e-8:
+        return M
+    X = M / norm
+    for _ in range(n_steps):
+        A = X.T @ X
+        X = X @ (a * torch.eye(A.shape[0], device=A.device, dtype=A.dtype) + b * A + c * A @ A)
+    if rows < cols:
+        X = X.T
+    return X
+
+
+class MuonOptimizer(torch.optim.Optimizer):
+    """Muon: Momentum + Orthogonalized Updates for Nesterov.
+
+    For 2D+ weight matrices, applies Newton-Schulz orthogonalization to the
+    momentum buffer. This encourages gradient updates to explore orthogonal
+    directions, improving optimization geometry for transformer weight matrices.
+
+    For 1D parameters (biases, LayerNorm), falls back to plain momentum (no
+    orthogonalization — Newton-Schulz requires 2D matrices).
+
+    Memory cost: 1x parameters (momentum only). No variance estimate.
+    Compare: AdamW stores 2x parameters (momentum + variance).
+    """
+
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-3,
+        weight_decay: float = 0.01,
+        momentum: float = 0.95,
+        nesterov: bool = True,
+        ns_steps: int = 5,
+    ):
+        defaults = dict(
+            lr=lr, weight_decay=weight_decay, momentum=momentum,
+            nesterov=nesterov, ns_steps=ns_steps,
+        )
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            wd = group["weight_decay"]
+            mu = group["momentum"]
+            nesterov = group["nesterov"]
+            ns_steps = group["ns_steps"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad
+                state = self.state[p]
+
+                if len(state) == 0:
+                    state["momentum_buffer"] = torch.zeros_like(grad)
+
+                buf = state["momentum_buffer"]
+                buf.mul_(mu).add_(grad)
+
+                if nesterov:
+                    update = grad + mu * buf
+                else:
+                    update = buf
+
+                # Orthogonalize for 2D weight matrices
+                if p.ndim >= 2:
+                    update = _newton_schulz_orthogonalize(
+                        update.view(p.shape[0], -1), n_steps=ns_steps,
+                    ).view_as(p)
+
+                # Decoupled weight decay
+                if wd > 0:
+                    p.data.mul_(1 - lr * wd)
+
+                p.data.add_(update, alpha=-lr)
+
+        return loss
+
+
+# ── Optimizer Factory ─────────────────────────────────────────────────
+
+
+def build_optimizer(
+    params,
+    optimizer_type: str = "adamw",
+    lr: float = 3e-4,
+    weight_decay: float = 0.01,
+    betas: Tuple[float, float] = (0.9, 0.95),
+    momentum: float = 0.95,
+    fused: bool = False,
+    foreach: bool = False,
+) -> torch.optim.Optimizer:
+    """Construct an optimizer with no silent fallbacks.
+
+    Args:
+        params: Model parameters (iterable).
+        optimizer_type: One of "muon", "adamw", "sgd".
+        lr: Learning rate.
+        weight_decay: Decoupled weight decay.
+        betas: Adam beta coefficients (only used for adamw).
+        momentum: Momentum coefficient (used for muon and sgd).
+        fused: Use fused AdamW kernel if available (CUDA only).
+        foreach: Use foreach AdamW if available (CUDA only).
+
+    Returns:
+        Configured optimizer instance.
+
+    Raises:
+        ValueError: Unknown optimizer_type.
+        TypeError: If fused/foreach not supported (logged, retried without).
+    """
+    name = optimizer_type.lower().strip()
+
+    if name == "muon":
+        return MuonOptimizer(
+            params, lr=lr, weight_decay=weight_decay, momentum=momentum,
+        )
+
+    elif name == "adamw":
+        kwargs: Dict[str, object] = dict(
+            lr=lr, weight_decay=weight_decay, betas=betas,
+        )
+        if fused:
+            kwargs["fused"] = True
+        elif foreach:
+            kwargs["foreach"] = True
+        try:
+            return torch.optim.AdamW(params, **kwargs)  # type: ignore[arg-type]
+        except TypeError:
+            logger.warning(
+                "AdamW fused/foreach not supported on this PyTorch build; "
+                "falling back to plain AdamW"
+            )
+            kwargs.pop("fused", None)
+            kwargs.pop("foreach", None)
+            return torch.optim.AdamW(params, **kwargs)  # type: ignore[arg-type]
+
+    elif name == "sgd":
+        return torch.optim.SGD(
+            params, lr=lr, weight_decay=weight_decay,
+            momentum=momentum, nesterov=True,
+        )
+
+    else:
+        raise ValueError(
+            f"Unknown optimizer_type {name!r}. "
+            f"Valid options: muon, adamw, sgd"
+        )

@@ -292,6 +292,9 @@ class _ResultsAnalysisMixin:
         rt_tokens_total = 0
         rt_tokens_processed = 0
         rt_entropy_sum = 0.0
+        rt_confidence_sum = 0.0
+        rt_confidence_sq_sum = 0.0
+        rt_confidence_count = 0
         rt_count = 0
         rt_expert_counts: Optional[torch.Tensor] = None
 
@@ -314,6 +317,9 @@ class _ResultsAnalysisMixin:
                     rt_tokens_total += rt.get("tokens_total", 0)
                     rt_tokens_processed += rt.get("tokens_processed", 0)
                     rt_entropy_sum += rt.get("entropy_sum", 0.0)
+                    rt_confidence_sum += rt.get("confidence_sum", 0.0)
+                    rt_confidence_sq_sum += rt.get("confidence_sq_sum", 0.0)
+                    rt_confidence_count += rt.get("confidence_count", 0)
                     rt_count += rt.get("count", 0)
                     ec = rt.get("expert_counts")
                     if isinstance(ec, torch.Tensor):
@@ -374,6 +380,9 @@ class _ResultsAnalysisMixin:
                     rt_tokens_total += rt.get("tokens_total", 0)
                     rt_tokens_processed += rt.get("tokens_processed", 0)
                     rt_entropy_sum += rt.get("entropy_sum", 0.0)
+                    rt_confidence_sum += rt.get("confidence_sum", 0.0)
+                    rt_confidence_sq_sum += rt.get("confidence_sq_sum", 0.0)
+                    rt_confidence_count += rt.get("confidence_count", 0)
                     rt_count += rt.get("count", 0)
                     ec = rt.get("expert_counts")
                     if isinstance(ec, torch.Tensor):
@@ -460,11 +469,16 @@ class _ResultsAnalysisMixin:
         if rt_count > 0:
             metrics["routing_tokens_total"] = rt_tokens_total
             metrics["routing_tokens_processed"] = rt_tokens_processed
+            metrics["routing_tokens_skipped"] = max(0, rt_tokens_total - rt_tokens_processed)
             metrics["routing_utilization_entropy"] = rt_entropy_sum / rt_count
             if rt_tokens_total > 0:
                 metrics["routing_drop_rate"] = max(0.0, 1.0 - (rt_tokens_processed / rt_tokens_total))
-                # savings = fraction of tokens NOT processed (routed away)
                 metrics["routing_savings_ratio"] = max(0.0, 1.0 - (rt_tokens_processed / rt_tokens_total))
+            if rt_confidence_count > 0:
+                conf_mean = rt_confidence_sum / rt_confidence_count
+                metrics["routing_confidence_mean"] = conf_mean
+                conf_var = max(0.0, (rt_confidence_sq_sum / rt_confidence_count) - conf_mean * conf_mean)
+                metrics["routing_confidence_std"] = conf_var ** 0.5
             if rt_expert_counts is not None:
                 metrics["routing_expert_count"] = int(len(rt_expert_counts))
                 metrics["routing_expert_utilization_json"] = json.dumps(rt_expert_counts.cpu().tolist())

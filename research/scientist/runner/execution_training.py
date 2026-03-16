@@ -212,29 +212,32 @@ class _ExecutionTrainingMixin:
             with _trace_ctx("model_setup"):
                 model = model.to(dev)
                 model.train()
-                opt_kwargs: Dict[str, Any] = {"lr": config.stage1_lr, "weight_decay": 0.01}
-                if dev.type == "cuda":
-                    use_fused = bool(getattr(config, "optimizer_fused", True))
-                    use_foreach = bool(getattr(config, "optimizer_foreach", True))
-                    if use_fused:
-                        opt_kwargs["fused"] = True
-                    elif use_foreach:
-                        opt_kwargs["foreach"] = True
-                try:
-                    optimizer = torch.optim.AdamW(model.parameters(), **opt_kwargs)
-                except Exception:
-                    opt_kwargs.pop("fused", None)
-                    opt_kwargs.pop("foreach", None)
-                    optimizer = torch.optim.AdamW(model.parameters(), **opt_kwargs)
+                from ...training.optimizer_synthesis import build_optimizer
+
+                # Resolve phase-specific optimizer: screening_optimizer overrides optimizer_type
+                phase_opt = getattr(config, "screening_optimizer", "") or ""
+                opt_type = phase_opt or getattr(config, "optimizer_type", "adamw") or "adamw"
+                phase_lr = getattr(config, "screening_lr", 0.0) or 0.0
+                effective_lr = phase_lr if phase_lr > 0 else config.stage1_lr
+
                 # Synthesized optimizer support (screening exploration only)
-                if use_synthesized_training and getattr(config, 'optimizer_type', 'adamw') != 'adamw':
-                    try:
-                        from ...training.optimizer_synthesis import synthesize_optimizer
-                        synth_opt = synthesize_optimizer(seed=seed)
-                        optimizer = synth_opt.create(model.parameters(), lr=config.stage1_lr)
-                        result["optimizer_synthesized"] = synth_opt.name
-                    except Exception:
-                        pass  # Fall back to already-created AdamW
+                if use_synthesized_training and opt_type == "synthesized":
+                    from ...training.optimizer_synthesis import synthesize_optimizer
+                    synth_opt = synthesize_optimizer(seed=seed)
+                    optimizer = synth_opt.create(model.parameters(), lr=effective_lr)
+                    result["optimizer_synthesized"] = synth_opt.name
+                else:
+                    # Non-synthesized: use build_optimizer (no silent fallbacks)
+                    resolved_type = opt_type if opt_type != "synthesized" else "adamw"
+                    optimizer = build_optimizer(
+                        model.parameters(),
+                        optimizer_type=resolved_type,
+                        lr=effective_lr,
+                        weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
+                        betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
+                        fused=(dev.type == "cuda" and bool(getattr(config, "optimizer_fused", True))),
+                        foreach=(dev.type == "cuda" and bool(getattr(config, "optimizer_foreach", True))),
+                    )
             trace_totals_ms["model_setup"] += (time.perf_counter() - setup_t0) * 1000.0
 
             # ── Structural smoke test (Phase 6.6) ──
@@ -247,6 +250,7 @@ class _ExecutionTrainingMixin:
                     return result
 
             result["optimizer_class"] = optimizer.__class__.__name__.lower()
+            result["optimizer_type"] = opt_type
             if optimizer.param_groups:
                 pg0 = optimizer.param_groups[0]
                 result["optimizer_lr"] = float(pg0.get("lr", config.stage1_lr))
@@ -705,13 +709,20 @@ class _ExecutionTrainingMixin:
                     # Emit live training step events for dashboard
                     ctx = getattr(self, "_live_training_context", None)
                     if ctx and step % 10 == 0:
-                        self._emit_event("training_step", {
+                        step_event = {
                             "experiment_id": ctx.get("exp_id", ""),
                             "step": step,
                             "loss": round(loss_val, 6),
                             "total_steps": total_steps,
                             "phase": ctx.get("phase", ""),
-                        })
+                        }
+                        # Append per-step routing telemetry when available
+                        _raux_step = step_state.get("routing_aux_loss")
+                        if _raux_step is not None:
+                            step_event["routing_aux_loss"] = round(_raux_step, 6)
+                        if grad_norm > 0:
+                            step_event["grad_norm"] = round(grad_norm, 4)
+                        self._emit_event("training_step", step_event)
 
                     # Log training progress at start, midpoint, and end
                     if step == 0 or step == total_steps // 2 or step == total_steps - 1:
@@ -1025,13 +1036,27 @@ class _ExecutionTrainingMixin:
                         nn.init.xavier_normal_(m.weight)
 
             # Create optimizer from program
+            opt_fallback = False
             try:
                 optimizer = program.optimizer.create(model.parameters())
-            except Exception:
-                optimizer = torch.optim.AdamW(
-                    model.parameters(), lr=3e-4, weight_decay=0.01)
+            except Exception as exc:
+                logger.warning(
+                    "program.optimizer.create() failed (%s); "
+                    "falling back to AdamW via build_optimizer",
+                    exc,
+                )
+                from ...training.optimizer_synthesis import build_optimizer
+                optimizer = build_optimizer(
+                    model.parameters(),
+                    optimizer_type="adamw",
+                    lr=3e-4,
+                    weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
+                    betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
+                )
+                opt_fallback = True
 
             result["optimizer_class"] = optimizer.__class__.__name__.lower()
+            result["optimizer_fallback"] = opt_fallback
             if optimizer.param_groups:
                 pg0 = optimizer.param_groups[0]
                 result["optimizer_lr"] = float(pg0.get("lr", 3e-4))
@@ -1059,7 +1084,29 @@ class _ExecutionTrainingMixin:
             grad_norms: List[float] = []
             training_curve: List[Dict] = []
 
-            safe_max_seq = min(config.max_seq_len, 512)
+            # VRAM-aware seq_len cap: probe free memory and scale down
+            # to avoid OOM with quadratic-attention ops like ultrametric_attention
+            _static_cap = 512
+            if dev.type == "cuda":
+                try:
+                    free_mb = (torch.cuda.get_device_properties(dev).total_memory
+                               - torch.cuda.memory_allocated(dev)) / (1024 * 1024)
+                    # Rough heuristic: quadratic ops need ~B*S*S*D*4 bytes per layer
+                    # At dim=256, batch=B, n_layers=L: budget ≈ free * 0.5 (leave headroom)
+                    _batch = int(getattr(config, 'stage1_batch_size', 4) or 4)
+                    _nlayers = int(getattr(config, 'n_layers', 4) or 4)
+                    _dim = int(getattr(config, 'model_dim', 256) or 256)
+                    # max_seq where B*S^2*D*L*12 (fwd+bwd+optim) < free*0.5
+                    import math as _math
+                    _budget = free_mb * 0.5 * 1024 * 1024  # bytes
+                    _max_s = int(_math.sqrt(_budget / (max(_batch, 1) * max(_dim, 1) * max(_nlayers, 1) * 12)))
+                    _static_cap = min(_static_cap, max(64, _max_s))
+                    if _static_cap < config.max_seq_len:
+                        logger.info("VRAM-capped seq_len: %d (free=%.0fMB, B=%d, L=%d)",
+                                    _static_cap, free_mb, _batch, _nlayers)
+                except Exception:
+                    pass
+            safe_max_seq = min(config.max_seq_len, _static_cap)
             seq_len = min(128, safe_max_seq)
             # Apply curriculum seq_len schedule
             try:
@@ -1182,13 +1229,16 @@ class _ExecutionTrainingMixin:
                 # Emit live training step events for dashboard
                 ctx = getattr(self, "_live_training_context", None)
                 if ctx and step % 10 == 0:
-                    self._emit_event("training_step", {
+                    step_event = {
                         "experiment_id": ctx.get("exp_id", ""),
                         "step": step,
                         "loss": round(loss_val, 6),
                         "total_steps": n_steps,
                         "phase": ctx.get("phase", ""),
-                    })
+                    }
+                    if grad_norm > 0:
+                        step_event["grad_norm"] = round(grad_norm, 4)
+                    self._emit_event("training_step", step_event)
 
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000

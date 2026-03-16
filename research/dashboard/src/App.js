@@ -42,6 +42,7 @@ const CampaignView = React.lazy(() => import('./components/CampaignView'));
 const KnowledgeBase = React.lazy(() => import('./components/KnowledgeBase'));
 const CompareView = React.lazy(() => import('./components/CompareView'));
 const NativeProfilePanel = React.lazy(() => import('./components/NativeProfilePanel'));
+const ObservabilityDashboard = React.lazy(() => import('./components/ObservabilityDashboard'));
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
@@ -181,7 +182,7 @@ const NAV_CATEGORIES = {
   },
   diagnostics: {
     label: 'Diagnostics',
-    tabs: ['perf', 'references'],
+    tabs: ['observability', 'perf', 'references'],
   }
 };
 
@@ -192,6 +193,7 @@ function AppContent({ onRunningChange }) {
     experiments: 'Experiments',
     discoveries: 'Discoveries',
     comparison: 'Comparison',
+    observability: 'Observability',
     perf: 'Optimization',
     reports: 'Reports',
     references: 'References',
@@ -204,6 +206,7 @@ function AppContent({ onRunningChange }) {
     experiments: 'Browse all experiments and their results (3)',
     discoveries: 'Best architectures found so far, ranked by tier (4)',
     comparison: 'Side-by-side architecture comparison (5)',
+    observability: 'Pipeline health, component status, alerts, live training stream',
     perf: 'System performance and optimization metrics (6)',
     reports: 'Publishable findings, campaigns, and knowledge base (7)',
     references: 'Reference models (GPT-2, Mamba, etc.) baselines (8)',
@@ -1677,6 +1680,12 @@ function AppContent({ onRunningChange }) {
               onRemoveProgram={handleRemoveFromComparison}
               onSelectProgram={handleSelectProgram}
             />
+          </Suspense>
+        )}
+
+        {activeTab === 'observability' && (
+          <Suspense fallback={<LazyFallback />}>
+            <ObservabilityDashboard />
           </Suspense>
         )}
 

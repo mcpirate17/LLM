@@ -659,14 +659,16 @@ def _stability_probe(
         _probe_optimizer = torch.optim.Adam(model.parameters(), lr=_probe_lr)
         _probe_losses: List[float] = []
 
+        _use_amp = (dev.type == "cuda")
         for _ in range(_probe_steps):
             ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
             _probe_optimizer.zero_grad()
-            logits = model(ids)
-            loss = F.cross_entropy(
-                logits[:, :-1].reshape(-1, logits.size(-1)),
-                ids[:, 1:].reshape(-1),
-            )
+            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=_use_amp):
+                logits = model(ids)
+                loss = F.cross_entropy(
+                    logits[:, :-1].reshape(-1, logits.size(-1)),
+                    ids[:, 1:].reshape(-1),
+                )
             if torch.isnan(loss) or torch.isinf(loss):
                 break
             loss.backward()

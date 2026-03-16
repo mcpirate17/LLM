@@ -1,21 +1,17 @@
 from __future__ import annotations
 import json
-import sys
 import pytest
 from pathlib import Path
 
-# Add api/ to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "api"))
-
-from app.intent_parser import compute_insertion_point
-from app.models import AskAriaPromptRequest, WorkflowGraphModel
-from app.routers.aria import _generate_patch_impl, _validate_parent_regression_guardrails
-from app.historical_insights import build_historical_insights_response
-from app.aria_patch_postprocess import postprocess_patched_workflow
-from app.suggestions import suggest_components
-from app.mutation import refine_winner
-from app.conversation import _build_patch_from_pattern, _match_pattern
-from app import database as db
+from aria_designer.api.app.intent_parser import compute_insertion_point
+from aria_designer.api.app.models import AskAriaPromptRequest, WorkflowGraphModel
+from aria_designer.api.app.routers.aria import _generate_patch_impl, _validate_parent_regression_guardrails
+from aria_designer.api.app.historical_insights import build_historical_insights_response
+from aria_designer.api.app.aria_patch_postprocess import postprocess_patched_workflow
+from aria_designer.api.app.suggestions import suggest_components
+from aria_designer.api.app.mutation import refine_winner
+from aria_designer.api.app.conversation import _build_patch_from_pattern, _match_pattern
+from aria_designer.api.app import database as db
 
 @pytest.fixture
 def mock_db():
@@ -203,7 +199,7 @@ def test_suggestions_include_insertion_hint_and_leaderboard_evidence(mock_db, mo
             ]
         })
     }]
-    monkeypatch.setattr("app.suggestions.fetch_leaderboard_top_entries", lambda: leaderboard_entries)
+    monkeypatch.setattr("aria_designer.api.app.suggestions.fetch_leaderboard_top_entries", lambda: leaderboard_entries)
     scored = suggest_components(
         workflow,
         prompt="Improve stability",
@@ -247,7 +243,7 @@ def test_suggestions_fetch_leaderboard_once_per_request(mock_db, monkeypatch):
             })
         }]
 
-    monkeypatch.setattr("app.suggestions.fetch_leaderboard_top_entries", _fetch_entries)
+    monkeypatch.setattr("aria_designer.api.app.suggestions.fetch_leaderboard_top_entries", _fetch_entries)
     suggest_components(
         workflow,
         prompt="Improve stability",
@@ -376,14 +372,14 @@ def test_parent_regression_guard_rejects_excessive_removals():
 
 def test_historical_insights_uses_precomputed_component_ids(monkeypatch):
     monkeypatch.setattr(
-        "app.historical_insights.fetch_leaderboard_top_entries",
+        "aria_designer.api.app.historical_insights.fetch_leaderboard_top_entries",
         lambda n=10, min_composite=50.0: [
             {"_component_ids": ["rmsnorm_pre", "linear_proj"]},
             {"_component_ids": ["rmsnorm_pre"]},
         ],
     )
     monkeypatch.setattr(
-        "app.historical_insights.fetch_research_recommendation_signals",
+        "aria_designer.api.app.historical_insights.fetch_research_recommendation_signals",
         lambda force=False: {
             "insights": [{"category": "success_factor", "content": "Normalization improves stability"}],
             "toxic_ops": ["no_norm"],

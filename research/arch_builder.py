@@ -1173,7 +1173,7 @@ def _build_compute_routing(choice: str, dim: int) -> nn.Module:
         "early_exit": lambda: EarlyExitRouting(dim),
         "adaptive_recursion": lambda: AdaptiveRecursionRouting(dim),
         "layerdrop": lambda: LayerDropRouting(),
-        "token_merging": lambda: TokenMerging(dim),
+        "token_merge": lambda: TokenMerging(dim),
         "cascade": lambda: CascadeRouting(dim),
         "speculative": lambda: SpeculativeRouting(dim),
     }

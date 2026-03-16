@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import {
   HelpCircle,
@@ -54,10 +54,7 @@ function DesignerNode({ data, selected, onHelp, hardwareView, heatmapView, maxFl
   const flops = profile.flops || profile.flops_forward
   const paramCount = profile.params || profile.param_count
 
-  const heatmapIntensity = useMemo(() => {
-    if (!heatmapView || !flops || !maxFlops) return 0
-    return Math.min(1, flops / maxFlops)
-  }, [heatmapView, flops, maxFlops])
+  const heatmapIntensity = (!heatmapView || !flops || !maxFlops) ? 0 : Math.min(1, flops / maxFlops)
 
   const heatmapStyle = heatmapView && flops ? {
     '--heat': heatmapIntensity,

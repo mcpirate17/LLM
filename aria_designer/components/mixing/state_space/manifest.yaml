@@ -1,13 +1,13 @@
 id: state_space
 version: 1.0.0
-name: State Space
+name: State Space Mixer
 category: mixing
 tags:
+- ssm
+- sequence_mixing
 - linear_complexity
-- recurrent
-- token_mixing
 status: approved
-description: State space model (S4/Mamba style)
+description: State-space sequence mixer (Mamba-style selective scan)
 inputs:
 - name: x
   dtype: tensor
@@ -30,28 +30,6 @@ implementation:
   python: kernel_fallback.py
 performance:
   has_params: true
-  param_formula: D*D
+  param_formula: D*4
   preserves_gradient: true
   numerically_risky: false
-constraints:
-  incompatible_with: []
-help_md: '### Technical
-
-  State space model (S4/Mamba style)
-
-
-  Inputs: x:tensor[B, S, D].
-
-  Outputs: y:tensor[B, S, D].
-
-  Params: none.
-
-
-  ### Plain Language
-
-  State space model (S4/Mamba style)
-
-
-  Use when you need this specific transformation in a workflow.
-
-  '

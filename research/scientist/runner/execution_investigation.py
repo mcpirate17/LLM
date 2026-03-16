@@ -114,8 +114,24 @@ class _ExecutionInvestigationMixin:
                 model_source = source.get("model_source") or "graph_synthesis"
 
                 # Generate training programs (queue-level scheduling telemetry)
-                # Cap curriculum max_seq_len to avoid OOM with quadratic-attention ops
-                tp_max_seq = min(config.max_seq_len, 512)
+                # VRAM-aware seq_len cap for training program curriculum
+                _tp_cap = 512
+                if dev.type == "cuda":
+                    try:
+                        free_mb = (torch.cuda.get_device_properties(dev).total_memory
+                                   - torch.cuda.memory_allocated(dev)) / (1024 * 1024)
+                        import math as _math
+                        _batch = int(getattr(config, 'investigation_batch_size', 4) or 4)
+                        _nlayers = int(getattr(config, 'n_layers', 4) or 4)
+                        _dim = int(getattr(config, 'model_dim', 256) or 256)
+                        _budget = free_mb * 0.5 * 1024 * 1024
+                        _max_s = int(_math.sqrt(_budget / (max(_batch, 1) * max(_dim, 1) * max(_nlayers, 1) * 12)))
+                        _tp_cap = min(_tp_cap, max(64, _max_s))
+                        if _tp_cap < config.max_seq_len:
+                            logger.info("VRAM-capped curriculum seq_len: %d (free=%.0fMB)", _tp_cap, free_mb)
+                    except Exception:
+                        pass
+                tp_max_seq = min(config.max_seq_len, _tp_cap)
                 training_programs, tp_sched = synthesize_training_program_batch(
                     n_programs=config.n_training_programs,
                     n_steps=config.investigation_steps,
@@ -133,7 +149,13 @@ class _ExecutionInvestigationMixin:
                     if self._stop_event.is_set():
                         break
 
+                    # Free GPU memory before reconstructing model
+                    if dev.type == "cuda":
+                        torch.cuda.empty_cache()
+                        gc.collect()
+
                     # Reconstruct model fresh for each training program
+                    # Use VRAM-capped seq_len for model construction too
                     try:
                         if model_source == "morphological_box" and arch_spec_json_str:
                             from ...morphological_box import ArchSpec
@@ -144,7 +166,7 @@ class _ExecutionInvestigationMixin:
                                 dim=config.model_dim,
                                 n_layers=config.n_layers,
                                 vocab_size=config.vocab_size,
-                                max_seq_len=config.max_seq_len,
+                                max_seq_len=tp_max_seq,
                             )
                             model = build_model(spec, build_cfg)
                         elif graph_json_str:
@@ -153,7 +175,7 @@ class _ExecutionInvestigationMixin:
                             model = compile_model(
                                 layer_graphs,
                                 vocab_size=config.vocab_size,
-                                max_seq_len=config.max_seq_len,
+                                max_seq_len=tp_max_seq,
                             )
                         else:
                             continue

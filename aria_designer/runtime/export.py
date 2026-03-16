@@ -1,6 +1,5 @@
 import torch
 import io
-import os
 from .compiler import compile_workflow
 from .dispatch import KernelDispatcher
 

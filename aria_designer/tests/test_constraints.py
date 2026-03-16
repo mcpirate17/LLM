@@ -1,13 +1,9 @@
 """Tests for constraint visualization."""
 
-import sys
-import os
 import pytest
 import yaml
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from runtime.constraints import check_compatibility, compute_palette_constraints
+from aria_designer.runtime.constraints import check_compatibility, compute_palette_constraints
 
 
 # ── Test fixtures with temp component directories ────────────────────

@@ -18,15 +18,19 @@ gradient flows, bounded depth/params) but not necessarily USEFUL.
 from __future__ import annotations
 
 import copy
+import logging
 import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
+logger = logging.getLogger(__name__)
+
 from research.defaults import MODEL_DIM
 from .graph import ComputationGraph, OpNode, ShapeInfo
 from .primitives import (
-    PRIMITIVE_REGISTRY, PrimitiveOp, algebraic_types_compatible,
-    default_algebraic_type_for_space,
+    PRIMITIVE_REGISTRY, PrimitiveOp, REQUIRES_RESIDUAL_BYPASS,
+    algebraic_types_compatible, default_algebraic_type_for_space,
+    validate_wiring,
 )
 from .templates import (
     apply_template,
@@ -152,6 +156,9 @@ class GrammarConfig:
     routing_min_lanes: int = 2        # Minimum routing lanes (2 or 3)
     difficulty_scorer_type: str = "entropy"  # "entropy" or "learned"
 
+    # ── Byte-Safety Config ────────────────────────────────────────────
+    byte_mode: bool = False  # When True, reject byte-unsafe ops
+
     def update_bias(self, delta: float):
         """Adjust structured sparsity bias."""
         self.structured_sparsity_bias = max(0.0, min(1.0,
@@ -207,8 +214,8 @@ class GrammarConfig:
             op_weights={
                 "nm_sparse_linear": 4.0,
                 "moe_topk": 4.0,
-                "entropy_router": 3.5,
-                "token_merging": 3.5,
+                "entropy_score": 3.5,
+                "token_merge": 3.5,
                 "ternary_projection": 3.5,
                 "block_sparse_linear": 3.5,
                 "semi_structured_2_4_linear": 3.0,
@@ -263,7 +270,7 @@ class GrammarConfig:
                 "route_topk": 3.0, "route_lanes": 3.0,
                 "route_recursion": 2.5, "mod_topk": 3.0,
                 "early_exit": 2.0, "adaptive_recursion": 3.0,
-                "token_merging": 2.0, "cascade": 2.0,
+                "token_merge": 2.0, "cascade": 2.0,
                 "speculative": 2.0, "moe_topk": 3.0,
                 "adaptive_lane_mixer": 3.0,
                 "mixed_recursion_gate": 2.5,
@@ -273,7 +280,7 @@ class GrammarConfig:
                 "progressive_compression_gate": 2.0,
                 "compression_mixture_experts": 2.5,
                 "token_type_classifier": 2.5,
-                "entropy_router": 2.5,
+                "entropy_score": 2.5,
             },
         )
 
@@ -325,14 +332,14 @@ class GrammarConfig:
             },
             template_weights=tpl_weights,
             op_weights={
-                "entropy_router": 5.0,
+                "entropy_score": 5.0,
                 "adaptive_lane_mixer": 4.0,
                 "early_exit": 3.5,
                 "cascade": 3.5,
                 "adaptive_recursion": 3.5,
                 "moe_topk": 3.0,
                 "moe_2expert": 3.0,
-                "token_merging": 3.0,
+                "token_merge": 3.0,
                 "relu_gate_routing": 2.5,
                 "swiglu_mlp": 2.0,
                 "gated_linear": 2.0,
@@ -378,6 +385,12 @@ def generate_layer_graph(
     """
     if config is None:
         config = GrammarConfig()
+
+    # Byte-mode: pre-exclude byte-unsafe ops so generation avoids them
+    if config.byte_mode:
+        from .primitives import _BYTE_UNSAFE_OPS
+        config = copy.copy(config)
+        config.excluded_ops = set(config.excluded_ops) | set(_BYTE_UNSAFE_OPS.keys())
 
     rng = random.Random(seed)
     graph = ComputationGraph(config.model_dim)
@@ -434,11 +447,12 @@ def generate_layer_graph(
     current = input_id
     for t_idx in range(n_templates):
         _iter_weights = _first_tpl_weights if (t_idx == 0 and _use_efficiency_first) else tpl_weights
-        trial_graph = copy.deepcopy(graph)
+        trial_graph = graph.copy()
         trial_current = apply_template(
             trial_graph, current, rng,
             template_weights=_iter_weights,
             motif_weights=motif_weights,
+            excluded_ops=frozenset(config.excluded_ops),
         )
 
         if _graph_exceeds_final_budget(trial_graph, config):
@@ -452,7 +466,7 @@ def generate_layer_graph(
         current = graph.add_op("linear_proj", [current],
                                config={"out_dim": config.model_dim})
 
-    if result_shape.is_freq_domain and "irfft_seq" in PRIMITIVE_REGISTRY:
+    if result_shape.is_freq_domain and "irfft_seq" in PRIMITIVE_REGISTRY:  # pragma: no cover — irfft_seq removed in audit
         current = graph.add_op("irfft_seq", [current])
 
     # Optional outer residual connection (if not already added by template)
@@ -484,10 +498,10 @@ def generate_layer_graph(
 
 
 _ROUTING_OPS: frozenset = frozenset({
-    "entropy_router", "token_type_classifier", "route_topk", "route_lanes",
+    "entropy_score", "token_type_classifier", "route_topk", "route_lanes",
     "route_recursion", "adaptive_lane_mixer", "mixed_recursion_gate",
     "early_exit", "cascade", "speculative", "adaptive_recursion",
-    "mod_topk", "token_merging", "token_merge", "relu_gate_routing",
+    "mod_topk", "token_merge", "relu_gate_routing",
     "moe_topk", "moe_2expert", "routing_conditioned_compression",
 })
 
@@ -518,6 +532,71 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
             raise ValueError(
                 "routing_mandatory=True but graph has no routing ops"
             )
+
+    # Byte-safety check: reject byte-unsafe ops when byte_mode is enabled
+    if config.byte_mode:
+        for node in graph.nodes.values():
+            if node.is_input:
+                continue
+            op = PRIMITIVE_REGISTRY.get(node.op_name)
+            if op is not None and not op.byte_safe:
+                raise ValueError(
+                    f"byte_mode=True but graph contains byte-unsafe op: "
+                    f"{node.op_name}"
+                )
+
+    # Depth constraint check: reject ops placed before their min_layer_depth.
+    # Approximate layer depth by topological order from input.
+    topo_depth: Dict[int, int] = {}
+    for nid, node in sorted(graph.nodes.items()):
+        if node.is_input:
+            topo_depth[nid] = 0
+        else:
+            parent_depths = [topo_depth.get(pid, 0) for pid in node.input_ids]
+            topo_depth[nid] = max(parent_depths, default=0) + 1
+
+    for nid, node in graph.nodes.items():
+        if node.is_input:
+            continue
+        op = PRIMITIVE_REGISTRY.get(node.op_name)
+        if op is not None and op.min_layer_depth > 0:
+            depth = topo_depth.get(nid, 0)
+            if depth < op.min_layer_depth:
+                # Auto-correct: replace too-shallow op with identity pass-through
+                logger.debug(
+                    "depth_autocorrect: %s at depth %d < min %d → identity",
+                    node.op_name, depth, op.min_layer_depth,
+                )
+                object.__setattr__(node, "op_name", "identity")
+
+    # Residual bypass check: ops in REQUIRES_RESIDUAL_BYPASS must have a
+    # downstream add that also takes the op's input (residual connection).
+    for nid, node in graph.nodes.items():
+        if node.is_input or node.op_name not in REQUIRES_RESIDUAL_BYPASS:
+            continue
+        # Check if any downstream consumer is an 'add' that also takes
+        # one of this node's inputs (forming a skip connection).
+        node_inputs = set(node.input_ids)
+        has_bypass = False
+        for other_nid, other_node in graph.nodes.items():
+            if other_node.op_name != "add":
+                continue
+            other_inputs = set(other_node.input_ids)
+            # The add takes both (a) something downstream of nid and
+            # (b) one of the original inputs to nid → residual bypass
+            if other_inputs & node_inputs:
+                has_bypass = True
+                break
+        if not has_bypass:
+            raise ValueError(
+                f"{node.op_name} (id={nid}) requires residual bypass "
+                f"but none found"
+            )
+
+    # Op wiring constraint check: validate signal producer/consumer chains
+    wiring_errors = validate_wiring(graph)
+    if wiring_errors:
+        raise ValueError(f"Wiring constraint violated: {wiring_errors[0]}")
 
 
 def _graph_exceeds_final_budget(

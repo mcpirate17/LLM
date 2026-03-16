@@ -83,11 +83,85 @@ def tropical_mul(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return x + y
 
 
+class _TropicalMatmulFn(torch.autograd.Function):
+    """Memory-efficient tropical matmul: min_k(a_ik + b_kj) via chunking.
+
+    Saves only the inputs a, b and the output result. Recomputes the
+    chunked pairwise sums + smooth-min in backward, avoiding retention
+    of O(chunks * B * chunk * S * D) intermediate tensors.
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b_val: torch.Tensor,
+                chunk_size: int, tau: float) -> torch.Tensor:
+        B, S1, D = a.shape
+        S2 = b_val.shape[1]
+
+        result = torch.empty((B, S1, S2), device=a.device, dtype=a.dtype)
+        b_expanded = b_val.unsqueeze(1)  # (B, 1, S2, D)
+
+        adaptive_tau = _adaptive_temperature(tau, D)
+        inv_tau = 1.0 / adaptive_tau
+
+        for i in range(0, S1, chunk_size):
+            end = min(i + chunk_size, S1)
+            a_chunk = a[:, i:end, :].unsqueeze(2)  # (B, c, 1, D)
+            with torch.no_grad():
+                pairwise = a_chunk + b_expanded  # (B, c, S2, D)
+                result[:, i:end, :] = -adaptive_tau * torch.logsumexp(
+                    -pairwise * inv_tau, dim=-1)
+
+        ctx.save_for_backward(a, b_val)
+        ctx.chunk_size = chunk_size
+        ctx.tau = tau
+        return result
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        a, b_val = ctx.saved_tensors
+        chunk_size = ctx.chunk_size
+        B, S1, D = a.shape
+        S2 = b_val.shape[1]
+
+        adaptive_tau = _adaptive_temperature(ctx.tau, D)
+        inv_tau = 1.0 / adaptive_tau
+
+        grad_a = torch.zeros_like(a)
+        grad_b = torch.zeros_like(b_val)
+        b_expanded = b_val.unsqueeze(1)  # (B, 1, S2, D)
+
+        bwd_chunk = min(chunk_size, 16)
+        for i in range(0, S1, bwd_chunk):
+            end = min(i + bwd_chunk, S1)
+            a_chunk = a[:, i:end, :].unsqueeze(2)  # (B, c, 1, D)
+            pairwise = a_chunk + b_expanded  # (B, c, S2, D)
+
+            # Recompute smooth min weights
+            neg_pw_scaled = -pairwise * inv_tau  # (B, c, S2, D)
+            lse = torch.logsumexp(neg_pw_scaled, dim=-1, keepdim=True)  # (B, c, S2, 1)
+            # softmin weights: exp(neg_pw_scaled - lse) = contribution of each D to the min
+            sm_weights = torch.exp(neg_pw_scaled - lse)  # (B, c, S2, D)
+
+            # grad_output[:, i:end, :] is (B, c, S2)
+            # result = -tau * lse.squeeze(-1)
+            # d(result)/d(pairwise) = sm_weights  (since d(-tau*lse)/d(x) = exp(x - lse))
+            g_out = grad_output[:, i:end, :].unsqueeze(-1)  # (B, c, S2, 1)
+            g_pairwise = g_out * sm_weights  # (B, c, S2, D)
+
+            # pairwise = a_chunk + b_expanded
+            grad_a[:, i:end, :] += g_pairwise.sum(dim=2)  # sum over S2
+            grad_b += g_pairwise.sum(dim=1)  # sum over chunk
+
+            del pairwise, neg_pw_scaled, sm_weights, g_pairwise
+
+        return grad_a, grad_b, None, None
+
+
 def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Tropical matrix multiplication.
 
     Instead of sum(a_ik * b_kj), computes min_k(a_ik + b_kj).
-    Dispatch order: Triton (GPU) -> aria_core (CPU) -> chunked torch fallback.
+    Dispatch order: Triton (GPU) -> aria_core (CPU) -> memory-efficient torch fallback.
 
     Input: a (B, S, D), b (B, D, S) or (B, S, D)
     Output: (B, S, S) or similar
@@ -110,27 +184,15 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if native_b is not None:
             return aria_core.tropical_matmul_batched_f32(a, native_b)
 
-    # Chunked torch fallback — avoids O(S^2 * D) peak memory
+    # Normalize b to (B, S2, D) layout
     B, S1, D1 = a.shape
     if b.ndim == 3 and b.shape[1] == D1:
-        S2 = b.shape[2]
         b_val = b.transpose(1, 2)
     else:
-        S2 = b.shape[1]
         b_val = b
 
-    result = torch.empty((B, S1, S2), device=a.device, dtype=a.dtype)
-    b_expanded = b_val.unsqueeze(1)  # (B, 1, S2, D)
-
-    chunk_size = 32
-    for i in range(0, S1, chunk_size):
-        end = min(i + chunk_size, S1)
-        a_chunk = a[:, i:end, :].unsqueeze(2)  # (B, chunk, 1, D)
-        pairwise = a_chunk + b_expanded        # (B, chunk, S2, D)
-        # Smooth min: all D dimensions contribute gradient, not just argmin
-        result[:, i:end, :] = _smooth_min_dim(pairwise, dim=-1)
-
-    return result
+    # Memory-efficient path via custom autograd
+    return _TropicalMatmulFn.apply(a, b_val, 32, _SMOOTH_TAU)
 
 
 def tropical_softmax(x: torch.Tensor, dim: int = -1,
@@ -163,13 +225,13 @@ def tropical_attention(q: torch.Tensor, k: torch.Tensor,
     """
     # Distance matrix via tropical matmul
     distances = tropical_matmul(q, k)  # (B, S, S)
-    
+
     # Apply causal mask if S > 1
     S = q.shape[1]
     if S > 1:
         mask = torch.triu(torch.ones(S, S, device=q.device), diagonal=1).bool()
         distances.masked_fill_(mask, float('inf'))
-        
+
     # Softmin: attend to closest tokens
     weights = tropical_softmax(distances, dim=-1)  # (B, S, S)
     # Standard value aggregation
@@ -183,13 +245,13 @@ def execute_tropical_matmul(module: nn.Module, x: torch.Tensor,
     """Tropical matmul then project back to D dim."""
     B, S, D = x.shape
     scores = tropical_matmul(x, y)  # (B, S, S)
-    
+
     # Apply causal mask if S > 1
     if S > 1:
         mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
         # For tropical softmax (distance-based), we set future distances to infinity
         scores.masked_fill_(mask, float('inf'))
-        
+
     weights = tropical_softmax(scores, dim=-1)
     return torch.bmm(weights, y)  # (B, S, D)
 
@@ -244,12 +306,12 @@ def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     B, S, D = x.shape
     # Tropical distance scores: pairwise min-plus distances
     distances = tropical_matmul(x, x)  # (B, S, S)
-    
+
     # Apply causal mask if S > 1
     if S > 1:
         mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
         distances.masked_fill_(mask, float('inf'))
-        
+
     gate_scores = tropical_softmax(distances, dim=-1)  # (B, S, S)
     gated = torch.bmm(gate_scores, x)  # (B, S, D)
     # Linear projection if params available

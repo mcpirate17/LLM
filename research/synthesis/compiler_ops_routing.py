@@ -14,6 +14,42 @@ from .compiler_op_utils import (
     _unflatten_from_kernel,
 )
 
+def _routing_scores_from_x(x: torch.Tensor) -> torch.Tensor:
+    """Simple, deterministic score: mean over channels."""
+    return x.mean(dim=-1)
+
+
+def _apply_moe_load_balance(module, logits: torch.Tensor, n_experts: int,
+                            gamma: float = 0.001) -> torch.Tensor:
+    """Auxiliary-loss-free load balancing (DeepSeek-V3 style).
+
+    Adds a per-expert bias to gate logits. During training, the bias is updated
+    outside of backprop based on observed expert load — overloaded experts get
+    negative bias, underloaded get positive. No gradient contamination.
+    """
+    # Initialize bias buffer if needed (not a Parameter — no gradients)
+    if not hasattr(module, '_moe_balance_bias'):
+        module._moe_balance_bias = torch.zeros(n_experts, device=logits.device, dtype=logits.dtype)
+    bias = module._moe_balance_bias.to(device=logits.device, dtype=logits.dtype)
+
+    # Apply bias to logits (forward only — bias is detached)
+    logits = logits + bias.detach()
+
+    # Update bias based on load (training only, no grad)
+    if getattr(module, 'training', False) and gamma > 0:
+        with torch.no_grad():
+            # Count how many tokens selected each expert
+            selected = logits.argmax(dim=-1)  # (B, S)
+            counts = torch.zeros(n_experts, device=logits.device)
+            for i in range(n_experts):
+                counts[i] = (selected == i).float().sum()
+            target = counts.sum() / n_experts
+            # Increase bias for underloaded, decrease for overloaded
+            module._moe_balance_bias = bias + gamma * (target - counts)
+
+    return logits
+
+
 def _op_topk_gate(module, inputs, _):
     if not hasattr(module, 'gate_proj'): return inputs[0]
     x = inputs[0]
@@ -57,9 +93,10 @@ def _op_moe_topk(module, inputs, config):
         return x
         
     logits = F.linear(x, module.gate_weight.to(x.dtype))
+    logits = _apply_moe_load_balance(module, logits, n_experts)
     weights, indices = logits.topk(top_k, dim=-1)
     weights = F.softmax(weights, dim=-1)
-    
+
     # Record routing telemetry
     _record_routing_telemetry(module, n_experts, indices, logits=logits)
     
@@ -93,9 +130,10 @@ def _op_moe_2expert(module, inputs, config):
     if not hasattr(module, 'gate_proj'):
         return x
 
-    # Compute gate scores
+    # Compute gate scores with load balancing
     dt = x.dtype
     logits = F.linear(x, module.gate_proj.to(dt))  # (B, S, 2)
+    logits = _apply_moe_load_balance(module, logits, 2)
     weights = F.softmax(logits, dim=-1)              # (B, S, 2)
 
     # Record routing telemetry
@@ -142,58 +180,167 @@ def _op_route_topk(module, inputs, config):
     return x * (mask.detach() - x.detach() + x)
 
 def _op_route_lanes(module, inputs, config):
-    scores = inputs[0] # (B, S, L)
-    if HAS_ARIA_CORE and scores.device.type == "cpu" and scores.dtype == torch.float32:
-        lane_indices = aria_core.route_lane_argmax_f32(scores)
-        _record_routing_telemetry(module, scores.shape[2], lane_indices, logits=scores)
-        return lane_indices
-    # Fallback
-    lane_indices = scores.argmax(dim=-1)
-    _record_routing_telemetry(module, scores.shape[2], lane_indices, logits=scores)
-    return lane_indices
+    """Learned difficulty-based lane routing: score tokens, assign to lanes, per-lane transforms.
+
+    Each token gets routed to one of n_lanes compute paths based on learned
+    difficulty scoring. Easy tokens get cheap transforms, hard tokens get expensive.
+    Soft routing via softmax weights for gradient flow, hard assignment for telemetry.
+    """
+    x = inputs[0]
+    B, S, D = x.shape
+    n_lanes = int(config.get("n_lanes", 3))
+
+    if not hasattr(module, 'lane_scorer'):
+        return x
+    dt = x.dtype
+
+    # 1. Score token difficulty → lane logits (B, S, n_lanes)
+    lane_logits = F.linear(x, module.lane_scorer.to(dt))
+    lane_weights = F.softmax(lane_logits, dim=-1)  # soft assignment
+    lane_indices = lane_logits.argmax(dim=-1)       # hard assignment for telemetry
+    _record_routing_telemetry(module, n_lanes, lane_indices, logits=lane_logits)
+
+    # 2. Per-lane transforms: each lane has its own learned projection
+    out = torch.zeros_like(x)
+    for i in range(n_lanes):
+        if hasattr(module, 'lane_projs') and i < len(module.lane_projs):
+            lane_out = F.linear(x, module.lane_projs[i].to(dt))
+        else:
+            lane_out = x
+        out = out + lane_weights[..., i:i+1] * lane_out
+
+    return out
 
 def _op_route_recursion(module, inputs, config):
-    scores = inputs[0] # (B, S, Dp)
-    max_depth = scores.shape[-1]
-    if HAS_ARIA_CORE and scores.device.type == "cpu" and scores.dtype == torch.float32:
-        depth = aria_core.route_recursion_depth_f32(scores)
-    else:
-        # Fallback
-        depth = scores.argmax(dim=-1) + 1
-    _record_routing_telemetry(module, max_depth, depth, logits=scores)
-    return depth
+    """Learned difficulty-based recursion depth: score tokens, apply variable-depth transforms.
+
+    Each token gets a learned depth score determining how many transform steps
+    it receives. Easy tokens get 1 pass, hard tokens get up to max_depth passes.
+    Uses soft depth weighting for gradient flow.
+    """
+    x = inputs[0]
+    B, S, D = x.shape
+    max_depth = int(config.get("max_depth", 3))
+    max_depth = max(1, min(6, max_depth))
+
+    if not hasattr(module, 'depth_scorer'):
+        return x
+    dt = x.dtype
+
+    # 1. Score token difficulty → depth logits (B, S, max_depth)
+    depth_logits = F.linear(x, module.depth_scorer.to(dt))
+    depth_weights = F.softmax(depth_logits, dim=-1)
+    depth_indices = depth_logits.argmax(dim=-1)
+    _record_routing_telemetry(module, max_depth, depth_indices, logits=depth_logits)
+
+    # 2. Per-depth transforms: cumulative application weighted by depth probability
+    out = torch.zeros_like(x)
+    for i in range(max_depth):
+        if hasattr(module, 'depth_projs') and i < len(module.depth_projs):
+            step_out = F.linear(x, module.depth_projs[i].to(dt))
+        else:
+            step_out = x
+        out = out + depth_weights[..., i:i+1] * step_out
+
+    return out
 
 def _op_token_merge(module, inputs, config):
+    """Similarity-based token merging (ToMe-style): merge most similar adjacent pairs."""
     x = inputs[0]
-    n_keep = int(config.get("n_keep", x.shape[1] // 2))
-    seq_len = x.shape[1]
-    if HAS_ARIA_CORE and x.device.type == "cpu" and x.dtype == torch.float32:
+    B, S, D = x.shape
+    n_keep = int(config.get("n_keep", S // 2))
+    n_keep = max(1, min(n_keep, S))
+    n_merge = S - n_keep
+
+    if n_merge <= 0:
+        return x
+
+    use_c_kernel = HAS_ARIA_CORE and x.device.type == "cpu" and x.dtype == torch.float32 and not x.requires_grad
+    if use_c_kernel:
         y, restore_map = aria_core.token_merge_simple_f32(x, n_keep)
     else:
-        # Fallback: simple truncation
-        y = x[:, :n_keep, :]
-        restore_map = torch.arange(seq_len, device=x.device).expand(x.shape[0], -1)
-    # Record merge telemetry — tokens_processed = n_keep, tokens_total = seq_len
+        # Cosine similarity between adjacent token pairs (causal-safe)
+        x_norm = F.normalize(x.detach(), dim=-1)
+        # Similarity of token i with token i+1 (only look backward/adjacent, not ahead)
+        sim = (x_norm[:, :-1, :] * x_norm[:, 1:, :]).sum(dim=-1)  # (B, S-1)
+        # Find pairs to merge: pick top n_merge most similar adjacent pairs
+        # Greedy: mark merged positions, skip already-merged neighbors
+        merged = torch.zeros(B, S, device=x.device, dtype=torch.bool)
+        merge_targets = torch.zeros(B, S, device=x.device, dtype=torch.long)
+        merge_targets[:] = torch.arange(S, device=x.device).unsqueeze(0)
+
+        # Sort similarities descending per batch, greedily merge non-overlapping pairs
+        sim_sorted, sim_idx = sim.sort(dim=-1, descending=True)
+        for b in range(B):
+            count = 0
+            for j in range(S - 1):
+                idx = sim_idx[b, j].item()
+                if count >= n_merge:
+                    break
+                if not merged[b, idx] and not merged[b, idx + 1]:
+                    merged[b, idx + 1] = True
+                    merge_targets[b, idx + 1] = idx
+                    count += 1
+
+        # Build merged output: average merged pairs, keep unmerged tokens
+        kept_mask = ~merged  # (B, S)
+        # Use scatter_add for autograd-safe merging instead of in-place mutation
+        # Start with a copy, then blend merged tokens via differentiable indexing
+        weights = torch.ones(B, S, 1, device=x.device, dtype=x.dtype)
+        target_idx = merge_targets.unsqueeze(-1).expand(-1, -1, D)  # (B, S, D)
+        # Accumulate: for merged positions, add their values to the target position
+        out = x.scatter_add(1, target_idx, x * merged.unsqueeze(-1).float())
+        # Count how many tokens map to each position (1 for kept, 2 for merge targets)
+        count_map = weights.scatter_add(1, merge_targets.unsqueeze(-1), merged.unsqueeze(-1).float())
+        out = out / count_map.clamp(min=1)
+
+        # Gather only kept tokens
+        # Build gather indices for kept positions
+        kept_indices = []
+        for b in range(B):
+            idx = kept_mask[b].nonzero(as_tuple=False).squeeze(-1)
+            # Pad to n_keep if needed
+            if idx.shape[0] < n_keep:
+                pad = idx[-1:].expand(n_keep - idx.shape[0])
+                idx = torch.cat([idx, pad])
+            kept_indices.append(idx[:n_keep])
+        kept_indices = torch.stack(kept_indices)  # (B, n_keep)
+        y = out.gather(1, kept_indices.unsqueeze(-1).expand(-1, -1, D))
+
+    # Record merge telemetry
     merge_telem = getattr(module, "routing_telemetry", {
         "tokens_total": 0, "tokens_processed": 0,
         "merge_kept": 0, "merge_dropped": 0,
         "expert_counts": torch.zeros(1, device=x.device),
         "entropy_sum": 0.0, "count": 0, "heatmap": None,
     })
-    B = x.shape[0]
-    merge_telem["tokens_total"] += B * seq_len
+    merge_telem["tokens_total"] += B * S
     merge_telem["tokens_processed"] += B * n_keep
     merge_telem["merge_kept"] = merge_telem.get("merge_kept", 0) + B * n_keep
-    merge_telem["merge_dropped"] = merge_telem.get("merge_dropped", 0) + B * (seq_len - n_keep)
+    merge_telem["merge_dropped"] = merge_telem.get("merge_dropped", 0) + B * n_merge
     merge_telem["count"] = merge_telem.get("count", 0) + 1
     setattr(module, "routing_telemetry", merge_telem)
-    # Restore to original length with causal-safe indexing:
-    # Position i can only map to kept positions <= i (never look ahead)
-    B_size, S_orig = restore_map.shape
-    causal_limit = torch.arange(S_orig, device=restore_map.device).unsqueeze(0).expand(B_size, -1)
-    causal_limit = causal_limit.clamp(max=y.shape[1] - 1)
-    restore_map = restore_map.clamp(0, y.shape[1] - 1).minimum(causal_limit)
-    return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, x.shape[2]))
+
+    # Restore to original seq length via causal-safe nearest-kept mapping.
+    # For position i in the original sequence, map to the nearest kept
+    # position <= i (causal: never look ahead). This is better than
+    # broadcasting the last kept token into all dropped positions.
+    if use_c_kernel:
+        # C kernel path: kept tokens are first n_keep (simple truncation)
+        restore_map = torch.arange(S, device=x.device).unsqueeze(0).expand(B, -1)
+        restore_map = restore_map.clamp(max=n_keep - 1)
+    else:
+        # Python path: kept positions are scattered, build per-batch map
+        restore_map = torch.zeros(B, S, device=x.device, dtype=torch.long)
+        for b in range(B):
+            ki = kept_indices[b]  # (n_keep,) — sorted original positions
+            ptr = 0
+            for s in range(S):
+                # Advance pointer while next kept position <= s
+                while ptr < n_keep - 1 and ki[ptr + 1] <= s:
+                    ptr += 1
+                restore_map[b, s] = ptr
+    return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, D))
 
 # ── Routing Control Ops (Phase 2) ────────────────────────────────────
 
@@ -220,57 +367,74 @@ def _op_mod_topk(module, inputs, config):
     return x * gate.unsqueeze(-1)
 
 def _op_early_exit(module, inputs, config):
+    """Learned early-exit: tokens with low confidence are attenuated."""
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
-    scores = _routing_scores_from_x(x)
+    if hasattr(module, 'confidence_proj'):
+        scores = F.linear(x, module.confidence_proj.to(x.dtype)).squeeze(-1)  # (B, S)
+    else:
+        scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores)
     keep = (gate > threshold).float()
+    # STE: hard gate forward, soft gate backward
+    gate_ste = keep - gate.detach() + gate
     _record_routing_telemetry(module, 2, keep.long(), logits=gate)
-    return x * keep.unsqueeze(-1)
+    return x * gate_ste.unsqueeze(-1)
 
 def _op_cascade(module, inputs, config):
+    """Learned progressive cascade: soft gate scales tokens by learned difficulty."""
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
-    scores = _routing_scores_from_x(x)
+    if hasattr(module, 'cascade_proj'):
+        scores = F.linear(x, module.cascade_proj.to(x.dtype)).squeeze(-1)  # (B, S)
+    else:
+        scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores)
     _record_routing_telemetry(module, 2, (gate > threshold).long(), logits=gate)
     return x * gate.unsqueeze(-1)
 
 def _op_speculative(module, inputs, config):
+    """Speculative execution: cheap path always runs, learned gate blends full path."""
     x = inputs[0]
-    threshold = float(config.get("threshold", 0.5))
-    scores = _routing_scores_from_x(x)
-    gate = torch.sigmoid(scores)
-    keep = (gate > threshold).float()
-    _record_routing_telemetry(module, 2, keep.long(), logits=gate)
-    # Mild effect: scale rather than drop
-    return x * (0.5 + 0.5 * gate).unsqueeze(-1)
+    if not hasattr(module, 'cheap_proj'):
+        return x
+    dt = x.dtype
+    # Cheap path: lightweight linear projection (always runs)
+    cheap_out = F.linear(x, module.cheap_proj.to(dt))
+    # Learned verification gate: decides how much of the full input to blend
+    gate = torch.sigmoid(F.linear(x, module.verify_gate.to(dt)).squeeze(-1))
+    _record_routing_telemetry(module, 2, (gate > 0.5).long(), logits=gate)
+    # Blend: cheap_out + gate * (x - cheap_out) = lerp(cheap_out, x, gate)
+    return cheap_out + gate.unsqueeze(-1) * (x - cheap_out)
 
 def _op_adaptive_recursion(module, inputs, config):
+    """Learned adaptive recursion: per-token depth from learned scorer, per-step transforms."""
     x = inputs[0]
     max_depth = int(config.get("max_depth", 3))
     max_depth = max(1, min(6, max_depth))
+
+    if hasattr(module, 'depth_scorer'):
+        # Learned depth scoring: (B, S, D) → (B, S, max_depth)
+        dt = x.dtype
+        depth_logits = F.linear(x, module.depth_scorer.to(dt))
+        depth_weights = F.softmax(depth_logits, dim=-1)  # (B, S, max_depth)
+        _record_routing_telemetry(module, max_depth,
+                                  depth_weights.argmax(dim=-1), logits=depth_logits)
+        # Apply per-step transforms weighted by depth probability
+        out = torch.zeros_like(x)
+        for i in range(max_depth):
+            if hasattr(module, 'step_projs') and i < len(module.step_projs):
+                step_out = F.linear(x, module.step_projs[i].to(dt))
+            else:
+                step_out = x
+            out = out + depth_weights[..., i:i+1] * step_out
+        return out
+    # Fallback for legacy models without learned params
     scores = _routing_scores_from_x(x)
     depth_scores = torch.stack([scores + (i * 0.1) for i in range(max_depth)], dim=-1)
-    if HAS_ARIA_CORE and depth_scores.device.type == "cpu" and depth_scores.dtype == torch.float32:
-        depth = aria_core.route_recursion_depth_f32(depth_scores)
-    else:
-        depth = depth_scores.argmax(dim=-1) + 1
+    depth = depth_scores.argmax(dim=-1) + 1
     scale = 1.0 + 0.05 * depth.float()
     return x * scale.unsqueeze(-1)
-
-def _op_token_merging(module, inputs, config):
-    x = inputs[0]
-    n_keep = int(config.get("n_keep", x.shape[1] // 2))
-    seq_len = x.shape[1]
-    if HAS_ARIA_CORE and x.device.type == "cpu" and x.dtype == torch.float32:
-        y, restore_map = aria_core.token_merge_simple_f32(x, n_keep)
-    else:
-        y = x[:, :n_keep, :]
-        restore_map = torch.arange(seq_len, device=x.device).expand(x.shape[0], -1)
-    # Ensure indices are within bounds for CUDA safety
-    restore_map = restore_map.clamp(0, y.shape[1] - 1)
-    return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, x.shape[2]))
 
 # ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
 
@@ -328,29 +492,40 @@ def _op_mixed_recursion_gate(module, inputs, config):
     _record_routing_telemetry(module, max_depth, depths, logits=scores)
     return out
 
-def _op_entropy_router(module, inputs, config):
-    """Produces routing signal [B, S, 1] based on entropy of input scores (B,S,K)."""
+def _op_entropy_score(module, inputs, config):
+    """Compute Shannon entropy of input scores as a difficulty signal (B,S,K) → (B,S,1)."""
     scores = inputs[0]
     probs = F.softmax(scores, dim=-1)
     entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1, keepdim=True)
     return entropy
 
 def _op_relu_gate_routing(module, inputs, config):
-    """ReLU-based differentiable MoE gating (ReMoE).
-    Unlike Top-K, this learns how many experts to activate per token.
-    """
+    """ReLU-gated MoE (ReMoE): learned gate activates variable expert count per token."""
     x = inputs[0]
-    if not hasattr(module, 'gate_proj'): return x
-    
-    # [B, S, n_experts]
-    gate_scores = F.relu(F.linear(x, module.gate_proj.to(x.dtype)))
-    
-    # Record telemetry on 'effective expert count' (sparsity)
-    active_count = (gate_scores > 0).float().sum(dim=-1).mean().item()
-    _record_routing_telemetry(module, gate_scores.shape[-1], gate_scores.argmax(dim=-1), logits=gate_scores)
-    
-    # Placeholder: In a real MoE this would dispatch to experts.
-    # For micro-eval, we just return the weighted gate signal.
+    if not hasattr(module, 'gate_proj'):
+        return x
+    dt = x.dtype
+    n_experts = module.gate_proj.shape[0]
+
+    # Learned ReLU gate with load balancing: sparse activation
+    raw_logits = F.linear(x, module.gate_proj.to(dt))
+    raw_logits = _apply_moe_load_balance(module, raw_logits, n_experts)
+    gate_scores = F.relu(raw_logits)  # (B, S, n_experts)
+    # Normalize non-zero gates to sum to 1
+    gate_sum = gate_scores.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    gate_weights = gate_scores / gate_sum  # (B, S, n_experts)
+
+    _record_routing_telemetry(module, n_experts, gate_scores.argmax(dim=-1), logits=gate_scores)
+
+    # Dispatch to learned expert projections
+    if hasattr(module, 'expert_weights'):
+        output = torch.zeros_like(x)
+        for i in range(n_experts):
+            w = gate_weights[..., i:i+1]  # (B, S, 1)
+            expert_out = F.linear(x, module.expert_weights[i].to(dt))
+            output = output + w * expert_out
+        return output
+    # Fallback for legacy models: scale by total gate activation
     return gate_scores.sum(dim=-1, keepdim=True).expand_as(x) * x
 
 OP_IMPLS: Dict[str, Callable] = {
@@ -367,8 +542,7 @@ OP_IMPLS: Dict[str, Callable] = {
     "cascade": _op_cascade,
     "speculative": _op_speculative,
     "adaptive_recursion": _op_adaptive_recursion,
-    "token_merging": _op_token_merging,
-    "entropy_router": _op_entropy_router,
+    "entropy_score": _op_entropy_score,
     "relu_gate_routing": _op_relu_gate_routing,
     "adaptive_lane_mixer": _op_adaptive_lane_mixer,
     "mixed_recursion_gate": _op_mixed_recursion_gate,

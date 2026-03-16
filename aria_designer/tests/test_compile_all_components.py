@@ -7,7 +7,6 @@ missing symbols, and runtime failures that unit-level handler tests miss.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -15,16 +14,9 @@ import pytest
 import torch
 import yaml
 
-# Ensure aria_designer packages are importable
-_HERE = Path(__file__).resolve().parent
-_ARIA_ROOT = _HERE.parent
-_PROJECT_ROOT = _ARIA_ROOT.parent
-sys.path.insert(0, str(_ARIA_ROOT))
-sys.path.insert(0, str(_ARIA_ROOT / "api"))
-sys.path.insert(0, str(_PROJECT_ROOT))
+from aria_designer.runtime.compiler import compile_workflow
 
-from runtime.compiler import compile_workflow  # noqa: E402
-
+_ARIA_ROOT = Path(__file__).resolve().parent.parent
 COMPONENTS_DIR = _ARIA_ROOT / "components"
 
 # Categories that require specialized I/O setup (file handles, datasets)

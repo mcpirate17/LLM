@@ -14,7 +14,7 @@ def _load_manifest(path: Path) -> dict:
 
 
 def test_math_space_manifest_count_baseline() -> None:
-    assert len(MANIFEST_PATHS) == 30
+    assert len(MANIFEST_PATHS) == 32
 
 
 @pytest.mark.parametrize("manifest_path", MANIFEST_PATHS, ids=lambda p: p.parent.name)

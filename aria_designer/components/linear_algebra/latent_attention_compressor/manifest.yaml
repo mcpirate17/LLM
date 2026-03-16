@@ -1,0 +1,35 @@
+id: latent_attention_compressor
+version: 1.0.0
+name: Latent Attention Compressor
+category: linear_algebra
+tags:
+- kv_compression
+- attention
+- linear_algebra
+status: approved
+description: Multi-Head Latent Attention (MLA) style KV cache compression
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false

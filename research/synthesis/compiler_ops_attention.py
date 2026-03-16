@@ -91,10 +91,12 @@ def _op_layernorm(module, inputs, _):
 def _op_gated_linear(module, inputs, _):
     if not hasattr(module, 'linear_weight'): return inputs[0]
     x = inputs[0]
-    if _c(x):
-        return aria_core.gated_linear_f32(
+    if _c(x) and x.ndim == 3:
+        out = aria_core.gated_linear_f32(
             x, module.linear_weight, module.linear_bias,
             module.gate_weight, module.gate_bias)
+        if out.ndim == x.ndim:
+            return out
     dt = x.dtype
     linear = F.linear(x, module.linear_weight.to(dt), module.linear_bias.to(dt))
     gate = torch.sigmoid(F.linear(x, module.gate_weight.to(dt), module.gate_bias.to(dt)))

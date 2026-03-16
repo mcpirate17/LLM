@@ -1,0 +1,35 @@
+id: ternary_projection
+version: 1.0.0
+name: Ternary Projection
+category: linear_algebra
+tags:
+- quantization
+- sparse_compute
+- linear_algebra
+status: approved
+description: 1.58-bit ternary simulated projection (-1, 0, 1 weights)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false

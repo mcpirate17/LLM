@@ -753,8 +753,8 @@ def _derive_mutation_grammar(
     # If parent has sparse/routing ops, bias child toward efficiency
     _SPARSE_ROUTING_OPS = frozenset({
         "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
-        "ternary_projection", "entropy_router", "moe_topk", "moe_2expert",
-        "token_merging",
+        "ternary_projection", "entropy_score", "moe_topk", "moe_2expert",
+        "token_merge",
     })
     parent_has_efficiency = any(
         n.op_name in _SPARSE_ROUTING_OPS
@@ -831,8 +831,8 @@ def _derive_crossover_grammar(
     # If either parent has sparse/routing ops, bias child toward efficiency
     _SPARSE_ROUTING_OPS = frozenset({
         "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
-        "ternary_projection", "entropy_router", "moe_topk", "moe_2expert",
-        "token_merging",
+        "ternary_projection", "entropy_score", "moe_topk", "moe_2expert",
+        "token_merge",
     })
     sparsity_bias = base.structured_sparsity_bias
     for g in (g1, g2):

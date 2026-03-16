@@ -9,25 +9,18 @@ from aria_designer.api.app.component_identity import (
 )
 
 def test_canonicalize_component_id():
-    # Aliases
-    assert canonicalize_component_id("difficulty") == "routing/difficulty_scorer"
-    assert canonicalize_component_id("scorer") == "routing/difficulty_scorer"
-    assert canonicalize_component_id("attention") == "mixing/softmax_attention"
-    assert canonicalize_component_id("norm") == "linear_algebra/rmsnorm"
-    assert canonicalize_component_id("linear") == "linear_algebra/linear_proj"
-    
-    # Leaf names
+    # Leaf names → canonical
     assert canonicalize_component_id("relu") == "math/relu"
-    assert canonicalize_component_id("rmsnorm_pre") == "normalization/rmsnorm_pre"
-    
+    assert canonicalize_component_id("linear_proj") == "linear_algebra/linear_proj"
+    assert canonicalize_component_id("softmax_attention") == "mixing/softmax_attention"
+    assert canonicalize_component_id("difficulty_scorer") == "routing/difficulty_scorer"
+    assert canonicalize_component_id("rmsnorm") == "linear_algebra/rmsnorm"
+    assert canonicalize_component_id("layernorm") == "normalization/layernorm"
+
     # Already canonical
     assert canonicalize_component_id("io/input") == "io/input"
     assert canonicalize_component_id("math/relu") == "math/relu"
-    
-    # Path redirects: wrong-category paths → correct on-disk paths
-    assert canonicalize_component_id("normalization/rmsnorm") == "normalization/rmsnorm_pre"
-    assert canonicalize_component_id("normalization/layernorm") == "normalization/layernorm_pre"
-    
+
     # Unknown
     assert canonicalize_component_id("unknown/id") == "unknown/id"
     assert canonicalize_component_id("completely_new_op") == "completely_new_op"
@@ -42,24 +35,18 @@ def test_canonicalize_workflow():
         ]
     }
     canonicalize_workflow(wf)
-    
+
     assert wf["nodes"][0]["component_type"] == "io/input"
     assert wf["nodes"][1]["component_type"] == "routing/difficulty_scorer"
     assert wf["nodes"][2]["component_type"] == "linear_algebra/linear_proj"
     assert wf["nodes"][3]["component_type"] == "io/output_head"
 
 def test_discover_concepts():
-    message = "I want a transformer with ultrametric attention and a difficulty scorer"
+    message = "I want a model with softmax_attention and a difficulty_scorer"
     found = discover_concepts(message)
-    
-    concepts = {f["concept"] for f in found}
-    assert "transformer" in concepts or "attention" in concepts
-    assert "ultrametric" in concepts
-    assert "difficulty" in concepts or "scorer" in concepts
-    
+
     types = {f["component_type"] for f in found}
     assert "mixing/softmax_attention" in types
-    assert "math_space/ultrametric_attention" in types
     assert "routing/difficulty_scorer" in types
 
 
@@ -130,14 +117,6 @@ def test_canonicalize_workflow_ids_preserves_raw():
     originals = wf["metadata"].get("original_component_types", {})
     assert "n1" in originals
     assert originals["n1"] == "input"
-
-
-def test_path_redirects():
-    """Full-path redirects correct wrong-category entries."""
-    assert canonicalize_component_id("normalization/rmsnorm") == "normalization/rmsnorm_pre"
-    assert canonicalize_component_id("normalization/layernorm") == "normalization/layernorm_pre"
-    # The bare leaf "rmsnorm" still maps to linear_algebra/rmsnorm (different component)
-    assert canonicalize_component_id("rmsnorm") == "linear_algebra/rmsnorm"
 
 
 def test_round_trip_bare_to_canonical():

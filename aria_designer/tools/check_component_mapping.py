@@ -4,7 +4,6 @@ Fail CI when component manifests are missing integration mapping classification.
 
 Rules:
 - Component is OK if it maps directly to PRIMITIVE_REGISTRY.
-- Component is OK if it maps via alias.
 - Component is OK if it is an IO component.
 - Otherwise it must have a non-primitive execution class via:
   - component_execution_class[component_id], or
@@ -13,7 +12,6 @@ Rules:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -25,11 +23,8 @@ PROJECT_ROOT = ROOT.parent
 COMPONENTS_ROOT = ROOT / "components"
 MAPPING_FILE = ROOT / "runtime" / "component_mapping.yaml"
 
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(ROOT))
-
-from research.synthesis.primitives import PRIMITIVE_REGISTRY  # noqa: E402
-from runtime.bridge import _IO_COMPONENTS  # noqa: E402
+from research.synthesis.primitives import PRIMITIVE_REGISTRY
+from aria_designer.runtime.bridge import _IO_COMPONENTS
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -60,8 +55,10 @@ def _execution_class(cid: str, category: str, mapping: Dict[str, Any]) -> str:
 
 def main() -> int:
     mapping = _load_yaml(MAPPING_FILE)
-    aliases = mapping.get("aliases") or {}
     allowed_classes = {"primitive", "primitive_candidate", "composite", "data_control", "control", "io"}
+    passthrough = set(mapping.get("passthrough_components") or [])
+    sources = set(mapping.get("source_components") or [])
+    template_lowered = set(mapping.get("template_lowered_components") or [])
 
     errors: List[str] = []
     unmapped_count = 0
@@ -75,7 +72,9 @@ def main() -> int:
             )
             continue
 
-        if leaf in _IO_COMPONENTS or leaf in PRIMITIVE_REGISTRY or leaf in aliases:
+        if leaf in _IO_COMPONENTS or leaf in PRIMITIVE_REGISTRY:
+            continue
+        if leaf in passthrough or leaf in sources or leaf in template_lowered:
             continue
 
         unmapped_count += 1

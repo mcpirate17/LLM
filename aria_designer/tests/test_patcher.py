@@ -1,12 +1,8 @@
 """Tests for the Aria patch engine."""
 
-import sys
-import os
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from api.app.patcher import apply_patch_ops, PatchError
+from aria_designer.api.app.patcher import apply_patch_ops, PatchError
 
 
 def _base_workflow():

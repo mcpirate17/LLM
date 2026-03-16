@@ -1,20 +1,21 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { formatBenchmarkValue } from '../../utils/format';
 import useSortableRows from './useSortableRows';
 
 const BenchmarkTargets = ({ benchmarkMetrics, benchmarkObserved, onBenchmarkObservedChange }) => {
-  const [benchmarkInputDraft, setBenchmarkInputDraft] = useState('');
+  const initializedRef = useRef(false);
+  const src = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {};
+  const benchmarkInputCount = Object.entries(src).filter(([, v]) => Number.isFinite(Number(v))).length;
+
+  const [benchmarkInputDraft, setBenchmarkInputDraft] = useState(() =>
+    JSON.stringify(src, null, 2)
+  );
   const [benchmarkInputError, setBenchmarkInputError] = useState('');
 
-  const benchmarkInputCount = useMemo(() => {
-    const src = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {};
-    return Object.entries(src).filter(([, v]) => Number.isFinite(Number(v))).length;
-  }, [benchmarkObserved]);
-
-  useEffect(() => {
-    const src = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {};
+  if (!initializedRef.current && Object.keys(src).length > 0) {
+    initializedRef.current = true;
     setBenchmarkInputDraft(JSON.stringify(src, null, 2));
-  }, [benchmarkObserved]);
+  }
 
   const handleApplyBenchmarkObserved = () => {
     if (typeof onBenchmarkObservedChange !== 'function') return;

@@ -185,8 +185,10 @@ def test_candidate_scoring_includes_supporting_insight_ids():
     exp_id = nb.start_experiment("synthesis", {"n_programs": 3}, "selection insight scoring")
     candidates = _seed_candidates(nb, exp_id)
 
-    nb.record_insight("success_factor", "attention composes well with residual paths", exp_id, confidence=0.9)
-    nb.record_insight("success_factor", "conv1d_seq is robust in stage1", exp_id, confidence=0.8)
+    nb.record_insight("success_factor", "attention composes well with residual paths",
+                       exp_id, confidence=0.9, subject_key="attention", insight_level="op")
+    nb.record_insight("success_factor", "conv1d_seq is robust in stage1",
+                       exp_id, confidence=0.8, subject_key="conv1d_seq", insight_level="op")
 
     cfg = RunConfig(selection_policy="ucb", selection_epsilon=0.0)
     scored = runner._score_candidate_pool(candidates, cfg, nb, "unit_test_insights", exp_id)

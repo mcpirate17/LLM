@@ -17,3 +17,8 @@ __all__ = [
 	"compression",
 	"spiking",
 ]
+
+# Ensure mathspace ops are always registered when this package is imported.
+# This handles the circular-import case where synthesis.primitives can't
+# eagerly import us (because we're mid-import). Idempotent.
+register_all_mathspaces()

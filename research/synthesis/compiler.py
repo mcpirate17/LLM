@@ -43,17 +43,24 @@ _OP_DISPATCH: Dict[str, Callable[[nn.Module, Tuple[torch.Tensor, ...], Dict], to
 
 
 def _register_split_op_modules() -> None:
-    """Prefer split op implementations when they are available."""
-    try:
-        from .compiler_ops_math import OP_IMPLS as math_ops
-        from .compiler_ops_attention import OP_IMPLS as attention_ops
-        from .compiler_ops_mathspaces import OP_IMPLS as mathspace_ops
-        from .compiler_ops_routing import OP_IMPLS as routing_ops
-    except Exception:
-        return
-
-    for registry in (math_ops, attention_ops, mathspace_ops, routing_ops):
-        _OP_DISPATCH.update(registry)
+    """Load split op implementations. Raises on import failure — a missing handler
+    module means the compiler cannot function correctly."""
+    split_modules = {
+        "compiler_ops_math": ".compiler_ops_math",
+        "compiler_ops_attention": ".compiler_ops_attention",
+        "compiler_ops_mathspaces": ".compiler_ops_mathspaces",
+        "compiler_ops_routing": ".compiler_ops_routing",
+    }
+    for label, rel_import in split_modules.items():
+        try:
+            mod = __import__(f"research.synthesis.{label}", fromlist=["OP_IMPLS"])
+            _OP_DISPATCH.update(mod.OP_IMPLS)
+        except ImportError as e:
+            raise ImportError(
+                f"Failed to load compiler op module '{label}': {e}\n"
+                f"Compiler handlers for ops in that module are missing. "
+                f"Fix the import error before continuing."
+            ) from e
 
 
 # ── Parallel Associative Scan ────────────────────────────────────────
@@ -498,7 +505,7 @@ def _op_split4(_, inputs, config):
 
 @register_op("concat")
 def _op_concat(_, inputs, __):
-    return torch.cat(inputs, dim=-1)
+    return torch.cat(inputs, dim=-1).contiguous()
 
 @register_op("roll_seq")
 def _op_roll_seq(_, inputs, __): return torch.roll(inputs[0], shifts=1, dims=1)
@@ -558,41 +565,35 @@ def _op_learnable_bias(module, inputs, _):
 @register_op("selective_scan")
 def _op_selective_scan(module, inputs, _):
     """
-    Vectorized Linear Scan.
-    Computes h[t] = decay * h[t-1] + B_x[t] * x[t], out[t] = C_x[t] * h[t]
-    Since decay is constant in this implementation, this is a linear recurrence
-    that can be computed via a parallel scan or cumulative sum in log-space.
+    Vectorized Linear Scan with trapezoidal discretization (Mamba-3 style).
+
+    Trapezoidal rule: h[t] = a*h[t-1] + 0.5*(u[t] + a*u[t-1])
+    Second-order accuracy vs Euler's first-order, same compute cost.
+    Uses causal convolution for parallel evaluation.
     """
     if not hasattr(module, 'A_log'): return inputs[0]
     x = inputs[0]
     B, S, D = x.shape
-    
-    # h[t] = a h[t-1] + u[t]
-    # h[t] = sum_{i=0}^t a^{t-i} u[i]
+
     A = -torch.exp(module.A_log.clamp(-10, 10))
-    # Ensure dt matches input dim D
     dt = F.softplus(module.dt_proj[:D])
-    # Clamp to [-10, -0.05]: upper bound -0.05 ensures minimum 5% decay
-    # per step, bounding kernel sum to ~20 (geometric series) instead of
-    # S (~128).  log_a=0 creates a pure integrator (no decay) whose
-    # gradient amplification is O(S²) — the primary cause of grad explosion
-    # in selective_scan architectures.
     log_a = (A * dt).clamp(-10, -0.05)  # (D,)
+    a = torch.exp(log_a)  # decay per step (D,)
 
     u = torch.sigmoid(module.B_proj(x)) * x  # (B, S, D)
 
-    # Vectorized linear recurrence via causal convolution with exponential kernel.
-    # h_t = a * h_{t-1} + u_t, kernel = [a^{S-1}, ..., a, 1].
-    # Use log-space arithmetic for numerical stability.
-    indices = torch.arange(S, device=x.device, dtype=x.dtype)
-    # log_kernel[d, 1, s] = log_a[d] * (S-1-s)
-    log_kernel = log_a.view(D, 1, 1) * (S - 1 - indices).view(1, 1, S)
-    kernel = torch.exp(log_kernel)  # (D, 1, S) — single exp, stable
+    # Trapezoidal input: u_trap[t] = 0.5 * (u[t] + a * u[t-1])
+    u_prev = F.pad(u, (0, 0, 1, 0))[:, :S, :]  # shift right, pad with 0
+    u_trap = 0.5 * (u + a.unsqueeze(0).unsqueeze(0) * u_prev)
 
-    u_swapped = u.permute(0, 2, 1) # (B, D, S)
-    # Causal convolution via padding
-    h_swapped = F.conv1d(F.pad(u_swapped, (S - 1, 0)), kernel, groups=D) # (B, D, S)
-    h = h_swapped.permute(0, 2, 1) # (B, S, D)
+    # Vectorized linear recurrence via causal convolution with exponential kernel
+    indices = torch.arange(S, device=x.device, dtype=x.dtype)
+    log_kernel = log_a.view(D, 1, 1) * (S - 1 - indices).view(1, 1, S)
+    kernel = torch.exp(log_kernel)  # (D, 1, S)
+
+    u_swapped = u_trap.permute(0, 2, 1)  # (B, D, S)
+    h_swapped = F.conv1d(F.pad(u_swapped, (S - 1, 0)), kernel, groups=D)
+    h = h_swapped.permute(0, 2, 1)  # (B, S, D)
 
     C_x = torch.sigmoid(module.C_proj(x))
     return C_x * h
@@ -802,6 +803,37 @@ def _op_graph_attention(module, inputs, _):
     out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
     return module.o_proj(out)
 
+@register_op("diff_attention")
+def _op_diff_attention(module, inputs, _):
+    """Differential attention: two softmax maps subtracted to cancel noise.
+
+    Q/K are split into two groups. Two separate softmax attention maps
+    are computed and subtracted, cancelling common-mode noise and
+    amplifying relevant signal. (Microsoft, ICLR 2025)
+    """
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    # Project Q, K, V — Q and K are 2x wide for the two groups
+    q = module.q_proj(x).reshape(B, S, nh, 2, hd).permute(0, 2, 3, 1, 4)  # (B, nh, 2, S, hd)
+    k = module.k_proj(x).reshape(B, S, nh, 2, hd).permute(0, 2, 3, 1, 4)
+    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)  # (B, nh, S, hd)
+
+    # Two attention maps
+    scale = hd ** -0.5
+    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    attn1 = (q[:, :, 0] @ k[:, :, 0].transpose(-2, -1)) * scale
+    attn2 = (q[:, :, 1] @ k[:, :, 1].transpose(-2, -1)) * scale
+    attn1.masked_fill_(mask, float("-inf"))
+    attn2.masked_fill_(mask, float("-inf"))
+
+    # Differential: subtract to cancel noise, scale by learned lambda
+    diff = F.softmax(attn1, dim=-1) - module.lambda_param.abs() * F.softmax(attn2, dim=-1)
+    out = (diff @ v).transpose(1, 2).reshape(B, S, -1)
+    return module.o_proj(out)
+
 @register_op("state_space")
 def _op_state_space(module, inputs, _):
     """S4-style state space mixer with true parallel associative scan.
@@ -847,6 +879,42 @@ def _op_conv_only(module, inputs, _):
     B, S, D = x.shape
     out = module.conv_dw(x.transpose(1, 2))[:, :, :S].transpose(1, 2)
     return module.conv_proj(out)
+
+@register_op("gated_delta")
+def _op_gated_delta(module, inputs, _):
+    """Gated delta rule: linear recurrence with decay + update gates.
+
+    h[t] = alpha[t] * h[t-1] + beta[t] * (v[t] ⊗ k[t] - h[t-1])
+    where alpha = sigmoid(decay gate), beta = sigmoid(update gate).
+    The delta term (v⊗k - h) does targeted overwrites, not just accumulation.
+    (NVIDIA GatedDeltaNet, ICLR 2025)
+    """
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, D = x.shape
+
+    # Project input to query, key, value, and gates
+    q = module.q_proj(x)                                         # (B, S, D)
+    k = module.k_proj(x)                                         # (B, S, D)
+    v = module.v_proj(x)                                         # (B, S, D)
+    alpha = torch.sigmoid(module.alpha_proj(x))                  # (B, S, D) decay gate
+    beta = torch.sigmoid(module.beta_proj(x))                    # (B, S, D) update gate
+
+    # Sequential recurrence (parallel scan possible but sequential is correct)
+    h = torch.zeros(B, D, D, device=x.device, dtype=x.dtype)    # state: (B, D, D)
+    outputs = []
+    for t in range(S):
+        # Outer product: v[t] ⊗ k[t] → (B, D, D)
+        vk = v[:, t, :].unsqueeze(-1) * k[:, t, :].unsqueeze(-2)
+        # Delta update: targeted write via (vk - h)
+        h = alpha[:, t, :].unsqueeze(-1) * h + beta[:, t, :].unsqueeze(-1) * (vk - h)
+        # Read: q[t] @ h → (B, D)
+        out_t = (q[:, t, :].unsqueeze(-2) @ h).squeeze(-2)
+        outputs.append(out_t)
+
+    out = torch.stack(outputs, dim=1)  # (B, S, D)
+    return module.o_proj(out)
 
 @register_op("nm_sparse_linear")
 def _op_nm_sparse_linear(module, inputs, config):
@@ -903,7 +971,7 @@ def _op_block_sparse_linear(module, inputs, config):
 @register_op("low_rank_proj")
 def _op_low_rank_proj(module, inputs, _):
     if not hasattr(module, 'U') or not hasattr(module, 'V'): return inputs[0]
-    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32:
+    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32 and not inputs[0].requires_grad:
         bias = getattr(module, 'bias', None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
         # C kernel expects U:[rank, dim_in], V:[dim_out, rank] but Python stores
@@ -920,7 +988,7 @@ def _op_low_rank_proj(module, inputs, _):
 @register_op("grouped_linear")
 def _op_grouped_linear(module, inputs, _):
     if not hasattr(module, 'weight'): return inputs[0]
-    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32:
+    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32 and not inputs[0].requires_grad:
         bias = getattr(module, 'bias', None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
         out = aria_core.linear_grouped_f32(x, module.weight, bias, module.n_groups)
@@ -941,7 +1009,7 @@ def _op_grouped_linear(module, inputs, _):
 @register_op("bottleneck_proj")
 def _op_bottleneck_proj(module, inputs, _):
     if not hasattr(module, 'down') or not hasattr(module, 'up'): return inputs[0]
-    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32:
+    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32 and not inputs[0].requires_grad:
         b_down = getattr(module, 'bias_down', None)
         b_up = getattr(module, 'bias_up', None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
@@ -954,17 +1022,18 @@ def _op_bottleneck_proj(module, inputs, _):
 @register_op("shared_basis_proj")
 def _op_shared_basis_proj(module, inputs, _):
     if not hasattr(module, 'mixing') or not hasattr(module, 'basis'): return inputs[0]
-    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32:
+    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32 and not inputs[0].requires_grad:
         x, orig_shape = _flatten_for_kernel(inputs[0])
-        out = aria_core.linear_shared_basis_f32(x, module.mixing, module.basis)
+        # C kernel expects mixing as (k, D) but we store (D, k) — transpose
+        out = aria_core.linear_shared_basis_f32(x, module.mixing.T.contiguous(), module.basis)
         return _unflatten_from_kernel(out, orig_shape)
-    # PyTorch fallback
+    # PyTorch fallback: x @ (D,k) @ (k,D) -> (B,S,D)
     return inputs[0] @ module.mixing @ module.basis
 
 @register_op("tied_proj")
 def _op_tied_proj(module, inputs, _):
     if not hasattr(module, 'tied_weight'): return inputs[0]
-    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32:
+    if HAS_ARIA_CORE and inputs[0].device.type == "cpu" and inputs[0].dtype == torch.float32 and not inputs[0].requires_grad:
         b_down = getattr(module, 'bias_down', None)
         b_up = getattr(module, 'bias_up', None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
@@ -1339,35 +1408,53 @@ def _op_route_topk(module, inputs, config):
 
 @register_op("route_lanes")
 def _op_route_lanes(module, inputs, config):
-    scores = inputs[0] # (B, S, L)
-    if HAS_ARIA_CORE and scores.device.type == "cpu" and scores.dtype == torch.float32:
-        lane_indices = aria_core.route_lane_argmax_f32(scores)
-        _record_routing_telemetry(module, scores.shape[2], lane_indices, logits=scores)
-        return lane_indices
-    # Fallback
-    lane_indices = scores.argmax(dim=-1)
-    _record_routing_telemetry(module, scores.shape[2], lane_indices, logits=scores)
-    return lane_indices
+    """Learned lane routing: difficulty scorer → lane assignment → per-lane transforms."""
+    x = inputs[0]
+    B, S, D = x.shape
+    n_lanes = int(config.get("n_lanes", 3))
+    if not hasattr(module, 'lane_scorer'):
+        return x
+    dt = x.dtype
+    lane_logits = F.linear(x, module.lane_scorer.to(dt))
+    lane_weights = F.softmax(lane_logits, dim=-1)
+    _record_routing_telemetry(module, n_lanes, lane_logits.argmax(dim=-1), logits=lane_logits)
+    out = torch.zeros_like(x)
+    for i in range(n_lanes):
+        if hasattr(module, 'lane_projs') and i < len(module.lane_projs):
+            lane_out = F.linear(x, module.lane_projs[i].to(dt))
+        else:
+            lane_out = x
+        out = out + lane_weights[..., i:i+1] * lane_out
+    return out
 
 @register_op("route_recursion")
 def _op_route_recursion(module, inputs, config):
-    scores = inputs[0] # (B, S, Dp)
-    max_depth = scores.shape[-1]
-    if HAS_ARIA_CORE and scores.device.type == "cpu" and scores.dtype == torch.float32:
-        depth = aria_core.route_recursion_depth_f32(scores)
-    else:
-        # Fallback
-        depth = scores.argmax(dim=-1) + 1
-    _record_routing_telemetry(module, max_depth, depth, logits=scores)
-    return depth
+    """Learned depth routing: difficulty scorer → depth assignment → per-depth transforms."""
+    x = inputs[0]
+    B, S, D = x.shape
+    max_depth = int(config.get("max_depth", 3))
+    max_depth = max(1, min(6, max_depth))
+    if not hasattr(module, 'depth_scorer'):
+        return x
+    dt = x.dtype
+    depth_logits = F.linear(x, module.depth_scorer.to(dt))
+    depth_weights = F.softmax(depth_logits, dim=-1)
+    _record_routing_telemetry(module, max_depth, depth_logits.argmax(dim=-1), logits=depth_logits)
+    out = torch.zeros_like(x)
+    for i in range(max_depth):
+        if hasattr(module, 'depth_projs') and i < len(module.depth_projs):
+            step_out = F.linear(x, module.depth_projs[i].to(dt))
+        else:
+            step_out = x
+        out = out + depth_weights[..., i:i+1] * step_out
+    return out
 
-@register_op("token_merging")
 @register_op("token_merge")
 def _op_token_merge(module, inputs, config):
     x = inputs[0]
     n_keep = int(config.get("n_keep", x.shape[1] // 2))
     seq_len = x.shape[1]
-    if HAS_ARIA_CORE and x.device.type == "cpu" and x.dtype == torch.float32:
+    if HAS_ARIA_CORE and x.device.type == "cpu" and x.dtype == torch.float32 and not x.requires_grad:
         y, restore_map = aria_core.token_merge_simple_f32(x, n_keep)
     else:
         # Fallback: simple truncation
@@ -1387,16 +1474,14 @@ def _op_token_merge(module, inputs, config):
     merge_telem["merge_dropped"] = merge_telem.get("merge_dropped", 0) + B * (seq_len - n_keep)
     merge_telem["count"] = merge_telem.get("count", 0) + 1
     setattr(module, "routing_telemetry", merge_telem)
-    # Restore to original length with causal-safe indexing:
-    # Position i can only map to kept positions <= i (never look ahead)
-    B_size, S_orig = restore_map.shape
-    causal_limit = torch.arange(S_orig, device=restore_map.device).unsqueeze(0).expand(B_size, -1)
-    causal_limit = causal_limit.clamp(max=y.shape[1] - 1)
-    restore_map = restore_map.clamp(0, y.shape[1] - 1).minimum(causal_limit)
-    return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, x.shape[2]))
+    # Restore to original length via causal nearest-kept mapping:
+    # Position i maps to min(i, n_keep-1) — the nearest kept token
+    # at or before position i.  Never looks ahead.
+    pos = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(B, -1)
+    restore_idx = pos.clamp(max=y.shape[1] - 1)
+    return y.gather(1, restore_idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
 
 
-_op_token_merging = _op_token_merge
 
 # ── Routing Control Ops (Phase 2) ────────────────────────────────────
 
@@ -1408,62 +1493,95 @@ def _routing_scores_from_x(x: torch.Tensor) -> torch.Tensor:
 def _op_mod_topk(module, inputs, config):
     x = inputs[0]
     B, S, D = x.shape
-    capacity = float(config.get("capacity_factor", 0.75))
-    scores = _routing_scores_from_x(x)
-    # Causal sparsity: deterministic stride-based mask that keeps
-    # ~capacity fraction of positions without peeking at future tokens.
-    stride = max(1, int(1.0 / max(1.0 - capacity, 0.01)))
-    pos = torch.arange(S, device=x.device)
-    keep_mask = ((pos % stride) != (stride - 1)).float().unsqueeze(0).expand(B, -1)
-    cumsum = scores.cumsum(dim=-1)
-    counts = torch.arange(1, S + 1, device=scores.device, dtype=scores.dtype)
-    causal_mean = cumsum / counts
-    soft_gate = torch.sigmoid(4.0 * (scores - causal_mean))
-    gate = soft_gate * keep_mask
+    capacity = float(config.get("capacity_factor", 0.5))
+    k = max(1, int(S * capacity))
+
+    # Input-dependent router scores
+    if hasattr(module, 'router_weight'):
+        scores = F.linear(x, module.router_weight).squeeze(-1)  # (B, S)
+    else:
+        scores = _routing_scores_from_x(x)
+
+    # Select top-k tokens by score
+    topk_scores, topk_indices = scores.topk(k, dim=-1)
+
+    # Build hard mask with STE for gradient flow
+    mask = torch.zeros_like(scores)
+    mask.scatter_(-1, topk_indices, 1.0)
+
+    # Soft version for backward: sigmoid around the k-th threshold
+    threshold = topk_scores[:, -1:]  # (B, 1) — the k-th largest score
+    soft_mask = torch.sigmoid(10.0 * (scores - threshold))
+    # STE: hard mask forward, soft mask backward
+    gate = mask - soft_mask.detach() + soft_mask
+
     _record_routing_telemetry(module, S, (gate > 0.5).long(), logits=scores)
+
     return x * gate.unsqueeze(-1)
 
 @register_op("early_exit")
 def _op_early_exit(module, inputs, config):
+    """Learned early-exit: tokens with low confidence are attenuated."""
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
-    scores = _routing_scores_from_x(x)
+    if hasattr(module, 'confidence_proj'):
+        scores = F.linear(x, module.confidence_proj.to(x.dtype)).squeeze(-1)
+    else:
+        scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores)
     keep = (gate > threshold).float()
+    gate_ste = keep - gate.detach() + gate
     _record_routing_telemetry(module, 2, keep.long(), logits=gate)
-    return x * keep.unsqueeze(-1)
+    return x * gate_ste.unsqueeze(-1)
 
 @register_op("cascade")
 def _op_cascade(module, inputs, config):
+    """Learned progressive cascade: soft gate scales tokens by learned difficulty."""
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
-    scores = _routing_scores_from_x(x)
+    if hasattr(module, 'cascade_proj'):
+        scores = F.linear(x, module.cascade_proj.to(x.dtype)).squeeze(-1)
+    else:
+        scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores)
     _record_routing_telemetry(module, 2, (gate > threshold).long(), logits=gate)
     return x * gate.unsqueeze(-1)
 
 @register_op("speculative")
 def _op_speculative(module, inputs, config):
+    """Speculative execution: cheap path always runs, learned gate blends full path."""
     x = inputs[0]
-    threshold = float(config.get("threshold", 0.5))
-    scores = _routing_scores_from_x(x)
-    gate = torch.sigmoid(scores)
-    keep = (gate > threshold).float()
-    _record_routing_telemetry(module, 2, keep.long(), logits=gate)
-    # Mild effect: scale rather than drop
-    return x * (0.5 + 0.5 * gate).unsqueeze(-1)
+    if not hasattr(module, 'cheap_proj'):
+        return x
+    dt = x.dtype
+    cheap_out = F.linear(x, module.cheap_proj.to(dt))
+    gate = torch.sigmoid(F.linear(x, module.verify_gate.to(dt)).squeeze(-1))
+    _record_routing_telemetry(module, 2, (gate > 0.5).long(), logits=gate)
+    return cheap_out + gate.unsqueeze(-1) * (x - cheap_out)
 
 @register_op("adaptive_recursion")
 def _op_adaptive_recursion(module, inputs, config):
+    """Learned adaptive recursion: per-token depth from learned scorer, per-step transforms."""
     x = inputs[0]
     max_depth = int(config.get("max_depth", 3))
     max_depth = max(1, min(6, max_depth))
+    if hasattr(module, 'depth_scorer'):
+        dt = x.dtype
+        depth_logits = F.linear(x, module.depth_scorer.to(dt))
+        depth_weights = F.softmax(depth_logits, dim=-1)
+        _record_routing_telemetry(module, max_depth,
+                                  depth_weights.argmax(dim=-1), logits=depth_logits)
+        out = torch.zeros_like(x)
+        for i in range(max_depth):
+            if hasattr(module, 'step_projs') and i < len(module.step_projs):
+                step_out = F.linear(x, module.step_projs[i].to(dt))
+            else:
+                step_out = x
+            out = out + depth_weights[..., i:i+1] * step_out
+        return out
     scores = _routing_scores_from_x(x)
     depth_scores = torch.stack([scores + (i * 0.1) for i in range(max_depth)], dim=-1)
-    if HAS_ARIA_CORE and depth_scores.device.type == "cpu" and depth_scores.dtype == torch.float32:
-        depth = aria_core.route_recursion_depth_f32(depth_scores)
-    else:
-        depth = depth_scores.argmax(dim=-1) + 1
+    depth = depth_scores.argmax(dim=-1) + 1
     scale = 1.0 + 0.05 * depth.float()
     return x * scale.unsqueeze(-1)
 
@@ -1562,37 +1680,48 @@ def _op_routing_conditioned_compression(module, inputs, config):
 
 @register_op("token_type_classifier")
 def _op_token_type_classifier(module, inputs, config):
-    """Learned classifier: (B,S,D) -> scores -> projected back to (B,S,D)."""
+    """Token type classifier: D → n_classes (with nonlinearity) → D."""
     x = inputs[0]  # (B, S, D)
     if not hasattr(module, 'classifier_weight'):
         return x
-    # (B, S, D) -> (B, S, n_classes)
-    scores = F.linear(x, module.classifier_weight)
-    # Project back to model dim so downstream ops get correct shape
+    # (B, S, D) → (B, S, n_classes) with GELU for nonlinear class boundaries
+    scores = F.gelu(F.linear(x, module.classifier_weight))
+    # Stash classification scores for telemetry / downstream routing
+    module._class_scores = scores.detach()
+    # Project back to model dim
     return F.linear(scores, module.classifier_proj_back)
 
-@register_op("entropy_router")
-def _op_entropy_router(module, inputs, config):
-    """Produces routing signal [B, S, 1] based on entropy of input scores (B,S,K)."""
+@register_op("entropy_score")
+def _op_entropy_score(module, inputs, config):
+    """Compute Shannon entropy of input scores as a difficulty signal (B,S,K) → (B,S,1).
+
+    Uses log_softmax for numerical stability and temperature scaling
+    to prevent gradient vanishing from softmax saturation.
+    """
     scores = inputs[0]
-    probs = F.softmax(scores, dim=-1)
-    entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1, keepdim=True)
+    temperature = max(scores.shape[-1] ** 0.5, 1.0)
+    log_probs = F.log_softmax(scores / temperature, dim=-1)
+    probs = log_probs.exp()
+    entropy = -torch.sum(probs * log_probs, dim=-1, keepdim=True)
     return entropy
 
 @register_op("progressive_compression_gate")
 def _op_progressive_compression_gate(module, inputs, config):
-    """Learned per-layer compression: interpolates between full and low-rank based on depth."""
+    """Per-token compression gate: learned projection decides compression ratio per token."""
     x = inputs[0]
-    if not hasattr(module, 'weight_full') or not hasattr(module, 'compress_param'):
+    if not hasattr(module, 'weight_full'):
         return x
-    
-    # compress_param is a single scalar per layer
-    s = torch.sigmoid(module.compress_param)
-    
-    full = F.linear(x, module.weight_full)
+    dt = x.dtype
+    # Per-token gate: (B,S,D) → (B,S,1) — each token gets its own compression ratio
+    if hasattr(module, 'token_gate'):
+        s = torch.sigmoid(F.linear(x, module.token_gate.to(dt)))  # (B, S, 1)
+    else:
+        s = torch.sigmoid(module.compress_param)
+
+    full = F.linear(x, module.weight_full.to(dt))
     if hasattr(module, 'U_comp'):
-        comp = F.linear(F.linear(x, module.U_comp), module.V_comp)
-        return s * full + (1-s) * comp
+        comp = F.linear(F.linear(x, module.U_comp.to(dt)), module.V_comp.to(dt))
+        return s * full + (1 - s) * comp
     return full
 
 @register_op("compression_mixture_experts")
@@ -1617,21 +1746,25 @@ def _op_compression_mixture_experts(module, inputs, config):
 
 @register_op("relu_gate_routing")
 def _op_relu_gate_routing(module, inputs, config):
-    """ReLU-based differentiable MoE gating (ReMoE).
-    Unlike Top-K, this learns how many experts to activate per token.
-    """
+    """ReLU-gated MoE (ReMoE): learned gate activates variable expert count per token."""
     x = inputs[0]
-    if not hasattr(module, 'gate_proj'): return x
-    
-    # [B, S, n_experts]
-    gate_scores = F.relu(F.linear(x, module.gate_proj))
-    
-    # Record telemetry on 'effective expert count' (sparsity)
-    active_count = (gate_scores > 0).float().sum(dim=-1).mean().item()
-    _record_routing_telemetry(module, gate_scores.shape[-1], gate_scores.argmax(dim=-1), logits=gate_scores)
-    
-    # Placeholder: In a real MoE this would dispatch to experts.
-    # For micro-eval, we just return the weighted gate signal.
+    if not hasattr(module, 'gate_proj'):
+        return x
+    dt = x.dtype
+    n_experts = module.gate_proj.shape[0]
+    gate_scores = F.relu(F.linear(x, module.gate_proj.to(dt)))
+    gate_sum = gate_scores.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    gate_weights = gate_scores / gate_sum
+
+    _record_routing_telemetry(module, n_experts, gate_scores.argmax(dim=-1), logits=gate_scores)
+
+    if hasattr(module, 'expert_weights'):
+        output = torch.zeros_like(x)
+        for i in range(n_experts):
+            w = gate_weights[..., i:i+1]
+            expert_out = F.linear(x, module.expert_weights[i].to(dt))
+            output = output + w * expert_out
+        return output
     return gate_scores.sum(dim=-1, keepdim=True).expand_as(x) * x
 
 @register_op("ternary_projection")
@@ -1876,37 +2009,41 @@ def _execute_op(module: nn.Module, op_name: str, inputs: Tuple[torch.Tensor, ...
     from .primitives import PRIMITIVE_REGISTRY
     if op_name in PRIMITIVE_REGISTRY:
         prim = PRIMITIVE_REGISTRY[op_name]
-        if hasattr(prim, 'execute_fn') and prim.execute_fn is not None:
-            result = prim.execute_fn(module, *inputs)
-            # Sanitize non-finite values and record telemetry
-            if isinstance(result, torch.Tensor):
-                nonfinite = int((~torch.isfinite(result)).sum().item())
-                telemetry = getattr(module, "mathspace_telemetry", {})
-                stats = telemetry.get(op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0})
-                stats["calls"] = stats.get("calls", 0) + 1
-                
-                if nonfinite > 0:
-                    result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
-                    stats["nonfinite_elements"] = stats.get("nonfinite_elements", 0) + nonfinite
-                    stats["sanitized_calls"] = stats.get("sanitized_calls", 0) + 1
-                    
-                telemetry[op_name] = stats
-                setattr(module, "mathspace_telemetry", telemetry)
+        if not (hasattr(prim, 'execute_fn') and prim.execute_fn is not None):
+            raise RuntimeError(
+                f"Op '{op_name}' is registered as a primitive but has no compiler "
+                f"handler in _OP_DISPATCH and no execute_fn fallback. "
+                f"Check that _register_split_op_modules() completed without errors."
+            )
+        result = prim.execute_fn(module, *inputs)
+        # Sanitize non-finite values and record telemetry
+        if isinstance(result, torch.Tensor):
+            nonfinite = int((~torch.isfinite(result)).sum().item())
+            telemetry = getattr(module, "mathspace_telemetry", {})
+            stats = telemetry.get(op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0})
+            stats["calls"] = stats.get("calls", 0) + 1
 
-            # Tropical routing telemetry for route-collapse detection
-            if op_name in ("tropical_router", "tropical_moe"):
-                _tropical_obj = getattr(module, '_tropical_router', None) or getattr(module, '_tropical_moe', None)
-                if _tropical_obj is not None:
-                    _router = getattr(_tropical_obj, 'router', _tropical_obj)
-                    if hasattr(_router, 'centroids'):
-                        n_exp = _router.centroids.shape[0]
-                        # Re-run router for telemetry (cheap — just reads cached weights)
-                        with torch.no_grad():
-                            _weights = _router(inputs[0])  # (B, S, n_experts)
-                            _top_idx = _weights.argmax(dim=-1).flatten()  # (B*S,)
-                            _record_routing_telemetry(module, n_exp, _top_idx.unsqueeze(-1), logits=_weights.reshape(-1, n_exp))
+            if nonfinite > 0:
+                result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
+                stats["nonfinite_elements"] = stats.get("nonfinite_elements", 0) + nonfinite
+                stats["sanitized_calls"] = stats.get("sanitized_calls", 0) + 1
 
-            return result
+            telemetry[op_name] = stats
+            setattr(module, "mathspace_telemetry", telemetry)
+
+        # Tropical routing telemetry for route-collapse detection
+        if op_name in ("tropical_router", "tropical_moe"):
+            _tropical_obj = getattr(module, '_tropical_router', None) or getattr(module, '_tropical_moe', None)
+            if _tropical_obj is not None:
+                _router = getattr(_tropical_obj, 'router', _tropical_obj)
+                if hasattr(_router, 'centroids'):
+                    n_exp = _router.centroids.shape[0]
+                    with torch.no_grad():
+                        _weights = _router(inputs[0])  # (B, S, n_experts)
+                        _top_idx = _weights.argmax(dim=-1).flatten()  # (B*S,)
+                        _record_routing_telemetry(module, n_exp, _top_idx.unsqueeze(-1), logits=_weights.reshape(-1, n_exp))
+
+        return result
 
     raise ValueError(f"Unknown op: {op_name}")
 
@@ -1936,10 +2073,12 @@ class CompiledOp(nn.Module):
     def _init_params(self, op: PrimitiveOp, config: Dict, input_shape: ShapeInfo):
         """Initialize learnable parameters for this op."""
         D_in = max(1, input_shape.dim)
-        # Guard against degenerate input dims (e.g. from entropy_router's
-        # reduce_last → dim=1).  Fall back to model_dim so weight shapes
-        # are sensible and bf16 autocast doesn't hit shape/dtype mismatches.
-        if D_in < 4:
+        # Guard against degenerate input dims (e.g. from entropy_score's
+        # reduce_last → dim=1) for ops with structured params (attention heads,
+        # MoE experts, etc.).  Linear projections must use the true D_in so
+        # bridge layers from reduce_last ops get correct (D_out, 1) weights.
+        _LINEAR_OPS = {"linear_proj", "linear_proj_down", "linear_proj_up", "fused_linear_gelu"}
+        if D_in < 4 and op.name not in _LINEAR_OPS:
             D_in = self.model_dim
         D_out = max(1, config.get("out_dim", D_in))
         # Avoid division by zero for symbolic or unset shapes
@@ -1998,6 +2137,8 @@ class CompiledOp(nn.Module):
                 self.C_proj.weight.data.normal_(std=0.02),
             ),
             "conv1d_seq": lambda: setattr(self, "conv_weight", self._make_param((D_in, 1, 3), std=1.0 / math.sqrt(3))),
+            "route_lanes": lambda: self._init_route_lanes(config, D_in),
+            "route_recursion": lambda: self._init_route_recursion(config, D_in),
             "topk_gate": lambda: setattr(self, "gate_proj", self._make_param((2, D_in), std=0.02)),
             "moe_topk": lambda: self._init_moe_topk(config, D_in),
             "moe_2expert": lambda: (
@@ -2055,15 +2196,24 @@ class CompiledOp(nn.Module):
             "softmax_attention": lambda: _init_attention_stack("softmax_attention"),
             "linear_attention": lambda: _init_attention_stack("linear_attention"),
             "graph_attention": lambda: _init_attention_stack("graph_attention"),
+            "diff_attention": lambda: self._init_diff_attention(D_in),
+            "gated_delta": lambda: self._init_gated_delta(D_in),
             "state_space": lambda: self._init_state_space(D_in),
             "conv_only": lambda: self._init_conv_only(D_in),
             "stdp_attention": lambda: setattr(self, "log_tau", nn.Parameter(torch.tensor(0.0))),
+            "mod_topk": lambda: (
+                setattr(self, "router_weight", self._make_param((1, D_in), std=0.02)),
+            ),
             "adaptive_lane_mixer": lambda: self._init_adaptive_lane_mixer(D_in),
             "mixed_recursion_gate": lambda: self._init_mixed_recursion_gate(config, D_in),
+            "early_exit": lambda: setattr(self, "confidence_proj", self._make_param((1, D_in), std=0.02)),
+            "cascade": lambda: setattr(self, "cascade_proj", self._make_param((1, D_in), std=0.02)),
+            "speculative": lambda: self._init_speculative(D_in),
+            "adaptive_recursion": lambda: self._init_adaptive_recursion(config, D_in),
             "token_type_classifier": lambda: self._init_token_type_classifier(config, D_in),
             "progressive_compression_gate": lambda: self._init_progressive_compression_gate(D_in, D_out),
             "compression_mixture_experts": lambda: self._init_compression_mixture_experts(D_in, D_out),
-            "relu_gate_routing": lambda: setattr(self, "gate_proj", self._make_param((int(config.get("n_experts", 8)), D_in), std=0.02)),
+            "relu_gate_routing": lambda: self._init_relu_gate_routing(config, D_in),
             "ternary_projection": lambda: self._init_ternary_projection(config, D_in, D_out),
             "latent_attention_compressor": lambda: self._init_latent_attention_compressor(D_in),
             "routing_conditioned_compression": lambda: self._init_routing_conditioned_compression(D_in),
@@ -2143,6 +2293,52 @@ class CompiledOp(nn.Module):
         self.receptance_proj.weight.data.normal_(mean=0.0, std=0.02)
         self.value_proj.weight.data.normal_(mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1))
 
+    def _init_diff_attention(self, d_in: int) -> None:
+        n_heads = max(1, d_in // 64)
+        head_dim = d_in // n_heads
+        self.n_heads = n_heads
+        self.head_dim = head_dim
+        # Q and K project to 2x heads (two groups for differential)
+        self.q_proj = nn.Linear(d_in, n_heads * 2 * head_dim, bias=False)
+        self.k_proj = nn.Linear(d_in, n_heads * 2 * head_dim, bias=False)
+        self.v_proj = nn.Linear(d_in, n_heads * head_dim, bias=False)
+        self.o_proj = nn.Linear(n_heads * head_dim, d_in, bias=False)
+        self.lambda_param = nn.Parameter(torch.tensor(0.5))
+        for proj in (self.q_proj, self.k_proj, self.v_proj, self.o_proj):
+            proj.weight.data.normal_(std=0.02)
+
+    def _init_gated_delta(self, d_in: int) -> None:
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.k_proj = nn.Linear(d_in, d_in, bias=False)
+        self.v_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.alpha_proj = nn.Linear(d_in, d_in, bias=False)  # decay gate
+        self.beta_proj = nn.Linear(d_in, d_in, bias=False)   # update gate
+        for proj in (self.q_proj, self.k_proj, self.v_proj, self.o_proj,
+                     self.alpha_proj, self.beta_proj):
+            proj.weight.data.normal_(std=0.02)
+
+    def _init_route_lanes(self, config: Dict, d_in: int) -> None:
+        n_lanes = int(config.get("n_lanes", 3))
+        self.lane_scorer = self._make_param((n_lanes, d_in), std=0.02)
+        projs = []
+        for _ in range(n_lanes):
+            p = nn.Parameter(torch.empty(d_in, d_in))
+            p.data.normal_(std=0.02)
+            projs.append(p)
+        self.lane_projs = nn.ParameterList(projs)
+
+    def _init_route_recursion(self, config: Dict, d_in: int) -> None:
+        max_depth = int(config.get("max_depth", 3))
+        max_depth = max(1, min(6, max_depth))
+        self.depth_scorer = self._make_param((max_depth, d_in), std=0.02)
+        projs = []
+        for _ in range(max_depth):
+            p = nn.Parameter(torch.empty(d_in, d_in))
+            p.data.normal_(std=0.02)
+            projs.append(p)
+        self.depth_projs = nn.ParameterList(projs)
+
     def _init_state_space(self, d_in: int) -> None:
         state_dim = 16
         self.ssm_state_dim = state_dim
@@ -2183,6 +2379,31 @@ class CompiledOp(nn.Module):
             projs.append(p)
         self.step_projs = nn.ParameterList(projs)
 
+    def _init_speculative(self, d_in: int) -> None:
+        self.cheap_proj = self._make_param((d_in, d_in), std=0.02)
+        self.verify_gate = self._make_param((1, d_in), std=0.02)
+
+    def _init_adaptive_recursion(self, config: Dict, d_in: int) -> None:
+        max_depth = int(config.get("max_depth", 3))
+        max_depth = max(1, min(6, max_depth))
+        self.depth_scorer = self._make_param((max_depth, d_in), std=0.02)
+        projs = []
+        for _ in range(max_depth):
+            p = nn.Parameter(torch.empty(d_in, d_in))
+            p.data.normal_(std=0.02)
+            projs.append(p)
+        self.step_projs = nn.ParameterList(projs)
+
+    def _init_relu_gate_routing(self, config: Dict, d_in: int) -> None:
+        n_experts = int(config.get("n_experts", 8))
+        self.gate_proj = self._make_param((n_experts, d_in), std=0.02)
+        expert_list = []
+        for _ in range(n_experts):
+            p = nn.Parameter(torch.empty(d_in, d_in))
+            p.data.normal_(std=0.02)
+            expert_list.append(p)
+        self.expert_weights = nn.ParameterList(expert_list)
+
     def _init_token_type_classifier(self, config: Dict, d_in: int) -> None:
         n_classes = int(config.get("n_classes", 2))
         self.classifier_weight = self._make_param((n_classes, d_in), std=0.02)
@@ -2191,6 +2412,7 @@ class CompiledOp(nn.Module):
     def _init_progressive_compression_gate(self, d_in: int, d_out: int) -> None:
         self.weight_full = self._make_param((d_out, d_in), std=0.02)
         self.compress_param = nn.Parameter(torch.zeros(1))
+        self.token_gate = self._make_param((1, d_in), std=0.02)
         rank = max(d_in // 8, 1)
         self.U_comp = self._make_param((rank, d_in), std=0.02)
         self.V_comp = self._make_param((d_out, rank), std=0.02)

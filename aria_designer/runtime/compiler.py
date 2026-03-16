@@ -1,8 +1,7 @@
 import logging
-import torch
+import os
 import torch.nn as nn
 import importlib.util
-import os
 import yaml
 from .dispatch import KernelDispatcher
 from .port_dtypes import find_unsupported_edge_dtype_pairings

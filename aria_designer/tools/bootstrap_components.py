@@ -12,16 +12,12 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import yaml
 
-# Ensure research/ is importable
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(REPO_ROOT / "research"))
-sys.path.insert(0, str(REPO_ROOT))
 
 COMPONENTS_DIR = Path(__file__).resolve().parent.parent / "components"
 

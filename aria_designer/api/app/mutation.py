@@ -12,6 +12,7 @@ from .database import get_workflow, save_proposal
 from .intent_parser import IntentConstraints, component_groups, parse_intent_constraints
 from .models import AriaPatchProposalModel, PatchOpModel
 from .research_signals import fetch_research_recommendation_signals
+from .type_utils import safe_float, safe_str
 
 _IO_GROUPS = {"io"}
 _MUTATION_PENALTIES = {
@@ -24,10 +25,7 @@ _MUTATION_PENALTIES = {
 
 
 def _loss_ratio_value(parent_scores: Dict[str, Any]) -> float:
-    try:
-        return float(parent_scores.get("loss_ratio") or 0.5)
-    except (TypeError, ValueError):
-        return 0.5
+    return safe_float(parent_scores.get("loss_ratio"), default=0.5)
 
 
 def _param_delta_window(loss_ratio: float, max_param_delta: float) -> Tuple[float, float]:
@@ -46,11 +44,8 @@ def _signal_pair_rates(signals: Optional[Dict[str, Any]]) -> Dict[str, float]:
         return {}
     rates: Dict[str, float] = {}
     for row in signals.get("op_pair_priors") or ():
-        signature = str(row.get("signature") or "")
-        try:
-            success_rate = float(row.get("success_rate") or 0.0)
-        except (TypeError, ValueError):
-            continue
+        signature = safe_str(row.get("signature"))
+        success_rate = safe_float(row.get("success_rate"))
         if signature and success_rate > 0.0:
             rates[signature] = success_rate
     return rates

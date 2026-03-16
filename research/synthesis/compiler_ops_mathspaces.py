@@ -74,7 +74,7 @@ def _op_tropical_center(_, inputs, __):
     """Causal min centering: subtract cumulative minimum to preserve causality."""
     x = inputs[0]
     if _c(x):
-        return aria_core.tropical_center_f32(x)
+        return aria_core.tropical_center_f32(x.contiguous())
     # torch.cummin(x, dim=1).values is causal
     return x - torch.cummin(x, dim=1).values
 

@@ -11,7 +11,7 @@ VALID_ROUTING_KINDS = {
     "mod_topk",
     "early_exit",
     "adaptive_recursion",
-    "token_merging",
+    "token_merge",
     "cascade",
     "speculative",
     "mixture_of_paths",

@@ -28,7 +28,7 @@ class _ExecutionSearchMixin:
 
     # Ops considered "routing" for dashboard template stats
     _ROUTING_OPS = frozenset({
-        "entropy_router", "token_type_classifier", "route_topk", "route_lanes",
+        "entropy_score", "token_type_classifier", "route_topk", "route_lanes",
         "route_recursion", "adaptive_lane_mixer", "mixed_recursion_gate",
         "early_exit", "cascade", "speculative", "adaptive_recursion",
         "mod_topk", "token_merging", "token_merge", "relu_gate_routing",

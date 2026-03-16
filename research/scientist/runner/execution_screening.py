@@ -215,6 +215,30 @@ def _apply_insight_adjustments(
             if "7-9" in best:
                 grammar.composition_depth = min(grammar.composition_depth, 2)
                 grammar.max_ops = min(grammar.max_ops, 12)
+        else:
+            # ── Data-driven structural rules from profiling ──
+            # Composition rates → residual_prob (nudge if residual > sequential)
+            comp_rates = evidence.get("composition_rates")
+            if isinstance(comp_rates, dict):
+                res_info = comp_rates.get("residual")
+                seq_info = comp_rates.get("sequential")
+                res_rate = float(res_info.get("rate", 0)) if isinstance(res_info, dict) else 0
+                seq_rate = float(seq_info.get("rate", 0)) if isinstance(seq_info, dict) else 0
+                if res_rate > seq_rate:
+                    grammar.residual_prob = min(0.85, grammar.residual_prob + conf * 0.1)
+            # Also check param_param_residual as standalone evidence
+            ppr = evidence.get("param_param_residual")
+            if isinstance(ppr, dict) and float(ppr.get("rate", 0)) > 0.7:
+                grammar.residual_prob = min(0.85, grammar.residual_prob + conf * 0.05)
+
+            # Corrector ops → boost
+            correctors = evidence.get("corrector_ops")
+            if isinstance(correctors, dict):
+                for op_name, stats in correctors.items():
+                    rate = float(stats.get("correction_rate", 0)) if isinstance(stats, dict) else 0
+                    if rate >= 0.5:
+                        cur = grammar.op_weights.get(op_name, 1.0)
+                        grammar.op_weights[op_name] = cur * (1.0 + conf * 0.15 * rate)
 
     # ── Template insights ──
     try:
@@ -242,7 +266,7 @@ def _apply_insight_adjustments(
     # ── Composition insights ──
     try:
         composition = nb.get_insights(
-            exclude_display_only=True, insight_level="composition", limit=20,
+            exclude_display_only=True, insight_level="composition", limit=50,
         )
     except Exception:
         composition = []
@@ -255,6 +279,34 @@ def _apply_insight_adjustments(
             continue
 
         subject = str(ins.get("subject_key") or "")
+        evidence = ins.get("evidence_json")
+        if isinstance(evidence, str):
+            try:
+                import json as _json
+                evidence = _json.loads(evidence)
+            except Exception:
+                evidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        insight_type = str(ins.get("insight_type") or "")
+        semantic = str(ins.get("semantic_key") or "")
+
+        # ── Profiling composition rules ──
+        if insight_type == "composition_rule" and semantic.startswith("profiling:"):
+            _apply_profiling_composition_rule(grammar, subject, evidence, conf)
+            continue
+
+        # ── Universal stabilizer / top_op boosting ──
+        if insight_type == "top_op" and semantic.startswith("profiling:"):
+            stabilizer_set = evidence.get("stabilizer_set") or {}
+            for op_name, stats in stabilizer_set.items():
+                rate = float(stats.get("rate", 0))
+                if rate >= 0.8:
+                    cur = grammar.op_weights.get(op_name, 1.0)
+                    grammar.op_weights[op_name] = cur * (1.0 + conf * 0.4)
+            continue
+
+        # ── Legacy motif boosting ──
         subject_ops = {s.strip() for s in subject.split("+") if s.strip()}
         if not subject_ops:
             continue
@@ -264,6 +316,93 @@ def _apply_insight_adjustments(
             if subject_ops & motif_ops:
                 base = motif_weights.get(motif_name, motif.lift)
                 motif_weights[motif_name] = base * (1.0 + conf * 0.3)
+
+
+def _apply_profiling_composition_rule(
+    grammar: GrammarConfig,
+    subject: str,
+    evidence: dict,
+    conf: float,
+) -> None:
+    """Apply a profiling-derived composition rule to grammar config.
+
+    Fully data-driven: reads evidence_json to decide what to adjust.
+    No hard-coded subject keys — any insight with the right evidence
+    structure will be applied.  As Bayesian confidence (alpha/beta)
+    changes through experiments, the adjustment strength scales linearly.
+
+    Recognized evidence_json patterns:
+      - risk_score + valid_followers → penalize subject op, boost followers
+      - best_followers / bridge_ops → boost named ops by their stability rate
+      - dampener_ops → boost named ops
+      - composition_rates.residual → nudge residual_prob
+      - corrector_ops → boost distribution correctors
+      - stabilizer_set → boost universal stabilizers
+    """
+    # ── 1. Op-specific risk rule: penalize the subject op, boost its valid followers ──
+    risk = evidence.get("risk_score")
+    if risk is not None and float(risk) > 50:
+        penalty = max(0.15, 1.0 - (float(risk) / 100.0) * conf)
+        cur = grammar.op_weights.get(subject, 1.0)
+        grammar.op_weights[subject] = cur * penalty
+        # Also boost the ops that rescue it
+        for follower in evidence.get("valid_followers", []):
+            cur_f = grammar.op_weights.get(follower, 1.0)
+            grammar.op_weights[follower] = cur_f * (1.0 + conf * 0.1)
+        return
+
+    # ── 2. Composition rates with residual data → nudge residual_prob ──
+    comp_rates = evidence.get("composition_rates")
+    if isinstance(comp_rates, dict):
+        res_info = comp_rates.get("residual")
+        seq_info = comp_rates.get("sequential")
+        if isinstance(res_info, dict) and isinstance(seq_info, dict):
+            res_rate = float(res_info.get("rate", 0))
+            seq_rate = float(seq_info.get("rate", 0))
+            if res_rate > seq_rate:
+                grammar.residual_prob = min(0.85, grammar.residual_prob + conf * 0.1)
+        return
+
+    # ── 3. Named op sets with stability rates → boost high-stability ops ──
+    for key in ("best_followers", "bridge_ops", "stabilizer_set"):
+        named_set = evidence.get(key)
+        if isinstance(named_set, dict) and named_set:
+            for op_name, stats in named_set.items():
+                if isinstance(stats, dict):
+                    rate = float(stats.get("rate", 0))
+                else:
+                    rate = float(stats) if stats else 0
+                if rate >= 0.7:
+                    cur = grammar.op_weights.get(op_name, 1.0)
+                    boost = 1.0 + conf * 0.2 * rate
+                    grammar.op_weights[op_name] = cur * boost
+            return
+
+    # ── 4. Dampener ops list → boost ──
+    dampeners = evidence.get("dampener_ops")
+    if isinstance(dampeners, list) and dampeners:
+        for op_name in dampeners:
+            cur = grammar.op_weights.get(op_name, 1.0)
+            grammar.op_weights[op_name] = cur * (1.0 + conf * 0.25)
+        return
+
+    # ── 5. Distribution corrector ops → boost ──
+    correctors = evidence.get("corrector_ops")
+    if isinstance(correctors, dict) and correctors:
+        for op_name, stats in correctors.items():
+            rate = float(stats.get("correction_rate", 0)) if isinstance(stats, dict) else 0
+            if rate >= 0.5:
+                cur = grammar.op_weights.get(op_name, 1.0)
+                grammar.op_weights[op_name] = cur * (1.0 + conf * 0.15 * rate)
+        return
+
+    # ── 6. Insights with valid_followers but no risk_score → informational boost only ──
+    valid_followers = evidence.get("valid_followers")
+    if isinstance(valid_followers, list) and valid_followers:
+        for op_name in valid_followers:
+            cur = grammar.op_weights.get(op_name, 1.0)
+            grammar.op_weights[op_name] = cur * (1.0 + conf * 0.1)
+        return
 
 
 def _build_signal_weight_maps(nb: LabNotebook) -> Tuple[Dict[str, float], Dict[str, float]]:
@@ -974,15 +1113,14 @@ class _ExecutionScreeningMixin:
                 min_splits=config.min_splits,
             )
             if not validation.valid:
-                # Don't store S0 validation failures — they carry no learning
-                # signal. Error counts are tracked in results dict and live feed.
-                # But DO track op usage for grammar weight adaptation.
+                # Graph-level validation failures (depth, shape, structure) are
+                # NOT op-level failures.  Counting individual ops here inflates
+                # n_used without incrementing n_s0, making ubiquitous ops like
+                # linear_proj appear broken in the health dashboard.  Track the
+                # aggregate count for grammar tuning but don't blame individual
+                # ops for structural violations they didn't cause.
                 results.setdefault("s0_validation_failures", 0)
                 results["s0_validation_failures"] += 1
-                for node in graph.nodes.values():
-                    if not node.is_input and node.op_name:
-                        c = _s0_op_counts.setdefault(node.op_name, {"n_used": 0, "n_s0": 0, "n_s05": 0})
-                        c["n_used"] += 1
                 self._emit_event("program_evaluated", {
                     "index": i, "fingerprint": fp[:10],
                     "result": "invalid", "error": validation.errors[0] if validation.errors else "",

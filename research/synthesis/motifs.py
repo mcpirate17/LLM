@@ -478,7 +478,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="merge_scan",
         motif_class=MOTIF_CLASS_SSM,
         steps=(
-            MotifStep("token_merging", OpRole.MIX),
+            MotifStep("token_merge", OpRole.MIX),
             MotifStep("selective_scan", OpRole.MIX),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
@@ -504,6 +504,94 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         ),
         description="Gated linear conditional compute (routing via template)",
         support=8, avg_loss_ratio=0.130, lift=2.0,
+    ),
+
+    # ── Missing mixing ops (catalog byte_safe, no motif) ─────────────
+    Motif(
+        name="attn_diff",
+        motif_class=MOTIF_CLASS_ATTENTION,
+        steps=(
+            MotifStep("diff_attention", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Differential attention (dual softmax subtraction) → projection",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+    Motif(
+        name="attn_gated_delta",
+        motif_class=MOTIF_CLASS_ATTENTION,
+        steps=(
+            MotifStep("gated_delta", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Gated delta rule recurrence → projection",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+    Motif(
+        name="conv_only_block",
+        motif_class=MOTIF_CLASS_CONV,
+        steps=(
+            MotifStep("conv_only", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="Pure conv stack (local + dilated) → projection",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+
+    # ── Missing routing ops (catalog byte_safe, no motif) ────────────
+    Motif(
+        name="route_mod_topk",
+        motif_class=MOTIF_CLASS_MOE,
+        steps=(
+            MotifStep("mod_topk", OpRole.ROUTE),
+        ),
+        description="Mixture-of-Depths top-k token routing",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+    Motif(
+        name="route_speculative",
+        motif_class=MOTIF_CLASS_GATE,
+        steps=(
+            MotifStep("speculative", OpRole.ROUTE),
+        ),
+        description="Speculative dual-path blend (cheap + verify gate)",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+    Motif(
+        name="route_topk_gate",
+        motif_class=MOTIF_CLASS_GATE,
+        steps=(
+            MotifStep("topk_gate", OpRole.GATE),
+        ),
+        description="Sparse top-k gating over feature halves",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+    Motif(
+        name="route_lanes_block",
+        motif_class=MOTIF_CLASS_MOE,
+        steps=(
+            MotifStep("route_lanes", OpRole.ROUTE),
+        ),
+        description="Multi-lane dispatch with learned lane scorer",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+    Motif(
+        name="route_recursion_block",
+        motif_class=MOTIF_CLASS_MOE,
+        steps=(
+            MotifStep("route_recursion", OpRole.ROUTE),
+        ),
+        description="Adaptive recursion depth per token",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
+    ),
+    Motif(
+        name="route_topk_sparse",
+        motif_class=MOTIF_CLASS_SPARSE,
+        steps=(
+            MotifStep("route_topk", OpRole.ROUTE),
+        ),
+        description="Hard top-k token selection with STE",
+        support=0, avg_loss_ratio=0.0, lift=1.0,
     ),
 )
 

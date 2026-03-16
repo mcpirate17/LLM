@@ -38,6 +38,7 @@ from ..shared_api import (
     _PROJECT_ROOT,
 )
 from ..component_identity import canonicalize_component_id, canonicalize_workflow_ids
+from ..type_utils import dig, safe_str
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/aria", tags=["aria"])
@@ -106,13 +107,13 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
     workflow = json.loads(wf_row["graph_json"])
     from ..patcher import PatchError as _PE
     added_node_ids = [
-        str(((op or {}).get("payload") or {}).get("id", ""))
-        for op in ops if str((op or {}).get("op", "")) == "add_node" and ((op or {}).get("payload") or {}).get("id")]
+        safe_str(dig(op, "payload", "id"))
+        for op in ops if safe_str(dig(op, "op")) == "add_node" and dig(op, "payload", "id")]
     insertion_hints = {
-        str(((op or {}).get("payload") or {}).get("id")): dict(((op or {}).get("payload") or {}).get("insertion_hint") or {})
-        for op in ops if str((op or {}).get("op", "")) == "add_node"
-        and ((op or {}).get("payload") or {}).get("id")
-        and isinstance(((op or {}).get("payload") or {}).get("insertion_hint"), dict)}
+        safe_str(dig(op, "payload", "id")): dict(dig(op, "payload", "insertion_hint", default={}))
+        for op in ops if safe_str(dig(op, "op")) == "add_node"
+        and dig(op, "payload", "id")
+        and isinstance(dig(op, "payload", "insertion_hint"), dict)}
     try:
         patched_workflow = apply_patch_ops(workflow, ops)
     except _PE as e:
@@ -553,7 +554,7 @@ def _select_fallback_component_type(
             if len(non_io_nodes) >= 2:
                 ops.append({"op": "rewire", "payload": {"action": "add", "source": non_io_nodes[0]["id"], "source_port": "out", "target": non_io_nodes[-1]["id"], "target_port": "in"}})
                 return None
-        for novelty_op in ("selective_scan", "fourier_mixing", "low_rank_proj", "tropical_gate", "poincare_add", "clifford_attention"):
+        for novelty_op in ("selective_scan", "low_rank_proj", "tropical_gate", "poincare_add", "clifford_attention"):
             if novelty_op not in existing_types:
                 return _normalize_component_type(novelty_op, approved) or novelty_op
     if not has_output:
@@ -712,7 +713,7 @@ def _fetch_parent_scores_for_workflow(workflow_id: str) -> Optional[Dict[str, An
     wf = db.get_workflow(workflow_id)
     if not wf or not wf.get("graph_json"): return None
     graph = json.loads(wf["graph_json"])
-    fingerprint = (graph.get("metadata") or {}).get("graph_fingerprint")
+    fingerprint = dig(graph, "metadata", "graph_fingerprint")
     if not fingerprint: return None
     try:
         from research.scientist.notebook import LabNotebook
@@ -888,7 +889,7 @@ def _estimate_patch_quality_multiplier(ops: List[Dict[str, Any]], parent_scores:
     constraints = parse_intent_constraints(None, parent_scores)
     if constraints.preserve_novelty:
         penalty *= 0.85
-    tier = str((parent_scores or {}).get("tier") or "").lower()
+    tier = safe_str(dig(parent_scores, "tier"), lower=True)
     if tier in {"investigation", "validation", "breakthrough"}:
         penalty *= 1.15
     return max(0.75, 1.0 - penalty)

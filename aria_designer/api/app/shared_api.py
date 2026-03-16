@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 import time as _time_mod
 from pathlib import Path
@@ -14,19 +13,13 @@ from . import database as db
 from .config import settings
 from .models import utc_now_iso as _utc_now
 from .research_signals import fetch_research_recommendation_signals
+from .type_utils import dig, safe_float
 
 logger = logging.getLogger(__name__)
-
-# ── Path setup (mirrors main.py) ─────────────────────────────────────
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _ARIA_DESIGNER_ROOT = _PROJECT_ROOT / "aria_designer"
 _ARIA_CORE_ROOT = _PROJECT_ROOT / "aria_core"
-for _p in (_ARIA_DESIGNER_ROOT, _PROJECT_ROOT, _ARIA_CORE_ROOT):
-    _ps = str(_p)
-    if _p.exists() and _ps not in sys.path:
-        sys.path.insert(0, _ps)
-
 _RESEARCH_ROOT = _PROJECT_ROOT / "research"
 
 from research.eval.perf_budget import evaluate_perf_budget_gate
@@ -187,18 +180,18 @@ def _build_designer_perf_bundle(
     status: str,
     duplicate_work: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    profiling = ((stages or {}).get("profiling") or {}).get("metrics") or {}
-    compilation = ((stages or {}).get("compilation") or {}).get("metrics") or {}
-    sandbox = ((stages or {}).get("sandbox") or {}).get("metrics") or {}
+    profiling = dig(stages, "profiling", "metrics", default={})
+    compilation = dig(stages, "compilation", "metrics", default={})
+    sandbox = dig(stages, "sandbox", "metrics", default={})
     metrics: Dict[str, Any] = {
-        "total_time_ms": float(total_time_ms or 0.0),
-        "compile_time_ms": float(compilation.get("compile_time_ms", 0.0) or 0.0),
-        "forward_time_ms": float(sandbox.get("forward_ms", 0.0) or 0.0),
-        "backward_time_ms": float(sandbox.get("backward_ms", 0.0) or 0.0),
-        "peak_memory_mb": float(sandbox.get("peak_memory_mb", 0.0) or 0.0),
-        "native_coverage": float(profiling.get("native_coverage", 0.0) or 0.0),
-        "total_flops_per_token": float(profiling.get("total_flops_per_token", 0.0) or 0.0),
-        "total_params": float(profiling.get("total_params", 0.0) or 0.0),
+        "total_time_ms": safe_float(total_time_ms),
+        "compile_time_ms": safe_float(compilation.get("compile_time_ms")),
+        "forward_time_ms": safe_float(sandbox.get("forward_ms")),
+        "backward_time_ms": safe_float(sandbox.get("backward_ms")),
+        "peak_memory_mb": safe_float(sandbox.get("peak_memory_mb")),
+        "native_coverage": safe_float(profiling.get("native_coverage")),
+        "total_flops_per_token": safe_float(profiling.get("total_flops_per_token")),
+        "total_params": safe_float(profiling.get("total_params")),
         "status_code": 1.0 if status == "success" else 0.0,
     }
     metrics.update(_stage_elapsed_metrics(stages))
@@ -241,10 +234,10 @@ def _discovery_url_for_fingerprint(fingerprint: str | None) -> str | None:
 
 
 def _compute_eval_composite_score(stage_metrics: Dict[str, Any]) -> float:
-    benchmark_score = float((((stage_metrics.get("benchmarking") or {}).get("summary") or {}).get("score")) or 0.0)
-    novelty = float(((stage_metrics.get("novelty") or {}).get("overall_novelty")) or 0.0)
-    efficiency = float(((stage_metrics.get("compression") or {}).get("efficiency_score")) or 0.0)
-    stability = float(((stage_metrics.get("sandbox") or {}).get("stability_score")) or 0.0)
+    benchmark_score = safe_float(dig(stage_metrics, "benchmarking", "summary", "score"))
+    novelty = safe_float(dig(stage_metrics, "novelty", "overall_novelty"))
+    efficiency = safe_float(dig(stage_metrics, "compression", "efficiency_score"))
+    stability = safe_float(dig(stage_metrics, "sandbox", "stability_score"))
     raw = (benchmark_score * 100.0) + (novelty * 40.0) + (efficiency * 30.0) + (stability * 20.0)
     return round(max(0.0, raw), 3)
 
@@ -333,17 +326,14 @@ def _convert_workflow_to_graph(
     param_count)`` on success, or ``None`` on failure.
     """
     try:
-        from runtime.bridge import workflow_to_graph as _w2g
+        from aria_designer.runtime.bridge import workflow_to_graph as _w2g
         from research.synthesis.serializer import graph_to_json
     except Exception as exc:
         logger.warning("Local auto-promotion unavailable (imports): %s", exc)
         return None
 
-    try:
-        model_dim = int((workflow.get("metadata") or {}).get("model_dim") or 256)
-    except Exception:
-        logger.debug("Failed to parse model_dim from workflow metadata, defaulting to 256", exc_info=True)
-        model_dim = 256
+    model_dim = safe_float(dig(workflow, "metadata", "model_dim"), default=256)
+    model_dim = int(model_dim)
 
     try:
         graph, _ = _w2g(workflow, model_dim=model_dim, return_id_map=True)

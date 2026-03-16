@@ -1,13 +1,9 @@
 """Automated contract verification for all Aria Designer components."""
 import os
-import sys
 import yaml
 import torch
 import pytest
 from pathlib import Path
-
-# Add api/ to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "api"))
 
 def get_all_components():
     components_dir = Path(__file__).parent.parent / "components"

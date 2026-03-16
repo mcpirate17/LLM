@@ -1,0 +1,37 @@
+id: tropical_moe
+version: 1.0.0
+name: Tropical MoE
+category: math_space
+tags:
+- tropical_geometry
+- moe
+- math_space
+status: approved
+description: Mixture-of-Experts with tropical (min-plus) routing
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true

@@ -49,9 +49,15 @@ class _KnowledgeMixin:
         if category == "failure_mode":
             display_only = True
 
-        # Compute confidence from Bayesian posterior
+        # Compute confidence from Bayesian posterior.
+        # If caller passed explicit confidence but left alpha/beta at defaults,
+        # derive alpha/beta from the desired confidence so they stay consistent.
         alpha = max(0.01, float(alpha))
         beta_ = max(0.01, float(beta_))
+        if confidence != 0.5 and alpha == 1.0 and beta_ == 1.0:
+            # Solve: confidence = alpha / (alpha + beta_) with alpha + beta_ = 2
+            alpha = max(0.01, 2.0 * confidence)
+            beta_ = max(0.01, 2.0 * (1.0 - confidence))
         confidence = alpha / (alpha + beta_)
 
         if semantic_key:

@@ -12,20 +12,9 @@ Usage:
 
 from __future__ import annotations
 
-import sys
-import os
 import time
-from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
-
-# Ensure research/ is importable
-_HERE = Path(__file__).resolve().parent
-_PROJECT_ROOT = _HERE.parent.parent
-_RESEARCH_ROOT = _PROJECT_ROOT / "research"
-
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.synthesis.graph import ComputationGraph
@@ -62,10 +51,8 @@ def _resolve_primitive(component_type: str) -> Optional[str]:
     if leaf in _IO_COMPONENTS:
         return None
 
-    # Normalize through shared alias registry.
-    primitive = registry.get_primitive_name(component_type)
-    if primitive in PRIMITIVE_REGISTRY:
-        return primitive
+    if leaf in PRIMITIVE_REGISTRY:
+        return leaf
     raise ValueError(f"Unknown component: {component_type}")
 
 # ── Component Mapping Helpers (Delegating to Registry) ───────────────
@@ -120,16 +107,14 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
         }
 
     if primitive is not None:
-        note = registry.approximate_alias_notes.get(cid)
-        mapping_kind = "alias" if (cid in registry.aliases and registry.aliases[cid] != cid) else "direct"
         return {
-            "component_type": component_type, "component_leaf": cid, "mapping_kind": mapping_kind,
+            "component_type": component_type, "component_leaf": cid, "mapping_kind": "direct",
             "execution_class": "primitive",
-            "semantic_fidelity": "approximate" if note else "exact",
+            "semantic_fidelity": "exact",
             "bridge_supported": True,
             "primitive_name": primitive,
-            "warnings": [note] if note else [],
-            "reason": "Mapped via alias." if mapping_kind == "alias" else "Direct primitive mapping.",
+            "warnings": [],
+            "reason": "Direct primitive mapping.",
         }
 
     return {
@@ -295,6 +280,15 @@ def validate_workflow_graph(workflow_json: Dict[str, Any], model_dim: int = MODE
     """Validate that a workflow can be converted to a valid ComputationGraph."""
     try:
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)
+
+        # Wiring constraint check — catch misconnected signal chains
+        from research.synthesis.primitives import validate_wiring
+        wiring_errors = validate_wiring(graph)
+
+        if wiring_errors:
+            return {"valid": False, "error": f"Wiring error: {wiring_errors[0]}",
+                    "wiring_errors": wiring_errors}
+
         return {"valid": True, "graph_info": {
             "fingerprint": graph.fingerprint(),
             "n_params_estimate": int(graph.n_params_estimate()),

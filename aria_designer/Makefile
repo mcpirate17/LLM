@@ -36,10 +36,7 @@ bootstrap:
 build-ui:
 	cd ui && npm run build
 
-build-native:
-	$(MAKE) -C runtime build
-
-build: build-native build-ui
+build: build-ui
 
 # ── Test ─────────────────────────────────────────────────────────────
 
@@ -57,13 +54,10 @@ test-components:
 test-runtime:
 	python -m pytest runtime/tests/ -x --tb=short
 
-test-native:
-	$(MAKE) -C runtime test
-
 test-e2e:
 	cd e2e && npx playwright test --config=playwright.config.js
 
-test-all: test test-runtime test-native
+test-all: test test-runtime
 
 # ── Lint ─────────────────────────────────────────────────────────────
 
@@ -79,5 +73,5 @@ validate: test-manifests
 clean:
 	rm -rf api/.venv api/aria_designer.db api/__pycache__
 	rm -rf ui/node_modules ui/dist
-	rm -rf runtime/lib/*.so runtime/lib/*.dylib
+	rm -rf runtime/lib/
 	find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true

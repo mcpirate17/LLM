@@ -1,16 +1,10 @@
 """Tests for the research survivor importer."""
 
-import sys
-import os
 import json
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-# Also need research/ on path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
-from runtime.importer import graph_to_workflow
-from runtime.bridge import workflow_to_graph, validate_workflow_graph
+from aria_designer.runtime.importer import graph_to_workflow
+from aria_designer.runtime.bridge import workflow_to_graph, validate_workflow_graph
 from research.synthesis.graph import ComputationGraph
 
 

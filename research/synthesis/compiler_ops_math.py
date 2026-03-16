@@ -104,12 +104,12 @@ def _op_reciprocal(_, inputs, __):
 
 def _op_add(_, inputs, __):
     a, b = inputs[0], inputs[1]
-    if _c(a): return aria_core.add_f32(a, b)
+    if _c(a) and a.numel() == b.numel(): return aria_core.add_f32(a, b)
     return a + b
 
 def _op_mul(_, inputs, __):
     a, b = inputs[0], inputs[1]
-    if _c(a): return aria_core.mul_f32(a, b)
+    if _c(a) and a.numel() == b.numel(): return aria_core.mul_f32(a, b)
     return a * b
 
 def _op_sub(_, inputs, __):

@@ -8,6 +8,15 @@ All route handlers live in api/app/routers/. This module handles only:
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure project root is importable when running from api/.venv
+# (needed for aria_designer.runtime.importer and research.* imports)
+_project_root = str(Path(__file__).resolve().parents[3])
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict

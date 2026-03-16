@@ -36,7 +36,7 @@
     },
     {
       "id": "pos_enc",
-      "component_type": "positional/rope",
+      "component_type": "positional/rope_rotate",
       "params": {},
       "ui_meta": {
         "position": {
@@ -58,7 +58,7 @@
     },
     {
       "id": "router",
-      "component_type": "routing/lane_router",
+      "component_type": "routing/adaptive_lane_mixer",
       "params": {
         "num_lanes": 3
       },
@@ -82,7 +82,7 @@
     },
     {
       "id": "lane2_cattn",
-      "component_type": "mixing/compressed_attention",
+      "component_type": "sequence/local_window_attn",
       "params": {},
       "ui_meta": {
         "position": {

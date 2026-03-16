@@ -674,6 +674,7 @@ class _SelectionMixin:
                         model.parameters(),
                         lr=recipe["lr"],
                         weight_decay=recipe.get("weight_decay", 0.01),
+                        betas=(0.9, 0.95),
                     )
 
                 seq_len = min(128, config.max_seq_len)
@@ -778,7 +779,8 @@ class _SelectionMixin:
                 model = model_factory().to(dev)
                 model.train()
                 optimizer = torch.optim.AdamW(
-                    model.parameters(), lr=lr, weight_decay=0.01)
+                    model.parameters(), lr=lr, weight_decay=0.01,
+                    betas=(0.9, 0.95))
 
                 seq_len = min(128, config.max_seq_len)
                 initial_loss = None

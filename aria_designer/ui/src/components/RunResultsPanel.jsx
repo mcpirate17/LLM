@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { CheckCircle2, Loader, Circle, XCircle, ChevronRight } from 'lucide-react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import ChartActionRail from './ChartActionRail.jsx'
@@ -74,11 +74,8 @@ export default function RunResultsPanel({
 }) {
   const { stages = [], totalTimeMs, error, compositeScore, graphFingerprint, discoveryUrl } = evalState || {}
 
-  const stageMap = useMemo(() => {
-    const m = {}
-    for (const s of stages) m[s.stage] = s
-    return m
-  }, [stages])
+  const stageMap = {}
+  for (const s of stages) stageMap[s.stage] = s
 
   const sandboxMetrics = stageMap.sandbox?.metrics
   const profilingMetrics = stageMap.profiling?.metrics
@@ -86,11 +83,9 @@ export default function RunResultsPanel({
   const fingerprintMetrics = stageMap.fingerprint?.metrics
   const noveltyMetrics = stageMap.novelty?.metrics
   const benchmarkMetrics = evalState?.benchmarking || stageMap.benchmarking?.metrics || null
-  const notMeasuredTargets = useMemo(() => (
-    Array.isArray(benchmarkMetrics?.targets)
-      ? benchmarkMetrics.targets.filter((t) => t.status === 'not_measured')
-      : []
-  ), [benchmarkMetrics])
+  const notMeasuredTargets = Array.isArray(benchmarkMetrics?.targets)
+    ? benchmarkMetrics.targets.filter((t) => t.status === 'not_measured')
+    : []
   const abiProbe = sandboxMetrics?.native_abi_probe || null
   const abiParityAttempted = Boolean(abiProbe?.parity_attempted)
   const abiParityPass = abiProbe?.parity_pass
@@ -107,20 +102,15 @@ export default function RunResultsPanel({
     : (abiPrimaryUsed ? 'primary' : 'probe')
 
   // FLOPs by category chart data
-  const chartData = useMemo(() => {
-    const raw = profilingMetrics?.flops_by_category || {}
-    return Object.entries(raw)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-  }, [profilingMetrics])
+  const chartData = Object.entries(profilingMetrics?.flops_by_category || {})
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
 
   // Sorted op profiles
   const opProfiles = profilingMetrics?.op_profiles || []
   const topBottleneck = opProfiles[0] || null
-  const benchmarkInputCount = useMemo(() => {
-    const src = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {}
-    return Object.entries(src).filter(([, v]) => Number.isFinite(Number(v))).length
-  }, [benchmarkObserved])
+  const benchmarkSrc = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {}
+  const benchmarkInputCount = Object.entries(benchmarkSrc).filter(([, v]) => Number.isFinite(Number(v))).length
 
   if (!evalState || stages.length === 0) {
     return (

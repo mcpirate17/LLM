@@ -1,11 +1,4 @@
 import os
-import sys
-from pathlib import Path
-
-# Ensure research/ is importable
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from research.defaults import RESEARCH_API_BASE, LINEAGE_SYNC_TIMEOUT
 

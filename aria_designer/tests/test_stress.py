@@ -1,23 +1,18 @@
 """Stress tests for Aria Designer API."""
-import sys
 import os
 import pytest
+import tempfile
 from pathlib import Path
 from fastapi.testclient import TestClient
 
-# Add api/ to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "api"))
-
-import tempfile
-
 @pytest.fixture
 def client():
-    from app.main import app
-    from app import database as db
+    from aria_designer.api.app.main import app
+    from aria_designer.api.app import database as db
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test_stress.db"
         db.init_db(db_path)
-        from app.loader import scan_and_load
+        from aria_designer.api.app.loader import scan_and_load
         scan_and_load()
         with TestClient(app) as c:
             yield c

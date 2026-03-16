@@ -4068,27 +4068,15 @@ class TestApplyRecommendation(unittest.TestCase):
         self.assertAlmostEqual(runner._grammar_weight_overrides["elementwise_unary"], 2.5)
         self.assertAlmostEqual(runner._grammar_weight_overrides["math_space"], 1.8)
 
-    def test_excluded_ops_stored(self):
-        """excluded_ops list should populate _excluded_ops_overrides (non-protected ops only)."""
+    def test_excluded_ops_ignored(self):
+        """excluded_ops are deliberately ignored (policy: no auto-exclusion)."""
         runner = self._make_runner()
         nb = MagicMock()
-        # Use non-protected ops — protected ops are stripped by the guard
         suggestion = self._make_suggestion({
             "excluded_ops": ["fake_bad_op_a", "fake_bad_op_b"],
         })
         runner._apply_recommendation(suggestion, nb)
-        self.assertIn("fake_bad_op_a", runner._excluded_ops_overrides)
-        self.assertIn("fake_bad_op_b", runner._excluded_ops_overrides)
-
-    def test_excluded_ops_accumulate(self):
-        """Multiple recommendations should accumulate excluded ops."""
-        runner = self._make_runner()
-        runner._excluded_ops_overrides = {"old_op"}
-        nb = MagicMock()
-        suggestion = self._make_suggestion({"excluded_ops": ["new_op"]})
-        runner._apply_recommendation(suggestion, nb)
-        self.assertIn("old_op", runner._excluded_ops_overrides)
-        self.assertIn("new_op", runner._excluded_ops_overrides)
+        self.assertEqual(runner._excluded_ops_overrides, set())
 
     def test_op_weights_stored(self):
         """op_weights dict should populate _op_weights_overrides."""
@@ -4138,8 +4126,8 @@ class TestApplyRecommendation(unittest.TestCase):
         self.assertAlmostEqual(runner._grammar_weight_overrides["math_space_weight"], 3.5)
         self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 2.5)
         self.assertAlmostEqual(runner._grammar_weight_overrides["sequence"], 1.8)
-        # Excluded ops (non-protected)
-        self.assertIn("fake_excluded_op", runner._excluded_ops_overrides)
+        # Excluded ops are ignored (policy: no auto-exclusion)
+        self.assertEqual(runner._excluded_ops_overrides, set())
         # Op weights
         self.assertAlmostEqual(runner._op_weights_overrides["matmul"], 1.5)
         # Config overrides

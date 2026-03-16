@@ -10,15 +10,11 @@ These tests verify that profiling baselines don't regress:
 These serve as a regression gate in CI.
 """
 
-import sys
-import os
 import time
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from runtime.bridge import validate_workflow_graph, evaluate_workflow, estimate_performance
-from runtime.profiler import profile_static, profile_runtime
+from aria_designer.runtime.bridge import validate_workflow_graph, evaluate_workflow, estimate_performance
+from aria_designer.runtime.profiler import profile_static, profile_runtime
 
 
 # ── Reference Workflows ──────────────────────────────────────────────

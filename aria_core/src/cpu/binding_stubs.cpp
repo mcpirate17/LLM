@@ -99,7 +99,8 @@ void aria_sort_seq_f32(const float *x, float *y, int64_t *indices,
 
 void aria_conv1d_seq_f32(const float *x, const float *weight, const float *bias,
                           float *y, int64_t batch, int64_t seq, int64_t dim) {
-    /* Depthwise 1D conv along sequence dim, kernel_size=3, padding=1 */
+    /* Depthwise causal 1D conv along sequence dim, kernel_size=3.
+       Causal: output[s] reads from input[s-2], input[s-1], input[s] only. */
 #ifdef ARIA_HAS_OPENMP
     #pragma omp parallel for collapse(2) if(batch * dim > 64) schedule(static)
 #endif
@@ -108,7 +109,7 @@ void aria_conv1d_seq_f32(const float *x, const float *weight, const float *bias,
             for (int64_t s = 0; s < seq; s++) {
                 float acc = 0.0f;
                 for (int k = 0; k < 3; k++) {
-                    int64_t si = s + k - 1; /* padding=1 */
+                    int64_t si = s + k - 2; /* causal: left-pad by kernel_size-1 */
                     if (si >= 0 && si < seq) {
                         float w = weight ? weight[d * 3 + k] : (k == 1 ? 1.0f : 0.0f);
                         acc += x[b * seq * dim + si * dim + d] * w;

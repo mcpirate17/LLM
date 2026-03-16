@@ -10,7 +10,7 @@ import pytest
 from research.synthesis.compiler import (
     _op_route_topk, _op_route_lanes, _op_route_recursion, _op_token_merge,
     _op_mod_topk, _op_early_exit, _op_cascade, _op_speculative,
-    _op_adaptive_recursion, _op_token_merging,
+    _op_adaptive_recursion,
     _record_routing_telemetry,
 )
 
@@ -80,60 +80,81 @@ class TestRouteTopk:
 
 # ── route_lanes ─────────────────────────────────────────────────────
 
+def _make_lane_module(D, n_lanes):
+    """Build a DummyModule with learned lane routing params."""
+    module = DummyModule()
+    module.lane_scorer = nn.Parameter(torch.randn(n_lanes, D) * 0.02)
+    module.lane_projs = nn.ParameterList([
+        nn.Parameter(torch.randn(D, D) * 0.02) for _ in range(n_lanes)
+    ])
+    return module
+
+
 class TestRouteLanes:
     def test_output_shape(self):
-        module = DummyModule()
-        B, S, L = 2, 8, 4
-        scores = torch.randn(B, S, L)
-        result = _op_route_lanes(module, [scores], {"n_lanes": L})
-        assert result.shape == (B, S)
+        B, S, D, L = 2, 8, 64, 4
+        module = _make_lane_module(D, L)
+        x = torch.randn(B, S, D)
+        result = _op_route_lanes(module, [x], {"n_lanes": L})
+        assert result.shape == (B, S, D)
 
-    def test_values_in_range(self):
-        module = DummyModule()
-        B, S, L = 2, 8, 4
-        scores = torch.randn(B, S, L)
-        result = _op_route_lanes(module, [scores], {"n_lanes": L})
-        assert (result >= 0).all() and (result < L).all()
+    def test_non_identity(self):
+        B, S, D, L = 2, 8, 64, 3
+        module = _make_lane_module(D, L)
+        x = torch.randn(B, S, D)
+        result = _op_route_lanes(module, [x], {"n_lanes": L})
+        assert not torch.allclose(result, x, atol=1e-5)
 
     def test_telemetry_recorded(self):
-        module = DummyModule()
-        scores = torch.randn(2, 8, 4)
-        _op_route_lanes(module, [scores], {"n_lanes": 4})
+        D, L = 64, 4
+        module = _make_lane_module(D, L)
+        x = torch.randn(2, 8, D)
+        _op_route_lanes(module, [x], {"n_lanes": L})
         assert hasattr(module, "routing_telemetry")
         rt = module.routing_telemetry
         assert rt["tokens_total"] > 0
 
-    def test_deterministic(self):
-        module = DummyModule()
-        scores = torch.randn(2, 8, 4)
-        r1 = _op_route_lanes(module, [scores], {"n_lanes": 4})
-        module2 = DummyModule()
-        r2 = _op_route_lanes(module2, [scores], {"n_lanes": 4})
-        assert torch.equal(r1, r2)
+    def test_gradient_flows(self):
+        D, L = 32, 3
+        module = _make_lane_module(D, L)
+        x = torch.randn(2, 4, D, requires_grad=True)
+        result = _op_route_lanes(module, [x], {"n_lanes": L})
+        result.sum().backward()
+        assert x.grad is not None
 
 
 # ── route_recursion ─────────────────────────────────────────────────
 
+def _make_depth_module(D, max_depth):
+    """Build a DummyModule with learned depth routing params."""
+    module = DummyModule()
+    module.depth_scorer = nn.Parameter(torch.randn(max_depth, D) * 0.02)
+    module.depth_projs = nn.ParameterList([
+        nn.Parameter(torch.randn(D, D) * 0.02) for _ in range(max_depth)
+    ])
+    return module
+
+
 class TestRouteRecursion:
     def test_output_shape(self):
-        module = DummyModule()
-        B, S, Dp = 2, 8, 5
-        scores = torch.randn(B, S, Dp)
-        result = _op_route_recursion(module, [scores], {"max_depth": Dp})
-        assert result.shape == (B, S)
+        B, S, D, Dp = 2, 8, 64, 5
+        module = _make_depth_module(D, Dp)
+        x = torch.randn(B, S, D)
+        result = _op_route_recursion(module, [x], {"max_depth": Dp})
+        assert result.shape == (B, S, D)
 
-    def test_depth_values_in_range(self):
-        module = DummyModule()
-        B, S, Dp = 2, 8, 5
-        scores = torch.randn(B, S, Dp)
-        result = _op_route_recursion(module, [scores], {"max_depth": Dp})
-        # argmax + 1 means values are 1..Dp
-        assert (result >= 1).all() and (result <= Dp).all()
+    def test_non_identity(self):
+        B, S, D, Dp = 2, 8, 64, 3
+        module = _make_depth_module(D, Dp)
+        x = torch.randn(B, S, D)
+        result = _op_route_recursion(module, [x], {"max_depth": Dp})
+        assert not torch.allclose(result, x, atol=1e-5)
 
     def test_telemetry_recorded(self):
-        module = DummyModule()
-        scores = torch.randn(2, 8, 5)
-        _op_route_recursion(module, [scores], {"max_depth": 5})
+        D, Dp = 64, 5
+        module = _make_depth_module(D, Dp)
+        x = torch.randn(2, 8, D)
+        _op_route_recursion(module, [x], {"max_depth": Dp})
         assert hasattr(module, "routing_telemetry")
         rt = module.routing_telemetry
         assert rt["tokens_total"] > 0
@@ -285,5 +306,5 @@ class TestTokenMergingControl:
     def test_output_shape_restored(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_token_merging(module, [x], {"n_keep": 4})
+        result = _op_token_merge(module, [x], {"n_keep": 4})
         assert result.shape == (2, 8, 16)  # restored to original length

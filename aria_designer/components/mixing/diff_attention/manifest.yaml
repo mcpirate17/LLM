@@ -1,0 +1,46 @@
+id: diff_attention
+version: 1.0.0
+name: Differential Attention
+category: mixing
+tags:
+- attention
+- noise-cancellation
+status: approved
+description: "Differential attention: two softmax maps subtracted to cancel noise (ICLR 2025)."
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: "D*D*4"
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Two parallel softmax attention maps are computed from split Q/K groups
+  and subtracted. Common-mode noise cancels, amplifying relevant signal.
+  A learned lambda parameter controls subtraction strength.
+
+  Based on: Differential Transformer (Microsoft, ICLR 2025).
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: y:tensor[B, S, D].
+
+  ### Plain Language
+
+  Standard attention wastes capacity on irrelevant tokens. Differential
+  attention computes attention twice and subtracts, like noise-cancelling
+  headphones for attention weights. The result is sharper, more focused
+  attention patterns.
+  '

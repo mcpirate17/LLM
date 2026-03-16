@@ -431,7 +431,7 @@ def _score_adjustment(
         if category == "normalization" or cid == "add":
             delta += 0.04
     if any(tok in prompt_lower for tok in ("compress", "flop", "latency", "efficien")):
-        if cid in {"low_rank", "bottleneck_proj", "token_merging", "progressive_compression_gate"}:
+        if cid in {"low_rank", "bottleneck_proj", "token_merge", "progressive_compression_gate"}:
             delta += 0.04
 
     if cid in {"softmax_attention", "linear_attention", "graph_attention"} and all_types:

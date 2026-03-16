@@ -1,13 +1,9 @@
-import sys
 import os
 import torch
 import numpy as np
 import pytest
 
-# Add the parent directory to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
-from runtime.compiler import compile_workflow
+from aria_designer.runtime.compiler import compile_workflow
 
 def test_compile_and_run():
     workflow_json = {

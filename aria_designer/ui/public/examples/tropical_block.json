@@ -7,7 +7,7 @@
     {"id": "n_trop_attn", "component_type": "math_space/tropical_attention", "params": {},                                       "ui_meta": {"position": {"x": 180, "y": 180}}},
     {"id": "n_trop_gate", "component_type": "math_space/tropical_gate",      "params": {},                                       "ui_meta": {"position": {"x": 180, "y": 310}}},
     {"id": "n_add",       "component_type": "math/add",                      "params": {},                                       "ui_meta": {"position": {"x": 300, "y": 440}}},
-    {"id": "n_norm",      "component_type": "normalization/rmsnorm_pre",     "params": {},                                       "ui_meta": {"position": {"x": 300, "y": 570}}},
+    {"id": "n_norm",      "component_type": "linear_algebra/rmsnorm",     "params": {},                                       "ui_meta": {"position": {"x": 300, "y": 570}}},
     {"id": "n_out",       "component_type": "io/output_head",                "params": {"vocab_size": 32000, "tie_weights": true},"ui_meta": {"position": {"x": 300, "y": 700}}}
   ],
   "edges": [

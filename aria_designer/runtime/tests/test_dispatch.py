@@ -1,12 +1,7 @@
-import sys
-import os
 import numpy as np
 import pytest
 
-# Add the parent directory to sys.path to import runtime
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
-from runtime.dispatch import KernelDispatcher
+from aria_designer.runtime.dispatch import KernelDispatcher
 
 def test_dispatch_validator():
     dispatcher = KernelDispatcher()

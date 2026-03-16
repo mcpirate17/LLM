@@ -1,13 +1,13 @@
 id: mod_topk
 version: 1.0.0
-name: Mod Topk
+name: Mixture-of-Depths Top-K
 category: routing
 tags:
 - dynamic_routing
-- token_sparse
-- compute_routing
+- token_routing
+- sparse_compute
 status: approved
-description: 'Mixture of Depths: top-k tokens per layer'
+description: Mixture-of-Depths top-k token routing with learned scorer
 inputs:
 - name: x
   dtype: tensor
@@ -30,28 +30,6 @@ implementation:
   python: kernel_fallback.py
 performance:
   has_params: true
-  param_formula: D*D
+  param_formula: D
   preserves_gradient: true
   numerically_risky: false
-constraints:
-  incompatible_with: []
-help_md: '### Technical
-
-  Mixture of Depths: top-k tokens per layer
-
-
-  Inputs: x:tensor[B, S, D].
-
-  Outputs: y:tensor[B, S, D].
-
-  Params: none.
-
-
-  ### Plain Language
-
-  Mixture of Depths: top-k tokens per layer
-
-
-  Use when you need this specific transformation in a workflow.
-
-  '

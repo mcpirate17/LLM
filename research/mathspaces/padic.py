@@ -84,27 +84,134 @@ def padic_norm(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
     return p ** (-val)
 
 
+def _padic_dist_chunk(x_q: torch.Tensor, x_j: torch.Tensor,
+                      p: int) -> torch.Tensor:
+    """Compute p-adic distance between query chunk and all keys, reduced over D.
+
+    x_q: (B, chunk, 1, D), x_j: (B, 1, S, D)
+    Returns: (B, chunk, S) mean distance.
+    """
+    diff = x_q - x_j  # (B, chunk, S, D)
+    log_p = math.log(p)
+    smooth_abs = torch.sqrt(diff * diff + PADIC_EPS * PADIC_EPS)
+    val = -(torch.log(smooth_abs.clamp_min(PADIC_EPS)) / log_p)
+    dist = torch.exp((-val) * log_p)
+    return dist.mean(dim=-1)  # (B, chunk, S)
+
+
+class _UltrametricAttentionFn(torch.autograd.Function):
+    """Memory-efficient ultrametric attention via recomputation.
+
+    Forward saves only x and the output. Backward recomputes distances
+    per chunk to avoid retaining O(chunks * B * chunk * S * D) intermediates.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, p: int, chunk_size: int) -> torch.Tensor:
+        B, S, D = x.shape
+        ctx.save_for_backward(x)
+        ctx.p = p
+        ctx.chunk_size = chunk_size
+
+        out = torch.empty_like(x)
+        x_j = x.unsqueeze(1)  # (B, 1, S, D)
+
+        for q_start in range(0, S, chunk_size):
+            q_end = min(q_start + chunk_size, S)
+            x_q = x[:, q_start:q_end, :].unsqueeze(2)  # (B, c, 1, D)
+
+            with torch.no_grad():
+                dist_chunk = _padic_dist_chunk(x_q, x_j, p)  # (B, c, S)
+                if S > 1:
+                    row_ids = torch.arange(q_start, q_end, device=x.device).unsqueeze(1)
+                    col_ids = torch.arange(S, device=x.device).unsqueeze(0)
+                    dist_chunk.masked_fill_(col_ids > row_ids, float('inf'))
+                weights = torch.softmax(-dist_chunk, dim=-1)  # (B, c, S)
+
+            out[:, q_start:q_end, :] = torch.bmm(weights, x)
+
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        (x,) = ctx.saved_tensors
+        p = ctx.p
+        chunk_size = ctx.chunk_size
+        B, S, D = x.shape
+        log_p = math.log(p)
+
+        grad_x = torch.zeros_like(x)
+        # Backward uses smaller chunks — more intermediates per chunk than forward
+        bwd_chunk = min(chunk_size, 32)
+
+        for q_start in range(0, S, bwd_chunk):
+            q_end = min(q_start + bwd_chunk, S)
+
+            x_q = x[:, q_start:q_end, :].unsqueeze(2)  # (B, c, 1, D)
+            x_j = x.unsqueeze(1)  # (B, 1, S, D)
+
+            # Recompute distances
+            diff = x_q - x_j  # (B, c, S, D)
+            smooth_abs = torch.sqrt(diff * diff + PADIC_EPS * PADIC_EPS)
+            # dist_full = smooth_abs (simplification: exp(log(smooth_abs)) = smooth_abs)
+            dist = smooth_abs.mean(dim=-1)  # (B, c, S)
+
+            if S > 1:
+                row_ids = torch.arange(q_start, q_end, device=x.device).unsqueeze(1)
+                col_ids = torch.arange(S, device=x.device).unsqueeze(0)
+                dist = dist.masked_fill((col_ids > row_ids).unsqueeze(0), float('inf'))
+
+            weights = torch.softmax(-dist, dim=-1)  # (B, c, S)
+            g_out = grad_output[:, q_start:q_end, :]  # (B, c, D)
+
+            # Gradient through value path: out = weights @ x
+            grad_x += torch.bmm(weights.transpose(1, 2), g_out)
+
+            # Gradient through weights -> softmax -> dist -> x
+            g_weights = torch.bmm(g_out, x.transpose(1, 2))  # (B, c, S)
+            g_softmax = weights * (g_weights - (g_weights * weights).sum(dim=-1, keepdim=True))
+            g_dist = -g_softmax  # (B, c, S)
+
+            # dist = smooth_abs.mean(dim=-1)
+            g_smooth_abs = g_dist.unsqueeze(-1) / D  # (B, c, S, D)
+            # smooth_abs = sqrt(diff^2 + eps^2) -> d/d(diff) = diff / smooth_abs
+            g_diff = g_smooth_abs * (diff / smooth_abs)  # (B, c, S, D)
+
+            # diff = x_q - x_j
+            grad_x[:, q_start:q_end, :] += g_diff.sum(dim=2)
+            grad_x -= g_diff.sum(dim=1)
+
+            # Free large tensors explicitly
+            del diff, smooth_abs, g_diff, g_smooth_abs
+
+        return grad_x, None, None
+
+
 def ultrametric_attention(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
     """Attention using ultrametric (p-adic) distance.
 
     Tokens attend based on ultrametric closeness rather than
     dot-product similarity. This naturally creates hierarchical
     attention patterns — tokens at the same "level" attend to each other.
+
+    Uses a custom autograd.Function to avoid retaining O(chunks * B * chunk * S * D)
+    intermediate tensors. Only x is saved; distances are recomputed in backward.
     """
     B, S, D = x.shape
-    # Compute pairwise ultrametric distances
-    x_i = x.unsqueeze(2)  # (B, S, 1, D)
-    x_j = x.unsqueeze(1)  # (B, 1, S, D)
-    dist = padic_distance(x_i, x_j, p).mean(dim=-1)  # (B, S, S)
-    
-    # Apply causal mask if S > 1
-    if S > 1:
-        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-        dist.masked_fill_(mask, float('inf'))
-        
-    # Invert: close = high weight
-    weights = torch.softmax(-dist, dim=-1)
-    return torch.bmm(weights, x)
+
+    # For short sequences, the unchunked path retains at most (B, S, S, D) — acceptable
+    if S <= 128:
+        x_i = x.unsqueeze(2)  # (B, S, 1, D)
+        x_j = x.unsqueeze(1)  # (B, 1, S, D)
+        dist = padic_distance(x_i, x_j, p).mean(dim=-1)  # (B, S, S)
+        if S > 1:
+            mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
+            dist.masked_fill_(mask, float('inf'))
+        weights = torch.softmax(-dist, dim=-1)
+        return torch.bmm(weights, x)
+
+    # Memory-efficient path: custom autograd with per-chunk recomputation
+    return _UltrametricAttentionFn.apply(x, p, 32)
 
 
 # ── Primitive execution functions ─────────────────────────────────────

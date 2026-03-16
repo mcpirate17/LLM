@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app import database as db
+from aria_designer.api.app import database as db
 
 
 def test_cleanup_orphaned_workflows_skips_workflows_with_pending_proposals(tmp_path):

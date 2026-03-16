@@ -1,12 +1,8 @@
 """Tests for subgraph composition (extract, expand, builtin blocks)."""
 
-import sys
-import os
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from runtime.subgraph import (
+from aria_designer.runtime.subgraph import (
     create_block,
     extract_block,
     expand_block,

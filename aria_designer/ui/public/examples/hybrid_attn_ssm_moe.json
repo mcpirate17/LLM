@@ -20,7 +20,7 @@
     },
     {
       "id": "rope",
-      "component_type": "positional/rope",
+      "component_type": "positional/rope_rotate",
       "params": {},
       "ui_meta": {
         "position": {
@@ -31,7 +31,7 @@
     },
     {
       "id": "ln1",
-      "component_type": "normalization/rmsnorm_pre",
+      "component_type": "linear_algebra/rmsnorm",
       "params": {},
       "ui_meta": {
         "position": {
@@ -108,7 +108,7 @@
     },
     {
       "id": "ln2",
-      "component_type": "normalization/rmsnorm_pre",
+      "component_type": "linear_algebra/rmsnorm",
       "params": {},
       "ui_meta": {
         "position": {
@@ -141,7 +141,7 @@
     },
     {
       "id": "ln3",
-      "component_type": "normalization/rmsnorm_pre",
+      "component_type": "linear_algebra/rmsnorm",
       "params": {},
       "ui_meta": {
         "position": {
@@ -218,7 +218,7 @@
     },
     {
       "id": "ln4",
-      "component_type": "normalization/rmsnorm_pre",
+      "component_type": "linear_algebra/rmsnorm",
       "params": {},
       "ui_meta": {
         "position": {

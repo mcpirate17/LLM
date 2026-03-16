@@ -54,9 +54,7 @@ def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Output: (B, S, K, 8)
     """
     if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.device.type == "cpu":
-        y = torch.empty_like(a)
-        aria_core.clifford_geometric_product_cl30_f32(a, b, y)
-        return y
+        return aria_core.clifford_geometric_product_cl30_f32(a, b)
 
     # Basis: {1, e1, e2, e3, e12, e13, e23, e123}
     # Index: { 0,  1,  2,  3,   4,   5,   6,    7}

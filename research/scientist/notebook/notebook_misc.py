@@ -361,7 +361,7 @@ class _MiscMixin:
         "mod_topk", "early_exit", "adaptive_recursion", "token_merging",
         "cascade", "speculative", "moe_topk", "adaptive_lane_mixer",
         "mixed_recursion_gate", "relu_gate_routing", "routing_conditioned_compression",
-        "token_type_classifier", "entropy_router", "progressive_compression_gate",
+        "token_type_classifier", "entropy_score", "progressive_compression_gate",
         "compression_mixture_experts", "latent_attention_compressor",
     })
 
@@ -375,7 +375,7 @@ class _MiscMixin:
 
     _MOE_OPS = frozenset({
         "moe_topk", "route_topk", "route_lanes", "adaptive_lane_mixer",
-        "compression_mixture_experts", "entropy_router",
+        "compression_mixture_experts", "entropy_score",
     })
     _TIER_ORDER = {
         "screening": 0,
@@ -587,15 +587,33 @@ class _MiscMixin:
         primary worthiness gate instead of loss_ratio — a model with excellent
         efficiency/novelty/stability deserves investigation even with moderate loss.
         """
-        # Dynamic score floor: 25th percentile of investigation tier
+        # Dynamic score floor: 25th percentile of investigation tier,
+        # excluding reference architectures which inflate the floor.
+        # Falls back to 75th percentile of screening tier when no
+        # non-reference investigation entries exist yet.
         if min_composite_score is None:
             inv_scores = self.conn.execute(
                 "SELECT composite_score FROM leaderboard"
                 " WHERE tier IN ('investigation', 'validation')"
+                " AND COALESCE(is_reference, 0) = 0"
                 " AND composite_score IS NOT NULL"
                 " ORDER BY composite_score ASC"
             ).fetchall()
-            min_composite_score = inv_scores[len(inv_scores) // 4][0] if inv_scores else 0.0
+            if inv_scores:
+                min_composite_score = inv_scores[len(inv_scores) // 4][0]
+            else:
+                # No non-reference investigation entries: use 75th percentile
+                # of screening tier as a reasonable promotion threshold
+                scr_scores = self.conn.execute(
+                    "SELECT composite_score FROM leaderboard"
+                    " WHERE tier = 'screening'"
+                    " AND composite_score IS NOT NULL"
+                    " ORDER BY composite_score ASC"
+                ).fetchall()
+                min_composite_score = (
+                    scr_scores[3 * len(scr_scores) // 4][0]
+                    if scr_scores else 0.0
+                )
         rows = self.conn.execute(
             """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
                       l.screening_loss_ratio, l.screening_novelty,

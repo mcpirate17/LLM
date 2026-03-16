@@ -1,0 +1,37 @@
+id: tropical_router
+version: 1.0.0
+name: Tropical Router
+category: math_space
+tags:
+- tropical_geometry
+- routing
+- math_space
+status: approved
+description: Tropical (shortest-path) routing signal via min-plus distance
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: kernel.c
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+limits:
+  deterministic: true

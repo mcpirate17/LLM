@@ -187,6 +187,7 @@ class _SynthesisMixin:
         config: RunConfig,
         hypothesis: str,
         ablation_graphs: List[Any],
+        original_loss_ratio: Optional[float] = None,
     ) -> Tuple[List[str], str]:
         """Run Stage 0/0.5/1 evaluation on a generated ablation suite."""
         if not ablation_graphs:
@@ -247,6 +248,7 @@ class _SynthesisMixin:
         stage0_pass = 0
         stage05_pass = 0
         stage1_pass = 0
+        best_ablation_lr: Optional[float] = None
         result_ids: List[str] = []
         for idx, graph in enumerate(evaluable_graphs):
             try:
@@ -287,6 +289,8 @@ class _SynthesisMixin:
                 loss_ratio = s1.get("loss_ratio")
             if s1_passed:
                 stage1_pass += 1
+            if loss_ratio is not None and (best_ablation_lr is None or loss_ratio < best_ablation_lr):
+                best_ablation_lr = loss_ratio
             rid = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=graph.fingerprint(),
@@ -311,19 +315,47 @@ class _SynthesisMixin:
         outcome = "supported" if total > 0 and stage1_pass == 0 else "not_supported"
         if total == 0:
             outcome = "inconclusive"
+
+        # Compute ablation delta: how much worse are ablated graphs vs original?
+        ablation_best_lr = best_ablation_lr if best_ablation_lr is not None else None
+        ablation_delta = None
+        if original_loss_ratio is not None and ablation_best_lr is not None:
+            ablation_delta = ablation_best_lr - original_loss_ratio  # positive = ablated is worse
+
         nb.flush_writes()
+        experiment_results = {
+            "total": total,
+            "stage0_passed": stage0_pass,
+            "stage05_passed": stage05_pass,
+            "stage1_passed": stage1_pass,
+            "best_loss_ratio": ablation_best_lr,
+            "best_novelty_score": None,
+        }
+        if ablation_delta is not None:
+            experiment_results["ablation_delta"] = ablation_delta
+            experiment_results["original_loss_ratio"] = original_loss_ratio
         nb.complete_experiment(
             experiment_id=exp_id,
-            results={
-                "total": total,
-                "stage0_passed": stage0_pass,
-                "stage05_passed": stage05_pass,
-                "stage1_passed": stage1_pass,
-                "best_loss_ratio": None,
-                "best_novelty_score": None,
-            },
+            results=experiment_results,
             aria_summary=f"Ablation outcome: {outcome}",
         )
+
+        # Log ablation delta as learning event for grammar feedback
+        if ablation_delta is not None:
+            nb.log_learning_event(
+                "ablation_delta_measured",
+                f"Ablation for '{hypothesis}': delta={ablation_delta:.4f} "
+                f"(original={original_loss_ratio:.4f}, ablated={ablation_best_lr:.4f})",
+                evidence=json.dumps({
+                    "hypothesis": hypothesis,
+                    "original_loss_ratio": original_loss_ratio,
+                    "ablation_best_loss_ratio": ablation_best_lr,
+                    "ablation_delta": ablation_delta,
+                    "ablation_s1_pass_rate": stage1_pass / max(total, 1),
+                    "total_ablation_graphs": total,
+                }, sort_keys=True),
+            )
+
         return ([exp_id], outcome)
 
     def _evaluate_grammar_update_gate(
@@ -383,13 +415,14 @@ class _SynthesisMixin:
 
         if strong_corr and top_signal_interpretable:
             row = nb.conn.execute(
-                """SELECT graph_json FROM program_results
+                """SELECT graph_json, loss_ratio FROM program_results
                    WHERE stage1_passed = 1 AND graph_json IS NOT NULL
                    ORDER BY loss_ratio ASC NULLS LAST LIMIT 1"""
             ).fetchone()
             if row and row["graph_json"]:
                 try:
                     base_graph = graph_from_json(row["graph_json"])
+                    base_loss_ratio = float(row["loss_ratio"]) if row["loss_ratio"] is not None else None
                     suite = propose_ablation_suite(base_graph, hypothesis_text)
                     queued_plan = [g.fingerprint() for g in suite]
                     if suite:
@@ -398,6 +431,7 @@ class _SynthesisMixin:
                             config=config,
                             hypothesis=hypothesis_text,
                             ablation_graphs=suite,
+                            original_loss_ratio=base_loss_ratio,
                         )
                 except Exception as e:
                     logger.debug("Ablation run failed: %s", e)

@@ -36,6 +36,7 @@ from ..shared_api import (
 )
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.perf_contract import build_duplicate_work_report, emit_perf_artifact
+from ..type_utils import dig, safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -303,22 +304,16 @@ def _build_lineage_payload(run_id: str, wf: dict, acc: dict,
     return {
         "run_id": run_id,
         "workflow_id": wf.get("workflow_id"),
-        "workflow_version": (
-            wf.get("version") or (wf.get("metadata") or {}).get("version")
-        ),
-        "graph_fingerprint": (
-            (acc.get("conversion") or {}).get("graph_fingerprint")
-        ),
+        "workflow_version": wf.get("version") or dig(wf, "metadata", "version"),
+        "graph_fingerprint": dig(acc, "conversion", "graph_fingerprint"),
         "status": status,
         "source": "aria_designer",
         "total_time_ms": total_ms,
         "metrics": {
-            "sandbox_passed": (acc.get("sandbox") or {}).get("passed"),
-            "overall_novelty": (acc.get("novelty") or {}).get("overall_novelty"),
-            "efficiency_score": (acc.get("compression") or {}).get("efficiency_score"),
-            "benchmark_target_score": (
-                (acc.get("benchmarking") or {}).get("summary", {}).get("score")
-            ),
+            "sandbox_passed": dig(acc, "sandbox", "passed"),
+            "overall_novelty": dig(acc, "novelty", "overall_novelty"),
+            "efficiency_score": dig(acc, "compression", "efficiency_score"),
+            "benchmark_target_score": dig(acc, "benchmarking", "summary", "score"),
             "composite_score": acc.get("composite_score"),
         },
         "payload": {
@@ -429,14 +424,14 @@ def _build_direct_perf_contract(
     """Build perf contract, budget gate, and artifact for a direct eval run."""
     duplicate_work = build_duplicate_work_report()
     metrics = {
-        "total_time_ms": float(result_dict.get("total_time_ms", 0.0) or 0.0),
-        "compile_time_ms": float(result_dict.get("compile_time_ms", 0.0) or 0.0),
-        "forward_time_ms": float(result_dict.get("forward_ms", 0.0) or 0.0),
-        "backward_time_ms": float(result_dict.get("backward_ms", 0.0) or 0.0),
-        "peak_memory_mb": float(result_dict.get("peak_memory_mb", 0.0) or 0.0),
-        "native_coverage": float(result_dict.get("native_coverage", 0.0) or 0.0),
-        "total_flops_per_token": float(result_dict.get("total_flops_per_token", 0.0) or 0.0),
-        "total_params": float(result_dict.get("param_count", 0.0) or 0.0),
+        "total_time_ms": safe_float(result_dict.get("total_time_ms")),
+        "compile_time_ms": safe_float(result_dict.get("compile_time_ms")),
+        "forward_time_ms": safe_float(result_dict.get("forward_ms")),
+        "backward_time_ms": safe_float(result_dict.get("backward_ms")),
+        "peak_memory_mb": safe_float(result_dict.get("peak_memory_mb")),
+        "native_coverage": safe_float(result_dict.get("native_coverage")),
+        "total_flops_per_token": safe_float(result_dict.get("total_flops_per_token")),
+        "total_params": safe_float(result_dict.get("param_count")),
     }
 
     from research.eval.perf_budget import evaluate_perf_budget_gate
@@ -526,7 +521,7 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
     lineage_payload = {
         "run_id": run_id,
         "workflow_id": wf.get("workflow_id"),
-        "workflow_version": wf.get("version") or (wf.get("metadata") or {}).get("version"),
+        "workflow_version": wf.get("version") or dig(wf, "metadata", "version"),
         "graph_fingerprint": result_dict.get("graph_fingerprint"),
         "status": result_dict.get("status", "unknown"),
         "source": "aria_designer",
@@ -535,7 +530,7 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
             "sandbox_passed": result_dict.get("sandbox_passed"),
             "overall_novelty": result_dict.get("overall_novelty"),
             "efficiency_score": result_dict.get("efficiency_score"),
-            "benchmark_target_score": (result_dict.get("benchmarking") or {}).get("summary", {}).get("score"),
+            "benchmark_target_score": dig(result_dict, "benchmarking", "summary", "score"),
         },
         "payload": result_dict,
         "created_at": _time_mod.time(),
@@ -659,7 +654,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             model, bp["run_fingerprint"], bp["seq_len"], bp["model_dim"], bp["vocab_size"], bp["device"],
         ), ctx):
             yield ev
-        fp_obj = (ctx._last_stage_result or {}).get("fp_obj")
+        fp_obj = dig(ctx._last_stage_result, "fp_obj")
         async for ev in _run_nonfatal_stage("novelty", _stage_novelty(
             graph, fp_obj, bp["run_novelty"],
         ), ctx):
@@ -668,7 +663,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         # --- Done ---
         total_ms = round((_time_mod.monotonic() - ctx.total_t0) * 1000, 1)
         ctx.attach_benchmarking()
-        acc["graph_fingerprint"] = (acc.get("conversion") or {}).get("graph_fingerprint")
+        acc["graph_fingerprint"] = dig(acc, "conversion", "graph_fingerprint")
         acc["discovery_url"] = _discovery_url_for_fingerprint(acc.get("graph_fingerprint"))
         acc["composite_score"] = _compute_eval_composite_score(acc)
         ctx.persist_done("success", total_ms=total_ms)
@@ -721,90 +716,43 @@ def get_eval_run_stages(run_id: str) -> Dict[str, Any]:
     }
 
 
+def _get_run_stage_metrics(run_id: str, stage_name: str) -> Dict[str, Any]:
+    """Extract validated stage metrics from a completed run stage."""
+    run = _require_run(run_id)
+    stage = run.get("stages", {}).get(stage_name, {})
+    if not stage or stage.get("status") != "done":
+        raise HTTPException(status_code=404, detail=f"{stage_name.capitalize()} data not available for this run")
+    return {"run_id": run_id, **stage.get("metrics", {})}
+
+
 @router.get("/eval/runs/{run_id}/profile")
 def get_eval_run_profile(run_id: str) -> Dict[str, Any]:
-    """Get per-op profiling data for a run.
-
-    Returns FLOPs, params, memory per op, category breakdown,
-    bottleneck analysis, and native kernel coverage. Each op includes
-    its aria_node_id for mapping back to the visual canvas.
-    """
-    run = _require_run(run_id)
-    profiling = run.get("stages", {}).get("profiling", {})
-    if not profiling or profiling.get("status") != "done":
-        raise HTTPException(status_code=404, detail="Profiling data not available for this run")
-    return {
-        "run_id": run_id,
-        **profiling.get("metrics", {}),
-    }
+    """Get per-op profiling data (FLOPs, params, memory, bottlenecks, kernel coverage)."""
+    return _get_run_stage_metrics(run_id, "profiling")
 
 
 @router.get("/eval/runs/{run_id}/fingerprint")
 def get_eval_run_fingerprint(run_id: str) -> Dict[str, Any]:
-    """Get behavioral fingerprint for a run.
-
-    Returns CKA similarity scores (vs transformer/SSM/conv),
-    interaction locality, sparsity, intrinsic dimensionality, and isotropy.
-    """
-    run = _require_run(run_id)
-    fingerprint = run.get("stages", {}).get("fingerprint", {})
-    if not fingerprint or fingerprint.get("status") != "done":
-        raise HTTPException(status_code=404, detail="Fingerprint data not available for this run")
-    return {
-        "run_id": run_id,
-        **fingerprint.get("metrics", {}),
-    }
+    """Get behavioral fingerprint (CKA similarity, locality, sparsity, isotropy)."""
+    return _get_run_stage_metrics(run_id, "fingerprint")
 
 
 @router.get("/eval/runs/{run_id}/novelty")
 def get_eval_run_novelty(run_id: str) -> Dict[str, Any]:
-    """Get novelty scores for a run.
-
-    Returns structural, behavioral, and overall novelty scores,
-    plus the most similar known architecture.
-    """
-    run = _require_run(run_id)
-    novelty = run.get("stages", {}).get("novelty", {})
-    if not novelty or novelty.get("status") != "done":
-        raise HTTPException(status_code=404, detail="Novelty data not available for this run")
-    return {
-        "run_id": run_id,
-        **novelty.get("metrics", {}),
-    }
+    """Get novelty scores (structural, behavioral, overall + nearest known arch)."""
+    return _get_run_stage_metrics(run_id, "novelty")
 
 
 @router.get("/eval/runs/{run_id}/compression")
 def get_eval_run_compression(run_id: str) -> Dict[str, Any]:
-    """Get compression & efficiency analysis for a run.
-
-    Returns pruning curve, sparse op coverage, compression ratio,
-    theoretical sizes, and composite efficiency score.
-    """
-    run = _require_run(run_id)
-    compression = run.get("stages", {}).get("compression", {})
-    if not compression or compression.get("status") != "done":
-        raise HTTPException(status_code=404, detail="Compression data not available for this run")
-    return {
-        "run_id": run_id,
-        **compression.get("metrics", {}),
-    }
+    """Get compression & efficiency analysis (pruning, sparsity, ratios)."""
+    return _get_run_stage_metrics(run_id, "compression")
 
 
 @router.get("/eval/runs/{run_id}/sandbox")
 def get_eval_run_sandbox(run_id: str) -> Dict[str, Any]:
-    """Get sandbox evaluation results for a run.
-
-    Returns forward/backward timing, param count, peak memory,
-    gradient norm, and stability score.
-    """
-    run = _require_run(run_id)
-    sandbox = run.get("stages", {}).get("sandbox", {})
-    if not sandbox or sandbox.get("status") != "done":
-        raise HTTPException(status_code=404, detail="Sandbox data not available for this run")
-    return {
-        "run_id": run_id,
-        **sandbox.get("metrics", {}),
-    }
+    """Get sandbox evaluation results (timing, params, memory, stability)."""
+    return _get_run_stage_metrics(run_id, "sandbox")
 
 
 @router.get("/eval/runs/{run_id}/benchmarking")

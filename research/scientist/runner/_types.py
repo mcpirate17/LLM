@@ -195,7 +195,14 @@ class RunConfig:
     use_synthesized_training: bool = False  # use random training programs
     n_training_programs: int = 3       # how many to try per candidate (investigation)
     loss_type: str = "cross_entropy"       # "cross_entropy" | "synthesized"
-    optimizer_type: str = "adamw"          # "adamw" | "synthesized"
+    optimizer_type: str = "adamw"          # "adamw" | "muon" | "synthesized"
+    optimizer_betas: tuple = (0.9, 0.95)   # Adam betas (only used for adamw)
+    optimizer_weight_decay: float = 0.01   # decoupled weight decay
+    # Phase-specific optimizer overrides (empty/"" = inherit from optimizer_type)
+    screening_optimizer: str = ""          # optimizer for screening phase
+    screening_lr: float = 0.0             # 0 = use stage1_lr
+    investigation_optimizer: str = ""      # optimizer for investigation phase
+    investigation_lr: float = 0.0         # 0 = use stage1_lr
     # Investigation phase
     investigation_steps: int = INVESTIGATION_STEPS
     investigation_batch_size: int = INVESTIGATION_BATCH_SIZE

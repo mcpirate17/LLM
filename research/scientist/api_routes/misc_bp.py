@@ -11,10 +11,19 @@ from ..code_agent import _spawn_code_agent_task
 from ._chat import code_agent_task_snapshot, run_local_chat_agent
 from ._designer import (
     designer_idle_state,
+    designer_proxy,
     designer_service_status,
     designer_touch_activity,
+    proxy_or_error,
+    proxy_stream,
     start_designer_services,
     stop_designer_services,
+)
+from ..designer_utils import (
+    compile_designer_graph,
+    get_designer_components,
+    run_designer_graph,
+    validate_designer_graph,
 )
 from .deps import ApiRouteContext
 

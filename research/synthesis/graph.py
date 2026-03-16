@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Set
 
 import numpy as np
@@ -204,6 +204,24 @@ class ComputationGraph:
         self._output_node_id: Optional[int] = None
         self.metadata: Dict = {}
         self._cache: Dict = {}  # lazily computed properties
+
+    def copy(self) -> "ComputationGraph":
+        """Create a structural copy without generic deepcopy overhead."""
+        clone = ComputationGraph(self.model_dim)
+        clone.nodes = {
+            node_id: replace(
+                node,
+                input_ids=list(node.input_ids),
+                output_shape=replace(node.output_shape),
+                config=dict(node.config),
+            )
+            for node_id, node in self.nodes.items()
+        }
+        clone._next_id = self._next_id
+        clone._input_node_id = self._input_node_id
+        clone._output_node_id = self._output_node_id
+        clone.metadata = dict(self.metadata)
+        return clone
 
     @property
     def input_node(self) -> Optional[OpNode]:

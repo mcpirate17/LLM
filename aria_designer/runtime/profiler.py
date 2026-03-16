@@ -17,15 +17,8 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List
 
 import torch
-import torch.nn as nn
 
 from .bridge import workflow_to_graph
-
-import sys
-import os
-_RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "research"))
-if _RESEARCH_ROOT not in sys.path:
-    sys.path.insert(0, os.path.dirname(_RESEARCH_ROOT))
 
 from research.defaults import MODEL_DIM, VOCAB_SIZE
 from research.eval.perf_budget import evaluate_perf_budget_gate

@@ -11,6 +11,24 @@ import torch.nn.functional as F
 class _ExecutionMicroTrainPhase3Mixin:
     """Split helpers for micro-train phase orchestration."""
 
+    def _micro_train_get_rng(
+        self,
+        seed_int: int,
+        dev: torch.device,
+    ) -> torch.Generator:
+        """Reuse deterministic per-device generators instead of reseeding globals."""
+        device_key = f"{dev.type}:{dev.index if dev.index is not None else -1}"
+        cache = getattr(self, "_micro_train_rngs", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_micro_train_rngs", cache)
+        key = (int(seed_int), device_key)
+        gen = cache.get(key)
+        if gen is None:
+            gen = torch.Generator(device=dev.type)
+            cache[key] = gen
+        return gen
+
     def _micro_train_make_random_batch(
         self,
         seed_int: int,
@@ -21,8 +39,15 @@ class _ExecutionMicroTrainPhase3Mixin:
         dev: torch.device,
     ) -> torch.Tensor:
         """Generate deterministic random batch for a given step."""
-        torch.manual_seed(seed_int * 100_000 + step)
-        return torch.randint(0, int(vocab_size), (batch_size, seq_len), device=dev)
+        gen = self._micro_train_get_rng(seed_int=seed_int, dev=dev)
+        gen.manual_seed(seed_int * 100_000 + step)
+        return torch.randint(
+            0,
+            int(vocab_size),
+            (batch_size, seq_len),
+            device=dev,
+            generator=gen,
+        )
 
     def _micro_train_discovery_eval(
         self,
@@ -128,12 +153,14 @@ class _ExecutionMicroTrainPhase3Mixin:
         try:
             with torch.no_grad():
                 for i in range(discovery_batches):
-                    torch.manual_seed(int(seed) * 10_000 + 3_000 + i)
+                    gen = self._micro_train_get_rng(seed_int=int(seed) + 3_000, dev=dev)
+                    gen.manual_seed(int(seed) * 10_000 + 3_000 + i)
                     input_ids = torch.randint(
                         0,
                         int(config.vocab_size),
                         (discovery_batch_size, seq_len),
                         device=dev,
+                        generator=gen,
                     )
                     with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
                         logits = model(input_ids)
